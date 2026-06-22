@@ -1,0 +1,69 @@
+{
+  "48.503,17.002": {
+    "city": {
+      "name": "Bratislava",
+      "type": "city",
+      "lat": 48.1517,
+      "lng": 17.10931,
+      "km": 39.9
+    },
+    "border": {
+      "name": "Border",
+      "type": "border",
+      "lat": 48.16964,
+      "lng": 17.19973,
+      "km": 39.9
+    },
+    "port": {
+      "name": "Prístavisko Gajary",
+      "type": "port",
+      "lat": 48.46519,
+      "lng": 16.86503,
+      "km": 11.0
+    },
+    "rail": {
+      "name": "Dobermannsdorf",
+      "type": "rail",
+      "lat": 48.60584,
+      "lng": 16.81955,
+      "km": 17.6
+    }
+  },
+  "40.3,-3.65": {
+    "city": {
+      "name": "Getafe",
+      "type": "city",
+      "lat": 40.30706,
+      "lng": -3.73318,
+      "km": 7.1
+    },
+    "rail": {
+      "name": "RENFE Estación de Contenedores del Salobral",
+      "type": "rail",
+      "lat": 40.33667,
+      "lng": -3.68364,
+      "km": 5.0
+    },
+    "port": {
+      "name": "Embarcadero Casa de Campo",
+      "type": "port",
+      "lat": 40.4173,
+      "lng": -3.73154,
+      "km": 14.8
+    },
+    "border": {
+      "name": "Border",
+      "type": "border",
+      "lat": 40.46443,
+      "lng": -3.56989,
+      "km": 19.5
+    },
+    "air": {
+      "name": "Aeropuerto Adolfo Suárez Madrid-Barajas",
+      "type": "air",
+      "lat": 40.49502,
+      "lng": -3.56193,
+      "km": 22.9
+    }
+  }
+}

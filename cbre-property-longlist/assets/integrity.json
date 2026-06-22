@@ -1,0 +1,194 @@
+{
+  "helpers/_common.py": {
+    "size": 12681,
+    "sha256": "980c9bf9e2663a8fe1ea713b1db997645e544ec1d633526bb0d18a7735fe47e6"
+  },
+  "helpers/_vendor_wheels.py": {
+    "size": 4162,
+    "sha256": "47a911258b1e026d69e7e35e54f2f12d8dd140c6772df1997d9bda387d9eec58"
+  },
+  "helpers/build_cities_dataset.py": {
+    "size": 4726,
+    "sha256": "1a7ab72df3a7f5a5d231e4c39cd52d6f31e22867c4226da8cf02cb55fa64642b"
+  },
+  "helpers/build_dashboard.py": {
+    "size": 8886,
+    "sha256": "2ef53dbc661c7d347c55fee9a0b6666f69dfe66c967388755e77c5cb9eaa0d42"
+  },
+  "helpers/build_poi_dataset.py": {
+    "size": 8956,
+    "sha256": "962ba655a287edf1368a87c8fe39688226f9fab2a46d7f75f6515ed92f7fa3d9"
+  },
+  "helpers/build_region_geo.py": {
+    "size": 3982,
+    "sha256": "121419fbfa4d8058ded4022a1a8b6af268f9df97475bcebf76fef360320f1faf"
+  },
+  "helpers/build_regions_dataset.py": {
+    "size": 7537,
+    "sha256": "ba1f074b4974f3e629158919deaedb8b30e5feed94c998868295d366d6044c31"
+  },
+  "helpers/contact_sheet.py": {
+    "size": 8272,
+    "sha256": "80df722b4a9b571117a3903c4cfb675219e217a68b374fc77059a3b983d5a1b6"
+  },
+  "helpers/deliver.py": {
+    "size": 13634,
+    "sha256": "2b346293c5cef9f7e694a3aab167245025ce2518b9c5cce1434e54d8d46b2fa1"
+  },
+  "helpers/enrich.py": {
+    "size": 72706,
+    "sha256": "636ca2ba9a99ff81dabec0a44ea178fe83b994d0949828c4c679b8c429fe4946"
+  },
+  "helpers/extract_email.py": {
+    "size": 5890,
+    "sha256": "4592d7b53839c1b2dc817cb6607f55186a0e9b6233f3e6f3919511c576243dbc"
+  },
+  "helpers/extract_image.py": {
+    "size": 3579,
+    "sha256": "d9840092033219acad3d63b5722ecd71af314b0453687dfa3d21c730fc191662"
+  },
+  "helpers/extract_pdf.py": {
+    "size": 30796,
+    "sha256": "e815d676134ac9805f201bbe7fa2f1e73cc61ad752c28be48c364391f2f447b6"
+  },
+  "helpers/extract_pptx.py": {
+    "size": 4206,
+    "sha256": "1d592ac23901665b1462d025fb3d02473e554f214504ef029dc22e07f5047525"
+  },
+  "helpers/extract_xlsx.py": {
+    "size": 51759,
+    "sha256": "05e97e55e800151739da9ba0ef6eb109f38245600102c8a0cd7468eb28a795d1"
+  },
+  "helpers/final_gate.py": {
+    "size": 7230,
+    "sha256": "9c654ef53f9fd53c1d8c7620e7b896498a2c24c558aa50a0b8bed7ba30667e2d"
+  },
+  "helpers/fitz_shim.py": {
+    "size": 10322,
+    "sha256": "e2b6e197b7011fa9df68519f2b7a34fa1c34935cbbe043b6eb71f67c9757581b"
+  },
+  "helpers/gate_runner.py": {
+    "size": 33219,
+    "sha256": "35f85f995e77190c56852f73c5ebcf2b44d088b8d24bd2d3ee9cceedb8042e10"
+  },
+  "helpers/images.py": {
+    "size": 66349,
+    "sha256": "5a61ba7b13e7841b563397a3aadc6c3007da7cf66eb556180135fae68b2a72d2"
+  },
+  "helpers/intake.py": {
+    "size": 19910,
+    "sha256": "fac244c4af58c6d1a21a4b2f6752c5fc3566c2ce66b335300e563407d12481ef"
+  },
+  "helpers/interpret_prep.py": {
+    "size": 16833,
+    "sha256": "aa60603ece9a8e950d06592c4864e7857a2c2da8a31e0e4da7394799c7d83d60"
+  },
+  "helpers/ledger.py": {
+    "size": 3710,
+    "sha256": "9ee5b27a748195c2e6ffba4ea8139fb261e5444a185de921f60feff66e416979"
+  },
+  "helpers/make_integrity.py": {
+    "size": 2163,
+    "sha256": "55f1545200e8fed93ad4e6da9d0a30c7d673fe9d3217434563ddc17c0a7c42dc"
+  },
+  "helpers/make_template.py": {
+    "size": 22139,
+    "sha256": "316aec2d8146f3eeff611fa391b9e00399c9baad6061ebbe7f2b94ab866dc2da"
+  },
+  "helpers/match.py": {
+    "size": 16863,
+    "sha256": "7a2b21cc692f44894d2a30aa9bc09382ba3363dcbf50e7081a931cf209b0541a"
+  },
+  "helpers/merge.py": {
+    "size": 73826,
+    "sha256": "14011d2573d166b3aa67165d18477d433d00c9098d5f09f3195a1d7110c6c02c"
+  },
+  "helpers/normalize.py": {
+    "size": 15372,
+    "sha256": "39ec977536e3ec104ce6832824016e23f32f144b90e00a66957de70f138335cd"
+  },
+  "helpers/preflight.py": {
+    "size": 4305,
+    "sha256": "2ea40bdf167a0f3b7f3631e20f22a003e944f9608ab40d07f18df24acbf66c78"
+  },
+  "helpers/rapidfuzz_shim.py": {
+    "size": 2577,
+    "sha256": "be8ea652046f49d25a2aa1b3536626a476d1a538bd2a98821ed2a604999a233e"
+  },
+  "helpers/render_qa.py": {
+    "size": 9355,
+    "sha256": "cca30c8a454057309606f71a8e55fb16e67e03511648d968a6effe64ffffb3f3"
+  },
+  "helpers/run.py": {
+    "size": 122286,
+    "sha256": "258c8ed6a6219cfa00db5e907f32bd05fa9f061ad0ad3bc3d3e71446a7931c55"
+  },
+  "helpers/seed_geocode.py": {
+    "size": 2442,
+    "sha256": "6bd7c1dbed9a0098f05f10b7734bc8cf0c935ca1428cf82af433725404e7546f"
+  },
+  "helpers/setup_permissions.py": {
+    "size": 7513,
+    "sha256": "c7545e3e990c621e8a3895bdcf040d86f4e08c448da926c5566a763a7714fb55"
+  },
+  "helpers/shell_guard_hook.py": {
+    "size": 2974,
+    "sha256": "f5ef374318c1092e6f974e6ea4368290f5b0220bd09f50599c54e6decfd70bbb"
+  },
+  "helpers/vision_prep.py": {
+    "size": 11970,
+    "sha256": "bc3a84e06fd7a3a03bd119997e755ab48ef35980037f83cc2ccff13ff0de81bc"
+  },
+  "helpers/vision_validate.py": {
+    "size": 18462,
+    "sha256": "b353edeab2b09a4e4ed0d347a8d45847f8af82b85b689623da2e77d879176fbd"
+  },
+  "helpers/web_enrich.py": {
+    "size": 40923,
+    "sha256": "dd373aaeb2c365d9102b9654fef9f872045faa318179673d298a29162fb9103f"
+  },
+  "assets/dashboard_template.html": {
+    "size": 760363,
+    "sha256": "1a0ff173fc41f39a0042fded8077264937d5054f2bd42118aa2a6a590333df8a"
+  },
+  "assets/VERSION": {
+    "size": 83,
+    "sha256": "acbde44ff2c07a6411cc7756ccc95aa2046357fc7222143b6ecfed3d455a4420"
+  },
+  "assets/poi_library.json": {
+    "size": 19274,
+    "sha256": "470be8cc3e05d1c7f6ef47688139c8841afe2877e4fc5c40e08dc535618cd458"
+  },
+  "assets/label_ledger.json": {
+    "size": 6366,
+    "sha256": "0e29d815ccd045c50c82d599a669b78e1c32caa18ae4bb8aff0ae4755d32e935"
+  },
+  "assets/poi_dataset.json.gz": {
+    "size": 141942,
+    "sha256": "479fece32f0be316c9ecb8f541c90d5172543621359edcc62083c992190cf0e8"
+  },
+  "assets/regions_dataset.json.gz": {
+    "size": 80116,
+    "sha256": "220ab5433e66e3bfdbc858ecd8e7e28cda7fd43b385c8cad58e7f3d4036275c7"
+  },
+  "assets/cities_dataset.json.gz": {
+    "size": 486015,
+    "sha256": "193f096e39b607abbd3f5ca36430a8808fd29b2b9b0b071c458326a24264c9cc"
+  },
+  "assets/regions_geo.json.gz": {
+    "size": 938241,
+    "sha256": "f0467ef5a99def900d6bb95157c696971e881a78bdb0558add5217cca89c30ed"
+  },
+  "assets/placeholder.uri": {
+    "size": 7607,
+    "sha256": "d22609f38eab3ac2fd46d57f3746ddd0c3f33bb4292b797ef52d4e523e5d6530"
+  },
+  "templates/canonical.schema.json": {
+    "size": 9705,
+    "sha256": "1353e2622eb296ad86849ac86b470cff1ace9ff0e3cd9931d6e1f22767f04a59"
+  },
+  "templates/record_schema.json": {
+    "size": 4407,
+    "sha256": "054295ba443d3cc17c4cf221e3c68947185940ae3823dce9e559bf4e8f219075"
+  }
+}

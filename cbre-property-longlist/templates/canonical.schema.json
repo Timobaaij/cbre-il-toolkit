@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cbre-property-longlist/canonical.schema.json",
+  "title": "CBRE Property Longlist canonical dataset",
+  "description": "The single source of truth a run produces. Field names map 1:1 to the dashboard template's render JS, so the injector is a pure pass-through. Unknowns are explicit sentinels ('tbd', '—', null), never invented and never dropped.",
+  "type": "object",
+  "required": ["meta", "properties", "pois", "regions"],
+  "additionalProperties": false,
+  "properties": {
+    "meta": {
+      "type": "object",
+      "description": "Audit + hero/footer config. Not rendered as data; hero strings feed the {{tokens}}.",
+      "required": ["client", "hero"],
+      "additionalProperties": true,
+      "properties": {
+        "client": {"type": "string"},
+        "project": {"type": "string"},
+        "confidential": {"type": "boolean"},
+        "generatedAt": {"type": "string"},
+        "templateVersion": {"type": "string"},
+        "hero": {
+          "type": "object",
+          "description": "Fills the project-specific {{tokens}} in the template. KPI tokens are computed by build_dashboard.py and need not be supplied here.",
+          "required": ["topbar_meta", "eyebrow", "title_html", "lede", "footer_copyright"],
+          "additionalProperties": true,
+          "properties": {
+            "topbar_meta": {"type": "string"},
+            "eyebrow": {"type": "string"},
+            "title_html": {"type": "string"},
+            "lede": {"type": "string"},
+            "footer_copyright": {"type": "string"}
+          }
+        },
+        "sourceFiles": {"type": "array", "items": {"type": "string"}},
+        "unmatchedAssets": {"type": "array"},
+        "conflicts": {"type": "array"},
+        "requirements": {"type": "object", "description": "Client questionnaire requirements (size/must-haves). Populated by the spine from an xlsx questionnaire (merge --requirements); the orchestrator uses them for the size-slider default and hard-requirement flags. Not injected into the HTML."},
+        "enrichment": {"type": "object"}
+      }
+    },
+    "properties": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/property"}
+    },
+    "pois": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/poi"}
+    },
+    "regions": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/region"}
+    }
+  },
+  "$defs": {
+    "property": {
+      "type": "object",
+      "description": "One property option. 'required' = the chrome breaks without it.",
+      "required": [
+        "id", "country", "park", "developer", "city", "status", "photo"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "id": {"type": "integer", "minimum": 1},
+        "country": {"type": "string", "minLength": 2, "maxLength": 3},
+        "park": {"type": "string", "minLength": 1},
+        "developer": {"type": "string", "minLength": 1},
+        "landlord": {"type": "string", "description": "The owner / asset manager / freeholder of an existing building - a DISTINCT party from the developer. Optional (a property may have only a developer, or only a landlord); 'tbd' when unknown. Surfaced in the detail modal + compare table, gated by FIELD_PRESENT so it renders nowhere when no input carried it."},
+        "city": {"type": "string", "minLength": 1},
+        "region": {"type": "string"},
+        "regionCode": {"type": ["string", "null"]},
+        "lat": {"type": "number", "minimum": -90, "maximum": 90},
+        "lng": {"type": "number", "minimum": -180, "maximum": 180},
+        "coordsApprox": {"type": "boolean"},
+        "status": {"type": "string"},
+        "permitting": {"type": "string"},
+        "earlyAccess": {"type": "string"},
+        "leaseTerm": {"type": "string"},
+        "rentFree": {"type": "string"},
+        "incentives": {"type": "string"},
+        "plotArea": {"type": ["number", "string", "null"]},
+        "warehouseArea": {"type": "number", "minimum": 0},
+        "divisibleFrom": {"type": ["number", "string", "null"]},
+        "officeArea": {"type": ["number", "string", "null"]},
+        "officeAreaVal": {"type": ["number", "null"], "description": "Office GLA as a clean number in the dataset's area unit, derived by merge from officeArea for total-GLA rent maths. Null when unparseable/absent."},
+        "expansionBuilding": {"type": "string"},
+        "expansionPark": {"type": "string"},
+        "expansionParkVal": {"type": ["number", "null"]},
+        "clearHeight": {"type": "string"},
+        "floorLoad": {"type": "string"},
+        "sprinklers": {"type": "string"},
+        "loadingDocks": {"type": "string"},
+        "overheadDoors": {"type": "string"},
+        "electricity": {"type": "string"},
+        "truckParking": {"type": "string"},
+        "carParking": {"type": "string"},
+        "warehouseRent": {"type": "string"},
+        "warehouseRentVal": {"type": ["number", "null"], "description": "Headline warehouse rent as an ANNUAL per-area figure IN ITS OWN CONVENTION (the number shown in warehouseRent): €/m²/yr for metric sources, £/sq ft/yr for UK sources (rentUnit names it). A monthly quote must be annualised x12 before it is stored here. Currency is never converted."},
+        "rentUnit": {"type": "string", "description": "Rent quoting convention as 'currency/per-area/yr' (e.g. '£/sq ft/yr', '€/sq m/yr'). Absent = the €/sq m/yr default. Source conventions are KEPT."},
+        "areaUnit": {"type": "string", "enum": ["sq m", "sq ft"], "description": "The dataset's area unit (merge stamps the DOMINANT source unit on every property; minority-unit records convert arithmetically with a provenance note)."},
+        "officeRent": {"type": "string"},
+        "officeRentVal": {"type": ["number", "null"], "description": "Office rent as an ANNUAL per-area numeric in the property's own convention (rentUnit), derived by merge from officeRent for the total-rent split. Null when absent/unparseable."},
+        "landPrice": {"type": "string"},
+        "serviceCharge": {"type": "string"},
+        "reit": {"type": ["string", "null"]},
+        "breeam": {"type": "string"},
+        "motorway": {"type": "string"},
+        "mapLink": {"type": "string"},
+        "description": {"type": "string"},
+        "photo": {"type": "string", "description": "data:image/...;base64,... or a placeholder data URI. This is the HERO (gallery[0])."},
+        "gallery": {"type": "array", "items": {"type": "string"}, "description": "Up to GALLERY_MAX photo data URIs for the carousel, best-first (photographic_score), hero first. PAGE-SCOPED so a multi-property deck contributes only this property's photos. Always contains at least [photo]; the carousel falls back to [photo] when absent."},
+        "plan": {"type": "string", "description": "A site-plan image data URI. merge.py harvests it from the brochure page (page_plan: balanced white/ink signature; the hyperlinked location map and boilerplate are excluded); a standalone plan file bound by the orchestrator (extract_image.py kind=plan) takes precedence. On a plan-only page the plan also serves as the hero."},
+        "district": {
+          "type": "object",
+          "description": "ORCHESTRATOR-FILLED: optional local labour-market micro-profile from research. The deterministic spine does not populate it; region-level workforce data lives in top-level regions{} via enrich --regions.",
+          "additionalProperties": true,
+          "properties": {
+            "district": {"type": "string"},
+            "unemployment": {"type": ["number", "string", "null"]},
+            "asOf": {"type": "string"},
+            "applicantsPerVacancy": {"type": ["number", "string", "null"]},
+            "note": {"type": "string"}
+          }
+        },
+        "preBaked": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "distances": {"type": "object"},
+            "isochrones": {
+              "type": "object",
+              "properties": {
+                "poly30": {"type": "array"},
+                "poly60": {"type": "array"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "poi": {
+      "type": "object",
+      "required": ["name", "type", "lat", "lng"],
+      "additionalProperties": true,
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "type": {"type": "string", "enum": ["port", "rail", "air", "border", "city"]},
+        "lat": {"type": "number", "minimum": -90, "maximum": 90},
+        "lng": {"type": "number", "minimum": -180, "maximum": 180},
+        "country": {"type": "string"},
+        "note": {"type": "string"}
+      }
+    },
+    "region": {
+      "type": "object",
+      "description": "Workforce/labour profile. Every figure pairs with an *AsOf date and a sources citation; a missing figure stays null, never invented.",
+      "additionalProperties": true,
+      "properties": {
+        "name": {"type": "string"},
+        "nuts": {"type": "string"},
+        "country": {"type": "string"},
+        "population": {"type": ["number", "null"]},
+        "populationAsOf": {"type": "string"},
+        "labourForce": {"type": ["number", "null"]},
+        "employmentRate": {"type": ["number", "null"]},
+        "unemployment": {"type": ["number", "null"]},
+        "unemploymentAsOf": {"type": "string"},
+        "gdpPpsEu": {"type": ["number", "null"]},
+        "notes": {"type": "string"},
+        "sources": {"type": "string"}
+      }
+    }
+  }
+}

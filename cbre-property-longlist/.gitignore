@@ -1,0 +1,11 @@
+# transient run artefacts and caches - never commit
+evals/_out/
+**/__pycache__/
+*.pyc
+reference/geocode_cache.json
+# keep (committed): SKILL.md, helpers/, reference/*.md, reference/ seed caches,
+# templates/, examples/, all three evals/*.py, and every file in assets/ - the
+# template + VERSION + the four *.json datasets/ledgers (poi_library, label_ledger,
+# poi_dataset, regions_dataset) + reference_screenshots/. assets/integrity.json is
+# the authoritative list of build-critical tracked files - do not let this comment
+# drift from it.

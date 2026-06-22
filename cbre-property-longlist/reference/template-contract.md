@@ -1,0 +1,39 @@
+# The template contract
+
+The dashboard is produced by injecting three data blocks into a **frozen, versioned** template. The chrome (fonts, CSS, Leaflet, render JS) is byte-stable across every project; only data and a handful of config strings change. This is the whole value proposition - the CBRE look cannot drift.
+
+## The template asset
+`assets/dashboard_template.html` is generated from a reference dashboard by `helpers/make_template.py`, which:
+1. replaces the three data lines with markers: `/* @@INJECT:PROPS@@ */`, `/* @@INJECT:POIS@@ */`, `/* @@INJECT:REGIONS@@ */`.
+2. replaces project-specific strings with `{{tokens}}`: `topbar_meta`, `eyebrow`, `title_html`, `lede`, `footer_copyright`, and the KPI tokens (`kpi_properties`, `kpi_countries`, `kpi_regions`, `kpi_developers`, `kpi_wh_area`, `kpi_rent`, `kpi_countries_sub`, `kpi_regions_sub`, `kpi_wh_area_sub`, `kpi_rent_sub`). The authoritative token list is `_common.CONFIG_TOKENS`.
+3. applies robustness `POST_PATCHES` (so a missing numeric shows `"tbd"` instead of crashing the render).
+4. writes `assets/VERSION` (`<label>` + `chrome_sha256`).
+
+Every replacement must hit exactly once or `make_template.py` aborts - the 11 MB file is never hand-edited blindly.
+
+## Build = forward substitution (`build_dashboard.py`)
+`render(canonical)` fills the `{{tokens}}` (hero strings from `meta.hero`; KPIs **computed from the data** so they cannot drift) and replaces the three markers with `const NAME = <minified-json>;`. It asserts no token or marker is left behind. The output is, by construction, the template plus exactly these substitutions.
+
+## Byte-stability check (`gate_runner.py validate-html`)
+Re-runs `render(canonical)` and asserts the delivered file is **byte-identical**, that the three blocks round-trip a JSON parse, and that the template's SHA matches `VERSION`. Any chrome change therefore fails the gate unless the template was deliberately re-versioned.
+
+## Versioning
+When a visual/template defect must be fixed (not a data fix), add a `POST_PATCH` in `make_template.py` and regenerate (preferred - reproducible), bump the `--label`, and keep prior templates so old projects rebuild identically. The version is pinned by `assets/VERSION` (label + `chrome_sha256`) and enforced by `validate-html`'s SHA check - not by any `project.yaml` key. The current template is **v18**, cumulative over the raw reference. (This summary was previously stale at v10; v11-v18 are now folded in below.) v5-v18 were hand-applied directly to `assets/dashboard_template.html` (the raw reference HTML is not on disk to regenerate from), with VERSION + `chrome_sha256` bumped and `validate-html` confirming byte-stability each time; the authoritative per-version audit trail is the `NOTE` blocks in `make_template.py` (re-add each as a `POST_PATCH` if ever regenerating from a raw reference). Summary:
+- **v2** missing-numeric `fmt()` guard; **v3** comparison distance-row guards (empty POI type); **v4** visual fixes (card ref-chip spacing + `#` for the tofu numero sign, solid default map-marker fill so any country renders a readable number, transparent-on-dark compare-tray Clear button).
+- **v5** client-side live nearest-POI discovery (`ensureNearestPois`/`rebuildPoiMarkers`/`populateMapPois` + hooks in `openModal`/`openCompare`/`switchView('map')`); offline = silent no-op. `POIS` stays `const` (mutated via `.push`), so no `build_dashboard`/gate-regex change.
+- **v6** modal Workforce & Region guard (`reg`/`dist` null-safe + `rNum`/`rK`/`rStr` honest-`tbd` helpers + an honest "not yet added" placeholder).
+- **v7** country FILTER options derive from `PROPS` via `Intl.DisplayNames` (the hardcoded HU/CZ/SK no longer stick on a new market); Site Plan toggle renders only when `p.plan` exists; coordinate-less properties no longer crash the modal.
+- **v8** the "Open in Google Maps" anchor renders only when a real target exists (explicit `mapLink` -> else derived from coordinates -> else omitted; `href=""` used to reload the page).
+- **v9** dataset-wide `FIELD_PRESENT` (a variable no input ever carried renders nowhere; partial fields still show TBC) + the Workforce block renders only value-bearing tiles (adds the Oxecon GDP-nominal/manufacturing/transport-storage tiles, drops the never-shipped employment-rate / GDP-per-capita-PPS tiles). Regions KPI sub-label is the static "Under consideration".
+- **v10** unit-aware labels (source convention KEPT): `AREA_UNIT`/`RENT_PER` consts + the `{{kpi_wh_area_sub}}`/`{{kpi_rent_sub}}` tokens drive sq ft vs sq m and £/sq ft vs €/m² throughout the chrome.
+- **v11** wage tile dropped for a derived logistics-employment-share tile (workforce now 100% dataset-sourced); reviewer twin regenerated on every freeze.
+- **v12** per-property photo `gallery` (best-first, hero = `gallery[0]`, cap `images.GALLERY_MAX`) + a manual prev/next carousel on cards and in the modal, page-scoped so a multi-property deck never leaks a neighbour's photo.
+- **v13** data-driven size slider (`initSizeSlider` sets bounds/step/default from the real area range, unit-aware label); single-country header (`adaptSingleCountryHeader` drops the Countries KPI tile, widens Regions); monthly + annual rent (`rentMonthlyStr`/`RENT_CUR`); the compare 'lowest rent' skips non-numeric rents.
+- **v14** exhaustive total rent (GLA × rate) on the modal + compare: `totalAnnualRent`/`totalRentStr`, split warehouse@rate + office@rate when rates differ, derived `officeRentVal`/`officeAreaVal`.
+- **v15** a tbd/absent modal description renders nothing (guarded by `isTbd`) instead of a bare 'tbd' paragraph.
+- **v16** three area rows (`glaVal`/`glaStr` Total GLA = warehouse + office, plus warehouse + office components) on the modal + compare; a full-size photo lightbox (`#lightbox`/`#lb-img`/`openLightbox`) above the modal with prev/next + arrow-key/Esc handling.
+- **v17** honest drive-time labelling driven by the build-time enrichment state via the single `{{dist_mode}}` config token (machine string `est`/`car`/`hgv`). JS maps it through `DIST_LABEL`/`DIST_BADGE` to a mode-aware Drive-time column header, an adjacent badge, an honest initial `distStatusHtml`, and a legend mode tag. The client-side live OSRM upgrade is kept (always CAR profile) and labelled honestly - it claims only live car-routed where reachable and discloses that truck/HGV times are not modelled, never claiming HGV; the header/badge reflect the build state. Defect 1 of the same change drops the baked km from the `enrich.py` POI notes so the grey sub-label carries provenance only (the single headline distance comes from the opened property's own coordinates).
+- **v18** `landlord` surfaced as a party DISTINCT from the developer (the owner / asset manager / freeholder of an existing building): a `row('Landlord', p.landlord, 'landlord')` in the modal Availability & Site section and a `['Landlord', p=>p.landlord, 'landlord']` row in the compare table, EACH gated by `FIELD_PRESENT['landlord']` (the v9 machinery) so a no-landlord dataset renders no Landlord row anywhere. It is deliberately NOT on the card hero line, the filters, the search index or the sort (the card stays clean; developer remains the primary axis). `landlord` rides inside the `PROPS` data block - no new `{{config}}` token. Pairs with the data-engine change that stops `extract_xlsx` conflating landlord/owner/asset-manager into `developer`.
+
+## Generalising to a new reference look
+Point `make_template.py` at a new reference HTML and update the `CONFIG_REPLACEMENTS`/`POST_PATCHES` literals to match that file's exact strings. The data schema is shared, so only the chrome changes.

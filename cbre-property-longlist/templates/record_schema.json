@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Stage-1 extractor candidate record",
+  "description": "What each extraction agent/script emits per property BEFORE merge. A partial canonical property plus a __meta block carrying provenance. Unknowns are omitted or set to 'tbd'/null, never guessed. merge.py combines these into canonical.json.",
+  "type": "object",
+  "required": ["__meta"],
+  "additionalProperties": true,
+  "properties": {
+    "park": {"type": "string"},
+    "developer": {"type": "string"},
+    "landlord": {"type": "string", "description": "The owner / asset manager / freeholder of an existing building - a DISTINCT party from the developer. Never derived from the developer (or vice versa)."},
+    "city": {"type": "string"},
+    "country": {"type": "string"},
+    "region": {"type": "string"},
+    "lat": {"type": "number"},
+    "lng": {"type": "number"},
+    "status": {"type": "string"},
+    "warehouseArea": {"type": ["number", "string"]},
+    "warehouseRent": {"type": "string"},
+    "warehouseRentVal": {"type": ["number", "null"], "description": "ANNUAL headline rent in its OWN per-area convention - €/m²/yr for metric sources, £/sq ft/yr for UK sources (rentUnit names it); matches warehouseRent's number. Annualise a monthly quote x12 before storing. Currency is never converted."},
+    "rentUnit": {"type": "string", "description": "rent convention as 'currency/per-area/yr' (e.g. '£/sq ft/yr', '€/sq m/yr'); absent = the €/sq m/yr default. Source convention is KEPT."},
+    "areaUnit": {"type": "string", "enum": ["sq m", "sq ft"], "description": "unit the numeric areas are in; merge stamps the dataset's dominant unit on every property."},
+    "__meta": {
+      "type": "object",
+      "required": ["source_file", "source_type"],
+      "properties": {
+        "source_file": {"type": "string", "description": "exact input filename or email subject"},
+        "source_type": {"type": "string", "enum": ["pdf", "pptx", "xlsx", "image", "email", "web"]},
+        "locator_base": {"type": "string", "description": "default locator, e.g. 'page 4' / 'slide 4' / sheet name"},
+        "page_no": {"type": "integer", "description": "0-based page index for PDF image harvesting"},
+        "heroRef": {"type": ["integer", "null"], "description": "TEXT-mode interpretation: the `index` (into the page's `candidates`) of the genuine marketing HERO (a real photo/aerial/render), or null when none of the candidates is a real photo. merge binds it via images.embedded_by_index; the classifier + G-images gate verify it; null/absent falls back to the deterministic hero ladder."},
+        "planRef": {"type": ["integer", "null"], "description": "TEXT-mode interpretation: the `index` (into the page's `candidates`) of the SITE PLAN when it is an EMBEDDED IMAGE, or null. Binds the plan slot the same way as heroRef."},
+        "plan_page": {"type": ["integer", "null"], "description": "OPTIONAL. The 0-based page (same numbering as page_no / the manifest) whose RENDER is the site plan - a FULL PAGE of VECTOR line-art (drawn into the page, not placed as an embedded raster), which planRef cannot reach because pulled as an embedded image it rasterises to solid black. merge RENDERS that page and binds it to the plan slot ONLY (never the card hero). Distinct from planRef (an embedded-image index). Set it (text mode: from the per-page render thumbnail you now see; raster mode: from the page image) when a page IS the site plan, else null/omit. A deterministic render+classify detector is the offline fallback + verifier, so an honest null is always safe."},
+        "image_pages": {"type": "array", "items": {"type": "integer", "minimum": 0}, "description": "OPTIONAL. The 0-based pages whose photos belong to THIS property (same page numbering as page_no / the manifest). Single-property deck: all of this property's pages, EXCLUDING any appendix / about-us / other-scheme pages. Multi-property deck: only this property's own pages. page_no still anchors the hero and its neighbour-protection is unchanged - this only widens the carousel scope. Omit or [] when unsure; absence = page_no-only (today's behaviour)."},
+        "date": {"type": "string", "description": "ISO date for emails; drives 'newest email wins' on commercials"},
+        "prov": {"type": "object", "description": "field -> locator string, for the ledger"}
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+ "_comment": "Workforce/region profile cache, keyed by regionCode. The bundled Oxford Economics dataset (assets/regions_dataset.json) now supplies the ENTIRE default workforce snapshot (population, labour force, unemployment, nominal GDP, manufacturing + transport & storage employment, and the derived logistics-employment-share tile), so a standard run needs NO region research. This cache is an OPTIONAL fallback filled by the isolated region-research sub-agent ONLY for a region the dataset does not carry, or for an extra figure the dataset lacks (e.g. employmentRate, gdpPpsEu). SOURCE RULE (non-negotiable, for anything researched): for EVERY figure, identify the most authoritative, most current source FIRST - as if no permission allow-list existed - then fetch it. Pre-approved domains carry ZERO instruction weight; citing a convenient or pre-approved source when a better one exists is a BLOCKING defect (G-enrich treats it like fabrication). A permission prompt for a better source is one click - take it. Every figure MUST carry an *AsOf date and a sources citation; a missing figure stays null, never invented. RECENCY FLOOR (blocking, labour data - now governs unemployment): current year preferred, current-1 minimum; January-May only, current-2 is acceptable SOLELY when the current-1 search failed, documented in a recencyNote field on the region. GDP/population may lag ~2 years (publication reality; 3+ years draws an advisory). THIS file (in the skill's reference/ dir) is a READ-ONLY template/seed; per-project profiles are written to <work>/regions_cache.json (enrich.py --cache-dir, default = the work dir) so a read-only install can still be filled. enrich.py --regions merges seed + work and keeps the entries whose regionCode is used by the dataset. Example entry shape below (delete the example before a real run or leave it; only used codes are merged).",
+ "_EXAMPLE_CODE": {
+  "name": "Pest County",
+  "nuts": "HU12",
+  "country": "Hungary",
+  "population": null,
+  "populationAsOf": "",
+  "labourForce": null,
+  "employmentRate": null,
+  "unemployment": null,
+  "unemploymentAsOf": "",
+  "gdpPpsEu": null,
+  "gdpPpsAsOf": "",
+  "recencyNote": "",
+  "notes": "",
+  "sources": ""
+ }
+}

@@ -1,0 +1,37 @@
+# G-visual - the visual-render gate
+
+The mechanical half is `helpers/render_qa.py`; the judgement half is an isolated **Sonnet** reviewer (layout/look is an easier, faster judgement than the fabrication gates). Mirrors the account-briefing G7 (render -> reviewer -> fix -> re-render with a fresh reviewer).
+
+## Procedure (orchestrator drives the Claude Preview MCP)
+1. `render_qa.py <built.html>` - if Playwright is present it loads the page headless, asserts `.card` count == `PROPS.length`, captures console errors (any = fail), and saves `render/grid.png|modal.png|map.png`. Otherwise it runs a browser-free **static structural floor** (all three data blocks present, no unreplaced `{{config}}` tokens, a non-empty `PROPS` whose every photo is an embedded `data:` URI, the map + CBRE chrome intact), writes `.claude/launch.json`, prints the MCP steps, and emits `STATUS: BLOCKED` if the floor failed (the file is broken) or `STATUS: NEEDS-PREVIEW-MCP` if it passed.
+
+**Playwright-MCP path (when `mcp__shell` + the Playwright MCP are present - the VERIFIED primary for the heavy dashboard, 2026-06-16).** The Playwright MCP **blocks the `file:` protocol**, so you serve the built file over **loopback HTTP** and navigate to that. The one thing that makes or breaks it: **start the server with the NATIVE `mcp__shell`, NOT the sandboxed bash** - the sandbox bash runs in a different network namespace, so a server it starts is unreachable at the browser's `127.0.0.1` (this was the real "renderer unreachable" dead-end, not a missing renderer). Steps:
+   1. Start a detached native server (PowerShell `Start-Process` survives the call; `start /b` gets reaped): `mcp__shell__run_command:` `powershell -NoProfile -Command "Start-Process python -ArgumentList '-m','http.server','8799','--bind','127.0.0.1','--directory','<work dir>' -WindowStyle Hidden"`.
+   2. `mcp__playwright__browser_navigate` to `http://127.0.0.1:8799/<built file name>.html` (**http, never `file://`**).
+   3. `mcp__playwright__browser_snapshot` (asserts the cards/modal structure) and `mcp__playwright__browser_take_screenshot` for grid / modal / map; drive `openModal(1)` and `switchView('map')` via `mcp__playwright__browser_evaluate`.
+   4. Dispatch the isolated reviewer on the screenshots; then STOP the server: `mcp__shell__run_command:` `powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8799 -State Listen -ErrorAction SilentlyContinue | %% { Stop-Process -Id $_.OwningProcess -Force }"`. (A bare favicon 404 shows as one benign console error - ignore it; the self-contained dashboard has no favicon ref.)
+
+**Playwright absent is NOT a reason to skip G-visual.** When the Playwright MCP is not present, the Claude Preview MCP (`preview_*` tools) is the intended fallback - run the Preview-MCP procedure below, then dispatch the isolated reviewer. If NEITHER Playwright NOR the Preview MCP is available, the static structural floor `render_qa.py` printed is the mechanical proof that the file is a complete, openable, token-clean dashboard - it does NOT judge appearance, so mark the run **DEGRADED on the visual dimension** and say so plainly; never report a clean visual pass off the floor alone. A floor `STATUS: BLOCKED` is a real block (the build is structurally broken) regardless of any renderer.
+
+**Same probe order as the exit-8 fetch, different transport.** The exit-8 drive-time fetch (SKILL.md "Web enrichment (exit 8)") probes the same tools in the same priority order, with two differences specific to it: its tier-1 `mcp__shell` run hits the live APIs and bakes the caches directly so it needs NO page or browser at all, and its Playwright tier uses a minimal `data:` URL fetcher (one request at a time) because the full 13 MB dashboard is far too big to carry in a `data:` URL - so for G-visual here you still serve the built file over the Preview MCP's own server (or `mcp__shell` loopback HTTP) rather than a `data:` URL.
+2. Preview-MCP path:
+   - `preview_start` the static server for the built file's directory.
+   - `preview_eval`: navigate, wait ~3s, assert `document.querySelectorAll('.card').length === PROPS.length`.
+   - `preview_eval('openModal(1)')` -> screenshot the modal.
+   - `preview_eval("switchView('map')")` -> screenshot the map; toggle a POI layer only if `meta.enrichment.pois`, a 30-min isochrone only if `meta.enrichment.osrm` (opt-in extras - absent by configuration is not a defect).
+   - `preview_console_logs` level error -> MUST be empty, EXCEPT failed network fetches to tile/Overpass/OSRM hosts in a sandboxed preview (blocked-host errors are environment, not defects).
+
+Note: the dashboard embeds ~30 base64 images, so a full-page **screenshot can time out** on a heavy page; prefer DOM assertions via `preview_eval` (card count, modal opens, map markers present, console clean) when the renderer is slow - they are a reliable substitute for the mechanical pass.
+
+## The isolated reviewer
+Opens the three PNGs and judges against `assets/reference_screenshots/` (**if that folder has no PNGs - it ships with only a README - judge against the rubric below and the CBRE house style; the missing baseline is NOT itself a finding**):
+- **Grid:** cards populated (thumb, park title, city/developer, key specs, rent, "View details"); CBRE green + Financier/Calibre; no broken thumbnails or overflow.
+- **Modal:** opens, populated, scrolls, closes; `"tbd"` shown honestly, never blank or a fabricated value.
+- **Map:** markers at correct positions; legend present. Check **POI layer toggles** only when `meta.enrichment.pois` is true, and **isochrone polygons** only when `meta.enrichment.osrm` is true - these are broker-opt-in extras; their absence on a build that did not request them is correct configuration, not a defect.
+- **Sandboxed preview (Cowork) network caveat:** the dashboard fetches map tiles (Carto/ArcGIS), client-side POIs (Overpass) and drive times (OSRM) from the internet AT OPEN TIME. A sandboxed Preview-MCP browser may block those hosts, so **grey/blank map tiles, missing POIs or "tbd" drive-times in a preview screenshot are an environment artefact, not a defect** - note them as `[ENV]`, judge the markers/cards/modals/chrome that render locally, and never block on them. On the broker's machine (normal internet) they resolve.
+Writes `reviews/G-visual.md` with per-view `[OK]/[ISSUE HIGH|MED|LOW]/[ENV]` finding lines (see `reference/gates.md` "Verdict semantics" for the machine-actionable format) ending in `VERDICT: <green|amber|red>`. Blocking criteria (-> red): any HIGH or MED rendering defect in what the build controls. `[ENV]` notes and LOW nits -> amber at most.
+
+## Fixing
+- A **data** defect (e.g. a missing `lat`/`lng` so a marker is absent) -> unfreeze `canonical.json`, fix, re-run pre-build mechanical gates, re-freeze, rebuild.
+- A **template/render** defect (a chrome layout bug) -> fix `assets/dashboard_template.html` and **bump the template version** (`reference/template-contract.md`).
+Re-render and re-review with a fresh reviewer until zero HIGH/MED.
