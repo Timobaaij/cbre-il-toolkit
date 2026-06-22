@@ -1,0 +1,12 @@
+{
+  "name": "cbre-il",
+  "description": "CBRE IL skills for Claude Code. Replace this with a short description of what your CBRE skills do.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Timo Baaij",
+    "email": "timo.baaij@cbre.com"
+  },
+  "homepage": "https://github.com/timobaaij/cbre-il-plugin",
+  "repository": "https://github.com/timobaaij/cbre-il-plugin",
+  "keywords": ["cbre", "il"]
+}

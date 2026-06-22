@@ -1,0 +1,22 @@
+{
+  "name": "cbre",
+  "description": "CBRE plugins and skills for Claude Code.",
+  "version": "0.1.0",
+  "owner": {
+    "name": "Timo Baaij",
+    "email": "timo.baaij@cbre.com"
+  },
+  "plugins": [
+    {
+      "name": "cbre-il",
+      "source": "./plugins/cbre-il",
+      "description": "CBRE IL skills for Claude Code.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Timo Baaij",
+        "email": "timo.baaij@cbre.com"
+      },
+      "keywords": ["cbre", "il"]
+    }
+  ]
+}
