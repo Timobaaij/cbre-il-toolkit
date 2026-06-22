@@ -1,6 +1,6 @@
 {
   "name": "cbre",
-  "description": "CBRE plugins and skills for Claude Code and Cowork.",
+  "description": "CBRE's Industrial & Logistics toolkit for Claude — branded decks, account briefings, property longlists, and on-brand writing.",
   "version": "0.2.0",
   "owner": {
     "name": "Timo Baaij",
@@ -9,14 +9,15 @@
   "plugins": [
     {
       "name": "cbre-il",
+      "displayName": "CBRE I&L Toolkit",
       "source": "./plugins/cbre-il",
-      "description": "CBRE skills: corporate PowerPoint decks, IL account briefings, property longlist dashboards, and CBRE tone of voice.",
+      "description": "The CBRE Industrial & Logistics toolkit for Claude. Build polished, on-brand PowerPoint decks, turn a folder of property materials into an interactive longlist dashboard, draft I&L account briefings, and keep every word in the CBRE tone of voice.",
       "version": "0.2.0",
       "author": {
         "name": "Timo Baaij",
         "email": "timo.baaij@cbre.com"
       },
-      "keywords": ["cbre", "il"]
+      "keywords": ["cbre", "industrial-logistics", "presentations", "powerpoint", "property", "brand-voice"]
     }
   ]
 }

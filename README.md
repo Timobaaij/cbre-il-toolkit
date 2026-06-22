@@ -1,74 +1,53 @@
-# cbre-il-plugin
+# CBRE I&L Toolkit
 
-A shareable [Claude Code](https://code.claude.com/docs/en/overview) plugin for
-CBRE skills. This repo is **both a plugin and a marketplace**, so colleagues can
-add it and install the plugin in two commands.
+CBRE Industrial & Logistics skills for [Claude](https://www.claude.com/) — branded
+decks, account briefings, property longlists, and on-brand writing. Packaged as a
+Claude plugin so the whole team can install it in a couple of clicks.
 
-## Repository layout
+## What's inside
 
-```
-cbre-il-plugin/
-├── .claude-plugin/
-│   └── marketplace.json          # the shareable catalog (lists the plugin below)
-├── plugins/
-│   └── cbre-il/
-│       ├── .claude-plugin/
-│       │   └── plugin.json        # the plugin manifest
-│       ├── skills/
-│       │   ├── cbre-corporate-pptx/        # CBRE-branded PowerPoint decks
-│       │   ├── cbre-il-account-briefing/   # IL account briefings
-│       │   ├── cbre-property-longlist/     # property longlist dashboards
-│       │   └── cbre-tone-of-voice/         # CBRE writing voice
-│       └── README.md
-└── README.md
-```
+| Skill | What it does |
+|-------|--------------|
+| **Corporate decks** | Polished, CBRE-branded PowerPoint decks built from your content. |
+| **Account briefings** | Industrial & Logistics account-briefing decks built from your research. |
+| **Property longlist** | An interactive longlist dashboard from a folder of brochures, emails, and spreadsheets. |
+| **CBRE voice** | Any copy rewritten or reviewed in the CBRE tone of voice. |
 
-## Install (for your colleagues)
+Once it's installed, just describe what you need and Claude runs the right skill.
 
-Inside any Claude Code session:
+## Install
+
+**In Claude Cowork:** open **Customize → Plugins → ＋ → Add marketplace → Add from a
+repository**, enter `timobaaij/cbre-il-plugin`, then install **CBRE I&L Toolkit**.
+
+**In Claude Code (CLI):**
 
 ```
 /plugin marketplace add timobaaij/cbre-il-plugin
 /plugin install cbre-il@cbre
 ```
 
-- `cbre-il` is the plugin name, `cbre` is the marketplace name (from
-  `marketplace.json` → `name`).
-- After installing, the plugin's skills appear as `/cbre-il:<skill-name>` and
-  Claude can auto-invoke them based on each skill's `description`.
+To get updates later: re-sync the marketplace (Cowork) or run
+`/plugin marketplace update cbre` (CLI).
 
-To update later: `/plugin marketplace update cbre` then re-install/enable.
+---
 
-## Add another CBRE skill
+### For maintainers
 
-1. Create a folder per skill under `plugins/cbre-il/skills/`, named in
-   kebab-case (e.g. `skills/lease-abstraction/`), with a `SKILL.md` directly
-   inside it.
-2. The `SKILL.md` needs YAML frontmatter (`name`, `description`) + markdown
-   instructions. The `description` controls *when* Claude uses the skill — be
-   specific about the trigger situation and keywords. If the description
-   contains a colon followed by a space, quote it or use a `>-` block scalar so
-   the YAML stays valid.
-3. Bump `version` in both `plugin.json` and `marketplace.json`, then commit and push.
-
-> Note: build artifacts (`__pycache__/`, `*.pyc`, `.pytest_cache/`) don't belong
-> in a shared skill — the root `.gitignore` keeps them out of git commits.
-> Uploading a folder via the GitHub web UI bypasses `.gitignore`, so zip/commit
-> from a clean tree instead.
-
-## Test locally before sharing
+This repository is both the plugin and its marketplace. Skills live in
+`plugins/cbre-il/skills/<name>/SKILL.md`. Before sharing changes, validate and
+(optionally) load the plugin without installing:
 
 ```bash
-# validate the plugin and marketplace manifests
-claude plugin validate ./plugins/cbre-il
 claude plugin validate .
-
-# load the plugin in a session without installing it
 claude --plugin-dir ./plugins/cbre-il
 ```
 
-## Docs
+Bump `version` in both `plugin.json` and `marketplace.json` when you ship changes.
+Build artifacts (`__pycache__/`, `*.pyc`, `*.bak`) are kept out of git by the root
+`.gitignore`; note the GitHub web upload UI bypasses `.gitignore`, so commit from a
+clean tree.
 
-- Plugins — https://code.claude.com/docs/en/plugins
-- Plugin marketplaces — https://code.claude.com/docs/en/plugin-marketplaces
-- Skills — https://code.claude.com/docs/en/skills
+Docs: [plugins](https://code.claude.com/docs/en/plugins) ·
+[marketplaces](https://code.claude.com/docs/en/plugin-marketplaces) ·
+[skills](https://code.claude.com/docs/en/skills)
