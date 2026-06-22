@@ -3,7 +3,7 @@
 The distilled, build-facing visual brand system, from **CBRE Guidelines 2026 (v17)**. This is the canonical *visual* source for this skill (the sibling of the canonical *verbal* source, the `cbre-tone-of-voice` skill). `scripts/build.py` is the **implementation**; this file is the **spec** it answers to. Design-philosophy prose lives in `philosophy.md`; spacing/measurement rules in `spacing-and-rules.md`.
 
 - Full extracted source text (provenance): `references/brand-source-2026.md`.
-- Source PDF: `C:\Users\TBaaij\OneDrive - CBRE, Inc\Documents\cbre_guidelines_visual_v17_2026.pdf` (144pp). Assets/templates: `brand.cbre.com`; questions: `CBREbrand@cbre.com`.
+- Source: CBRE Guidelines 2026 (v17), 144pp; full extracted text in `references/brand-source-2026.md`. Assets/templates: `brand.cbre.com`; questions: `CBREbrand@cbre.com`.
 
 > **The skill's relationship to the brand.** This skill's look was tuned to an editorial reference deck ("CBRE – Slides I like"), and its palette turns out to be ~90% aligned with the official secondary palette. The default look is preserved on purpose. The official colours/names are layered in *additively* (see the mapping table), the type rules are enforced, the wordmark uses official artwork, and the Line of Sight device is available. Use official **CBRE Green `#003F2D`** when you want the corporate-primary look; the editorial dark teal `#012A2C` (= official Dark Green) remains the default background.
 

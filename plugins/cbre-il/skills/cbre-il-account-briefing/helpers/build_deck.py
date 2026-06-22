@@ -44,7 +44,12 @@ from pathlib import Path
 _EMU_PER_IN = 914400.0
 
 # Locate the cbre-corporate-pptx build library without a hardcoded user path.
-_CANDIDATES = [Path("scripts"), Path.home() / ".claude/skills/cbre-corporate-pptx/scripts"]
+# Works as a plugin (sibling skill under the same plugin root), as a standalone
+# ~/.claude/skills install, or via the CLAUDE_PLUGIN_ROOT / CBRE_PPTX_SCRIPTS env vars.
+_SIBLING = Path(__file__).resolve().parents[2] / "cbre-corporate-pptx" / "scripts"
+_CANDIDATES = [Path("scripts"), _SIBLING, Path.home() / ".claude/skills/cbre-corporate-pptx/scripts"]
+if os.environ.get("CLAUDE_PLUGIN_ROOT"):
+    _CANDIDATES.insert(0, Path(os.environ["CLAUDE_PLUGIN_ROOT"]) / "skills" / "cbre-corporate-pptx" / "scripts")
 if os.environ.get("CBRE_PPTX_SCRIPTS"):
     _CANDIDATES.insert(0, Path(os.environ["CBRE_PPTX_SCRIPTS"]))
 for _p in _CANDIDATES:
@@ -53,7 +58,7 @@ for _p in _CANDIDATES:
         break
 else:
     raise SystemExit("cbre-corporate-pptx scripts not found; set CBRE_PPTX_SCRIPTS "
-                     "or install the sibling skill at ~/.claude/skills/cbre-corporate-pptx.")
+                     "or install the sibling cbre-corporate-pptx skill.")
 import build  # noqa: E402
 
 # Fail loudly if the sibling library drifted (a renamed/removed symbol we rely on).

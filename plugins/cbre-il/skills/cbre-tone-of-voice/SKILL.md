@@ -5,7 +5,7 @@ description: The canonical CBRE tone-of-voice system (Clear / Bold / Connected) 
 
 # CBRE Tone of Voice
 
-The operational distillation of CBRE's official **Tone of Voice Guidelines (2021)**. Source PDF: `C:\Users\TBaaij\OneDrive - CBRE, Inc\Documents\cbre_tov_guidelines.pdf` (full text mirrored in `references/source-guidelines.md`). For brand assets, templates, fonts: `brand.cbre.com`; questions: `CBREbrand@cbre.com`.
+The operational distillation of CBRE's official **Tone of Voice Guidelines (2021)**. Source: CBRE Tone of Voice Guidelines (2021); full text mirrored in `references/source-guidelines.md`. For brand assets, templates, fonts: `brand.cbre.com`; questions: `CBREbrand@cbre.com`.
 
 ## How to use this
 

@@ -5,3 +5,6 @@ __pycache__/
 
 # transient skill run artifacts
 **/evals/_out/
+
+# editor/backup files
+*.bak

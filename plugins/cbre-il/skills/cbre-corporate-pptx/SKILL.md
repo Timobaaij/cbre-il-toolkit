@@ -95,7 +95,6 @@ from pathlib import Path
 for _p in (
     Path("scripts"),
     Path.home() / ".claude/skills/cbre-corporate-pptx/scripts",
-    Path(r"C:/Users/TBaaij/.claude/skills/cbre-corporate-pptx/scripts"),
 ):
     if _p.exists():
         sys.path.insert(0, str(_p.resolve()))

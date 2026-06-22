@@ -10,6 +10,7 @@ Run: python evals/extract_test.py    (exit 0 on success, 1 on any failure)
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -4092,10 +4093,12 @@ def llm_hero_cases() -> None:
         IMG.close_doc_cache()
 
     # --- 6. REAL-DECK best-effort: candidates per page + a simulated heroRef binds ---
-    real_dir = Path(r"C:\Users\TBaaij\CBRE, Inc\European I&L Occupier Team - "
-                    r"IL Occupier Data\06 GtM Projects\TEDi\TEDi Spain\Brochures")
-    real_decks = [real_dir / "Sale opportunity_El Morell_CBRE.pdf",
-                  real_dir / "CBRE_Valencia_Options_TEDI.pdf"]
+    # Optional real-deck smoke test: point CBRE_REAL_DECK_DIR at a local folder of
+    # brochure PDFs to exercise this path. Skipped (harmlessly) when unset/absent,
+    # so no real client paths or filenames are committed.
+    _real_env = os.environ.get("CBRE_REAL_DECK_DIR", "")
+    real_dir = Path(_real_env) if _real_env else None
+    real_decks = sorted(real_dir.glob("*.pdf")) if real_dir else []
     present = [d for d in real_decks if d.exists()]
     if present:
         with tempfile.TemporaryDirectory() as td:
