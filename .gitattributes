@@ -1,0 +1,12 @@
+# Store text files with LF so SKILL.md frontmatter parses consistently across
+# Claude Code, Cowork, and editors. Windows uploads (CRLF) otherwise break the
+# YAML frontmatter parser and the skill loads with no name/description.
+* text=auto eol=lf
+
+# Binary assets — never normalize.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gz   binary
+*.whl  binary
+*.pdf  binary
