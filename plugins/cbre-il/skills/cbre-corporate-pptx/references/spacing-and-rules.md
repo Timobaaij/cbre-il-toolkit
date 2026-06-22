@@ -321,7 +321,7 @@ in body copy.
 
 ## 12. Tone: outward-facing voice, not CBRE-internal
 
-> **Canonical voice reference:** the full CBRE tone-of-voice system (Clear / Bold / Connected, the seven writing principles, the dial-up/dial-down volume control, and the *Attributes in Action* approach menu) lives in the `cbre-tone-of-voice` skill — `~/.claude/skills/cbre-tone-of-voice/SKILL.md`. Read it at the content-lock stage. The rules in §12–13 below are the **board-grade, dialed-down specifics** that layer on top of it for investor/advisory decks.
+> **Canonical voice reference:** the full CBRE tone-of-voice system (Clear / Bold / Connected, the seven writing principles, the dial-up/dial-down volume control, and the *Attributes in Action* approach menu) lives in the `cbre-tone-of-voice` skill — `${CLAUDE_PLUGIN_ROOT}/skills/cbre-tone-of-voice/SKILL.md` (or `~/.claude/skills/cbre-tone-of-voice/SKILL.md` as a standalone skill). Read it at the content-lock stage. The rules in §12–13 below are the **board-grade, dialed-down specifics** that layer on top of it for investor/advisory decks.
 
 The deck is CBRE talking *to* the board, not CBRE narrating its own process.
 
