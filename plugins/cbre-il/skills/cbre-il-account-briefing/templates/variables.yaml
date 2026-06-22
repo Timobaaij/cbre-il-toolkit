@@ -8,8 +8,11 @@ today_date: ""            # ISO date, anchors time-sensitive research (lease exp
 company_type: ""          # RETAILER | MANUFACTURER | B2B DISTRIBUTOR | E-COMMERCE | OMNICHANNEL | OTHER
 geographic_focus: ""      # region or "global". e.g. "Focus detail on Europe; summarise other regions at headline level."
 language: "English"       # output language for the deck + Meeting Brief. Default English.
-                          # Supported (Latin-script European): English, German, French, Dutch, Spanish,
-                          # Italian, Portuguese, Polish, Czech, Slovak, Danish, Swedish, Norwegian, Finnish.
+                          # ASK THIS AS AN OPEN QUESTION - the user's free choice of ANY Latin-script
+                          # European language; NOT a company-home-language-vs-English binary.
+                          # Supported = any Latin-script European language, e.g. English, German, French,
+                          # Dutch, Spanish, Italian, Portuguese, Polish, Czech, Slovak, Danish, Swedish,
+                          # Norwegian, Finnish, Hungarian, Romanian, Croatian, Slovenian, Baltic langs.
                           # Sources stay in their own language; only AUTHORED text is written in this language.
                           # Non-Latin scripts (Cyrillic/Greek/CJK/Arabic) are NOT supported - stop and say so.
 
