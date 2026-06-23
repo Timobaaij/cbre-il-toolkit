@@ -86,6 +86,8 @@ The brand DNA the deck must hold to (full visual spec: `references/brand-guideli
 
 ## How to start a deck
 
+**Toolkit update check (run once, first).** Run `python scripts/version_check.py`. It prints a one-line note to stderr *only* if a newer CBRE I&L Toolkit version has been published (otherwise it is silent); it does nothing but a single public version lookup, never blocks the build, and is safe to ignore.
+
 This skill works in **both Claude Code (Windows) and Claude.ai (Linux sandbox)**. The import snippet probes the local `scripts/` folder first, then falls back to the Windows install path.
 
 ```python

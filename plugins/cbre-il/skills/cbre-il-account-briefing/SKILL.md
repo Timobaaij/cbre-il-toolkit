@@ -13,6 +13,8 @@ Two design commitments make this world-class and are non-negotiable:
 - **Independent review (separation of author and reviewer).** Every QA check that is a *judgement about work the orchestrator authored* runs in an isolated sub-agent with fresh context. The orchestrator runs only deterministic scripts and adjudicates verdicts; it never self-certifies a judgement review of its own plan.
 - **Shift-left sense-checking.** The story and the substance are reviewed *before any slide is built*: first the narrative outline (G0), then the full content plan (G4). "This says nothing / the read is wrong" is caught for the price of a paragraph, not a rebuild.
 
+**Toolkit update check (run once, at the very start).** Run `python helpers/version_check.py`. It prints a one-line note to stderr *only* if a newer CBRE I&L Toolkit version has been published (otherwise it is silent); it does nothing but a single public version lookup, never blocks the run, and is safe to ignore.
+
 ## What this produces
 
 Three deliverables, every time, in `deliverables/`:

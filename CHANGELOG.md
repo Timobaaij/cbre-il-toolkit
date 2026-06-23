@@ -7,6 +7,17 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [0.4.0] — 2026-06-23
+### Added
+- **Built-in update notifier.** Each runnable skill now runs a tiny
+  `version_check.py` at startup that compares the installed plugin version against
+  the latest published on `main` and prints a one-line update hint **only if you
+  are behind**. It is best-effort by design: a single anonymous public GET, a short
+  timeout, no telemetry, silent when current or offline, and it never blocks or
+  fails a run. Wired into `cbre-il-account-briefing`, `cbre-property-longlist`, and
+  `cbre-corporate-pptx`. This works around Claude Code's unreliable in-place
+  marketplace update so users find out when a new version is available.
+
 ## [0.3.6] — 2026-06-23
 ### Added
 - **Property longlist — dashboard internationalisation (i18n).** The dashboard
@@ -45,6 +56,7 @@ How to update to the latest version is in the [README](./README.md#updating).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[0.4.0]: https://github.com/Timobaaij/cbre-il-plugin/releases/tag/v0.4.0
 [0.3.6]: https://github.com/Timobaaij/cbre-il-plugin/releases/tag/v0.3.6
 [0.3.5]: https://github.com/Timobaaij/cbre-il-plugin/releases/tag/v0.3.5
 [0.3.4]: https://github.com/Timobaaij/cbre-il-plugin/releases/tag/v0.3.4

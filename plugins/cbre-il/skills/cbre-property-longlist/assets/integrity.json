@@ -139,6 +139,10 @@
     "size": 2974,
     "sha256": "f5ef374318c1092e6f974e6ea4368290f5b0220bd09f50599c54e6decfd70bbb"
   },
+  "helpers/version_check.py": {
+    "size": 3836,
+    "sha256": "ef868cffca093710f9519e9a4a2b597c71bdaef6315e93aa734ae9d0cb7513d8"
+  },
   "helpers/vision_prep.py": {
     "size": 11970,
     "sha256": "bc3a84e06fd7a3a03bd119997e755ab48ef35980037f83cc2ccff13ff0de81bc"
