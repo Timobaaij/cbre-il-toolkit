@@ -7,6 +7,18 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [0.6.2] — 2026-06-24
+### Changed
+- **`warehouse-network-mapper` — scope is the whole region, not the company's
+  operating footprint.** The skill now always covers every in-scope European
+  market, explicitly including the logistics gateway countries (Netherlands,
+  Belgium, Germany, Poland) even where the company has no presence, adds an
+  import/port-of-entry DC hypothesis, batches non-operating countries, and flags
+  the "operating-country trap" — because central EDCs, bonded import warehouses
+  and 3PL-shared hubs often sit where the company does not trade and are often the
+  largest sites in the network. (SKILL.md methodology; the plain-language
+  description is unchanged.)
+
 ## [0.6.1] — 2026-06-24
 ### Changed
 - Rewrote the `warehouse-network-mapper` skill description in plain language
@@ -90,6 +102,7 @@ How to update to the latest version is in the [README](./README.md#updating).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[0.6.2]: https://github.com/Timobaaij/cbre-il-plugin/releases/tag/v0.6.2
 [0.6.1]: https://github.com/Timobaaij/cbre-il-plugin/releases/tag/v0.6.1
 [0.6.0]: https://github.com/Timobaaij/cbre-il-plugin/releases/tag/v0.6.0
 [0.5.0]: https://github.com/Timobaaij/cbre-il-plugin/releases/tag/v0.5.0
