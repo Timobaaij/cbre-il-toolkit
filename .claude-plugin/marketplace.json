@@ -1,7 +1,7 @@
 {
   "name": "cbre",
   "description": "CBRE's Industrial & Logistics toolkit for Claude — branded decks, account briefings, property longlists, and on-brand writing.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "owner": {
     "name": "Timo Baaij",
     "email": "timo.baaij@cbre.com"
@@ -11,7 +11,7 @@
       "name": "cbre-il",
       "source": "./plugins/cbre-il",
       "description": "The CBRE Industrial & Logistics toolkit for Claude. Build polished, on-brand PowerPoint decks, turn a folder of property materials into an interactive longlist dashboard, draft I&L account briefings, and keep every word in the CBRE tone of voice.",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "author": {
         "name": "Timo Baaij",
         "email": "timo.baaij@cbre.com"

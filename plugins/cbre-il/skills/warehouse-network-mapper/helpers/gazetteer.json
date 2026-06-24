@@ -1,0 +1,213 @@
+{
+  "_about": "Offline city-centroid gazetteer for the geocode helper's fallback layer. Keys are lowercase, accent-stripped city names per country. Coordinates are WGS84 decimal degrees at city/town centroid (~3dp). Precision when matched here is always 'city'. Curated from the source-playbook hotspots plus major European logistics cities; extend per project rather than letting any model invent a coordinate.",
+  "netherlands": {
+    "venlo": [51.370, 6.172],
+    "tilburg": [51.560, 5.091],
+    "waalwijk": [51.682, 5.071],
+    "rotterdam": [51.924, 4.478],
+    "amsterdam": [52.370, 4.895],
+    "schiphol": [52.309, 4.762],
+    "moerdijk": [51.702, 4.613],
+    "almere": [52.371, 5.218],
+    "lelystad": [52.518, 5.471],
+    "eindhoven": [51.441, 5.469],
+    "utrecht": [52.090, 5.121],
+    "s-hertogenbosch": [51.697, 5.304],
+    "den bosch": [51.697, 5.304],
+    "nijmegen": [51.842, 5.853],
+    "born": [51.001, 5.812],
+    "sittard": [51.001, 5.866],
+    "roosendaal": [51.535, 4.461],
+    "oss": [51.765, 5.518],
+    "zwolle": [52.516, 6.083],
+    "ede": [52.043, 5.666],
+    "duiven": [51.948, 5.991]
+  },
+  "germany": {
+    "hamburg": [53.551, 9.993],
+    "duisburg": [51.434, 6.762],
+    "dortmund": [51.514, 7.466],
+    "koln": [50.937, 6.960],
+    "cologne": [50.937, 6.960],
+    "frankfurt": [50.110, 8.682],
+    "leipzig": [51.340, 12.375],
+    "halle": [51.482, 11.970],
+    "nurnberg": [49.452, 11.077],
+    "nuremberg": [49.452, 11.077],
+    "kassel": [51.312, 9.480],
+    "berlin": [52.520, 13.405],
+    "bad hersfeld": [50.868, 9.708],
+    "erfurt": [50.984, 11.029],
+    "munchen": [48.135, 11.582],
+    "munich": [48.135, 11.582],
+    "monchengladbach": [51.180, 6.442],
+    "worms": [49.638, 8.357],
+    "hannover": [52.376, 9.741],
+    "stuttgart": [48.776, 9.183],
+    "dusseldorf": [51.228, 6.773]
+  },
+  "belgium": {
+    "antwerp": [51.219, 4.402],
+    "antwerpen": [51.219, 4.402],
+    "brussels": [50.847, 4.357],
+    "brussel": [50.847, 4.357],
+    "bruxelles": [50.847, 4.357],
+    "genk": [50.965, 5.501],
+    "liege": [50.633, 5.567],
+    "ghent": [51.054, 3.717],
+    "gent": [51.054, 3.717],
+    "willebroek": [51.060, 4.360],
+    "aalst": [50.937, 4.040],
+    "nivelles": [50.598, 4.328],
+    "courcelles": [50.464, 4.374]
+  },
+  "france": {
+    "lille": [50.629, 3.057],
+    "paris": [48.857, 2.352],
+    "lyon": [45.764, 4.835],
+    "marseille": [43.296, 5.370],
+    "orleans": [47.902, 1.909],
+    "saint-vulbas": [45.808, 5.270],
+    "l'isle d'abeau": [45.617, 5.226],
+    "isle d'abeau": [45.617, 5.226],
+    "fos-sur-mer": [43.438, 4.943],
+    "amiens": [49.895, 2.302],
+    "reims": [49.258, 4.032],
+    "dijon": [47.322, 5.041],
+    "le havre": [49.494, 0.108],
+    "roissy": [49.009, 2.548],
+    "miramas": [43.587, 4.998],
+    "saint-quentin-fallavier": [45.642, 5.114]
+  },
+  "spain": {
+    "madrid": [40.417, -3.703],
+    "coslada": [40.424, -3.560],
+    "san fernando de henares": [40.423, -3.534],
+    "azuqueca de henares": [40.567, -3.265],
+    "guadalajara": [40.633, -3.167],
+    "barcelona": [41.385, 2.173],
+    "el prat de llobregat": [41.327, 2.095],
+    "valencia": [39.470, -0.376],
+    "zaragoza": [41.649, -0.889],
+    "plaza": [41.638, -1.040],
+    "sevilla": [37.389, -5.984],
+    "seville": [37.389, -5.984],
+    "toledo": [39.862, -4.027],
+    "illescas": [40.123, -3.847]
+  },
+  "italy": {
+    "milano": [45.464, 9.190],
+    "milan": [45.464, 9.190],
+    "piacenza": [45.052, 9.693],
+    "novara": [45.446, 8.622],
+    "bologna": [44.494, 11.342],
+    "verona": [45.438, 10.992],
+    "roma": [41.903, 12.496],
+    "rome": [41.903, 12.496],
+    "napoli": [40.852, 14.268],
+    "naples": [40.852, 14.268],
+    "nola": [40.926, 14.528],
+    "torino": [45.070, 7.687],
+    "turin": [45.070, 7.687],
+    "parma": [44.801, 10.328],
+    "modena": [44.647, 10.925],
+    "castel san giovanni": [45.058, 9.439]
+  },
+  "poland": {
+    "warszawa": [52.230, 21.012],
+    "warsaw": [52.230, 21.012],
+    "lodz": [51.759, 19.456],
+    "katowice": [50.270, 19.039],
+    "poznan": [52.407, 16.925],
+    "wroclaw": [51.108, 17.038],
+    "strykow": [51.901, 19.617],
+    "piotrkow trybunalski": [51.405, 19.703],
+    "gliwice": [50.295, 18.676],
+    "gdansk": [54.352, 18.646],
+    "krakow": [50.065, 19.945],
+    "blonie": [52.197, 20.612]
+  },
+  "czechia": {
+    "prague": [50.075, 14.437],
+    "praha": [50.075, 14.437],
+    "brno": [49.195, 16.608],
+    "ostrava": [49.820, 18.262],
+    "plzen": [49.738, 13.374]
+  },
+  "slovakia": {
+    "bratislava": [48.146, 17.107],
+    "kosice": [48.716, 21.261]
+  },
+  "hungary": {
+    "budapest": [47.497, 19.040],
+    "gyor": [47.687, 17.635]
+  },
+  "romania": {
+    "bucharest": [44.427, 26.103],
+    "bucuresti": [44.427, 26.103],
+    "timisoara": [45.760, 21.227],
+    "cluj-napoca": [46.770, 23.591]
+  },
+  "portugal": {
+    "lisbon": [38.722, -9.139],
+    "lisboa": [38.722, -9.139],
+    "porto": [41.158, -8.629],
+    "azambuja": [39.069, -8.869]
+  },
+  "austria": {
+    "vienna": [48.208, 16.373],
+    "wien": [48.208, 16.373],
+    "graz": [47.071, 15.439],
+    "linz": [48.306, 14.286]
+  },
+  "switzerland": {
+    "zurich": [47.377, 8.540],
+    "geneva": [46.204, 6.143],
+    "basel": [47.560, 7.588]
+  },
+  "ireland": {
+    "dublin": [53.350, -6.260],
+    "cork": [51.898, -8.475]
+  },
+  "denmark": {
+    "copenhagen": [55.676, 12.568],
+    "kobenhavn": [55.676, 12.568],
+    "aarhus": [56.163, 10.204],
+    "koge": [55.458, 12.182]
+  },
+  "sweden": {
+    "stockholm": [59.329, 18.069],
+    "goteborg": [57.709, 11.974],
+    "gothenburg": [57.709, 11.974],
+    "malmo": [55.605, 13.003],
+    "jonkoping": [57.782, 14.161],
+    "norrkoping": [58.587, 16.193]
+  },
+  "norway": {
+    "oslo": [59.914, 10.752],
+    "bergen": [60.392, 5.323]
+  },
+  "finland": {
+    "helsinki": [60.170, 24.941],
+    "tampere": [61.498, 23.761]
+  },
+  "united kingdom": {
+    "london": [51.507, -0.128],
+    "birmingham": [52.486, -1.890],
+    "lutterworth": [52.487, -1.207],
+    "magna park": [52.487, -1.207],
+    "daventry": [52.291, -1.107],
+    "dirft": [52.291, -1.107],
+    "manchester": [53.481, -2.242],
+    "leeds": [53.801, -1.549],
+    "northampton": [52.241, -0.903],
+    "milton keynes": [52.041, -0.759],
+    "rugby": [52.371, -1.265],
+    "doncaster": [53.523, -1.135],
+    "bristol": [51.455, -2.587],
+    "coventry": [52.407, -1.510],
+    "peterborough": [52.573, -0.241],
+    "hams hall": [52.527, -1.694],
+    "crick": [52.355, -1.137]
+  }
+}

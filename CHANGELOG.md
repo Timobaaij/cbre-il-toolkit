@@ -7,6 +7,18 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [0.6.0] — 2026-06-24
+### Added
+- **New skill: `warehouse-network-mapper`.** Maps a company's real warehouse and
+  distribution network across Europe (or one country) to an auditable Excel —
+  country, city, geocoded lat/long, landlord/developer, size (metric or imperial),
+  year in use, operator (3PL or occupier-run) and facility type. Runs an
+  orchestrated pipeline of parallel research subagents (searching in English and
+  the local language), geocodes from real addresses in code (never modelled), and
+  measures coverage against the company's own stated network size. Ships `SKILL.md`,
+  helpers (`_common`, `dedup`, `geocode`, `make_geocoder_html`, `units`, plus an
+  offline `gazetteer.json`), and `reference/source-playbook.md`.
+
 ## [0.5.0] — 2026-06-24
 ### Added
 - **Property longlist — ownership / provenance & tamper-evidence.** Adds a
@@ -71,6 +83,7 @@ How to update to the latest version is in the [README](./README.md#updating).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[0.6.0]: https://github.com/Timobaaij/cbre-il-plugin/releases/tag/v0.6.0
 [0.5.0]: https://github.com/Timobaaij/cbre-il-plugin/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Timobaaij/cbre-il-plugin/releases/tag/v0.4.0
 [0.3.6]: https://github.com/Timobaaij/cbre-il-plugin/releases/tag/v0.3.6
