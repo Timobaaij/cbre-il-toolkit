@@ -7,6 +7,13 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [0.6.1] — 2026-06-24
+### Changed
+- Rewrote the `warehouse-network-mapper` skill description in plain language
+  (dropped the internal pipeline jargon, kept the trigger phrasing).
+- Updated the README and the marketplace/plugin descriptions to include the new
+  warehouse-network-mapping capability.
+
 ## [0.6.0] — 2026-06-24
 ### Added
 - **New skill: `warehouse-network-mapper`.** Maps a company's real warehouse and
@@ -18,11 +25,6 @@ How to update to the latest version is in the [README](./README.md#updating).
   measures coverage against the company's own stated network size. Ships `SKILL.md`,
   helpers (`_common`, `dedup`, `geocode`, `make_geocoder_html`, `units`, plus an
   offline `gazetteer.json`), and `reference/source-playbook.md`.
-### Changed
-- Rewrote the `warehouse-network-mapper` skill description in plain language
-  (dropped the internal pipeline jargon, kept the trigger phrasing).
-- Updated the README and the marketplace/plugin descriptions to include the new
-  warehouse-network-mapping capability.
 
 ## [0.5.0] — 2026-06-24
 ### Added
@@ -88,6 +90,7 @@ How to update to the latest version is in the [README](./README.md#updating).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[0.6.1]: https://github.com/Timobaaij/cbre-il-plugin/releases/tag/v0.6.1
 [0.6.0]: https://github.com/Timobaaij/cbre-il-plugin/releases/tag/v0.6.0
 [0.5.0]: https://github.com/Timobaaij/cbre-il-plugin/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Timobaaij/cbre-il-plugin/releases/tag/v0.4.0
