@@ -1,6 +1,6 @@
 ---
 name: warehouse-network-mapper
-description: Maps a company's warehouse and distribution network across Europe, or a single country, and exports an auditable Excel with one row per facility — country, city, geocoded coordinates, landlord/developer, floor area (metric or imperial), year in use, operator (a 3PL or run by the occupier) and facility type. Every location is geocoded from a real address rather than guessed, and coverage is checked against the company's own stated network size so the gaps are honest. Use this when someone wants to map a company's warehouse or logistics network, find all of its distribution centres (DCs), build a warehouse list or a DC network map, or names a company and a country or region and wants its facilities located. It also applies to looser asks like "find their European footprint" or "build the warehouse Excel for company X".
+description: Maps a company's warehouse and distribution network across Europe, or a single country, and exports an auditable Excel with one row per facility giving country, city, geocoded coordinates, landlord/developer, tenure (leased or owned), floor area (metric or imperial), year in use, current status (operational or closed), operator (a 3PL or run by the occupier) and facility type. It can also include manufacturing sites for companies that produce as well as sell. Every location is geocoded from a real address rather than guessed, and coverage is checked against the company's own stated network size so the gaps are honest. Use this when someone wants to map a company's warehouse or logistics network, find all of its distribution centres (DCs), build a warehouse list or a DC network map, or names a company and a country or region and wants its facilities located. It also applies to looser asks like 'find their European footprint' or 'build the warehouse Excel for company X'.
 ---
 
 # Warehouse Network Mapper
@@ -41,12 +41,14 @@ Lock these before dispatching anything. They flow through every downstream stage
 
 - **Company.** Plus every legal entity, brand, fascia and former name. A retailer trades under fascia that differ from the parent; search must cover all of them.
 - **Scope.** A geographic region, not the company's operating footprint. "Europe-wide" means every European market, by default the EU-27 plus the UK, Norway and Switzerland, and it always includes the logistics gateways (Netherlands, Belgium, Germany, Poland) even when the company has no stores or offices there. This matters: a company frequently runs its central European DC, a bonded or port-of-entry import warehouse (Rotterdam, Antwerp, Hamburg) or a 3PL-shared hub in a country where it does not trade, and those are often the largest sites in the whole network. **Never narrow the search to "countries [company] operates in"**; that single move structurally hides the most valuable DCs. A single named country is allowed when the user explicitly asks for one. Confirm the region as "all European markets, not only where [company] trades", and otherwise do not expand or narrow it.
+- **Facility scope.** Ask which sites count: (a) **warehousing only** (default): distribution and fulfilment warehouses, including 3PL-operated sites run for the client; or (b) **warehousing plus manufacturing**: also production sites (plants, factories, assembly, processing) for companies that make as well as sell. Choose (b) for manufacturers and vertically integrated retailers, (a) for pure distributors and retailers.
 - **Units.** Ask the user to choose **metric (sqm)** or **imperial (sq ft)** before the run. This is the unit the Size column and the size floor are expressed in, and the unit `units.py` converts every sourced figure into. Default metric. Always confirm, because the audience (UK vs Continental) usually has a strong preference and converting after the fact loses the raw basis.
 - **Size floor.** Default **5,000 sqm (about 54,000 sq ft)**. Below this you drown in parcel depots, store stockrooms and last-mile lockers. State it in the chosen unit; confirm or override with the user.
-- **Facility whitelist.** Default: national DC (NDC), regional DC (RDC), European DC (EDC), fulfilment centre, cold/chilled/frozen store, cross-dock, returns/reverse logistics, parts/spares. Excludes retail stockrooms, offices and pure last-mile micro-sites unless the user asks for them. Tune the whitelist to the client (a grocer needs cold-store granularity; an apparel brand needs returns).
+- **Facility whitelist.** Default: national DC (NDC), regional DC (RDC), European DC (EDC), fulfilment centre, cold/chilled/frozen store, cross-dock, returns/reverse logistics, parts/spares. Excludes retail stockrooms, offices and pure last-mile micro-sites unless the user asks for them. If facility scope includes manufacturing, add production sites: plant, factory, assembly, processing/manufacturing. Tune the whitelist to the client (a grocer needs cold-store granularity; an apparel brand needs returns).
+- **Depth.** Three modes, confirm one: **normal** (Stages 1 to 7, suits most occupiers); **detail** (normal plus one targeted gap-fill round, when fields like size, tenure or landlord matter and a single pass leaves too many tbd); **extra-deep** (a recon-then-deep funnel for very large portfolios, several times the cost). See Depth modes below.
 - **Auditable extras.** The Source Ledger and Coverage/Gaps sheets default ON, matching house style. The user may switch them off.
 
-State the locked scope (company, countries, units, floor, whitelist) back to the user in one line before proceeding. If any of these is genuinely ambiguous, ask once; otherwise proceed on the defaults and state the assumption inline.
+State the locked scope (company, region, facility scope, units, floor, whitelist, depth) back to the user in one line before proceeding. If any of these is genuinely ambiguous, ask once; otherwise proceed on the defaults and state the assumption inline.
 
 ## Stage 1: Profile and anchor (Opus, with web search)
 
@@ -56,7 +58,7 @@ Produce:
 
 - **Identity set.** Legal entities, brands/fascia, former names, ticker if listed.
 - **Known 3PL partners.** Search for the company's logistics providers explicitly (DHL, Kuehne+Nagel, GXO, DSV, ID Logistics, FM Logistic, Wincanton, Rhenus, DB Schenker, CEVA, Geodis, and any named in the company's own filings). Half the network may sit under these names. This list is handed to every research subagent.
-- **Anchor figure(s).** The company's own stated count of DCs / fulfilment centres / logistics sqm / countries served, with source, **overall and per country/region wherever stated**. A per-country anchor turns the Coverage sheet from one weak global ratio into a real gate per market. If none exists, record that.
+- **Anchor figure(s).** The company's own stated count of DCs / fulfilment centres / logistics sqm / countries served (and plants, if manufacturing is in scope), with source, **overall and per country/region wherever stated**. A per-country anchor turns the Coverage sheet from one weak global ratio into a real gate per market. If none exists, record that.
 - **Footprint priors.** Where the company is known to be heavy or light, to inform batching density. This is *retail/operating* presence; warehousing presence can differ entirely, so the gateway countries (Netherlands, Belgium, Germany, Poland) are must-search regardless of whether the company trades there.
 - **Import and gateway hypothesis.** From where the company sources or imports (the Far East via Rotterdam/Antwerp/Hamburg, for example) and its likely inland hubs, name the countries most likely to hold a central EDC or port-of-entry DC even with no retail presence, and ensure they are in scope and batched. State this hypothesis so a research subagent actively hunts the central DC rather than only the in-market ones.
 
@@ -66,8 +68,30 @@ Partition the scope into research batches and write one brief per batch.
 
 - **Batch by research load, not a flat count.** At most three countries per subagent is the ceiling, not the unit. A high-density country (the company's home market, or one with many sites) gets its own agent. Several low-presence countries share one. Aim to balance expected work across agents.
 - **Cover the whole region, including non-operating countries.** Batch every in-scope country, not just the company's markets. Give the gateway countries (Netherlands, Belgium, Germany, Poland) and any country named in the import/gateway hypothesis a batch even if the company has no presence there; the central EDC or import DC is exactly what a markets-only sweep misses.
-- **Write a self-contained brief per batch** using the dispatch template below, pre-filled with the identity set, the 3PL partner list, the per-country anchor (if any), and the per-country source playbook entries for the countries in that batch.
+- **Write a self-contained brief per batch** using the dispatch template below, pre-filled with the identity set, the 3PL partner list, the per-country anchor (if any), the facility scope (warehousing only, or plus manufacturing), and the per-country source playbook entries for the countries in that batch.
 - Spawn all research subagents in parallel.
+
+## Depth modes
+
+Confirm one at intake. All three share Stages 4 to 7 (geocode, dedup, reconcile, build); they differ only in how records are gathered.
+
+**Normal.** Stages 1 to 7 as written. Suits most occupiers.
+
+**Detail (normal plus one gap-fill round).** Run the normal pipeline through Stage 3, then a provisional Stage 5 merge and anchor check to expose gaps. Dispatch one **targeted gap-fill wave** (defined below), re-merge, then QA. Use when detail matters and a single pass leaves too many tbd cells on size, landlord, tenure, year or status. It adds one wave, not a full second run.
+
+**Extra-deep (large portfolios only).** A recon-then-deep funnel that shares leads across countries, for a very large portfolio (Lidl, Amazon, Action, a grocer with dozens of sites). Gate it on scale (an anchor above roughly 25 sites, or a scope above roughly 15 countries) and tell the user it costs several times a normal run. Five waves:
+
+1. **Recon sweep (cheap Sonnet agents, one per country, in parallel).** Each does a light pass in English and the local language for the mere presence and rough count of warehouses (and plants, if in scope), plus any site it can name. It casts wider than the size floor (an unmeasured lead is still worth keeping) and returns **structured leads, not prose**: for each site, the country it is in, the town if known, a one-line site hint, a confidence and the source; plus a `self_count_hint`, the country's own stated count if found. A lead may be about a different country than the one the agent searched.
+2. **Consolidate in code, not in one agent.** Route every recon agent's leads through the consolidator:
+   ```
+   python helpers/merge_leads.py --in recon_leads.json --out per_country_leads.json
+   ```
+   It sends each lead to the country it concerns (so the Spanish DC named in a Swedish article lands in Spain's brief), dedups, records which countries surfaced each lead, and aggregates the per-country expected count into a per-country anchor. This deterministic join captures the cross-border value without making one agent hold thirty countries of context.
+3. **Deep search (normal Stage 3 agents, one to three countries each).** Dispatch the standard research brief per country, but seed each with its consolidated lead list and expected count from wave 2, so the deep agent starts from the known sites and knows roughly how many to expect.
+4. **Targeted gap-fill wave**, then keep going per gap until two consecutive passes surface nothing new.
+5. **QA (Stage 6 blind agent), as normal.** FAIL is still a hard block.
+
+**The targeted gap-fill wave (used by detail and extra-deep).** Spawn agents only where it pays, never a blind rerun: (a) countries below their expected or anchor count; (b) records missing a key field (address, size, landlord, operator, tenure, status); (c) cross-border or recon leads not yet confirmed. Each agent is told the specific holes to close for its country. Stop when a pass adds nothing new.
 
 ## Stage 3: Parallel deep research (Sonnet subagents, web search, in parallel)
 
@@ -77,7 +101,7 @@ Each subagent receives the brief and returns a strict structured record set. The
 - **Run the source playbook** as a quantified contract, not a vibe. Per country, cover **at least four of the six source types** below, and the **planning/permit portal is mandatory wherever one exists** (it is the richest source for size, developer and build year). A "search pass" is one full sweep of the query battery for one source type in both languages.
 - **Cross-search the 3PL partners and hunt the announcement genre.** For each provider, search the contract-win announcement directly ("[provider] opens warehouse for [company]") in both languages and read the provider's customer case studies, not only "[company] + [provider]". Half the network may sit under provider names or live only in trade press.
 - **Stop condition tied to coverage**, not effort: keep searching a country until two consecutive passes surface no new facility AND the four-source-type floor is met. If the agent stops earlier, it must state why in the per-country coverage note.
-- **Never output coordinates.** The agent collects the fullest address it can; geocoding happens in Stage 4. Size figures come only from sources, captured verbatim in `size_as_stated` with a `size_basis`; everything unknown is "tbd". Each record carries a `last_confirmed` year.
+- **Never output coordinates.** The agent collects the fullest address it can, in native spelling; geocoding happens in Stage 4. Size figures come only from sources, captured verbatim in `size_as_stated` with a `size_basis`; everything unknown is "tbd". Each record carries a `last_confirmed` year, a `status` and a `tenure`.
 
 ## Stage 4: Geocode (code and the user's browser, never the model)
 
@@ -89,16 +113,17 @@ Coordinates come from real geocoding, in two layers, neither of which is a model
    ```
    Every record with a known city gets a city-centroid coordinate (precision "city"); anything with no resolvable city is left "tbd". This always works, with no internet.
 
-2. **Street-level upgrade, in the user's browser (optional but recommended).** The sandbox cannot call a live geocoder, so generate the browser tool and hand it to the user:
+2. **Street-level upgrade, in the user's browser (recommended).** The sandbox cannot call a live geocoder, so generate the browser tool and hand it to the user:
    ```
    python helpers/make_geocoder_html.py --in records_geocoded.json --out geocode.html
    ```
-   The user opens `geocode.html` in their own browser, clicks "Geocode all" (it queries OpenStreetMap Nominatim client-side, one address per second per Nominatim's policy), and downloads `coordinates.json`. Merge it back, upgrading city pins to street/rooftop where resolved:
+   It builds a most-specific-first query ladder per site (street + postcode + town, then postcode + town, then town + country as a guaranteed fallback), keeps native diacritics (which match OpenStreetMap far better than ASCII), and tries Nominatim then Photon for each rung. The user opens `geocode.html`, clicks "Geocode all" (about one request per second per Nominatim policy), and downloads `coordinates.json`. Merge it back, upgrading city pins to street/rooftop where resolved:
    ```
    python helpers/geocode.py --in records_geocoded.json --merge-coords coordinates.json --out records_geocoded.json
    ```
+   For the ladder to be sharp the research subagents should return `address_parts` (street with number, postcode, region) in native spelling alongside `full_address`; the builder falls back to `full_address` when they are absent.
 
-Record the geocoding precision per record (rooftop / street / city / tbd) so the user knows which pins are exact and which are approximate. A model never fills a coordinate; an address that resolves nowhere stays "tbd".
+Record the geocoding precision per record (rooftop / street / city / tbd) so the user knows which pins are exact and which are approximate. Reported precision is capped to what the matched query could justify, so a town-level match never claims "street". A model never fills a coordinate; an address that resolves nowhere stays "tbd".
 
 ## Stage 5: Normalise sizes, merge, dedup, reconcile (code-assisted, then Opus)
 
@@ -115,12 +140,12 @@ Assemble the canonical record set from all subagent returns, in this order so ea
    ```
    It matches the same building reached via two routes (a 3PL site appearing under both the 3PL name and the occupier name) on **coordinate proximity (within 150 m of street/rooftop pins) and on normalised address/postcode**, which catches duplicates that a name match or a raw address-string match misses. City-centroid pins are excluded from the proximity rule so two different sites in one city do not falsely merge.
 3. **Resolve conflicts by source rank (Opus).** The clusterer never averages or silently picks; each merged site carries a `_conflicts` block listing the rival values. For each, prefer the higher-tier source (company filing or planning document over trade press over a listing over a job posting), write the chosen value, and note the conflict in comments. Never average a size; that is invention.
-4. **Reconcile against the anchor.** Compare the mapped count to the Stage 1 anchor, overall and per country, and write the coverage statement. Flag countries where coverage confidence is low.
+4. **Reconcile against the anchor.** Compare the mapped count to the Stage 1 anchor, overall and per country, and write the coverage statement. Count only **operational and under-construction** sites toward the live network; list closed and former-occupier sites but exclude them from the live count, noting them separately. Flag countries where coverage confidence is low. In detail and extra-deep mode, this is also where gaps are identified to drive the gap-fill wave.
 5. **Refresh the unit columns** if the conflict resolution changed any size: re-run `units.py` on the resolved file so `size_out` matches the final `size_sqm`.
 
 ## Stage 6: Independent QA (Sonnet subagent, blind)
 
-Dispatch a blind verification subagent using the **QA subagent dispatch brief** below. It receives only the record set and the rubric, never the orchestrator's conclusions. It re-fetches a sample of cited sources and confirms the site, operator and size match what the source actually says.
+Dispatch a blind verification subagent using the **QA subagent dispatch brief** below. It receives only the record set and the rubric, never the orchestrator's conclusions. It re-fetches a sample of cited sources and confirms the site, operator, size, status and tenure match what the source actually says.
 
 **A FAIL verdict is a hard block.** If the QA returns FAIL, do not build the Excel. Run the recommended full check, fix or downgrade the offending records, and re-run QA until it passes. A FAIL that ships is the failure this stage exists to prevent.
 
@@ -130,7 +155,7 @@ Use your xlsx skill to build the workbook (in Cowork, the `anthropic-skills:xlsx
 
 1. **Network** (the main sheet, schema below).
 2. **Source Ledger.** One row per (site, field, source): site, field, value, source URL, source tier, date accessed. This is what makes the deliverable auditable.
-3. **Coverage and Gaps.** The anchor figure (overall and per country), the mapped count, the gap, per-country coverage confidence, and a list of fields that are "tbd" so the user sees the holes at a glance.
+3. **Coverage and Gaps.** The anchor figure (overall and per country), the mapped count, the gap, per-country coverage confidence, a status breakdown (operational / under-construction / closed / former), and a list of fields that are "tbd" so the user sees the holes at a glance.
 
 **Optional map handoff.** Every record is geocoded, so the same deduped record set can feed the CBRE longlist/dashboard skill (`cbre-property-longlist`) to render the Leaflet "DC network map" the brief promises, in house style, with no extra modelling. Offer this when the user wants a visual, not just the spreadsheet.
 
@@ -145,31 +170,33 @@ Use these columns in this order. The first columns are the user's spec; the ones
 | Lat | Geocoded in code. "tbd" if no resolvable address. |
 | Long | Geocoded in code. |
 | Geocode precision **(audit)** | rooftop / street / city / tbd. So a pin's exactness is never ambiguous. |
-| Address **(audit)** | Fullest address found. Needed for geocoding and verification. |
+| Address **(audit)** | Fullest address found, native spelling. Needed for geocoding and verification. |
 | Site name / scheme | Building or scheme name where known. |
 | Landlord / developer | Owner, developer or institutional landlord. "tbd" if unknown. |
+| Tenure | leased / owned / tbd. Whether the occupier leases or owns the building, from the land registry, annual-report lease disclosures, or property-press deal language ("pre-let", "sale-and-leaseback", "owner-occupied"). A 3PL-operated site is rarely owned by the occupier. "tbd" if unknown; never guessed. |
 | Size | In the chosen unit (sqm or sq ft). Sourced figure only. "tbd" if unknown. Never a guess. |
 | Size (as stated) **(audit)** | The raw sourced figure and unit, verbatim, before conversion. So a number is never naked or silently re-unitised. |
 | Size basis **(audit)** | stated / estimated / tbd. |
 | In use since (year) | Often sparse. "tbd" where unknown, never inferred. |
-| Last confirmed (year) **(audit)** | The year of the most recent source confirming the site still operates. Surfaces stale announcements as a filterable column, not buried prose. |
-| Operated by | 3PL name, or "occupier-operated". "tbd" if unknown. |
-| Used for | Facility type from the whitelist: NDC, RDC, EDC, fulfilment, cold store, cross-dock, returns, parts. |
+| Current status | operational / under-construction / announced / closed / former / tbd. "former" means the building still operates but no longer for this occupier. Default "tbd"; never guessed. Only operational and under-construction count toward the live network. |
+| Last confirmed (year) **(audit)** | The year of the most recent source confirming the current status. Surfaces stale announcements as a filterable column, not buried prose. |
+| Operated by | 3PL name, or "occupier-operated". A plant is normally occupier-operated. "tbd" if unknown. |
+| Used for | Facility type from the whitelist: NDC, RDC, EDC, fulfilment, cold store, cross-dock, returns, parts; or plant / factory / manufacturing where production sites are in scope. |
 | Confidence **(audit)** | H / M / L per record, reflecting source strength and corroboration. |
 | Source ref **(audit)** | Short key linking to the Source Ledger rows. Full URLs live there. |
 | Comments | Conflicts, caveats, the route the site was found by, anything the model would otherwise want to bury in another field. |
 
-Expect uneven fill. Country, city, facility type and at least one source should be present on every record. Landlord, exact size, year and operator will be partial; that is the honest state of public data, and the Gaps sheet surfaces it rather than hiding it.
+Expect uneven fill. Country, city, facility type and at least one source should be present on every record. Landlord, exact size, year, operator, status and tenure will be partial; that is the honest state of public data, and the Gaps sheet surfaces it rather than hiding it.
 
 ---
 
 ## Research subagent dispatch brief
 
-Dispatch this to each Stage 3 Sonnet subagent, pre-filled with the batch's countries, the identity set, the 3PL list, the per-country anchor, and the relevant `reference/source-playbook.md` entries.
+Dispatch this to each Stage 3 Sonnet subagent, pre-filled with the batch's countries, the identity set, the 3PL list, the per-country anchor, the facility scope, and the relevant `reference/source-playbook.md` entries.
 
 > You are mapping the warehouse and distribution footprint of **[COMPANY and all brands/entities]** in **[these one to three countries]**. Your job is to locate every qualifying facility and return it as structured data, with sources. Do not write prose around it.
 >
-> **What counts.** A facility of at least **[SIZE FLOOR in the chosen unit]** of one of these types: **[FACILITY WHITELIST]**. Ignore retail stockrooms, offices and last-mile micro-sites unless told otherwise.
+> **What counts.** A facility of at least **[SIZE FLOOR in the chosen unit]** of one of these types: **[FACILITY WHITELIST]**. *(If manufacturing is in scope:)* Production sites also count: plants, factories, assembly and processing facilities operated by [company]. Search the local manufacturing vocabulary too (Werk / Produktionswerk, usine, fabbrica / stabilimento, fabrica / planta de produccion, zaklad produkcyjny, productielocatie / fabriek). Ignore retail stockrooms, offices and last-mile micro-sites unless told otherwise.
 >
 > **The company may not trade in your country, and that is fine.** It can still run a warehouse here, a central European DC, an import or bonded port-of-entry warehouse, or a 3PL-shared hub serving other markets. Do not skip your country or dismiss a site because the company has no stores or offices here; such a site is valid and is often the largest in the network. Record the markets it serves in comments if a source says.
 >
@@ -182,20 +209,21 @@ Dispatch this to each Stage 3 Sonnet subagent, pre-filled with the batch's count
 > - **The provider's customer case studies.** Providers publish reference stories on their own sites ("customer stories", "case studies", "references") that name the client and frequently the exact site, size and function. High value and under-searched.
 > When an announcement names a site, the operator field is the provider and the occupier is [company]; that site belongs in the map. Date the announcement and set `last_confirmed` to the year of your most recent confirming source; for anything more than two or three years old find a recent source confirming it still operates, and say so in comments if you cannot. The announcement gives you the operator and location but rarely the building's owner, so do not record the provider as the landlord unless a source says it owns the building; the landlord still comes from the property and planning angle.
 >
-> **Depth and stop condition.** Keep searching each country until two consecutive search passes surface no new facility AND you have met the four-source-type floor. Do not stop because you have found "enough". If you do stop early, say why in that country's coverage note. Laziness here is the failure mode this whole exercise exists to prevent: a short, tidy list is the wrong answer if the network is larger.
->
 > **Honesty rules, non-negotiable.**
 > - Do **not** output coordinates. Collect the fullest address you can; the orchestrator geocodes. Returning a lat/long is a defect.
+> - Provide `address_parts` (street with house number where known, postcode, region/commune) in **native spelling with diacritics** (Moenchengladbach with its umlaut, Gluchow with its accents) alongside `full_address`, so the geocoder can build a precise query ladder.
 > - Size figures come only from a source. Put the exact sourced text in `size_as_stated` (for example "452,000 sq ft" or "42.000 m2") and tag `size_basis` stated or estimated. Do not convert units yourself; the orchestrator does that in code to the user's chosen unit. Anything you do not have is **"tbd"**. Never write a plausible number.
+> - Set `status` from sources: operational, under-construction, announced, closed, or former (the building runs but no longer for this occupier). Default "tbd"; never guess a site is live.
+> - Set `tenure` to owned or leased only with a source (the land registry, an annual-report lease disclosure, a let or sale-and-leaseback deal). A 3PL-operated site is rarely owned by [company]. Default "tbd".
 > - Every record carries its source URL(s), a source tier, a confidence (H/M/L), and a `last_confirmed` year.
 >
-> **Return format.** One structured record per facility with these fields: country, city, full_address, site_name, landlord_or_developer, size_as_stated, size_basis (stated/estimated/tbd), in_use_since, last_confirmed, operator (3PL name or "occupier-operated"), facility_type, confidence (H/M/L), sources (list of {url, tier}), comments. Leave lat, long and size_sqm out; the orchestrator fills them. Plus, per country, a short **coverage note**: the company's stated count for this country if any, how many sites you located, which source types you reached, and your honest confidence that you have the whole country (and why).
+> **Return format.** One structured record per facility with these fields: country, city, full_address, address_parts ({street, postcode, region}, native spelling), site_name, landlord_or_developer, tenure (owned/leased/tbd), size_as_stated, size_basis (stated/estimated/tbd), in_use_since, status (operational/under-construction/announced/closed/former/tbd), last_confirmed, operator (3PL name or "occupier-operated"), facility_type, confidence (H/M/L), sources (list of {url, tier}), comments. Leave lat, long and size_sqm out; the orchestrator fills them. Plus, per country, a short **coverage note**: the company's stated count for this country if any, how many sites you located, which source types you reached, and your honest confidence that you have the whole country (and why).
 
 ## QA subagent dispatch brief
 
 Dispatch this to the Stage 6 verification subagent. Give it only the record set and this rubric. Do not give it the orchestrator's conclusions or an expected answer.
 
-> You are verifying a warehouse network map, blind. You have the record set and nothing else. Take a random sample of **at least 20 percent** of records (minimum five). For each, open the cited source(s) and confirm that the source actually supports the claim: the facility exists, it is operated by who the record says, the size matches the `size_as_stated`, the year matches.
+> You are verifying a warehouse network map, blind. You have the record set and nothing else. Take a random sample of **at least 20 percent** of records (minimum five). For each, open the cited source(s) and confirm that the source actually supports the claim: the facility exists, it is operated by who the record says, the size matches the `size_as_stated`, the year matches, and where the record asserts a `status` (operational/closed/former) or a `tenure` (owned/leased) there is a source that says so.
 >
 > **Distinguish two different failures.** (a) The source does not support the claim, or contradicts it: that is a real failure, count it. (b) The source URL is dead or unreachable: before counting it, try the Wayback Machine (web.archive.org) for an archived copy, and try one corroborating search for the same fact. Only if neither recovers it is it a failure, and label it "unverifiable (link rot)" separately from "contradicted", because link rot is not fabrication.
 >
@@ -209,6 +237,8 @@ Dispatch this to the Stage 6 verification subagent. Give it only the record set 
 - **The naked or re-unitised size.** A figure with no source, or a converted number with the raw `size_as_stated` thrown away. Keep the raw text; convert only in code.
 - **The operating-country trap.** Scoping the search to "countries the company operates in" and dispatching only to its markets. Central European DCs, bonded/port-of-entry import warehouses and 3PL-shared hubs routinely sit in countries where the company has no stores, and they are often the biggest sites. Scope is the region, never the retail footprint; the gateway countries are always in.
 - **The missing 3PL sites.** If the map has only occupier-named buildings and the company uses 3PLs, the network is half-mapped. Re-run the announcement search ("[provider] opens warehouse for [company]") and the provider case studies, not just "[company] + [provider]".
+- **The dead site counted as live.** A closed or former-occupier site (the building runs, but for a different tenant now) counted in the live network or against the anchor. Mark `status` honestly and exclude closed and former sites from the live count.
+- **The guessed tenure.** Recording owned or leased without a source. Tenure is "tbd" unless the land registry, a lease disclosure or a deal report says otherwise; a 3PL-run site is not owned by the occupier by default.
 - **The stale announcement taken as current.** A 2018 "[provider] to operate a DC for [company]" is evidence the site once existed, not that it runs today. Date every announcement, set `last_confirmed`, corroborate older ones against a recent source, and flag in comments where you cannot confirm it is still live.
 - **The premature stop.** A country "covered" in two minutes with three sites when the company is large there. The stop condition is two empty passes plus the four-source-type floor, not "enough".
 - **The silent average.** Two sources disagree on size and the model splits the difference. Pick the higher-tier source and note the conflict; never average.
@@ -217,7 +247,7 @@ Dispatch this to the Stage 6 verification subagent. Give it only the record set 
 
 ## Honest expectations on yield
 
-Some companies disclose richly and use few 3PLs, and the map comes back near-complete with good fill on size and landlord. Others disclose little and outsource heavily, and the map is partial with many "tbd" cells on year and operator. The skill is honest about which case it is in rather than producing the same confident-looking table every time. A 70 percent map that names its own 30 percent gap is the deliverable; a 100 percent-looking table that is half fiction is not.
+Some companies disclose richly and use few 3PLs, and the map comes back near-complete with good fill on size and landlord. Others disclose little and outsource heavily, and the map is partial with many "tbd" cells on year, operator, status and tenure. The skill is honest about which case it is in rather than producing the same confident-looking table every time. A 70 percent map that names its own 30 percent gap is the deliverable; a 100 percent-looking table that is half fiction is not.
 
 ## User preferences (always)
 
@@ -225,6 +255,7 @@ Some companies disclose richly and use few 3PLs, and the map comes back near-com
 - Honesty over completeness. "tbd" is first-class, surfaced in the Gaps sheet, never smoothed over or invented.
 - Coordinates are geocoded in code (offline gazetteer) or by the user's browser geocoder, never produced by a model.
 - The user picks metric or imperial at intake; sizes are converted to that unit in code, the raw figure is kept in Size (as stated), conflicts are resolved by source rank, never averaged.
+- Status and tenure come from sources, default "tbd", and are never guessed; only operational and under-construction sites count toward the live network.
 - Every site carries a Last confirmed year so stale announcements are visible at a glance.
 - Edit, do not rebuild. On a re-run for one country or one fix, re-do only the affected stage and re-inject into the workbook rather than regenerating the whole map.
 - Full, readable cells. Comments are sentences, not data dumps.
@@ -233,8 +264,9 @@ Some companies disclose richly and use few 3PLs, and the map comes back near-com
 
 - `reference/source-playbook.md` (read first for research) per-country local warehouse vocabulary, the high-value source types to search, and the major 3PLs operating in each market. This is the concrete content that turns "go deep" into actual depth. Hand the relevant country sections to each research subagent.
 - `helpers/geocode.py` offline gazetteer geocoding plus `--merge-coords` to overlay browser-geocoded coordinates. Never modelled.
-- `helpers/make_geocoder_html.py` generates `geocode.html`, the browser tool the user runs to produce `coordinates.json` at street/rooftop precision.
+- `helpers/make_geocoder_html.py` generates `geocode.html` with a most-specific-first query ladder, native diacritics and a Nominatim+Photon fallback; the user runs it in a browser to produce `coordinates.json` at street/rooftop precision.
 - `helpers/gazetteer.json` offline city-centroid coordinates for European logistics cities; extend per project rather than letting a model invent a coordinate.
 - `helpers/units.py` converts every sourced size to the user's chosen unit (metric/imperial), keeping a canonical sqm and the raw stated figure.
 - `helpers/dedup.py` clusters duplicate records by coordinate proximity and normalised address, flagging source conflicts for resolution rather than guessing.
+- `helpers/merge_leads.py` extra-deep consolidation: routes recon leads to the country they concern, dedups, and builds one per-country lead brief with an expected-count anchor.
 - `helpers/_common.py` shared utilities (JSON IO, haversine, address/postcode normalisation).
