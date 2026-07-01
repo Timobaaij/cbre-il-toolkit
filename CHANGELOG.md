@@ -7,6 +7,27 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.0.2] — 2026-07-01
+### Added
+- **New skill: `cbre-il-outreach-angles`.** Turns a target company into a
+  ranked **Outreach Opportunities** sheet — about five to seven evidence-backed
+  reasons to make contact now, ordered by how developable each opportunity is,
+  each labelled for trigger strength (a dated event or a sourced structural
+  inefficiency) and readiness (send-now / verify-first), and each shipped with a
+  ready-to-send email hook and a call opener. Runs an orchestrated harvest (a
+  "now" machine, a pressure machine, and an all-Europe facility-evidence
+  fan-out), enforces dated-source evidence integrity and footprint completeness,
+  and delivers a self-contained, CBRE-branded HTML file that leads in plain
+  English with a jargon buster and tucks each item's evidence behind a
+  collapsible toggle. The lightweight prospecting sibling to
+  `cbre-il-account-briefing`. Ships `SKILL.md`, `helpers/final_gate.py` (the
+  deterministic structural gate) and `helpers/render_html.py` (the renderer),
+  `reference/` (evidence-and-ledger, source-playbook, output-template), and
+  `evals/smoke_test.py`.
+### Changed
+- README and the marketplace/plugin descriptions now list the outreach-angles
+  capability.
+
 ## [1.0.1] — 2026-06-25
 ### Changed
 - **`cbre-il-account-briefing` — sharpened the supply-chain-signature read.**
@@ -128,6 +149,7 @@ How to update to the latest version is in the [README](./README.md#updating).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.0.2]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.2
 [1.0.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.0
 [0.6.2]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v0.6.2
