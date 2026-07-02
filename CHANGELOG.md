@@ -7,6 +7,18 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.0.4] — 2026-07-02
+### Changed
+- **Update notifier now covers every skill, with clearer, Cowork-first
+  instructions.** The best-effort `version_check.py` nudge is wired into all six
+  skills (added to `cbre-il-outreach-angles`, `warehouse-network-mapper` and
+  `cbre-tone-of-voice`; already present in the other three), so a user on any
+  entry point learns when a newer toolkit version is available. Its message is
+  rewritten to be actionable: it now spells out the Cowork path (Customize →
+  Plugins → CBRE I&L Toolkit → Update) and the reliable remove-and-re-add
+  fallback, plus the CLI command. Still best-effort — one anonymous public
+  version lookup, silent when current or offline, and it never blocks a run.
+
 ## [1.0.3] — 2026-07-02
 ### Changed
 - **`cbre-il-outreach-angles` — tighter scoring and a stricter gate.**
@@ -168,6 +180,7 @@ How to update to the latest version is in the [README](./README.md#updating).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.0.4]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.4
 [1.0.3]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.3
 [1.0.2]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.2
 [1.0.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.1

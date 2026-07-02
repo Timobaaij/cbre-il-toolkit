@@ -140,8 +140,8 @@
     "sha256": "f5ef374318c1092e6f974e6ea4368290f5b0220bd09f50599c54e6decfd70bbb"
   },
   "helpers/version_check.py": {
-    "size": 3916,
-    "sha256": "ddc8e62af97ef5bb6c91d34131a36c12f70bb712530304bb9e9b33e325ede46d"
+    "size": 4251,
+    "sha256": "344e9c59b0e137350987e6f8026521b032add620d2fc42d2d8012899e599ffb3"
   },
   "helpers/vision_prep.py": {
     "size": 11970,

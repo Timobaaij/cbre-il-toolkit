@@ -104,7 +104,14 @@ def main() -> int:
         file=sys.stderr,
     )
     print(
-        f"[update] Update by removing and re-adding the marketplace: {UPDATE_DOC}",
+        "[update] In Cowork: Customize -> Plugins -> CBRE I&L Toolkit -> Update. "
+        "If it stays on the old version, remove the marketplace and add it again "
+        "(Timobaaij/cbre-il-toolkit), which always lands the latest.",
+        file=sys.stderr,
+    )
+    print(
+        f"[update] In the CLI: /plugin update cbre-il-toolkit@cbre-il-toolkit "
+        f"(or re-add the marketplace). More: {UPDATE_DOC}",
         file=sys.stderr,
     )
     return 0

@@ -13,6 +13,8 @@ The operational distillation of CBRE's official **Tone of Voice Guidelines (2021
 - **Standalone:** invoke it when writing or reviewing any CBRE-facing copy. Apply the seven writing principles to every sentence; reach into the *Attributes in Action* menu only where an approach fits naturally — never force one into every line.
 - **As a shared reference:** other CBRE skills read this file **while drafting** (content-lock stage), so the voice shapes the words as they're written. Voice is *infused*, not *appended* — it should never make content longer, and a "run it through afterward" pass is the wrong model. The one legitimate after-pass is a mechanical compliance lint (banned words, passive voice, overclaiming) — the checklist at the bottom.
 
+- **Toolkit update check (standalone use only).** When you invoke this skill on its own, run `python helpers/version_check.py` once at the start; it prints a one-line note to stderr *only* if a newer CBRE I&L Toolkit version is available (otherwise silent, never blocks). Skip it when this file is being read as a shared reference by another skill, since that skill runs its own check.
+
 ## North star
 
 CBRE creates the real estate solutions of tomorrow, so businesses and people thrive. Every piece of copy ties, somewhere, back to that — we describe what we do *and* connect it to a larger story about seeing potential and realizing opportunity. The brand vision ("Realizing Potential in Every Dimension") inspires the writing; it is never used as a tagline or pasted verbatim.

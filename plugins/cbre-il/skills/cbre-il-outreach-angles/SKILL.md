@@ -31,6 +31,8 @@ The full rule, the freshness grades and how to compute them, the evidence file t
 
 ## Inputs (Stage 0)
 
+**Toolkit update check (run once, first).** Run `python helpers/version_check.py`. It prints a one-line note to stderr *only* if a newer CBRE I&L Toolkit version has been published (otherwise it is silent); it does nothing but a single public version lookup, never blocks the run, and is safe to ignore.
+
 **This skill chooses the angle.** Not knowing the hook is the whole reason to run it, so the skill never asks the user which angle, focus or direction to take. The only thing it needs is the company (and ideally the market); everything else it discovers and decides from the evidence. Focus and the door are optional context a user may volunteer, never questions the skill puts to them. Collect and validate the following, then run end to end without quizzing the user.
 
 **Capability precondition (check before harvesting).** Confirm live web search and fetch are available with one trivial probe (a single query that should return a dated result). If retrieval is unavailable, blocked, or returns nothing retrievable, STOP and report "cannot run without live web access" rather than proceeding. Do not author from memory; a sheet with no real sources behind it is worse than no sheet.

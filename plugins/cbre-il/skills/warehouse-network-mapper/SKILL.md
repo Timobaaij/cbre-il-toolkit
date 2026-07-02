@@ -7,6 +7,8 @@ description: Maps a company's warehouse and distribution network across Europe, 
 
 Produce an Excel that maps a company's real warehouse and distribution footprint across a chosen scope (most often Europe, sometimes a single country), where every facility traces to a source, coordinates are geocoded from a real address rather than guessed, and the network's completeness is measured against the company's own stated figures rather than claimed.
 
+**Toolkit update check (run once, first).** Run `python helpers/version_check.py`. It prints a one-line note to stderr *only* if a newer CBRE I&L Toolkit version has been published (otherwise it is silent); it does nothing but a single public version lookup, never blocks the run, and is safe to ignore. (Best-effort: if the sandbox has no outbound network it simply stays silent.)
+
 ## Runtime environment (read this first)
 
 This skill is built to run in Cowork, a sandbox with **no outbound internet from helper code**. That single fact shapes two stages:
