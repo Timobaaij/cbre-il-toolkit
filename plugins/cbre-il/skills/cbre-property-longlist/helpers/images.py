@@ -104,7 +104,13 @@ def _open(image_bytes: bytes) -> Image.Image | None:
 
 
 def page_embedded_images(doc: "fitz.Document", page_index: int) -> list[dict]:
-    """All decodable raster images on a page, largest first."""
+    """All decodable raster images on a page, largest first. Memoised per (doc, page) so a
+    page's rasters are decoded ONCE per run (the interpret thumbnail pass and merge's hero
+    binding both ask for them). The memo is cleared with the doc cache. (#39/#21)"""
+    key = (id(doc), page_index)
+    hit = _EMBED_CACHE.get(key)
+    if hit is not None:
+        return hit
     out = []
     page = doc[page_index]
     for info in page.get_images(full=True):
@@ -119,6 +125,7 @@ def page_embedded_images(doc: "fitz.Document", page_index: int) -> list[dict]:
         except Exception:
             continue
     out.sort(key=lambda d: -d["area"])
+    _EMBED_CACHE[key] = out
     return out
 
 
@@ -342,6 +349,11 @@ def classify_data_uri(uri: str) -> str:
 
 
 _DOC_CACHE: dict[str, "fitz.Document"] = {}
+# in-process memo of a page's decoded embedded rasters, keyed (id(doc), page_index): the
+# same page is decoded by BOTH the interpret thumbnail pass and merge's hero binding -
+# decode once per run. MUST be cleared in close_doc_cache (id(doc) is recycled once the
+# handle is closed/dropped), which it is. (#39/#21)
+_EMBED_CACHE: dict[tuple, list] = {}
 
 
 def _get_doc(pdf_path: Path) -> "fitz.Document":
@@ -369,6 +381,9 @@ def close_doc_cache() -> None:
         _PLACED_CACHE.clear()
         _CROPS_CACHE.clear()
         _PPTX_CACHE.clear()
+        _EMBED_CACHE.clear()          # (#39) id(doc)-keyed decode memo - MUST drop with the handles
+        _SLIDEPIC_CACHE.clear()       # (#39) per-slide decoded pictures
+        _PPTX_SLIDES_CACHE.clear()    # (#38) enumerated slide lists
     except Exception:
         pass
 
@@ -1197,6 +1212,8 @@ def placeholder() -> str:
 # --------------------------------------------------------------------------- #
 
 _PPTX_CACHE: dict[str, object] = {}
+_PPTX_SLIDES_CACHE: dict[str, list] = {}   # (#38) enumerated slide list per deck
+_SLIDEPIC_CACHE: dict[tuple, list] = {}    # (#39) decoded pictures per (deck, slide)
 
 
 def _get_pptx(path: Path):
@@ -1209,13 +1226,28 @@ def _get_pptx(path: Path):
     return prs
 
 
+def _pptx_slides(path: Path) -> list:
+    """Enumerated slide list for a deck, memoised: python-pptx materialises every slide
+    part on list(prs.slides), and slide_pictures is called once per slide/page across the
+    gallery/candidate/audit passes. Cleared with the pptx cache in close_doc_cache. (#38)"""
+    key = str(Path(path).resolve())
+    sl = _PPTX_SLIDES_CACHE.get(key)
+    if sl is None:
+        sl = list(_get_pptx(path).slides)
+        _PPTX_SLIDES_CACHE[key] = sl
+    return sl
+
+
 def slide_pictures(pptx_path: Path, slide_index: int) -> list[dict]:
     """All decodable raster pictures on one slide, largest first (undecodable
     WMF/EMF vectors are skipped, never abort the harvest)."""
+    key = (str(Path(pptx_path).resolve()), slide_index)
+    hit = _SLIDEPIC_CACHE.get(key)
+    if hit is not None:
+        return hit
     try:
         from pptx.enum.shapes import MSO_SHAPE_TYPE
-        prs = _get_pptx(pptx_path)
-        slides = list(prs.slides)
+        slides = _pptx_slides(pptx_path)
         if not (0 <= slide_index < len(slides)):
             return []
         out = []
@@ -1230,6 +1262,7 @@ def slide_pictures(pptx_path: Path, slide_index: int) -> list[dict]:
                     w, h = img.size
                     out.append({"img": img, "w": w, "h": h, "area": w * h})
         out.sort(key=lambda d: -d["area"])
+        _SLIDEPIC_CACHE[key] = out
         return out
     except Exception:
         return []

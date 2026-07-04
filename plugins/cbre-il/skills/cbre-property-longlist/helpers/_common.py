@@ -7,7 +7,9 @@ jsonschema is used only if present.
 """
 from __future__ import annotations
 
+import copy
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -23,6 +25,32 @@ TEMPLATES = SKILL_ROOT / "templates"
 TEMPLATE_HTML = ASSETS / "dashboard_template.html"
 VERSION_FILE = ASSETS / "VERSION"
 SCHEMA_FILE = TEMPLATES / "canonical.schema.json"
+
+
+# --- Atomic durable writes ---------------------------------------------------
+# Every durable/resume-gating artefact goes through these: write to a sibling
+# .tmp then os.replace onto the target, so a kill mid-write (routine at Cowork's
+# ~45s cap) can NEVER leave a truncated file that --resume then treats as current.
+# Text is LF-only (newline="\n") so the built HTML is byte-identical across
+# platforms (no Windows CRLF translation) - the determinism contract.
+def atomic_write_text(path, text: str, *, encoding: str = "utf-8", newline: str = "\n"):
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    with open(tmp, "w", encoding=encoding, newline=newline) as fh:
+        fh.write(text)
+    os.replace(tmp, p)
+    return p
+
+
+def atomic_write_bytes(path, data: bytes):
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+    os.replace(tmp, p)
+    return p
 
 # --- Ownership / provenance mark (see NOTICE) --------------------------------
 # Authored by Timo Baaij. OWNER_NOTICE is the human copyright line (carries the ©
@@ -98,8 +126,39 @@ def load_json(path: Path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+# In-process parse-cache for canonical.json. run.py drives merge -> enrich -> the pre-build
+# gate battery -> build -> post-build gates -> deliver ALL IN ONE PROCESS (the in-process
+# spine), so load_canonical is called ~8-9x on the SAME canonical bytes per run - a multi-MB
+# base64 re-parse each time. Keyed on (resolved path, mtime_ns, size): merge/enrich write
+# canonical via an atomic os.replace (bumping mtime), so a changed canonical MISSES the cache
+# and re-parses (no stale read). EVERY return is a fresh copy.deepcopy, so a caller mutating
+# its result can never poison the cache or another caller (mutation isolation). deepcopy of
+# this base64-heavy dict is ~40x cheaper than json.loads - it shares the immutable strings,
+# copying only the container nodes (measured 0.15 ms vs 6 ms on a 5 MB canonical). (#22/#35)
+_CANON_CACHE: dict = {}
+
+
 def load_canonical(path: Path) -> dict:
-    return load_json(path)
+    p = Path(path)
+    try:
+        st = p.stat()
+        # Invalidation signature. st_ino is the DECISIVE member: the skill only ever writes
+        # canonical via an atomic tmp+os.replace (merge/enrich), which mints a NEW underlying
+        # file - so st_ino changes EVEN when a same-size rewrite lands within the same coarse
+        # mtime tick (Windows st_mtime_ns resolution is ~1-2 ms, so mtime+size alone could
+        # otherwise serve a stale hit). mtime_ns+size cover an in-place edit; ino covers the
+        # atomic-replace case. (st_ino is 0 on filesystems that lack it -> degrades to
+        # mtime+size, never worse than the old un-cached read.) (#22/#35)
+        sig = (st.st_mtime_ns, st.st_size, st.st_ino)
+        key = str(p.resolve())
+        hit = _CANON_CACHE.get(key)
+        if hit is not None and hit[0] == sig:
+            return copy.deepcopy(hit[1])
+        parsed = load_json(p)
+        _CANON_CACHE[key] = (sig, parsed)
+        return copy.deepcopy(parsed)
+    except OSError:
+        return load_json(p)  # stat failure -> uncached passthrough (never worse than before)
 
 
 def emit_review_view(canonical_path) -> None:
@@ -132,8 +191,8 @@ def emit_review_view(canonical_path) -> None:
             if isinstance(prop.get(k), list):
                 prop[k] = [_strip(x) for x in prop[k]]
     try:
-        (p.parent / "canonical_review.json").write_text(
-            json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_text(p.parent / "canonical_review.json",
+                          json.dumps(d, ensure_ascii=False, indent=2))
     except Exception:
         pass
 

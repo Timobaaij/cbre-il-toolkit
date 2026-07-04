@@ -31,6 +31,9 @@ TARGETS = (
        # size cap - enrich._load_asset_json reads .json.gz (or a rebuilt plain .json).
        "assets/poi_library.json", "assets/label_ledger.json", "assets/poi_dataset.json.gz",
        "assets/regions_dataset.json.gz", "assets/cities_dataset.json.gz",
+       # the >=100k European city POI layer + complete OSM border-crossing dataset (both
+       # nearest-of-complete-set; a truncated copy would degrade nearest-city / nearest-border)
+       "assets/cities_major_dataset.json.gz", "assets/borders_dataset.json.gz",
        # the NUTS-3 boundary polygons for point-in-polygon region binding (a truncated
        # copy would silently degrade the workforce bind to label/city)
        "assets/regions_geo.json.gz",

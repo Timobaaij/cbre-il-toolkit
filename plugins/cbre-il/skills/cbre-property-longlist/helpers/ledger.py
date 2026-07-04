@@ -18,8 +18,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 from pathlib import Path
+
+import _common as C
 
 COLUMNS = ["property_id", "record_type", "field", "value", "source_file",
            "source_locator", "source_type", "extractor", "confidence",
@@ -34,6 +37,10 @@ def read_rows(path: Path) -> list[dict]:
 
 def cmd_validate(args) -> int:
     rows = read_rows(Path(args.ledger))
+    if not rows:
+        print("[FAIL] ledger has no data rows - every property field must trace to a source (S4-52)")
+        print("STATUS: BLOCKED (empty ledger)")
+        return 1
     bad = []
     for i, r in enumerate(rows, start=2):  # +1 header, +1 1-based
         missing = [c for c in REQUIRED if not str(r.get(c, "")).strip()]
@@ -73,11 +80,13 @@ def cmd_export(args) -> int:
         for col, w in widths.items():
             ws.column_dimensions[col].width = w
         out.parent.mkdir(parents=True, exist_ok=True)
-        wb.save(out)
+        tmp = out.with_suffix(out.suffix + ".tmp")
+        wb.save(tmp)
+        os.replace(tmp, out)
         print(f"OK Source Ledger -> {out} ({len(rows)} rows)")
     except Exception as e:
         fallback = out.with_suffix(".csv")
-        fallback.write_text(Path(args.ledger).read_text(encoding="utf-8"), encoding="utf-8")
+        C.atomic_write_text(fallback, Path(args.ledger).read_text(encoding="utf-8"))
         print(f"NOTE openpyxl unavailable ({e}); wrote CSV fallback -> {fallback}")
     return 0
 

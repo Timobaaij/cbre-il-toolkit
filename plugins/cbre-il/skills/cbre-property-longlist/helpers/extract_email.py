@@ -38,16 +38,35 @@ import sys
 from email import policy
 from pathlib import Path
 
+import html as _html
+import re
+
+
+def _strip_html(raw: str) -> str:
+    """Best-effort HTML -> plain text for an HTML-only email body: drop script/style,
+    strip tags, unescape entities, collapse whitespace (audit S1-12)."""
+    t = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", raw or "")
+    t = re.sub(r"(?s)<[^>]+>", " ", t)
+    return re.sub(r"\s+", " ", _html.unescape(t)).strip()
+
 
 def _read_eml(p: Path) -> dict:
     msg = email.message_from_bytes(p.read_bytes(), policy=policy.default)
-    body = ""
+    body, html_body = "", ""
     if msg.is_multipart():
         for part in msg.walk():
-            if part.get_content_type() == "text/plain":
+            ct = part.get_content_type()
+            if ct == "text/plain":
                 body += part.get_content()
+            elif ct == "text/html" and not html_body:
+                html_body = part.get_content()
+        # an HTML-only multipart email (no text/plain part) must not silently lose its
+        # offer prose - fall back to the stripped HTML (audit S1-12)
+        if not body.strip() and html_body:
+            body = _strip_html(html_body)
     else:
-        body = msg.get_content()
+        raw = msg.get_content()
+        body = _strip_html(raw) if msg.get_content_type() == "text/html" else raw
     return {"subject": str(msg.get("subject", "")), "from": str(msg.get("from", "")),
             "date": str(msg.get("date", "")), "body": body, "attachments":
             [part.get_filename() for part in msg.walk() if part.get_filename()]}

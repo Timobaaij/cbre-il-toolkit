@@ -60,11 +60,17 @@ def infer_cluster(stem_file: str, city_country: dict) -> tuple[str, str, str]:
                tail was NOT a known city - the 'Options-Oporto' case)."""
     stem = Path(stem_file).stem
     parts = [s.strip() for s in _SEP.split(stem) if s.strip()]
+    had_sep = len(parts) > 1
     while len(parts) > 1 and _NOISE.fullmatch(parts[-1]):
         parts.pop()  # drop trailing FINAL / draft / v2 / dates - they are not regions
     if len(parts) > 1:
         region = parts[-1]
         confidence = "high"  # a clean spaced-dash split produced a real tail
+    elif had_sep and parts:
+        # a single real segment survived after noise-stripping ('City - FINAL' -> 'City'):
+        # use it, not the whole stem which would leak the ' - FINAL' noise (audit S0-41)
+        region = parts[0]
+        confidence = "high"
     else:
         region = stem
         confidence = "low"   # the whole-stem fallback fired
@@ -119,7 +125,15 @@ def _verified_cluster_overrides(cache, input_hash: str, stems: set) -> dict:
 # inputs (a Source Ledger was once read as a questionnaire -> phantom requirements).
 # Low-skill users routinely re-run in the same folder. The defensive twin is the
 # ledger-schema refusal in extract_xlsx (catches a renamed ledger by its columns).
-_OWN_OUTPUT = re.compile(r"_Source_Ledger\.|_Gaps_Report\.md$|^CBRE_Property_Dashboard_.*\.html$", re.I)
+_OWN_OUTPUT = re.compile(r"_Source_Ledger\.(?:xlsx|csv)$|_Gaps_Report\.md$|_Longlist\.(?:xlsx|csv)$|^CBRE_Property_Dashboard_.*\.html$", re.I)
+
+# INTAKE-036: the dedup hash reads the whole file into memory; a pathological huge file
+# (a mis-dropped video, a runaway export) can raise MemoryError - which is NOT an OSError
+# and so escaped the read guard, crashing the whole intake run. Files over this cap skip the
+# byte-identical-dedup check (their bytes are never read) but are still discovered/classified
+# normally. 512 MB is far above any real brochure/tracker/image, well under a memory-exhaustion
+# level. A >cap exact-duplicate pair simply won't be collapsed - acceptable for a pathological input.
+_DEDUP_MAX_BYTES = 512 * 1024 * 1024  # 512 MB
 
 
 def _is_own_output(rel: str) -> bool:
@@ -145,7 +159,7 @@ def discover(folder: Path, cluster_cache=None) -> dict:
     cc = lib.get("city_country", {})
     inv = {"folder": str(folder), "clusters": {}, "xlsx": [], "images": [],
            "emails": [], "present_types": [], "subfolders": [], "skipped_outputs": [],
-           "skipped_duplicates": []}
+           "skipped_duplicates": [], "skipped_hash_oversize": []}
     files = sorted((p for p in folder.rglob("*") if p.is_file()
                     and not any(part.startswith((".", "_"))
                                 for part in p.relative_to(folder).parts)),
@@ -166,10 +180,21 @@ def discover(folder: Path, cluster_cache=None) -> dict:
         # only ONCE - keep the first in sorted order (deterministic), record the skip so the
         # broker sees it, and avoid a wasted extraction + a phantom duplicate card. A read
         # error never drops a file (it is treated as unique).
+        # INTAKE-036: size-prefilter the whole-file dedup read so a pathological huge file
+        # (multi-GB) is never slurped into memory, and backstop MemoryError/OverflowError
+        # (NOT an OSError) so a bad file is skipped-from-dedup, never a crash of the whole run.
         try:
-            digest = hashlib.sha256(p.read_bytes()).hexdigest()
+            oversize = p.stat().st_size > _DEDUP_MAX_BYTES
         except OSError:
+            oversize = False
+        if oversize:
+            inv["skipped_hash_oversize"].append(rel)  # too big to hash; still discovered below
             digest = ""
+        else:
+            try:
+                digest = hashlib.sha256(p.read_bytes()).hexdigest()
+            except (OSError, MemoryError, OverflowError):
+                digest = ""
         if digest:
             if digest in seen_hashes:
                 inv["skipped_duplicates"].append({"file": rel, "duplicate_of": seen_hashes[digest]})
@@ -222,7 +247,7 @@ def discover(folder: Path, cluster_cache=None) -> dict:
     return inv
 
 
-def scaffold_yaml(inv: dict, client: str) -> str:
+def scaffold_yaml(inv: dict, client: str, inputs_folder: str = ".") -> str:
     import yaml
     countries = sorted({c.get("country") for c in inv["clusters"].values() if c.get("country")})
     # emit the cluster keys via safe_dump: a region label derived from a filename can
@@ -256,7 +281,7 @@ inputs:
     outlook_folder: ""           # Outlook mail FOLDER when source: outlook (e.g. Inbox, or "Normal CEE"); blank = all folders
     mailbox: ""                  # optional shared/delegated mailbox email
     query: ""                    # subject/keyword text (combine with a date window)
-    folder: "{"." if inv["emails"] else ""}"                  # filesystem .msg/.eml folder when source: folder (fallback only)
+    folder: "{inputs_folder if inv["emails"] else ""}"                  # filesystem .msg/.eml folder when source: folder (fallback only)
 enrichment:                      # broker opt-in; ask in plain language before running
   geocode: true                  # fill map coordinates (recommended)
   pois: true                     # nearby ports/rail/airports/borders on the map
@@ -306,8 +331,8 @@ def _merge_clusters_into_yaml(yml: Path, inv: dict) -> bool:
         if merged == cur:
             return False  # nothing changed -> leave the file byte-identical
         inputs["clusters"] = merged
-        yaml.safe_dump(cfg, yml.open("w", encoding="utf-8"),
-                       default_flow_style=False, allow_unicode=True, sort_keys=False)
+        C.atomic_write_text(yml, yaml.safe_dump(
+            cfg, default_flow_style=False, allow_unicode=True, sort_keys=False))
         return True
     except Exception:
         return False
@@ -325,15 +350,18 @@ def main() -> None:
     if not folder_arg:
         ap.error("provide the inputs folder (positional, or --folder)")
     folder = Path(folder_arg)
+    if not folder.is_dir():
+        ap.error(f"inputs folder does not exist or is not a directory: {folder} "
+                 f"(a mistyped path? it must be an existing folder of property files) - S0-42")
     outdir = Path(args.out_dir)
     outdir.mkdir(parents=True, exist_ok=True)
     # The orchestrator's LLM-refined labels (work/intake_clusters.json) override the
     # regex per stem when present + verified; absence forces the deterministic regex.
     inv = discover(folder, cluster_cache=_load_cluster_cache(outdir))
-    (outdir / "inventory.json").write_text(json.dumps(inv, ensure_ascii=False, indent=2), encoding="utf-8")
+    C.atomic_write_text(outdir / "inventory.json", json.dumps(inv, ensure_ascii=False, indent=2))
     yml = outdir / "project.yaml"
     if not yml.exists():
-        yml.write_text(scaffold_yaml(inv, args.client), encoding="utf-8")
+        C.atomic_write_text(yml, scaffold_yaml(inv, args.client, folder.as_posix()))
         scaffolded = " (scaffolded project.yaml)"
     elif _merge_clusters_into_yaml(yml, inv):
         scaffolded = " (project.yaml exists; clusters merged)"
@@ -351,6 +379,10 @@ def main() -> None:
     if inv.get("skipped_outputs"):  # transparency: a prior run's own files were ignored
         print(f"NOTE: ignored {len(inv['skipped_outputs'])} prior-run output file(s) in the "
               f"inputs folder (not treated as inputs): {', '.join(inv['skipped_outputs'][:6])}")
+    if inv.get("skipped_hash_oversize"):  # transparency: a too-big file skipped the dedup check
+        print(f"NOTE: {len(inv['skipped_hash_oversize'])} file(s) too large to de-duplicate "
+              f"(>{_DEDUP_MAX_BYTES // (1024 * 1024)} MB) - still discovered, dedup check skipped: "
+              f"{', '.join(inv['skipped_hash_oversize'][:4])}")
     unresolved = [r for r, c in inv["clusters"].items() if not c.get("country")]
     if inv["clusters"] and unresolved:
         print(f"NOTE: country not auto-inferred for {len(unresolved)}/{len(inv['clusters'])} cluster(s) "

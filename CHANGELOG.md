@@ -7,6 +7,27 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.0.5] — 2026-07-04
+### Added
+- **Property longlist — nearest-city and nearest-border geo layers.** Two new
+  bundled datasets, `assets/cities_major_dataset.json.gz` (European cities of
+  ~100k+) and `assets/borders_dataset.json.gz` (a complete OSM border-crossing
+  set), with `helpers/build_cities_major_dataset.py` and
+  `helpers/build_borders_dataset.py` to regenerate them, so property enrichment
+  can place each site against its nearest major city and nearest border crossing.
+### Changed
+- **Property longlist — broad extraction and pipeline refresh.** Updates across
+  extraction (`extract_pdf`, `extract_pptx`, `extract_email`), enrichment
+  (`enrich`, `web_enrich`, `images`, `vision_prep`, `vision_validate`), the
+  pipeline spine (`run`, `intake`, `merge`, `normalize`, `match`, `ledger`,
+  `deliver`, `build_dashboard`, `interpret_prep`, `render_qa`) and the gates
+  (`gate_runner`, `final_gate`), plus refreshed evals (`extract_test`,
+  `fixture_test`, and a new `atomic_test.py`).
+- Regenerated `assets/integrity.json` (now also guards the two new datasets and
+  builder helpers — 67 files, LF-normalised); preflight verifies integrity and
+  the ownership mark. The update notifier (`helpers/version_check.py`) is
+  retained and still wired into SKILL.md.
+
 ## [1.0.4] — 2026-07-02
 ### Changed
 - **Update notifier now covers every skill, with clearer, Cowork-first
@@ -180,6 +201,7 @@ How to update to the latest version is in the [README](./README.md#updating).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.0.5]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.5
 [1.0.4]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.4
 [1.0.3]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.3
 [1.0.2]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.2

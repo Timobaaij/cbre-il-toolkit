@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 import sys
 import unicodedata
+from functools import lru_cache
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -27,6 +28,15 @@ try:
     from rapidfuzz import fuzz
 except Exception:  # sandbox without rapidfuzz: difflib-backed shim (dedup still gated by coverage)
     from rapidfuzz_shim import fuzz
+
+
+@lru_cache(maxsize=None)
+def _tsr(key_a: str, key_b: str) -> float:
+    # cached delegate: the identical (match_key, match_key) string pair recurs across the
+    # O(n^2) dedupe / grey_pairs loops (fed twice within one pair_class, then re-fed on every
+    # later pair touching the same records) - compute token_set_ratio once per pair (#30).
+    return fuzz.token_set_ratio(key_a, key_b)
+
 
 DEV_ALIASES = {
     "ctpark": "ctp", "ct park": "ctp", "ctp invest": "ctp",
@@ -41,6 +51,7 @@ def strip_diacritics(s: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
 
 
+@lru_cache(maxsize=None)
 def norm(s) -> str:
     s = strip_diacritics(str(s or "")).lower()
     s = LEGAL.sub("", s)
@@ -188,16 +199,19 @@ def _cross_source_auto(a: dict, b: dict) -> bool:
     # through to the fuzzy tail - so this branch is the only auto path when exactly one
     # park is missing; a False here is a definite non-merge, never the fuzzy tail.)
     if bool(pa) != bool(pb):
+        # a SHARED UNKNOWN developer ('tbd'/'??') is neither agreement nor disagreement:
+        # require BOTH sides KNOWN and equal, mirroring the coord-net/containment branches,
+        # so two 'tbd'-developer records are not silently over-merged (audit S2-8).
+        ka_m, kb_m = _known_dev(a), _known_dev(b)
         return (norm(a.get("city")) == norm(b.get("city")) and norm(a.get("city")) != ""
-                and norm_dev(a.get("developer")) == norm_dev(b.get("developer"))
-                and norm_dev(a.get("developer")) != ""
+                and bool(ka_m) and bool(kb_m) and ka_m == kb_m
                 and bool(aa and ba and abs(aa - ba) / max(aa, ba) <= 0.05))
     # SAME NAME ACROSS SOURCES: the historical fuzzy-key tail. Both parks present-or-
     # absent (the one-missing case returned above), key near-identical (>= 88), and no
     # material size conflict. This is the path that, in the pre-LLM matcher, merged a
     # same-park/same-key pair even across a developer disagreement - kept verbatim here
     # so offline behaviour is unchanged.
-    if fuzz.token_set_ratio(match_key(a), match_key(b)) < MATCH_THRESHOLD:
+    if _tsr(match_key(a), match_key(b)) < MATCH_THRESHOLD:
         return False
     if aa and ba and abs(aa - ba) / max(aa, ba) > 0.15:
         return False
@@ -224,7 +238,7 @@ def _cross_source_grey(a: dict, b: dict) -> bool:
     da_, db_ = _distinctive_tokens(a.get("park")), _distinctive_tokens(b.get("park"))
     if da_ and db_ and (da_ & db_):
         return True
-    score = fuzz.token_set_ratio(match_key(a), match_key(b))
+    score = _tsr(match_key(a), match_key(b))
     if GREY_LOW <= score < MATCH_THRESHOLD:
         return True
     return False

@@ -1,19 +1,27 @@
 {
   "helpers/_common.py": {
-    "size": 14041,
-    "sha256": "eedf9dcb7a9aba3c1b39d350b24e4496353077f9dc477b07d00f5fd05bde81a4"
+    "size": 17039,
+    "sha256": "7a7a168654a62a99efed8930ea3b541c347b5bd7b8f19677381cbd27afb40695"
   },
   "helpers/_vendor_wheels.py": {
     "size": 4162,
     "sha256": "47a911258b1e026d69e7e35e54f2f12d8dd140c6772df1997d9bda387d9eec58"
   },
+  "helpers/build_borders_dataset.py": {
+    "size": 14110,
+    "sha256": "44b0f647ac453bf88e41510882392aa9d7adb5ec62609381ae0a167c68404cea"
+  },
   "helpers/build_cities_dataset.py": {
     "size": 4726,
     "sha256": "1a7ab72df3a7f5a5d231e4c39cd52d6f31e22867c4226da8cf02cb55fa64642b"
   },
+  "helpers/build_cities_major_dataset.py": {
+    "size": 4398,
+    "sha256": "89f718857ba5390aa2920793062409f24610f0b55508fa2dd2857e102dbf0892"
+  },
   "helpers/build_dashboard.py": {
-    "size": 12093,
-    "sha256": "735ee0c8c6c7b604c515ebeb6e2036fe72cc60c0449c9aef9e337e3e8efb9783"
+    "size": 12691,
+    "sha256": "ceeef8b9bb9d95b5a5b61a078f28a4546c34bd5c20fe9ea8d11ab8840ff03599"
   },
   "helpers/build_poi_dataset.py": {
     "size": 8956,
@@ -32,84 +40,84 @@
     "sha256": "80df722b4a9b571117a3903c4cfb675219e217a68b374fc77059a3b983d5a1b6"
   },
   "helpers/deliver.py": {
-    "size": 13634,
-    "sha256": "2b346293c5cef9f7e694a3aab167245025ce2518b9c5cce1434e54d8d46b2fa1"
+    "size": 13895,
+    "sha256": "c31cd2fcf030183ea96e1955783356d2ca29c42e04af3398e5f1169be58a72d0"
   },
   "helpers/enrich.py": {
-    "size": 72706,
-    "sha256": "636ca2ba9a99ff81dabec0a44ea178fe83b994d0949828c4c679b8c429fe4946"
+    "size": 85351,
+    "sha256": "9fe8711dbd46f8bdba973bcdfb6da19fcceceea4ae7b35e51eb7a54bd4104a67"
   },
   "helpers/extract_email.py": {
-    "size": 5890,
-    "sha256": "4592d7b53839c1b2dc817cb6607f55186a0e9b6233f3e6f3919511c576243dbc"
+    "size": 6742,
+    "sha256": "499f8775d8a5dc7c77e307890838bf9de0de5aae7e099be0181f95b35c18e820"
   },
   "helpers/extract_image.py": {
     "size": 3579,
     "sha256": "d9840092033219acad3d63b5722ecd71af314b0453687dfa3d21c730fc191662"
   },
   "helpers/extract_pdf.py": {
-    "size": 30128,
-    "sha256": "057ebb19b3b638cdde27d0abd35db60fab3eb9a5c94a1b34e0d9a11624b9a4aa"
+    "size": 35288,
+    "sha256": "12eb79cd9f3dbbaae9713cc5f9847230c142afcd51b12dbc8d3f1c4c899273a4"
   },
   "helpers/extract_pptx.py": {
-    "size": 4206,
-    "sha256": "1d592ac23901665b1462d025fb3d02473e554f214504ef029dc22e07f5047525"
+    "size": 4949,
+    "sha256": "8a888c10fd9902f64beee7d6d1ec12104a05c64077a4028b9f92436134b1183c"
   },
   "helpers/extract_xlsx.py": {
     "size": 50836,
     "sha256": "7d0ca996e7b9a2d38542068ccdbf094ed172278612a14bfd02e864bc3178b87d"
   },
   "helpers/final_gate.py": {
-    "size": 7230,
-    "sha256": "9c654ef53f9fd53c1d8c7620e7b896498a2c24c558aa50a0b8bed7ba30667e2d"
+    "size": 8317,
+    "sha256": "a96adff3e348bea686f0356228c6d6405bb0856e2e9ecb6fc68e4b913532298a"
   },
   "helpers/fitz_shim.py": {
     "size": 10322,
     "sha256": "e2b6e197b7011fa9df68519f2b7a34fa1c34935cbbe043b6eb71f67c9757581b"
   },
   "helpers/gate_runner.py": {
-    "size": 40993,
-    "sha256": "a228eb8484254757a5494c801d57f7d5cafef7f911a89ce03e9044aa6cb6ed8a"
+    "size": 43914,
+    "sha256": "bc9a6ce710e0fb788466060b6ae328efa3e49709e3ac3f3586dd2e122c386c35"
   },
   "helpers/i18n.py": {
     "size": 24437,
     "sha256": "6f2fcf3d58d84102ed22148a4c6afc3cf3637e079314ed1cb13c208a47e1ca91"
   },
   "helpers/images.py": {
-    "size": 66349,
-    "sha256": "5a61ba7b13e7841b563397a3aadc6c3007da7cf66eb556180135fae68b2a72d2"
+    "size": 68088,
+    "sha256": "9be1146d5855daed5f8fff03a8a308aea70fef876ea8dcff8c10bb98096ed73c"
   },
   "helpers/intake.py": {
-    "size": 20022,
-    "sha256": "55c74506580e954799678ceff829996c56ae7db9f9436ac35bc300de5bf7999d"
+    "size": 22176,
+    "sha256": "daa4e2ebaa765a91da71d11fa4149da65aa151c45fb4e8b7bc03dc876bf0dcad"
   },
   "helpers/interpret_prep.py": {
-    "size": 16833,
-    "sha256": "aa60603ece9a8e950d06592c4864e7857a2c2da8a31e0e4da7394799c7d83d60"
+    "size": 17602,
+    "sha256": "954f032d11edb77c12c735dddaeb04e1382eccfa4c9f50d5f2b4d5555518083d"
   },
   "helpers/ledger.py": {
-    "size": 3710,
-    "sha256": "9ee5b27a748195c2e6ffba4ea8139fb261e5444a185de921f60feff66e416979"
+    "size": 3997,
+    "sha256": "d3f8b0f74cc2ef0dc7058e31c986345deeab8ffffe7fdaf0abb28f13dd1f67f4"
   },
   "helpers/make_integrity.py": {
-    "size": 2741,
-    "sha256": "28605cfa850fd3d6a0762d557b7d1c5fb0817ca6122acb941ad909a1e74bf13b"
+    "size": 3006,
+    "sha256": "95617df2cedeb9c39ead7f5570de9540808d4e0a7879a3daa53471ce308604d8"
   },
   "helpers/make_template.py": {
     "size": 74900,
     "sha256": "f6adc5f3ffc94c4c6a17924426182ce0317c264333d5af4991285981c96b746e"
   },
   "helpers/match.py": {
-    "size": 16863,
-    "sha256": "7a2b21cc692f44894d2a30aa9bc09382ba3363dcbf50e7081a931cf209b0541a"
+    "size": 17522,
+    "sha256": "0d1093b7f141463433190aeb27efddb677d72b150cc91dba3bcb370bd01305f3"
   },
   "helpers/merge.py": {
-    "size": 76365,
-    "sha256": "c13345f3d0a0c91c340321800337990627e212d83238add87b9dc647669065ba"
+    "size": 78101,
+    "sha256": "b12165e4a111e82ce53c9afbe42451b56f934145eaa4bfec0d5bad97661145df"
   },
   "helpers/normalize.py": {
-    "size": 15372,
-    "sha256": "39ec977536e3ec104ce6832824016e23f32f144b90e00a66957de70f138335cd"
+    "size": 15376,
+    "sha256": "3bac85ccf1896aded296aa2cdb9ef55770231684430a070cc14030541c892287"
   },
   "helpers/preflight.py": {
     "size": 5777,
@@ -120,12 +128,12 @@
     "sha256": "be8ea652046f49d25a2aa1b3536626a476d1a538bd2a98821ed2a604999a233e"
   },
   "helpers/render_qa.py": {
-    "size": 9355,
-    "sha256": "cca30c8a454057309606f71a8e55fb16e67e03511648d968a6effe64ffffb3f3"
+    "size": 10092,
+    "sha256": "67989134eb7f373169d8e91e2736d765d724394993338ec0b48ec0314a6e1c36"
   },
   "helpers/run.py": {
-    "size": 130723,
-    "sha256": "ab26289d2c9476d0b1d20b452b8ea8ad571d4c929885c64739ac55b7724ab0e7"
+    "size": 133084,
+    "sha256": "d14e946f1f0ed1e24688c2ab3c9f866c769fe11db6cb6fdc7b001e82f36d4057"
   },
   "helpers/seed_geocode.py": {
     "size": 2442,
@@ -144,16 +152,16 @@
     "sha256": "344e9c59b0e137350987e6f8026521b032add620d2fc42d2d8012899e599ffb3"
   },
   "helpers/vision_prep.py": {
-    "size": 11970,
-    "sha256": "bc3a84e06fd7a3a03bd119997e755ab48ef35980037f83cc2ccff13ff0de81bc"
+    "size": 12222,
+    "sha256": "6964d5bb4081284cb3b1c4ae62c7b2fd18521fe34e7620f9d8df018e65cecbdd"
   },
   "helpers/vision_validate.py": {
-    "size": 18128,
-    "sha256": "1634b6641431619fef17d2bc4feba1eeb743451f6b4db1269f73cce69058c632"
+    "size": 18135,
+    "sha256": "e69585526eb26df86a3ca18872a4e5586575d89e8166d95fa46bc2bbdd9248ec"
   },
   "helpers/web_enrich.py": {
-    "size": 40923,
-    "sha256": "dd373aaeb2c365d9102b9654fef9f872045faa318179673d298a29162fb9103f"
+    "size": 41697,
+    "sha256": "1475c1f2d6d149ed6b97935e37d2ab6bbc8850979703223a3d9377eb98f1f4c6"
   },
   "assets/i18n/cs.json": {
     "size": 9548,
@@ -234,6 +242,14 @@
   "assets/cities_dataset.json.gz": {
     "size": 486015,
     "sha256": "193f096e39b607abbd3f5ca36430a8808fd29b2b9b0b071c458326a24264c9cc"
+  },
+  "assets/cities_major_dataset.json.gz": {
+    "size": 14159,
+    "sha256": "0e26f4a09e75803f4370ce3f18fe6898f20b04f5382f481c3fb394466d35cf97"
+  },
+  "assets/borders_dataset.json.gz": {
+    "size": 15863,
+    "sha256": "e9efe12563c636def5e75985347fd669e112c6bfd9628931b735bccefa9b1b15"
   },
   "assets/regions_geo.json.gz": {
     "size": 938241,

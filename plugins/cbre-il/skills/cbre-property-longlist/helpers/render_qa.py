@@ -41,6 +41,17 @@ Preview-MCP procedure (orchestrator runs these; an isolated Sonnet reviewer judg
 """
 
 
+def _is_env_error(text: str) -> bool:
+    """A console error from the OFFLINE environment (map tiles / routing host
+    unreachable, favicon), not a code defect - it must not hard-BLOCK G-visual,
+    matching the tile/OSRM [ENV] allowance elsewhere (audit S6-16)."""
+    t = (text or "").lower()
+    return any(k in t for k in (
+        "tile", "openstreetmap", "osm.org", "osrm", "unpkg", "favicon",
+        "err_internet", "err_network", "err_name_not_resolved", "err_connection",
+        "err_address", "failed to fetch", "net::", "load failed"))
+
+
 def playwright_check(html: Path, out: Path) -> int:
     try:
         from playwright.sync_api import sync_playwright
@@ -77,10 +88,13 @@ def playwright_check(html: Path, out: Path) -> int:
     except Exception as e:
         print(f"(Playwright present but unusable: {type(e).__name__}: {str(e).splitlines()[0][:160]})")
         return -1  # browsers not installed / launch failed -> Preview-MCP path
-    ok = (cards == props) and not errors
-    print(f"[{'PASS' if ok else 'FAIL'}] cards={cards} props={props} consoleErrors={len(errors)}")
-    if errors:
-        for e in errors[:5]:
+    real_errors = [e for e in errors if not _is_env_error(e)]
+    env_errors = [e for e in errors if _is_env_error(e)]
+    ok = (cards == props) and not real_errors
+    print(f"[{'PASS' if ok else 'FAIL'}] cards={cards} props={props} "
+          f"consoleErrors={len(real_errors)} (env-allowed={len(env_errors)})")
+    if real_errors:
+        for e in real_errors[:5]:
             print("   console error:", e)
     print(f"screenshots -> {out}")
     print(f"STATUS: {'ALL-PASS' if ok else 'BLOCKED'}")

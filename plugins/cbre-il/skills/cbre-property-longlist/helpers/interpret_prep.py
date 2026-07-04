@@ -107,7 +107,7 @@ def _pptx_slide_texts(path: Path) -> list[str]:
         from pptx import Presentation
         import extract_pptx as PPTX
         prs = Presentation(str(path))
-        return [PPTX.slide_text(s) for s in prs.slides]
+        return PPTX.slide_texts(prs)   # per-slide guard: one bad slide -> '' not a dead deck (#19)
     except Exception:
         return []
 
@@ -293,6 +293,15 @@ def prepare(path: Path, region: str, country: str, out_dir, dpi: int = 180,
             # byte-identical anyway.
             if (saved.get("key") == cur and entry.get("mode") == "text"
                     and _thumbs_present(entry)):
+                # the page payload + thumbnails are a pure function of the source BYTES and are
+                # reused as-is, but region/country are MANIFEST INPUTS supplied by the caller:
+                # intake can re-cluster a deck to a corrected region on a resume (reference/
+                # config.md), and the stamp key is bytes-only - so refresh them on the reused
+                # entry, or the sub-agent saves the record under the STALE <region>_vision.json
+                # slot (run.py's manifest says 'region EXACTLY as in this manifest'). vision_prep
+                # already rebuilds these fresh every call. (#28/#37)
+                entry["region"] = region
+                entry["country"] = country
                 return entry
     except Exception:
         cur = None

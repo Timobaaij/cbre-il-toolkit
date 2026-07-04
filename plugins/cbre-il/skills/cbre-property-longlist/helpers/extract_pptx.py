@@ -41,6 +41,22 @@ def slide_text(slide) -> str:
     return "\n".join(chunks)
 
 
+def slide_texts(prs) -> list[str]:
+    """Per-slide text for an open Presentation, one string per slide (0-based). A single
+    malformed slide (corrupt shape XML, an unsupported embedded object, a broken picture
+    relationship) yields '' and is logged - it never aborts the deck, so the deck's OTHER
+    slides still route on their own text. Mirrors the per-page guard the PDF path already
+    has (interpret_prep._pdf_page_texts). (#19)"""
+    texts: list[str] = []
+    for i, slide in enumerate(prs.slides):
+        try:
+            texts.append(slide_text(slide))
+        except Exception as e:
+            texts.append("")
+            print(f"(extract_pptx: slide {i + 1} unreadable, skipped: {e})", file=sys.stderr)
+    return texts
+
+
 def slide_hero(slide, budget_kb: int) -> str | None:
     # the most PHOTOGRAPHIC picture on the slide (not merely the largest), so a logo
     # or branded element does not win by area - same scorer as the PDF path

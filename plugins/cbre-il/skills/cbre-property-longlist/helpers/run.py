@@ -273,11 +273,22 @@ def _is_current(out, inputs) -> bool:
     newest_in = 0.0
     for i in inputs:
         ip = Path(i)
-        if ip.exists():
-            try:
+        if not ip.exists():
+            continue
+        try:
+            if ip.is_dir():
+                # a directory input's currency is its NEWEST descendant (recursive): st_mtime
+                # on the dir NODE alone misses an in-place edit of a file AND any change inside
+                # a subfolder (child mtimes do not bubble up), so intake would be wrongly skipped
+                # after such an edit. rglob catches every nested input; intake.discover already
+                # walks recursively, so the stamp now matches what discovery actually reads. (#27)
                 newest_in = max(newest_in, ip.stat().st_mtime)
-            except OSError:
-                return False  # cannot prove currency -> recompute
+                for child in ip.rglob("*"):
+                    newest_in = max(newest_in, child.stat().st_mtime)
+            else:
+                newest_in = max(newest_in, ip.stat().st_mtime)
+        except OSError:
+            return False  # cannot prove currency -> recompute
     return out_m >= newest_in
 
 
@@ -1029,10 +1040,13 @@ def main() -> None:
                         print(f"  ({Path(xl).name}: {bad} - skipped; logged to the Gaps Report)")
     if yield_notes:
         yr = work / "yield_report.md"
-        yr.write_text("# Extraction yield - unmapped tracker columns\n\n"
-                      "Columns the spreadsheet extractor did not map (per sheet). If one of\n"
-                      "these should feed the dashboard, extend extract_xlsx.COLUMN_MAP.\n\n"
-                      + "\n".join(f"- {n}" for n in yield_notes) + "\n", encoding="utf-8")
+        # _write_if_changed: a Gaps sidecar the Stage-7 deliver guard keys on - a byte-identical
+        # rewrite must NOT bump its mtime (else deliver never resumes-skips), but a real change
+        # DOES, so the Gaps Report re-delivers. (#25)
+        _write_if_changed(yr, "# Extraction yield - unmapped tracker columns\n\n"
+                          "Columns the spreadsheet extractor did not map (per sheet). If one of\n"
+                          "these should feed the dashboard, extend extract_xlsx.COLUMN_MAP.\n\n"
+                          + "\n".join(f"- {n}" for n in yield_notes) + "\n")
         if not QUIET:
             for n in yield_notes:
                 print(f"  [yield] {n[:200]}")
@@ -1053,9 +1067,11 @@ def main() -> None:
     except Exception:
         _prior_unreadable = []
     try:
-        (work / "unreadable.json").write_text(
+        # _write_if_changed: an unchanged unreadable-set keeps its mtime so Stage-7 deliver can
+        # resume-skip; a genuinely new/cleared unreadable input bumps it -> Gaps re-delivers. (#25)
+        _write_if_changed(work / "unreadable.json",
             json.dumps([{"file": f, "reason": r} for f, r in unreadable_inputs],
-                       ensure_ascii=False), encoding="utf-8")
+                       ensure_ascii=False))
     except OSError:
         pass
     if unreadable_inputs:
@@ -1282,7 +1298,8 @@ def main() -> None:
         if brochure_descriptions:
             (work / "photo_descriptions.json").write_text(
                 json.dumps(brochure_descriptions, ensure_ascii=False), encoding="utf-8")
-        (work / "photo_doubts.json").write_text(json.dumps(photo_doubts, ensure_ascii=False), encoding="utf-8")
+        # _write_if_changed: a Gaps sidecar the Stage-7 deliver guard keys on (#25)
+        _write_if_changed(work / "photo_doubts.json", json.dumps(photo_doubts, ensure_ascii=False))
 
     # INTERPRETATION MANIFEST (deterministic prep): the text decks are already prepped
     # (interpret_decks); rasterise the textless decks (vision_prep, reused unchanged)
@@ -1415,9 +1432,9 @@ def main() -> None:
             unreadable_inputs.append((f, r)); _seen_un.add(f); _added = True
     if _added:
         try:
-            (work / "unreadable.json").write_text(
+            _write_if_changed(work / "unreadable.json",
                 json.dumps([{"file": f, "reason": r} for f, r in unreadable_inputs],
-                           ensure_ascii=False), encoding="utf-8")
+                           ensure_ascii=False))
         except OSError:
             pass
     # The SEMANTIC VERIFIER's kind:"tracker_verify" jobs are ADVISORY and must NEVER be on
@@ -1522,6 +1539,10 @@ def main() -> None:
         # DEFAULT, so this never fires for a single-source / pure-brochure run, nor when no
         # field genuinely disagrees.
         import merge as _merge
+        # mirror merge.main ordering (compute_file_quality BEFORE dedupe/conflict enumeration):
+        # the file-quality demotion decides the conflict candidate labels + precedence default,
+        # so omitting it made the a/b/c labels map to different values than merge applies (S2-1).
+        _merge.compute_file_quality(_all_recs)
         clusters = _mm.dedupe(_all_recs, md or None)
         conflicts = _merge.conflict_candidates(clusters)
         fd = None
@@ -2085,11 +2106,22 @@ def main() -> None:
             print(f"\nBLOCKED: post-build gate red - not delivering. See {work / 'gate2_scorecard.md'}.")
         sys.exit(7)
 
-    # Stage 7 - deliver
+    # Stage 7 - deliver. Resume guard (mirrors Stage 5): skip only when the primary
+    # deliverable (the dashboard at its CURRENT flag-derived filename) is already newer
+    # than every input deliver reads - built.html, canonical (language/flags are baked into
+    # it by merge), the ledger csv, and the Gaps sidecars. A changed canonical/built/ledger,
+    # or a new output filename (a flag change), fails the check and re-delivers. --no-resume
+    # => _is_current is always False => unchanged behaviour for the byte-identity battery. (#25)
     deliverables = work / "deliverables"
-    call(deliver, "--canonical", canonical, "--html", built,
-         "--ledger", ledger_csv, "--out-dir", deliverables, "--slug", args.client,
-         "--filename", filename)
+    _deliver_inputs = [built, canonical, ledger_csv,
+                       work / "photo_doubts.json", work / "unreadable.json",
+                       work / "yield_report.md"]
+    if _is_current(deliverables / filename, _deliver_inputs):
+        _resumed("deliver")
+    else:
+        call(deliver, "--canonical", canonical, "--html", built,
+             "--ledger", ledger_csv, "--out-dir", deliverables, "--slug", args.client,
+             "--filename", filename)
 
     # PHOTO-MATCH DOUBTS (P0-1): an uncertain brochure<->property pairing ships as a
     # PLACEHOLDER and is surfaced here as an actionable yes/no prompt - the broker

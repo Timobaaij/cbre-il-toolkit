@@ -83,22 +83,28 @@ def compute_kpis(props: list[dict], regions: dict, units: dict | None = None,
     # an honest per-card gap, not a "country") - filter it from the count and the list
     countries = [c for c in distinct("country")
                  if str(c).strip().upper() not in ("??", "TBD", "—", "-", "")]
+    country_set = set(countries)  # #55: derive once, reuse for the count AND the sorted sub-label
     # regions: prefer regionCode, else region label
-    region_codes = [p.get("regionCode") for p in props if p.get("regionCode")]
-    region_labels = [p.get("region") for p in props if p.get("region")]
+    # exclude the unknown-region sentinel ('tbd'/'??') so it never inflates the KPI,
+    # mirroring the countries filter above (audit S5-15)
+    _unk = {"??", "tbd", "—", "-", "", "none"}
+    region_codes = [c for c in (p.get("regionCode") for p in props)
+                    if c and str(c).strip().lower() not in _unk]
+    region_labels = [r for r in (p.get("region") for p in props)
+                     if r and str(r).strip().lower() not in _unk]
     n_regions = len(set(region_codes)) or len(set(region_labels)) or len(regions)
 
     kpis = {
         "kpi_properties": str(len(props)),
-        "kpi_countries": str(len(set(countries))),
+        "kpi_countries": str(len(country_set)),
         "kpi_regions": str(n_regions),
-        "kpi_developers": str(len(set(distinct("developer")))),
+        "kpi_developers": str(len(distinct("developer"))),
         "kpi_wh_area": _fmt_thousands_k(min(areas), max(areas)) if areas else "tbd",
         "kpi_rent": ((f"{cur}{min(rents):g}" if min(rents) == max(rents)
                       else f"{cur}{min(rents):g} - {max(rents):g}") if rents else "tbd"),
         "kpi_wh_area_sub": (ui.get("kpi_wh_area_sub_fmt") or "{area} per building").format(area=area_unit),
         "kpi_rent_sub": (ui.get("kpi_rent_sub_fmt") or "per {unit} / year").format(unit=per),
-        "kpi_countries_sub": " · ".join(sorted(set(countries))) if countries else "tbd",
+        "kpi_countries_sub": " · ".join(sorted(country_set)) if countries else "tbd",
         # ALWAYS static: region labels are often derived from source-file names
         # (intake clustering), so enumerating them leaked filename junk into the
         # hero KPI strip on a real run. The count carries the information.
@@ -110,6 +116,9 @@ def compute_kpis(props: list[dict], regions: dict, units: dict | None = None,
 def render(data: dict, strict: bool = True) -> tuple[str, dict]:
     """Pure substitution: return (html, tokens). No file I/O. Used by both build()
     and gate_runner.py validate-html (which re-runs render and asserts byte-equality)."""
+    if "properties" not in data:
+        raise ValueError("canonical has no 'properties' key - cannot build (a hand-built or "
+                         "truncated canonical? re-run the pipeline to regenerate it) - S5-50")
     props = [C.fill_render_sentinels(dict(p)) for p in data["properties"]]
     pois = data.get("pois", [])
     regions = data.get("regions", {})
@@ -221,7 +230,7 @@ def build(canonical_path: Path, out_path: Path) -> dict:
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(out, encoding="utf-8")
+    C.atomic_write_text(out_path, out)
 
     report = {
         "template_label": version.get("label"),
@@ -232,7 +241,7 @@ def build(canonical_path: Path, out_path: Path) -> dict:
         "config_tokens": tokens,
     }
     report_path = out_path.with_suffix(".build_report.json")
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    C.atomic_write_text(report_path, json.dumps(report, ensure_ascii=False, indent=2))
 
     mb = report["output_bytes"] / (1024 * 1024)
     print(f"OK built {out_path} ({mb:.2f} MB) | "

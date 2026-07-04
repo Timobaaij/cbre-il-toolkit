@@ -113,7 +113,7 @@ MONTHLY_RX = N.MONTHLY_RX
 # rent. Without this gate, "Warehouse\n39 471 sq m" became a €39,471/m² rent and
 # routed whole readable decks to the vision fallback.
 RENT_CONTEXT = re.compile(
-    r"€|\beur\b|\bczk\b|\bhuf\b|\bpln\b|\bron\b|\bgbp\b|£"
+    r"€|\beur(?:os?)?\b|\bczk\b|\bhuf\b|\bpln\b|\bron\b|\bgbp\b|£"
     r"|/\s*(?:m2|m²|sq\.?\s?m\.?|sqm)\b"
     r"|\bpsf\b|(?:/|per)\s*sq\.?\s?ft\b", re.IGNORECASE)
 
@@ -128,7 +128,13 @@ def _parse_rent(raw: str):
     wrong figure). unit is None when nothing was stated (caller's € default)."""
     has_ctx = bool(RENT_CONTEXT.search(raw))
     em = re.search(r"[€£]\s*(" + _NUMTOK + r"+)", raw)
-    num = N.normalize_number(em.group(1)) if em else N.extract_first_number(raw)
+    # a RANGE ("€55 - 60") has no single headline value - the currency-symbol path
+    # bypassed normalize's own range guard and shipped one end as a confident number
+    # (audit S1-9); keep the honest text, ship no number.
+    if N.is_range(re.sub(r"\([^)]*\)", " ", raw)):
+        num = None  # a range in the rent FIGURE ('€55-60'); a date span in parens is stripped first
+    else:
+        num = N.normalize_number(em.group(1)) if em else N.extract_first_number(raw)
     unit = N.rent_unit_of_text(raw)
     monthly = num is not None and bool(MONTHLY_RX.search(raw))
     orig = num
@@ -143,11 +149,26 @@ def _parse_rent(raw: str):
     note = f" ({orig:g}/mo x12)" if (monthly and num is not None) else ""
     return display, num, note, unit
 
+
+def _rent_unit_assumed(raw: str, num) -> bool:
+    """True when a rent number is shipped but the source stated NEITHER a currency
+    NOR a per-area unit - the displayed EUR / sq m is then a house DEFAULT, not the
+    source. Mirrors extract_xlsx: ship the number but flag it ASSUMED for the Gaps
+    Report; never silently invent the currency/unit (audit S1-10)."""
+    return num is not None and not RENT_CONTEXT.search(raw)
+
+
 # one digit/thousands-separator char: digits, '.'/',', and the Unicode spaces
 # PyMuPDF emits for EU grouping (NBSP, thin/narrow/figure/hair space + ASCII).
 # Mirrors normalize._SPACES so "39<NBSP>471" is captured whole, not split into
 # 39 / 471 (which would both fail the >=1000 area filter and drop the size).
 _NUMTOK = r"[\d\u00a0\u2009\u202f\u2007\u200a .,]"
+
+# a SINGLE area number: either space-grouped EU thousands ("25 000", "1 234 567") or
+# a plain / dot / comma number ("40000", "12.500", "131,536"). Unlike the old greedy
+# _NUMTOK run, this does NOT cross a comma-space list separator, so "Unit 5, 25 000"
+# no longer glues into a fabricated 525000 (audit S1-1).
+_AREA_NUM = re.compile(r"\d{1,3}(?:[\u00a0\u2009\u202f\u2007\u200a ]\d{3})+|\d+(?:[.,]\d+)*")
 
 LATLNG = re.compile(r"(-?\d{1,2}\.\d{3,}),\s*(-?\d{1,3}\.\d{3,})")  # -? = western/southern (ES/PT/FR/UK) coords
 PROSE = re.compile(r"(?:(?<=\n)|^)([A-Z][a-z]+\b.{140,})", re.DOTALL)
@@ -165,7 +186,13 @@ def _find_latlng(text: str):
         ls = text.rfind("\n", 0, m.start()) + 1
         le = text.find("\n", m.end())
         line = text[ls:le if le != -1 else len(text)]
-        if re.search(r"(?:sq\.?\s?m|sqm|m2|m²|\bha\b|\bm\b)", line, re.IGNORECASE):
+        # a size/area list ('naves de 12.500, 8.750 ... m2', 'Superficies: 12.500, 8.750') is
+        # NOT coordinates - reject on a size UNIT or a size KEYWORD on the line. A bare plausible
+        # coordinate pair with neither is accepted (it degrades to geocode if wrong, never a
+        # fabricated pin); the trusted first-party pin is the brochure map-link, harvested in
+        # merge. A genuine 3-decimal coordinate (~110 m) must NOT be rejected (audit S1-11 + review).
+        if re.search(r"sq\.?\s?m|sqm|m2|m²|\bha\b|\bm\b|superfic|\bnaves?\b|surface|"
+                     r"\bplot\b|\bsize\b|\bárea\b|\barea\b|dispon", line, re.IGNORECASE):
             continue  # a size list, not coordinates
         return lat, lng
     return None
@@ -192,7 +219,7 @@ def _apply_num(rec: dict, prov: dict, field: str, raw: str, locator: str) -> Non
             prov["divisibleFrom"] = f"{locator} (range)"
         return
     taken = False
-    for m in re.finditer(_NUMTOK + r"*\d", raw):
+    for m in _AREA_NUM.finditer(raw):
         c = N.normalize_number(m.group(0))
         if c is None or c < 1000:
             continue
@@ -431,11 +458,19 @@ def parse_property_page(text: str, park, region: str, country: str,
 # FIRST-PARTY data (the brochure author pinned the site), better than any
 # geocoder and available fully offline. A real Spanish run burned a day on a
 # blocked geocoder while every page carried maps.google.com/?q=lat,lng links.
-_MAPS_URI = re.compile(r"maps\.google|google\.[a-z.]{2,8}/maps|openstreetmap\.org|bing\.com/maps", re.I)
+_MAPS_URI = re.compile(
+    r"maps\.google|google\.[a-z.]{2,8}/maps|goo\.gl/maps|maps\.app\.goo\.gl|"
+    r"openstreetmap\.org|osm\.org|bing\.com/maps|maps\.apple\.com|geo:", re.I)
 _LINK_LL = [
-    re.compile(r"[?&](?:q|query|ll|center|daddr)=(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})"),
+    # destination-of-trip / single-point keys ONLY. saddr (directions START/origin) and sll
+    # (search-viewport centre) are NOT the pinned property and _page_link_coords takes the
+    # LEFTMOST match, so an origin would win over the destination - never accept them.
+    re.compile(r"[?&](?:q|query|ll|center|daddr|destination)="
+               r"(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})"),
     re.compile(r"@(-?\d{1,2}\.\d{3,}),(-?\d{1,3}\.\d{3,})"),
     re.compile(r"!3d(-?\d{1,2}\.\d{3,})!4d(-?\d{1,3}\.\d{3,})"),
+    re.compile(r"/place/(-?\d{1,2}\.\d{3,}),(-?\d{1,3}\.\d{3,})"),
+    re.compile(r"\bgeo:(-?\d{1,2}\.\d{3,}),(-?\d{1,3}\.\d{3,})"),
 ]
 
 
@@ -479,6 +514,79 @@ def _apply_link_coords(doc, pno: int, rec: dict) -> None:
     if uri and not rec.get("mapLink"):
         rec["mapLink"] = uri
         prov["mapLink"] = f"page {pno + 1} (map link)"
+
+
+def _resolve_pdf(source_dir, name):
+    """Locate a record's source PDF under source_dir (source_file is a bare name; inputs may
+    sit in subfolders). Returns a Path or None."""
+    from pathlib import Path
+    base = Path(str(name)).name
+    if not base:
+        return None
+    root = Path(source_dir)
+    direct = root / base
+    if direct.exists():
+        return direct
+    try:
+        matches = sorted(root.rglob(base))   # deterministic regardless of filesystem walk order
+        if matches:
+            return matches[0]
+    except Exception:
+        pass
+    return None
+
+
+def backfill_link_coords(records, source_dir):
+    """Fill lat/lng + mapLink on records from their page's 'click for location' maps
+    hyperlink - the brochure author's OWN pin (first-party, better than any geocoder, fully
+    offline). Runs on records from ANY extractor (interpretation/vision/tracker), recovering
+    the first-party coordinates for the current interpretation record source - the harvest
+    used to live only in the deprecated own-line path (bug #D). A record already carrying a
+    NUMERIC coord AND a mapLink is left untouched. No-op without fitz or a resolvable PDF; it
+    never invents - a link with no parseable lat/lng still ships its URL as mapLink and the
+    coord stays a gap for geocode (a short goo.gl link needs a network resolve)."""
+    try:
+        import fitz  # noqa: F401
+    except Exception:
+        return records
+
+    def _num(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    by_file: dict = {}
+    for r in records:
+        m = r.get("__meta") or {}
+        if m.get("source_type") != "pdf":
+            continue
+        if _num(r.get("lat")) and r.get("mapLink"):
+            continue  # already has a first-party pin + link
+        pno, sf = m.get("page_no"), m.get("source_file")
+        if not isinstance(pno, int) or not sf:
+            continue
+        by_file.setdefault(str(sf), []).append((pno, r))
+    for sf, items in by_file.items():
+        path = _resolve_pdf(source_dir, sf)
+        if not path:
+            continue
+        try:
+            doc = fitz.open(str(path))
+        except Exception:
+            continue
+        try:
+            for pno, r in items:
+                if not (0 <= pno < doc.page_count):
+                    continue
+                ll, uri = _page_link_coords(doc[pno])
+                prov = r.setdefault("__meta", {}).setdefault("prov", {})
+                if ll and not _num(r.get("lat")):
+                    r["lat"], r["lng"] = ll[0], ll[1]
+                    prov["lat"] = prov["lng"] = f"page {pno + 1} (map link)"
+                if uri and not r.get("mapLink"):
+                    r["mapLink"] = uri
+                    prov["mapLink"] = f"page {pno + 1} (map link)"
+        finally:
+            doc.close()
+    return records
 
 
 def _is_toc_page(text: str, toc_names: list[str]) -> bool:

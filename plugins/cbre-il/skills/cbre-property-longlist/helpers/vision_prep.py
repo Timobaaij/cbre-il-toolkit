@@ -161,7 +161,7 @@ def prepare(path: Path, region: str, country: str, out_dir, dpi: int = 180,
             from pptx import Presentation
             import extract_pptx as PPTX
             prs = Presentation(str(path))
-            slide_texts = [PPTX.slide_text(s) for s in prs.slides]
+            slide_texts = PPTX.slide_texts(prs)   # one bad slide -> '' (prs kept), not a dead deck (#19)
         except Exception:
             prs = None
         # PREFERRED tier: LibreOffice renders the deck to PDF (slides map 1:1 to
@@ -202,7 +202,9 @@ def prepare(path: Path, region: str, country: str, out_dir, dpi: int = 180,
                     "country": country, "pages": [],
                     "note": "python-pptx unavailable and no LibreOffice - cannot rasterise pptx"}
         for i, slide in enumerate(prs.slides):
-            if not force and not _needs_vision(PPTX.slide_text(slide)):
+            # reuse the already-harvested per-slide texts (guarded); a bad slide's '' reads
+            # as needs-vision, so it still rasterises rather than raising out of prepare() (#19)
+            if not force and not _needs_vision(slide_texts[i] if i < len(slide_texts) else ""):
                 continue
             img = _largest_slide_picture(slide)
             if img is None:

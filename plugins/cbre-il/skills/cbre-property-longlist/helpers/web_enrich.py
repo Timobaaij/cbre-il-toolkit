@@ -367,9 +367,21 @@ def _chain_spec(canonical: dict, args) -> dict:
     if ds:
         pois += [{"type": q["type"], "lat": q["lat"], "lng": q["lng"]}
                  for q in ds.get("pois", []) if q.get("type") in ("air", "port", "rail")]
-    pois += [{"type": q.get("type"), "lat": q.get("lat"), "lng": q.get("lng")}
-             for q in E._poi_lib().get("pois", [])
-             if q.get("type") in ("border", "city") and isinstance(q.get("lat"), (int, float))]
+    bd = E._borders_dataset()
+    if bd:  # complete border set (the page picks nearest-of-type, so a full candidate set is fine)
+        pois += [{"type": "border", "lat": q["lat"], "lng": q["lng"]}
+                 for q in bd.get("pois", []) if isinstance(q.get("lat"), (int, float))]
+    cm = E._cities_major_dataset()
+    if cm:  # complete >=100k city set
+        pois += [{"type": "city", "lat": c["lat"], "lng": c["lng"]}
+                 for c in cm.get("cities", []) if isinstance(c.get("lat"), (int, float))]
+    # outage fallback: source any type whose COMPLETE dataset is absent from the curated library
+    _need = (({"air", "port", "rail"} if not ds else set())
+             | ({"border"} if not bd else set()) | ({"city"} if not cm else set()))
+    if _need:
+        pois += [{"type": q.get("type"), "lat": q.get("lat"), "lng": q.get("lng")}
+                 for q in E._poi_lib().get("pois", [])
+                 if q.get("type") in _need and isinstance(q.get("lat"), (int, float))]
     return {
         "do_routes": bool(args.osrm),
         "properties": props, "pois": pois, "caps": E.POI_MAX_KM,

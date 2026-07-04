@@ -90,6 +90,10 @@ def main() -> None:
     ap.add_argument("--html", required=True)
     ap.add_argument("--deliverables", required=True)
     ap.add_argument("--reviews")
+    ap.add_argument("--requested",
+                    help="comma-separated enrichment layers the broker requested "
+                         "(geocode,pois,osrm,regions) - runs the enrichment gate even if the run "
+                         "crashed before stamping meta.enrichment (the P2-9 ship backstop)")
     ap.add_argument("--no-reviews", action="store_true",
                     help="acknowledge DEGRADED mode: ship without the isolated judgement reviewers")
     args = ap.parse_args()
@@ -105,8 +109,12 @@ def main() -> None:
         gate("validate-html", args.html, "--canonical", args.canonical),
         gate("reconcile", args.html, "--canonical", args.canonical),
     ]
-    if any(enr.get(k) for k in ("geocode", "pois", "osrm", "regions")):
-        checks.append(gate("enrichment", args.canonical))
+    requested = [s.strip() for s in (args.requested or "").split(",") if s.strip()]
+    if requested or any(enr.get(k) for k in ("geocode", "pois", "osrm", "regions")):
+        # run the enrichment gate when enrichment was REQUESTED (even if the run crashed
+        # before stamping meta.enrichment) OR when it was stamped done (audit S7-18)
+        checks.append(gate("enrichment", args.canonical,
+                           *(["--requested", ",".join(requested)] if requested else [])))
     # The artefact the parallel reviewers judged must be byte-identical to its
     # freeze snapshot; in the reviewed path that also makes a second validate-data
     # redundant (it already passed pre-build on these exact bytes). In acknowledged
@@ -118,13 +126,20 @@ def main() -> None:
 
     print("Deliverables present:")
     dpath = Path(args.deliverables)
-    have_html = any(dpath.glob("*.html"))
-    have_ledger = any(dpath.glob("*_Source_Ledger.*"))
-    have_gaps = any(dpath.glob("*_Gaps_Report.md"))
+
+    def _present(pattern, min_bytes=1):
+        # non-empty AND not a half-written .tmp - a truncated / stub file must not pass
+        return any(p.suffix != ".tmp" and p.stat().st_size >= min_bytes
+                   for p in dpath.glob(pattern))
+
+    have_html = _present("*.html", 5000)      # a real dashboard is large; a stub is not
+    have_ledger = _present("*_Source_Ledger.*")
+    have_gaps = _present("*_Gaps_Report.md")
+    have_longlist = _present("*_Longlist.*")   # the flat broker table was never checked
     for name, ok in [("dashboard .html", have_html), ("Source Ledger", have_ledger),
-                     ("Gaps Report", have_gaps)]:
+                     ("Gaps Report", have_gaps), ("Longlist", have_longlist)]:
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}")
-    checks += [have_html, have_ledger, have_gaps]
+    checks += [have_html, have_ledger, have_gaps, have_longlist]
 
     print("Judgement verdicts (isolated reviewers):")
     rpath = Path(args.reviews) if args.reviews else None

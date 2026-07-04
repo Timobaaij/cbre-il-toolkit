@@ -112,7 +112,7 @@ def _load_page_texts(src: Path) -> list[str]:
         if src.suffix.lower() == ".pptx":
             from pptx import Presentation
             import extract_pptx as PPTX
-            return [PPTX.slide_text(s) for s in Presentation(str(src)).slides]
+            return PPTX.slide_texts(Presentation(str(src)))   # per-slide guard (#19)
         try:
             import fitz
         except Exception:

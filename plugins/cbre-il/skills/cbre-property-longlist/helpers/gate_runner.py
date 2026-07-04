@@ -25,11 +25,13 @@ import argparse
 import json
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _common as C
 import build_dashboard
+import normalize as N
 
 
 def _ok(msg): print(f"[PASS] {msg}")
@@ -58,17 +60,20 @@ def cmd_validate_data(args) -> int:
     for p in data.get("properties", []):
         rent, val = p.get("warehouseRent"), p.get("warehouseRentVal")
         if isinstance(val, (int, float)) and isinstance(rent, str):
-            digits = re.findall(r"\d+(?:\.\d+)?", rent.replace(" ", ""))
-            if digits and abs(float(digits[0]) - float(val)) > 0.5:
+            # parse the FULL first number (separator/decimal aware), not the first digit run:
+            # findall[0] misread thousands/ranges ('€1,234' -> '1') and false-flagged (S4-46)
+            got = N.extract_first_number(rent)
+            if got is not None and abs(got - float(val)) > 0.5:
                 errs.append(f"property id={p.get('id')}: warehouseRentVal {val} "
                             f"does not match warehouseRent '{rent}' - warehouseRentVal must be the "
                             f"ANNUAL per-area figure shown in warehouseRent (in its own convention, "
                             f"€/m² or £/sq ft; annualise a monthly quote x12)")
 
-    # unique ids
+    # unique ids (single-pass Counter, not O(n^2) ids.count per element - #32)
     ids = [p.get("id") for p in data.get("properties", [])]
     if len(ids) != len(set(ids)):
-        errs.append(f"duplicate property ids: {[i for i in ids if ids.count(i) > 1]}")
+        _id_counts = Counter(ids)
+        errs.append(f"duplicate property ids: {[i for i in ids if _id_counts[i] > 1]}")
 
     # regionCode resolves
     regions = data.get("regions", {})
@@ -111,6 +116,16 @@ def cmd_self_check(args) -> int:
         import i18n as _I18N
         if not getattr(_I18N, "EN", None):
             issues.append("i18n.EN is empty (the English chrome baseline must be non-empty)")
+        else:
+            # KPI-sub format keys are .format()'d by build_dashboard.compute_kpis; a dropped
+            # {area}/{unit} placeholder does NOT raise (str.format tolerates unused kwargs) -
+            # it silently emits a sub with the value missing. Guard the EN baseline here so
+            # the drift is caught PRE-build, not shipped. (#33)
+            for _k, _ph in (("kpi_wh_area_sub_fmt", "{area}"), ("kpi_rent_sub_fmt", "{unit}")):
+                if _ph not in str(_I18N.EN.get(_k, "")):
+                    issues.append(f"i18n.EN['{_k}'] lost its {_ph} placeholder "
+                                  f"(compute_kpis .format()s it; a dropped placeholder silently "
+                                  f"emits a KPI sub with the value missing)")
     except Exception as e:
         issues.append(f"i18n import failed: {e}")
     # schema loads and is well-formed
@@ -215,16 +230,20 @@ def cmd_validate_html(args) -> int:
         issues.append(f"chrome drift: output != render(canonical) at offset {i}\n"
                       f"   expected: ...{ctx_e!r}...\n   actual:   ...{ctx_a!r}...")
 
-    # three blocks present and JSON round-trippable
-    for name in ("PROPS", "POIS", "REGIONS"):
-        m = re.search(rf"const {name} = (.*?);(?:\n|$)", actual, re.DOTALL)
-        if not m:
-            issues.append(f"data block const {name} not found")
-            continue
-        try:
-            json.loads(m.group(1))
-        except Exception as e:
-            issues.append(f"const {name} not valid JSON: {e}")
+        # three blocks present and JSON round-trippable - only worth checking when the bytes
+        # DIVERGE (as a clearer diagnostic). On a byte-identical pass, render() produced these
+        # blocks from the loaded canonical, so they are provably present + valid and this
+        # multi-MB re-parse is redundant (S6-8). The byte-equality above, and the </script>-count
+        # and chrome-SHA guards below, stay UNCONDITIONAL - the byte-identity floor is untouched.
+        for name in ("PROPS", "POIS", "REGIONS"):
+            m = re.search(rf"const {name} = (.*?);(?:\n|$)", actual, re.DOTALL)
+            if not m:
+                issues.append(f"data block const {name} not found")
+                continue
+            try:
+                json.loads(m.group(1))
+            except Exception as e:
+                issues.append(f"const {name} not valid JSON: {e}")
 
     # injection safety: data is escaped at build, so the delivered file must carry
     # exactly the template's <script> tags - an extra one means a </script> breakout
@@ -235,7 +254,10 @@ def cmd_validate_html(args) -> int:
     import hashlib
     tmpl_sha = hashlib.sha256(C.load_template().encode("utf-8")).hexdigest()
     ver = C.load_version().get("chrome_sha256")
-    if ver and tmpl_sha != ver:
+    if not ver:
+        issues.append("VERSION carries no chrome_sha256 - the template-edit guard is DISABLED; "
+                      "record the chrome hash (make_integrity / version bump) - S6-47")
+    elif tmpl_sha != ver:
         issues.append(f"template SHA {tmpl_sha[:12]} != VERSION {ver[:12]} (template edited without re-versioning)")
 
     if issues:
@@ -261,10 +283,17 @@ def cmd_reconcile(args) -> int:
         issues.append(f"id mismatch HTML vs canonical: only-html={html_ids - canon_ids}, "
                       f"only-canon={canon_ids - html_ids}")
 
-    # KPI: properties count appears in the rendered hero
-    _, tokens = build_dashboard.render(data)
-    if f'<div class="kpi-value">{tokens["kpi_properties"]}</div>' not in html:
-        issues.append(f"hero KPI properties ({tokens['kpi_properties']}) not found in HTML")
+    # KPI: properties count appears in the rendered hero. kpi_properties is a pure
+    # function of the property list (build_dashboard.compute_kpis -> str(len(props)));
+    # compute it directly instead of a SECOND full render() of the (multi-MB) canonical
+    # here - validate-html already re-runs the real render(canonical) as the byte-identity
+    # floor, so this gate need not repeat it (#24/#34). compute_kpis is the same function
+    # render() calls for this token, so the value is byte-identical.
+    props = [C.fill_render_sentinels(dict(p)) for p in data["properties"]]
+    kpi_props = build_dashboard.compute_kpis(
+        props, data.get("regions", {}), (data.get("meta") or {}).get("units"))["kpi_properties"]
+    if f'<div class="kpi-value">{kpi_props}</div>' not in html:
+        issues.append(f"hero KPI properties ({kpi_props}) not found in HTML")
 
     if issues:
         for i in issues:
@@ -286,7 +315,7 @@ def cmd_reconcile(args) -> int:
 # Invariants that legitimately stay English/verbatim in EVERY language, so a key whose
 # EN value is ONE of these (or is empty) is excluded from the silent-fallback "must
 # differ from EN" share - translating them would be wrong, not missing.
-_I18N_INVARIANT_VALUES = {"%", "tbc", "reit", "pps", "% eu27", " min", ""}
+_I18N_INVARIANT_VALUES = {"%", "tbc", "reit", "pps", "% eu27", "min", ""}
 
 
 def _parse_const_obj(html: str, name: str):
@@ -361,7 +390,10 @@ def cmd_i18n(args) -> int:
         # the locale's primary subtag should match the resolved language code (e.g.
         # 'de-DE' for de). An explicit meta.locale (de-AT) still shares the primary subtag.
         prim = locale.split("-")[0].lower()
-        if prim != code:
+        # an EXPLICIT meta.locale is a deliberate regional override whose primary subtag may
+        # legitimately differ from the resolved language code (e.g. a fallback BCP-47) - S6-48
+        explicit_locale = bool(str(meta.get("locale") or "").strip())
+        if prim != code and not explicit_locale:
             issues.append(f"const LOCALE {locale!r} primary subtag {prim!r} != resolved "
                           f"language code {code!r}")
 
@@ -417,10 +449,15 @@ def cmd_trace_coverage(args) -> int:
                 traced.add((str(row.get("property_id")), row.get("field")))
 
     def is_sentinel(v):
-        return v is None or str(v).strip().lower() in {"tbd", "—", "", "none"}
+        return v is None or str(v).strip().lower() in {"tbd", "—", "", "none", "??", "?"}
 
     # fields a real source must back; excludes structural/derived/enriched keys
-    check = set(C.STRING_FIELDS) | {"warehouseArea", "warehouseRentVal", "plotArea"}
+    # identity fields (developer/city/park/country) must trace to a source too - a
+    # fabricated identity is as damaging as a fabricated spec (audit S4-14); a
+    # gap-documented unknown (e.g. country '??') is a sentinel, skipped above.
+    check = (set(C.STRING_FIELDS)
+             | {"warehouseArea", "warehouseRentVal", "plotArea",
+                "developer", "city", "park", "country"})
     issues = []
     for p in data.get("properties", []):
         pid = str(p.get("id"))
@@ -588,7 +625,7 @@ def cmd_freeze(args) -> int:
             print("STATUS: BLOCKED"); return 1
         _ok(f"{p.name} byte-identical to freeze ({sha[:12]}) - all reviewers saw the same artefact")
         print("STATUS: ALL-PASS"); return 0
-    side.write_text(sha, encoding="utf-8")
+    C.atomic_write_text(side, sha)
     # ALWAYS refresh the photo-stripped reviewer twin to match the bytes just frozen,
     # so a re-freeze after an out-of-band data fix can never leave the DATA reviewers
     # reading a stale canonical_review.json (the wasted duplicate-review-round bug).

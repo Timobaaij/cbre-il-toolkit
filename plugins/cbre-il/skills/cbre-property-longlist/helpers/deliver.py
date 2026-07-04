@@ -18,8 +18,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
+
+import _common as C
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -238,15 +241,19 @@ def longlist_xlsx(canonical: dict, out_path: Path) -> None:
         for i, (key, _h) in enumerate(LONGLIST_COLUMNS, start=1):
             ws.column_dimensions[get_column_letter(i)].width = (
                 30 if key in _WIDE else 8 if key == "id" else 16)
-        wb.save(out)
+        tmp = out.with_suffix(out.suffix + ".tmp")
+        wb.save(tmp)
+        os.replace(tmp, out)
         print(f"OK Longlist -> {out} ({len(rows)} properties x {len(headers)} fields)")
     except Exception as e:
         import csv as _csv
         fallback = out.with_suffix(".csv")
-        with open(fallback, "w", newline="", encoding="utf-8") as fh:
+        tmp = fallback.with_suffix(fallback.suffix + ".tmp")
+        with open(tmp, "w", newline="", encoding="utf-8") as fh:
             w = _csv.writer(fh)
             w.writerow(headers)
             w.writerows(rows)
+        os.replace(tmp, fallback)
         print(f"NOTE openpyxl unavailable ({e}); wrote CSV fallback -> {fallback}")
 
 
@@ -266,8 +273,11 @@ def main() -> None:
 
     # 1. html
     fname = args.filename or f"CBRE_Property_Dashboard_{args.slug}.html"
-    shutil.copyfile(args.html, out / fname)
-    print(f"OK dashboard -> {out / fname}")
+    dst = out / fname
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    shutil.copyfile(args.html, tmp)
+    os.replace(tmp, dst)
+    print(f"OK dashboard -> {dst}")
 
     # 2. ledger - exported IN-PROCESS (same interpreter, no subprocess) so it cannot
     # silently fail on a sandbox where sys.executable can't be re-invoked; the spine
@@ -283,9 +293,8 @@ def main() -> None:
 
     # 3. gaps report (the work dir = the canonical's folder; yield_report.md lives there)
     gaps = out / f"{args.slug}_Gaps_Report.md"
-    gaps.write_text(gaps_report(canonical, args.slug,
-                                work_dir=Path(args.canonical).resolve().parent),
-                    encoding="utf-8")
+    C.atomic_write_text(gaps, gaps_report(canonical, args.slug,
+                                          work_dir=Path(args.canonical).resolve().parent))
     print(f"OK gaps report -> {gaps}")
 
     # 4. flat longlist workbook (one property per row, variables in columns) - a

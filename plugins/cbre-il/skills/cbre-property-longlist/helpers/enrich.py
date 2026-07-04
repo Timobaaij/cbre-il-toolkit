@@ -91,13 +91,17 @@ def _coords_cc(val):
 
 
 def _cache_lookup(cache: dict, city: str, country: str):
-    """Find a cached geocode for this city: exact 'city|country' key first, then any
-    entry for the same city under a different/unknown country - so a cache the
-    orchestrator seeded online as 'city|es' is still found when the property's
-    country is still '??' (the sandbox-offline / WebFetch pattern)."""
+    """Find a cached geocode for this city: exact 'city|country' key first. The cross-country
+    prefix fallback (any entry for the same city under a DIFFERENT/unknown country) is taken
+    ONLY when this property's country is itself UNKNOWN - so a cache the orchestrator seeded
+    online as 'city|es' is still found when the property is still '??' (the sandbox-offline /
+    WebFetch pattern), but a KNOWN country never adopts a wrong-country cache entry
+    (bug #5: 'Toledo|ES' must not resolve to a cached 'Toledo|US')."""
     hit = cache.get(f"{city}|{country}".lower())
     if hit is not None:
         return _coords_cc(hit)
+    if not _is_unknown_cc(country):
+        return None, ""          # KNOWN country + exact miss -> honest miss, never cross-country
     pref = f"{city.strip().lower()}|"
     for k, v in cache.items():
         if k.startswith(pref):
@@ -152,11 +156,43 @@ def _poi_dataset():
     return _DATASET or None
 
 
-def _nearest_from_dataset(lat: float, lng: float, dataset: dict) -> dict:
-    """The genuine nearest air/port/rail facility from the complete dataset,
-    capped by POI_MAX_KM (past the cap we honestly give up)."""
+_BORDERS: dict | bool | None = None  # None = not loaded; False = absent (tests may pin)
+
+
+def _borders_dataset():
+    """The bundled COMPLETE European border-crossing dataset (assets/borders_dataset.json.gz,
+    built by helpers/build_borders_dataset.py from OSM barrier=border_control). With complete
+    coverage, nearest-of-this-set IS the genuine nearest crossing - no live Overpass needed."""
+    global _BORDERS
+    if _BORDERS is None:
+        d = _load_asset_json("borders_dataset")
+        _BORDERS = d if (d and d.get("pois")) else False
+    return _BORDERS or None
+
+
+_CITY_DATASET: dict | bool | None = None  # None = not loaded; False = absent (tests may pin)
+
+
+def _cities_major_dataset():
+    """The bundled COMPLETE-coverage >=100k European city dataset
+    (assets/cities_major_dataset.json.gz, built by helpers/build_cities_major_dataset.py).
+    With complete coverage, nearest-of-this-set IS the genuine nearest major city, so the
+    curated poi_library city role is retired. None when the asset is absent."""
+    global _CITY_DATASET
+    if _CITY_DATASET is None:
+        d = _load_asset_json("cities_major_dataset")
+        _CITY_DATASET = d if (d and d.get("cities")) else False
+    return _CITY_DATASET or None
+
+
+def _nearest_from_dataset(lat: float, lng: float, dataset: dict | None,
+                          borders: dict | None = None, cities: dict | None = None) -> dict:
+    """The genuine nearest air/port/rail facility from the complete POI dataset, the nearest
+    border crossing from the complete borders dataset, and the nearest >=100k city from the
+    complete cities-major dataset - each capped by POI_MAX_KM (past the cap we honestly give
+    up). All three are COMPLETE sets, so nearest-of-set IS the genuine nearest."""
     found: dict = {}
-    for q in dataset.get("pois", []):
+    for q in (dataset or {}).get("pois", []):
         t = q.get("type")
         if t not in ("air", "port", "rail"):
             continue
@@ -166,6 +202,26 @@ def _nearest_from_dataset(lat: float, lng: float, dataset: dict) -> dict:
         if t not in found or km < found[t]["km"]:
             found[t] = {"name": q["name"], "type": t, "lat": q["lat"], "lng": q["lng"],
                         "km": round(km, 1), "dataset": True}
+    for q in (borders or {}).get("pois", []):
+        km = _haversine_km(lat, lng, q["lat"], q["lng"])
+        if km > POI_MAX_KM.get("border", 400):
+            continue
+        if "border" not in found or km < found["border"]["km"]:
+            rec = {"name": q["name"], "type": "border", "lat": q["lat"], "lng": q["lng"],
+                   "km": round(km, 1), "dataset": True}
+            if q.get("country"):
+                rec["country"] = q["country"]
+            if q.get("crossingOf"):
+                rec["crossingOf"] = q["crossingOf"]
+            found["border"] = rec
+    for c in (cities or {}).get("cities", []):
+        km = _haversine_km(lat, lng, c["lat"], c["lng"])
+        if km > POI_MAX_KM.get("city", 300):
+            continue
+        if "city" not in found or km < found["city"]["km"]:
+            found["city"] = {"name": c["name"], "type": "city", "lat": c["lat"],
+                             "lng": c["lng"], "km": round(km, 1), "dataset": True,
+                             "country": c.get("country", ""), "population": c.get("population")}
     return found
 
 
@@ -201,11 +257,13 @@ def _update_ledger(ledger_path: Path, updates: list[dict]) -> None:
         else:
             index[key] = len(rows)
             rows.append(u)
-    with open(ledger_path, "w", newline="", encoding="utf-8") as fh:
-        w = csv.DictWriter(fh, fieldnames=L.COLUMNS)
-        w.writeheader()
-        for r in rows:
-            w.writerow({c: r.get(c, "") for c in L.COLUMNS})
+    import io as _io
+    buf = _io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=L.COLUMNS, lineterminator="\n")
+    w.writeheader()
+    for r in rows:
+        w.writerow({c: r.get(c, "") for c in L.COLUMNS})
+    C.atomic_write_text(ledger_path, buf.getvalue())  # atomic + LF, resume-safe (review #2)
 
 
 def _is_unknown_cc(v) -> bool:
@@ -237,6 +295,7 @@ def _reverse_cc(requests, lat, lng) -> str:
 
 
 _GAZETTEER: dict | bool | None = None  # None = not loaded; False = absent (tests may pin)
+_GAZETTEER_MULTI: dict | None = None   # norm_name -> frozenset of CCs, for names in >1 country
 
 
 def _gazetteer():
@@ -251,11 +310,31 @@ def _gazetteer():
     return _GAZETTEER or None
 
 
-def _gazetteer_lookup(city, country):
+def _gazetteer_multi() -> dict:
+    """{norm_name -> frozenset(CC, ...)} for every city name the gazetteer carries under MORE
+    THAN ONE country (e.g. 'halle'->{DE,BE}, 'rochefort'->{BE,FR}). Derived once from the
+    existing 'cities' keys - the shipped asset is unchanged, no rebuild. Lets the lookup detect
+    that a bare name is AMBIGUOUS and refuse the pre-baked by_name pick unless a country (real
+    or dataset-dominant) selects a specific candidate. Empty when there is no gazetteer."""
+    global _GAZETTEER_MULTI
+    if _GAZETTEER_MULTI is None:
+        ds = _gazetteer()
+        acc: dict = {}
+        for key in (ds or {}).get("cities", {}):
+            nm, _, cc = key.rpartition("|")
+            if nm and cc:
+                acc.setdefault(nm, set()).add(cc.upper())
+        _GAZETTEER_MULTI = {nm: frozenset(ccs) for nm, ccs in acc.items() if len(ccs) > 1}
+    return _GAZETTEER_MULTI
+
+
+def _gazetteer_lookup(city, country, dominant=""):
     """([lat, lng], 'CC') for a European city from the bundled gazetteer, or (None, '').
-    A known country (ISO-2) disambiguates same-named cities; without it the highest-
-    population city of that name wins (the dominant-country PASS B still re-checks a far
-    outlier upstream). Real city coordinates - never invented, never a guess."""
+    A known country (ISO-2) disambiguates same-named cities exactly. Without a known country:
+    if the name is UNIQUE in the gazetteer we return it; if it exists in MORE THAN ONE country
+    we return it ONLY when a dataset-`dominant` country (the mode of the already-located
+    cluster) has a real entry for that name - otherwise (None, '') so the caller leaves an
+    honest tbd+gap. Real city coordinates - never invented, never a silent guess."""
     ds = _gazetteer()
     if not ds:
         return None, ""
@@ -263,12 +342,25 @@ def _gazetteer_lookup(city, country):
     nm = _N._norm_city(city)
     if not nm:
         return None, ""
+    cities = ds.get("cities", {})
     cc = "" if _is_unknown_cc(country) else (_N.country_iso(str(country).strip()) or "").upper()
     if cc:
-        ll = ds.get("cities", {}).get(f"{nm}|{cc}")
+        ll = cities.get(f"{nm}|{cc}")
         if ll:
             return [ll[0], ll[1]], cc
-    ent = ds.get("by_name", {}).get(nm)
+        # a KNOWN country with NO entry for this name is NOT a licence to fall back to a
+        # different-country pick (that is bug #3 / #5): refuse rather than mislocate.
+        return None, ""
+    multi = _gazetteer_multi()
+    if nm in multi:
+        # ambiguous bare name: only resolvable via the dataset-dominant country
+        dcc = (_N.country_iso(str(dominant).strip()) or "").upper() if dominant else ""
+        if dcc and dcc in multi[nm]:
+            ll = cities.get(f"{nm}|{dcc}")
+            if ll:
+                return [ll[0], ll[1]], dcc
+        return None, ""            # ambiguous & no dominant match -> honest miss
+    ent = ds.get("by_name", {}).get(nm)   # UNIQUE name: the single pick IS unambiguous
     if ent and ent.get("ll"):
         return [ent["ll"][0], ent["ll"][1]], ent.get("cc", "")
     return None, ""
@@ -282,6 +374,7 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
     that country. Mode-based - no hardcoded country, works for any geography."""
     import requests
     import statistics
+    import normalize as _NN
     from collections import Counter
     cache = _load_cache(GEOCODE_CACHE)
     lib = _poi_lib()
@@ -291,32 +384,39 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
     todo = [p for p in props
             if not (isinstance(p.get("lat"), (int, float)) and isinstance(p.get("lng"), (int, float)))]
 
-    # PASS A: resolve each (cached, or city-only when the country is unknown).
-    # In Cowork the helper-side network is dead BY DESIGN (the orchestrator seeds
-    # the cache via seed_geocode.py instead), so the first network failure
-    # circuit-breaks: cache hits still serve, but we never burn timeout x N cities.
+    # PASS A: resolve each UNAMBIGUOUS city (cached, or a unique-name gazetteer/network hit).
+    # An AMBIGUOUS bare name (same name in >1 country, unknown country) MISSES here - the
+    # ambiguity-aware _gazetteer_lookup returns nothing without a dominant country - and is
+    # DEFERRED to the dominant-country PASS B, never resolved to a pre-baked wrong-country
+    # pick (bug #3). In Cowork the helper-side network is dead BY DESIGN (the orchestrator
+    # seeds the cache via seed_geocode.py); the first network failure circuit-breaks.
     dead = False
-    res = {}  # id(p) -> [latlng, cc, known, city, country]
+    res = {}  # id(p) -> [latlng, cc, known, city, country, source]
     for p in todo:
         city = str(p.get("city", "")).strip()
         country = str(p.get("country", "")).strip()
         known = not _is_unknown_cc(country)
         latlng, cc = _cache_lookup(cache, city, country)
+        src = "cache" if latlng is not None else ""
         # OFFLINE FIRST: the bundled European city gazetteer resolves real city coordinates
         # (+ country) with ZERO network, so the map works in Cowork without the exit-8
         # round-trip; the browser handoff is reserved strictly for live ROUTING.
         if latlng is None and city and not _is_unknown_cc(city):
             gll, gcc = _gazetteer_lookup(city, country)
             if gll:
-                latlng, cc = gll, (gcc or cc)
+                latlng, cc, src = gll, (gcc or cc), "gazetteer"
                 cache[f"{city}|{country}".lower()] = {"latlng": latlng, "cc": cc}
                 dirty = True
-        # never geocode a sentinel/placeholder city ('tbd', '??') - it would land a
-        # bogus pin; leave it as an honest gap instead
-        if latlng is None and city and not _is_unknown_cc(city) and not dead:
+        # never geocode a sentinel/placeholder city ('tbd', '??') - it would land a bogus
+        # pin. An AMBIGUOUS unknown-country name is NOT network-queried here either (a global
+        # Nominatim guess would re-introduce bug #3) - it is deferred to the dominant-country
+        # PASS B. Unique names and known countries still resolve live.
+        ambiguous = (not known) and bool(city) and (_NN._norm_city(city) in _gazetteer_multi())
+        if latlng is None and city and not _is_unknown_cc(city) and not dead and not ambiguous:
             try:
                 latlng, cc = _geocode_one(requests, city, country if known else "")
                 if latlng:
+                    src = "nominatim"
                     cache[f"{city}|{country}".lower()] = {"latlng": latlng, "cc": cc}
                     dirty = True
                     _save_cache(GEOCODE_CACHE, cache)  # incremental - a kill keeps progress
@@ -333,9 +433,9 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
                 print(f"NOTE {msg}")
             finally:
                 time.sleep(1.1)  # Nominatim usage policy - also on the failure path
-        res[id(p)] = [latlng, cc, known, city, country]
+        res[id(p)] = [latlng, cc, known, city, country, src]
 
-    # dataset-dominant country = mode of the well-clustered points (robust median centroid)
+    # dataset-dominant country = mode of the well-clustered located points (robust median).
     pts = [(ll, cc) for ll, cc, *_ in res.values() if ll and ll[0] is not None]
     med_lat = statistics.median([ll[0] for ll, _ in pts]) if pts else None
     med_lng = statistics.median([ll[1] for ll, _ in pts]) if pts else None
@@ -343,15 +443,69 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
             and _haversine_km(ll[0], ll[1], med_lat, med_lng) < 1000]
     dominant = Counter(near).most_common(1)[0][0] if near else ""
 
-    # PASS B: an unknown-country point >2000 km from the cluster is almost certainly a
-    # wrong same-name hit on another continent. Re-query within the dominant country
-    # when the network is live; whenever it cannot be CORRECTED (offline, the re-query
-    # raised, or no in-country match) emit an HONEST gap so a wrong-continent pin never
-    # ships silently (P2-8). One gap per outlier - corrected OR flagged, never both.
+    # PASS B: resolve every STILL-unresolved property. For an unknown-country bare name we
+    # constrain to the dataset-dominant country OFFLINE (the gazetteer carries the per-country
+    # key), so an ambiguous name lands in the RIGHT country or stays tbd - NEVER a pre-baked
+    # wrong-country pick (bug #3). Only a genuinely unresolvable name hits the network, and
+    # only when it is live; otherwise it is left as an honest gap (no invented pin).
+    for p in todo:
+        r = res[id(p)]
+        latlng, cc, known, city, country, src = r
+        if latlng and latlng[0] is not None:
+            continue  # already resolved in PASS A (cache / unique-name gazetteer / network)
+        if not city or _is_unknown_cc(city):
+            continue  # sentinel city - honest gap emitted at fill time
+        gll, gcc = _gazetteer_lookup(city, country, dominant=("" if known else dominant))
+        if gll:
+            r[0], r[1], r[5] = gll, (gcc or cc), "gazetteer-dominant"
+            cache[f"{city}|{country}".lower()] = {"latlng": gll, "cc": gcc or cc}
+            dirty = True
+            if not known and _NN._norm_city(city) in _gazetteer_multi():
+                gaps.append(f"geocode: '{city}' is ambiguous across countries - resolved to "
+                            f"{gcc or dominant} (dataset-dominant); verify the pin")
+            continue
+        # An AMBIGUOUS unknown-country name with NO dominant country cannot be constrained, so
+        # it must NOT fall through to a GLOBAL Nominatim query (country="") - that would
+        # re-introduce bug #3's wrong-country pick with no safety flag. Leave an honest tbd+gap.
+        # A UNIQUE unknown-country name (amb False) may still be globally geocoded; a known
+        # country is queried directly.
+        amb = (not known) and (_NN._norm_city(city) in _gazetteer_multi())
+        if not dead and (known or dominant or not amb):
+            try:
+                ll2, cc2 = _geocode_one(requests, city, country if known else (dominant or ""))
+                if ll2:
+                    r[0], r[1], r[5] = ll2, (cc2 or (dominant if not known else "")), "nominatim"
+                    cache[f"{city}|{country}".lower()] = {
+                        "latlng": ll2, "cc": cc2 or (dominant if not known else "")}
+                    dirty = True
+                    _save_cache(GEOCODE_CACHE, cache)
+            except Exception:
+                dead = True
+                gaps.append("geocoder unreachable from this sandbox - seed coordinates via "
+                            "`python helpers/seed_geocode.py coords.json --cache-dir <work>` "
+                            "(SKILL.md 'Sandbox offline'), then re-run enrich --geocode")
+            finally:
+                time.sleep(1.1)
+        if r[0] is None or r[0][0] is None:
+            if amb:
+                gaps.append(f"geocode: '{city}' is ambiguous across countries and no dominant "
+                            f"country could constrain it - left as a gap (verify)")
+            else:
+                gaps.append(f"geocode: could not resolve '{city}' to a confident location "
+                            f"(country {'unknown' if not known else country}) - left as a gap, "
+                            f"verify manually")
+
+    # SAFETY / correction: a point resolved with an UNKNOWN country that lands >2000 km from
+    # the cluster is almost certainly a wrong same-name hit on another continent (a stale cache
+    # or a unique-name Nominatim pick). Re-query it constrained to the dominant country when the
+    # network is live; whenever it cannot be CORRECTED (offline, the re-query raised, or no
+    # in-country match) emit an HONEST gap so a wrong-continent pin never ships silently. A
+    # dominant-country resolution above is already constrained, so it is exempt.
     if dominant and med_lat is not None:
         for p in todo:
-            ll, cc, known, city, country = res[id(p)]
-            if known or not ll or ll[0] is None:
+            r = res[id(p)]
+            ll, cc, known, city, country = r[0], r[1], r[2], r[3], r[4]
+            if known or not ll or ll[0] is None or r[5] == "gazetteer-dominant":
                 continue
             if _haversine_km(ll[0], ll[1], med_lat, med_lng) <= 2000:
                 continue
@@ -361,7 +515,7 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
                     ll2, cc2 = _geocode_one(requests, city, dominant)
                     time.sleep(1.1)
                     if ll2:
-                        res[id(p)][0], res[id(p)][1] = ll2, (cc2 or dominant)
+                        r[0], r[1], r[5] = ll2, (cc2 or dominant), "nominatim"
                         cache[f"{city}|{country}".lower()] = {"latlng": ll2, "cc": cc2 or dominant}
                         dirty = True
                         gaps.append(f"geocode: '{city}' was ambiguous worldwide - constrained to "
@@ -370,44 +524,62 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
                 except Exception:
                     dead = True  # the network is down after all - stop trying, flag the rest
             if not corrected:
-                # cannot correct it (offline / re-query failed / no in-country match):
-                # keep the pin but flag it for human review - never silently trusted
                 gaps.append(f"geocode: '{city}' (country unknown) landed far from the other "
                             f"options and could not be re-checked - verify the pin")
 
     filled = 0
     for p in props:
         if isinstance(p.get("lat"), (int, float)) and isinstance(p.get("lng"), (int, float)):
-            # P2-5: an already-located property (a tracker/email row that ARRIVED with
-            # coords) can still have country '??'. Fill it from the geocode cache by city
-            # (offline-safe), else a REVERSE lookup of its own pin when the network is
-            # live. Only fills an unknown country, never overrides or invents one.
+            # P2-5 / bug #4: an already-located property (a tracker/email row that ARRIVED
+            # with coords) can still have country '??'. The AUTHORITATIVE signal is its OWN
+            # pin - a name lookup must NEVER override where the pin actually is. So reverse-
+            # geocode the pin FIRST (ground truth) when the network is live; only offline do
+            # we accept a name-based country, and ONLY when the gazetteer's coordinate for
+            # that name/country AGREES with the pin (<=75 km). Never overrides/invents.
             if _is_unknown_cc(p.get("country")):
                 city = str(p.get("city", "")).strip()
                 cc = ""
                 cc_sf, cc_st = "Nominatim (OSM geocoder)", "web"
                 cc_loc = f"country for the pin of '{city or p.get('id')}'"
-                if city and not _is_unknown_cc(city):
-                    _ll, cc = _cache_lookup(cache, city, "")
-                    if not cc:  # the bundled gazetteer fills the country with ZERO network
-                        _gll, cc = _gazetteer_lookup(city, "")
-                        if cc:
-                            cc_sf, cc_st = "assets/cities_dataset.json", "dataset"
-                            cc_loc = f"city gazetteer '{city}'"
-                if not cc and not dead:
+                if not dead:
                     try:
                         cc = _reverse_cc(requests, p["lat"], p["lng"])
                     except Exception:
                         dead = True
                     finally:
                         time.sleep(1.1)
+                if not cc and city and not _is_unknown_cc(city):
+                    # a CACHE hit is operator-seeded (seed_geocode.py) - its coord IS the pin;
+                    # trust its country when that coord agrees with the pin (or carries none), so
+                    # the documented offline seed workflow still fills a city the bundled
+                    # gazetteer does not carry (a small/non-European town).
+                    _ll, ccn = _cache_lookup(cache, city, "")
+                    if ccn and (not _ll or _ll[0] is None
+                                or _haversine_km(p["lat"], p["lng"], _ll[0], _ll[1]) <= 75):
+                        cc = ccn
+                        cc_sf, cc_st = "geocode_cache.json", "cache"
+                        cc_loc = f"seeded geocode cache '{city}'"
+                    # else fall back to the NAME gazetteer, accepted ONLY when its city-centroid
+                    # agrees with the pin within 75 km (never override where the pin actually is).
+                    if not cc:
+                        _gll, ccn = _gazetteer_lookup(city, "")
+                        if ccn:
+                            gll = _gazetteer_lookup(city, ccn)[0]
+                            if gll and _haversine_km(p["lat"], p["lng"], gll[0], gll[1]) <= 75:
+                                cc = ccn
+                                cc_sf, cc_st = "assets/cities_dataset.json", "dataset"
+                                cc_loc = f"city gazetteer '{city}' (agrees with pin)"
+                            else:
+                                gaps.append(f"country for id={p.get('id')} ('{city}') left tbd: the "
+                                            f"name-based country pick disagrees with the property's "
+                                            f"own coordinates - verify (reverse-geocode unavailable)")
                 if cc and _is_unknown_cc(p.get("country")):
                     p["country"] = cc
                     if updates is not None:
                         updates.append(_trace(p.get("id"), "country", cc, cc_sf, cc_loc, cc_st))
             continue
         r = res.get(id(p))
-        latlng, cc = (r[0], r[1]) if r else (None, "")
+        latlng, cc, src = (r[0], r[1], (r[5] if len(r) > 5 else "")) if r else (None, "", "")
         city = str(p.get("city", "")).strip()
         from_centroid = False
         if latlng is None:  # offline / not found -> city-centroid fallback (CEE seed data)
@@ -415,19 +587,25 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
             from_centroid = latlng[0] is not None
         if latlng and latlng[0] is not None:
             p["lat"], p["lng"], p["coordsApprox"] = latlng[0], latlng[1], True
-            if cc and _is_unknown_cc(p.get("country")):  # fill unknown country from coords
+            if cc and _is_unknown_cc(p.get("country")):  # fill unknown country from the same source
                 p["country"] = cc
                 if updates is not None:
-                    updates.append(_trace(p.get("id"), "country", cc, "Nominatim (OSM geocoder)",
-                                          f"reverse geocode of '{city}'", "web"))
+                    if src in ("gazetteer", "gazetteer-dominant"):
+                        csf, cst, cloc = "assets/cities_dataset.json", "dataset", f"city gazetteer '{city}'"
+                    elif src == "cache":
+                        csf, cst, cloc = "geocode_cache.json", "cache", f"geocode cache '{city}'"
+                    else:
+                        csf, cst, cloc = "Nominatim (OSM geocoder)", "web", f"geocode of '{city}'"
+                    updates.append(_trace(p.get("id"), "country", cc, csf, cloc, cst))
             filled += 1
             if updates is not None:  # trace rows so the ledger matches the deliverable
                 if from_centroid:
                     sf, st, loc = "assets/poi_library.json", "poi_library", f"city centroid '{city}' (coordsApprox)"
-                elif _gazetteer_lookup(city, p.get("country"))[0] is not None:
-                    # gazetteer is tried first, so any gazetteer city was resolved by it -
-                    # cite the bundled dataset, not Nominatim (G-trace checks the cited source)
-                    sf, st, loc = "assets/cities_dataset.json", "dataset", f"city gazetteer '{city}' (coordsApprox)"
+                elif src in ("gazetteer", "gazetteer-dominant"):
+                    detail = "city gazetteer" if src == "gazetteer" else "city gazetteer (dominant-country)"
+                    sf, st, loc = "assets/cities_dataset.json", "dataset", f"{detail} '{city}' (coordsApprox)"
+                elif src == "cache":
+                    sf, st, loc = "geocode_cache.json", "cache", f"seeded geocode cache '{city}' (coordsApprox)"
                 else:
                     sf, st, loc = "Nominatim (OSM geocoder)", "web", f"geocode '{city}' (coordsApprox)"
                 updates.append(_trace(p.get("id"), "lat", p["lat"], sf, loc, st))
@@ -578,15 +756,16 @@ def nearest_pois_for(lat: float, lng: float) -> dict:
     return _nearest_from_elements(lat, lng, _overpass_around(lat, lng))
 
 
-def _library_supplement(lat: float, lng: float, found: dict) -> dict:
-    """Fill the types OSM could not see within OVERPASS_RADIUS_M from the curated
-    major-facilities library, capped by POI_MAX_KM and LABELLED as such. At 200+ km
-    the logistics-relevant answer IS the nearest major gateway (a minor harbour at
-    that distance is noise), so this is honest - and the note says exactly what it
-    is. The dashboard's client-side live discovery refines it when the viewer's
-    network allows."""
+def _library_supplement(lat: float, lng: float, found: dict, types: tuple = POI_TYPES) -> dict:
+    """Outage-only fallback: fill the requested `types` NOT already in `found` from the curated
+    major-facilities library, capped by POI_MAX_KM and LABELLED `library:True`. Callers pass
+    only the types whose COMPLETE dataset is ABSENT (air/port/rail from poi_dataset, border from
+    borders_dataset, city from cities_major_dataset), so when those assets are present the
+    curated CEE stand-ins are NEVER used for a type that has a complete set (retiring committee
+    bug #1). It remains a graceful stopgap only when an asset is missing, or (OSM path) for a
+    type beyond the scan radius - the note says exactly what it is; live discovery refines it."""
     lib = _poi_lib()
-    for t in POI_TYPES:
+    for t in types:
         if t in found:
             continue
         best = None
@@ -618,22 +797,45 @@ def attach_pois(canonical: dict, gaps: list) -> int:
                     "to the dashboard's client-side lookup")
         return 0, False  # honour the (count, live) contract - a bare int crashes the caller's unpack
 
-    # PRIMARY: the bundled complete-coverage dataset (all scheduled airports, all
-    # ports, all intermodal terminals) - pure offline computation, genuinely the
-    # nearest because the set is complete. Borders/cities from the curated library.
+    # PRIMARY: the bundled COMPLETE-coverage datasets - air/port/rail (poi_dataset), border
+    # crossings (borders_dataset) and >=100k cities (cities_major_dataset). Pure offline
+    # computation, genuinely the nearest because each set is complete. The curated poi_library
+    # is only an outage fallback for whichever of these assets is absent from this skill copy.
     dataset = _poi_dataset()
-    if dataset:
+    borders = _borders_dataset()
+    cities_major = _cities_major_dataset()
+    if dataset or borders or cities_major:
         by_key = {}
+        lib_types = tuple(t for t, present in
+                          (("air", dataset), ("port", dataset), ("rail", dataset),
+                           ("border", borders), ("city", cities_major)) if not present)
         for p in located:
-            found = _nearest_from_dataset(p["lat"], p["lng"], dataset)
-            found = _library_supplement(p["lat"], p["lng"], found)
+            found = _nearest_from_dataset(p["lat"], p["lng"], dataset, borders, cities_major)
+            if lib_types:        # outage fallback only for a type whose complete asset is absent
+                found = _library_supplement(p["lat"], p["lng"], found, lib_types)
             for t, poi in found.items():
                 key = (poi["name"], t, round(poi["lat"], 3), round(poi["lng"], 3))
-                src = "CBRE POI dataset" if poi.get("dataset") else "curated library"
-                by_key[key] = {"name": poi["name"], "type": t, "lat": poi["lat"],
-                               "lng": poi["lng"],
-                               "note": f"nearest {t} ({src})"}
-            missing = [t for t in ("port", "air", "rail", "border") if t not in found]
+                if poi.get("dataset"):
+                    src = ("CBRE border dataset" if t == "border"
+                           else "CBRE cities dataset" if t == "city"
+                           else "CBRE POI dataset")
+                else:
+                    src = "curated library"
+                note = f"nearest {t} ({src})"
+                if t == "border" and poi.get("crossingOf"):
+                    note = f"nearest border crossing {poi['crossingOf']} ({src})"
+                if t == "city" and poi.get("population"):
+                    # population is SHOWN here (renders in the modal distance note + map popup);
+                    # no chrome change needed - the template already renders poi.note verbatim.
+                    note = f"nearest major city ({src}; pop {poi['population']:,})"
+                rec = {"name": poi["name"], "type": t, "lat": poi["lat"], "lng": poi["lng"],
+                       "note": note}
+                if poi.get("country"):
+                    rec["country"] = poi["country"]
+                if poi.get("population") is not None:
+                    rec["population"] = poi["population"]
+                by_key[key] = rec
+            missing = [t for t in ("port", "air", "rail", "border", "city") if t not in found]
             if missing:
                 gaps.append(f"property id={p.get('id')} ({p.get('city', '?')}): no "
                             f"{'/'.join(missing)} within the distance caps - a genuine "
@@ -674,7 +876,7 @@ def attach_pois(canonical: dict, gaps: list) -> int:
                     else f"nearest {t} (OSM)")
             by_key[key] = {"name": poi["name"], "type": t, "lat": poi["lat"],
                            "lng": poi["lng"], "note": note}
-        missing = [t for t in ("port", "air", "rail", "border") if t not in full]
+        missing = [t for t in ("port", "air", "rail", "border", "city") if t not in full]
         if missing:
             gaps.append(f"property id={p.get('id')} ({p.get('city', '?')}): no nearest "
                         f"{'/'.join(missing)} via OSM (dashboard resolves client-side online, or confirm locally)")
@@ -1404,10 +1606,7 @@ def main() -> None:
     # ATOMIC write: enrich mutates canonical IN PLACE; a shell-cap kill mid-write
     # (routine under Cowork's ~45s cap) used to leave a truncated canonical that
     # --resume then treated as current, wedging every subsequent run
-    import os
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(canonical, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    C.atomic_write_text(path, json.dumps(canonical, ensure_ascii=False, indent=2))
     if gaps:
         print(f"NOTE {len(gaps)} enrichment gaps (see meta.enrichmentGaps / Gaps Report)")
 

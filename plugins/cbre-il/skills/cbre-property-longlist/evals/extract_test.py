@@ -1456,7 +1456,10 @@ def enrich_cases() -> None:
                                        by_type["rail"]["lat"], by_type["rail"]["lng"])
         check(rail_km < 60, f"dataset: rail terminal is LOCAL ({rail_km} km), not a far stand-in")
 
-    enrich._DATASET = False  # the remaining cases exercise the OSM fallback path
+    # the remaining cases exercise the OSM fallback path - reached only when NONE of the three
+    # complete datasets (poi_dataset air/port/rail, borders_dataset, cities_major_dataset) is
+    # present, so pin all three absent (not just poi_dataset).
+    enrich._DATASET = enrich._BORDERS = enrich._CITY_DATASET = False
     with tempfile.TemporaryDirectory() as td:
         enrich.CACHE_DIR = Path(td)
         seeded = [{"name": "Port of Hamburg", "type": "port", "lat": 53.54, "lng": 9.97}]
@@ -1490,7 +1493,7 @@ def enrich_cases() -> None:
               "supplement: the OSM-found type keeps its OSM note")
         check("port" in notes and "library" in notes["port"],
               "supplement: a beyond-scan port comes from the library, LABELLED as such")
-    enrich._DATASET = None  # restore the real dataset for later cases
+    enrich._DATASET = enrich._BORDERS = enrich._CITY_DATASET = None  # restore the real datasets
 
 
 def intake_cases() -> None:
@@ -2337,8 +2340,12 @@ def web_enrich_cases() -> None:
               "ingest: the browser bundle (web_seeds.json) is consumed")
         (work / "web_seeds.json").unlink()
 
-        # 3. offline attach_pois consumes the warm cache: genuine nearest, no library
+        # 3. offline attach_pois consumes the warm cache: genuine nearest, no library.
+        # The seeded-cache OSM fallback is reached only with NO complete dataset present, so
+        # pin the border/city datasets absent too (poi_dataset is already _DATASET=False here).
         enrich.CACHE_DIR = work
+        _sB, _sC = enrich._BORDERS, enrich._CITY_DATASET
+        enrich._BORDERS = enrich._CITY_DATASET = False
         original = enrich.nearest_pois_for
         enrich.nearest_pois_for = lambda lat, lng: (_ for _ in ()).throw(RuntimeError("offline"))
         try:
@@ -2347,6 +2354,7 @@ def web_enrich_cases() -> None:
             n, live = enrich.attach_pois(data, gaps)
         finally:
             enrich.nearest_pois_for = original
+            enrich._BORDERS, enrich._CITY_DATASET = _sB, _sC
         names = sorted(p["name"] for p in data["pois"])
         check(live and "Near Dry Port" in names and "Library Port" not in names,
               "offline --pois attaches the GENUINE nearest from the seeded cache")
@@ -4540,8 +4548,862 @@ def image_pages_carousel_cases() -> None:
         IMG.close_doc_cache()
 
 
+def geofix_cases() -> None:
+    """Regression guards for the geographic-enrichment fixes (committee bugs #1-#5 + #D and the
+    adversarial-review follow-ups R1-C1 / R4-I1). With the REAL bundled datasets loaded: nearest
+    border + city are nearest-of-complete-set with population shown; the geocode/cache/map-link
+    fixes hold. Without these, a refactor could silently re-open the confirmed bugs."""
+    print("geo fixes (nearest border/city + population, geocode #3/#4/#5, map-link #D):")
+    import enrich
+    import tempfile
+    from pathlib import Path
+
+    class _FakePage:  # minimal page exposing get_links() for _page_link_coords URL parsing
+        def __init__(self, uri): self._u = uri
+        def get_links(self): return [{"uri": self._u}]
+
+    # nearest BORDER + CITY from the complete datasets (bugs #1/#2), population in the city note
+    enrich._DATASET = enrich._BORDERS = enrich._CITY_DATASET = None  # real bundled datasets
+    with tempfile.TemporaryDirectory() as td:
+        enrich.CACHE_DIR = Path(td)
+        canonical = {"properties": [{"id": 1, "lat": 51.10, "lng": 17.03}],  # Wrocław, PL
+                     "pois": [], "meta": {}}
+        enrich.attach_pois(canonical, [])
+        by_type = {p["type"]: p for p in canonical["pois"]}
+        b, c = by_type.get("border"), by_type.get("city")
+        check(bool(b) and "CBRE border dataset" in b["note"] and b.get("country"),
+              "geofix: nearest BORDER from the complete border dataset (not the curated library)")
+        check(bool(c) and "CBRE cities dataset" in c["note"] and isinstance(c.get("population"), int)
+              and c["population"] >= 100000 and "pop " in c["note"],
+              "geofix: nearest CITY is a >=100k city from the complete dataset, population in the note")
+
+    # bug #5: _cache_lookup refuses a wrong-country cache entry under a KNOWN country
+    _cache = {"toledo|us": {"latlng": [41.6528, -83.5379], "cc": "US"}}
+    check(enrich._cache_lookup(_cache, "Toledo", "ES") == (None, ""),
+          "geofix #5: a KNOWN country + exact miss does NOT adopt a different-country cache entry")
+    check(enrich._cache_lookup(_cache, "Toledo", "??")[0] == [41.6528, -83.5379],
+          "geofix #5: an UNKNOWN country still uses the cross-country prefix cache (seed pattern)")
+
+    # bug #3: an ambiguous bare name misses without a dominant, resolves to the right country with one
+    enrich._GAZETTEER = None; enrich._GAZETTEER_MULTI = None
+    check(enrich._gazetteer_lookup("Halle", "??") == (None, ""),
+          "geofix #3: an ambiguous bare name (Halle DE/BE) w/o a dominant country is an honest MISS")
+    _ll, _cc = enrich._gazetteer_lookup("Halle", "??", dominant="DE")
+    check(_cc == "DE" and _ll and abs(_ll[0] - 51.5) < 1.0,
+          "geofix #3: with a dominant country the ambiguous name resolves to the RIGHT country")
+
+    # review R1-C1: a lone ambiguous unknown-country property is left tbd+gap, NEVER a silent
+    # global wrong-country pin (even if the network would return one)
+    enrich._GAZETTEER = None; enrich._GAZETTEER_MULTI = None
+    with tempfile.TemporaryDirectory() as td:
+        enrich.CACHE_DIR = Path(td)
+        _sg = enrich._geocode_one
+        enrich._geocode_one = lambda *a, **k: ([50.7333, 4.2333], "BE")  # must NOT be used
+        try:
+            data = {"properties": [{"id": 1, "city": "Halle", "country": "??"}], "pois": [], "meta": {}}
+            gaps: list = []
+            enrich.geocode(data, gaps)
+        finally:
+            enrich._geocode_one = _sg
+        check(not isinstance(data["properties"][0].get("lat"), (int, float))
+              and any("ambiguous" in g.lower() for g in gaps),
+              "geofix R1-C1: a lone ambiguous unknown-country city stays tbd+gap, not a global wrong pin")
+
+    # review R4-I1 / bug #4: an already-located property's unknown country is filled from a seeded
+    # CACHE even when the city is absent from the gazetteer (the documented offline seed workflow)
+    with tempfile.TemporaryDirectory() as td:
+        enrich.CACHE_DIR = Path(td)
+        enrich._save_cache(enrich.GEOCODE_CACHE, {"zzznotacity|": {"latlng": [52.49, -0.70], "cc": "GB"}})
+        _sr = enrich._reverse_cc
+        enrich._reverse_cc = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("offline"))
+        try:
+            data = {"properties": [{"id": 1, "city": "Zzznotacity", "country": "??",
+                                    "lat": 52.49, "lng": -0.70}], "pois": [], "meta": {}}
+            enrich.geocode(data, [])
+        finally:
+            enrich._reverse_cc = _sr
+        check(data["properties"][0].get("country") == "GB",
+              "geofix #4: a located property's country is filled from the seeded cache (gazetteer-absent city)")
+
+    # map-link (#D): a q/geo/place link yields (coords, mapLink); a directions link resolves to
+    # the DESTINATION (daddr), NEVER the origin (saddr) - review R1-I2/R2-I1
+    for uri, want in [("https://maps.google.com/?q=52.2298,21.0118", 52.2298),
+                      ("geo:48.8566,2.3522", 48.8566),
+                      ("https://www.google.com/maps/place/40.4168,-3.7038", 40.4168)]:
+        ll, mu = P._page_link_coords(_FakePage(uri))
+        check(ll is not None and abs(ll[0] - want) < 1e-3 and mu == uri,
+              f"geofix #D: a maps link with coords yields (coords, mapLink): {uri[:38]}")
+    ll2, _ = P._page_link_coords(_FakePage(
+        "https://maps.google.com/maps?saddr=48.1351,11.5820&daddr=52.5200,13.4050"))
+    check(ll2 is not None and abs(ll2[0] - 52.52) < 1e-3,
+          "geofix #D: a directions link resolves to the DESTINATION (daddr), never the origin (saddr)")
+
+    enrich._DATASET = enrich._BORDERS = enrich._CITY_DATASET = None  # leave the real datasets active
+
+
+def audit2_extract_cases() -> None:
+    """2026-07 audit, Batch A - extraction data-honesty fixes (S1-1/9/10/11/43)."""
+    print("audit2 extract (Batch A):")
+    import normalize as _N2
+
+    # S1-1: a list separator (comma-space) must not glue two number groups into one
+    # fabricated area ('Unit 5, 25 000' had become 525000). EU/US grouping still reads.
+    for raw, want, lbl in (
+        ("Unit 5, 25 000 sq m", 25000.0, "'Unit 5, 25 000' -> 25000, not a glued 525000"),
+        ("25 000 sq m", 25000.0, "EU space grouping '25 000' still reads 25000"),
+        ("131,536 sq ft", 131536.0, "US comma thousands '131,536' still reads 131536"),
+        ("12.500 m2", 12500.0, "EU dot thousands '12.500' still reads 12500"),
+        ("39 471 sq m (expandable to 80 000)", 39471.0, "first plausible number still wins"),
+    ):
+        r, pr = {}, {}
+        P._apply_num(r, pr, "warehouseArea", raw, "page 1")
+        check(r.get("warehouseArea") == want, f"S1-1: {lbl} (got {r.get('warehouseArea')})")
+
+    # S1-9: a rent RANGE carrying a currency symbol must not ship one end as a number
+    d, n, _note, _u = P._parse_rent("€55 - 60 / sq m / year")
+    check(d is not None and n is None, f"S1-9: rent range '€55 - 60' ships as text, no number (got {n})")
+    d, n, _note, _u = P._parse_rent("€60 / sq m / year")
+    check(n == 60.0, "S1-9: a non-range currency rent still parses (regression guard)")
+    d, n, _note, _u = P._parse_rent("€4.50 / sq m (2024-2025 lease)")
+    check(n == 4.5, f"S1-9: a DATE span in parens does not suppress a real single rent (got {n})")
+
+    # S1-10: a unit-silent rent (no currency, no per-area) is flagged rentUnitAssumed
+    d, n, _note, u = P._parse_rent("55")
+    check(n == 55.0 and P._rent_unit_assumed("55", n) is True,
+          "S1-10: a bare '55' rent ships the number AND is flagged unit-assumed")
+    check(P._rent_unit_assumed("€55 / sq m", 55.0) is False,
+          "S1-10: a currency+unit rent is NOT flagged assumed")
+
+    # S1-11: a dot-thousands pair with no coordinate cue and no unit is NOT coordinates
+    check(P._find_latlng("Superficies disponibles: 12.500, 8.750") is None,
+          "S1-11: a cue-less dot-thousands pair is not accepted as lat/lng")
+    check(P._find_latlng("GPS\n49.7384, 13.3736\n") == (49.7384, 13.3736),
+          "S1-11: a genuine 4-decimal coordinate pair still parses")
+    check(P._find_latlng("50.075, 14.437") == (50.075, 14.437),
+          "S1-11: a bare 3-decimal coordinate pair (no size word) IS accepted (no false reject)")
+
+    # S1-43: the spelled-out word 'euro'/'euros' is recognised as EUR
+    check(_N2.currency_of("45 euros / m2") == "€", "S1-43: 'euros' recognised as EUR currency")
+    check(bool(P.RENT_CONTEXT.search("45 euros")), "S1-43: 'euros' is a rent context")
+
+
+def audit2b_matcher_cases() -> None:
+    """2026-07 audit, Batch B - matcher (S2-8 one-park-missing over-merge on shared unknown dev)."""
+    print("audit2 matcher (Batch B):")
+    import match as M
+    base = {"city": "Brno", "warehouseArea": 30000.0, "country": "CZ"}
+    # S2-8: exactly one park missing + a SHARED UNKNOWN ('tbd') developer must NOT auto-merge
+    a = {**base, "park": "Some Park", "developer": "tbd"}
+    b = {**base, "developer": "tbd"}
+    check(M._cross_source_auto(a, b) is False,
+          "S2-8: one-park-missing + shared 'tbd' developer does NOT auto-merge (over-merge guard)")
+    # but a shared KNOWN developer (same city, area within 5%) still auto-merges
+    a2 = {**base, "park": "Some Park", "developer": "CTP"}
+    b2 = {**base, "developer": "CTP"}
+    check(M._cross_source_auto(a2, b2) is True,
+          "S2-8: one-park-missing + shared KNOWN developer still auto-merges")
+
+
+def audit2c_gate_cases() -> None:
+    """2026-07 audit, Batch C - gate floors (S4-14 identity trace-coverage, S6-16 env console)."""
+    print("audit2 gates (Batch C):")
+    import csv as _csv
+    import gate_runner as G
+    import render_qa as RQ
+    # S6-16: an offline map-tile / OSRM console error is [ENV], not a code defect
+    check(RQ._is_env_error("Failed to load resource: tile.openstreetmap.org/9/1/2.png") is True,
+          "S6-16: a map-tile fetch error is classified [ENV]")
+    check(RQ._is_env_error("Uncaught TypeError: openModal is not a function") is False,
+          "S6-16: a real JS error is NOT [ENV]")
+    # S4-14: a fabricated identity field with no ledger row must BLOCK trace-coverage
+    d = Path(tempfile.mkdtemp(prefix="cbre_gate_"))
+    canon = d / "canonical.json"; led = d / "ledger.csv"
+    canon.write_text(json.dumps({"meta": {}, "properties": [
+        {"id": 1, "developer": "Fabricated Ltd", "city": "Nowhere", "park": "Ghost Park",
+         "country": "??", "status": "Existing"}]}), encoding="utf-8")
+    cols = ["property_id", "record_type", "field", "value", "source_file", "source_locator",
+            "source_type", "extractor", "confidence", "conflict_note", "verified"]
+
+    def _row(f, v, st="pdf"):
+        return {"property_id": 1, "record_type": "property", "field": f, "value": v,
+                "source_file": "b.pdf", "source_locator": "page 1", "source_type": st,
+                "extractor": "pdf", "confidence": "Medium", "conflict_note": "", "verified": ""}
+
+    def _write(rows):
+        with open(led, "w", newline="", encoding="utf-8") as fh:
+            w = _csv.DictWriter(fh, fieldnames=cols); w.writeheader()
+            for r in rows:
+                w.writerow(r)
+    # city/park/status traced, country '??' gap-documented, but developer UNTRACED
+    _write([_row("city", "Nowhere"), _row("park", "Ghost Park"), _row("status", "Existing"),
+            {**_row("country", "??"), "source_file": "", "source_locator": "", "source_type": "gap"}])
+    check(call(G, "trace-coverage", canon, "--ledger", led) != 0,
+          "S4-14: a fabricated developer (no ledger row) BLOCKS trace-coverage")
+    _write([_row("city", "Nowhere"), _row("park", "Ghost Park"), _row("status", "Existing"),
+            _row("developer", "Fabricated Ltd"),
+            {**_row("country", "??"), "source_file": "", "source_locator": "", "source_type": "gap"}])
+    check(call(G, "trace-coverage", canon, "--ledger", led) == 0,
+          "S4-14: once developer traces (and '??' country is a gap sentinel), trace-coverage PASSES")
+    # S4-52: an empty / header-only ledger must BLOCK, not report ALL-PASS
+    import ledger as _L
+    empty_led = d / "empty.csv"
+    empty_led.write_text(",".join(cols) + "\n", encoding="utf-8")
+    check(call(_L, "validate", empty_led) != 0, "S4-52: an empty (header-only) ledger BLOCKS")
+
+
+def audit2d_cases() -> None:
+    """2026-07 audit, Batch D - build KPI/diagnostic (S5-15/S5-50) + email HTML body (S1-12)."""
+    print("audit2 build/email (Batch D):")
+    import build_dashboard as B
+    import extract_email as E
+    # S5-15: the 'tbd' unknown-region sentinel must not inflate kpi_regions
+    k = B.compute_kpis([
+        {"region": "Pilsen", "country": "CZ", "developer": "A"},
+        {"region": "Brno", "country": "CZ", "developer": "B"},
+        {"region": "tbd", "country": "CZ", "developer": "C"}],
+        {}, {"area": "sq m", "rent": "€/sq m/yr"})
+    check(k["kpi_regions"] == "2", f"S5-15: 'tbd' region excluded from kpi_regions (got {k['kpi_regions']})")
+    # S5-50: a canonical with no 'properties' key raises a CLEAN error, not an opaque KeyError
+    try:
+        B.render({"meta": {}})
+        check(False, "S5-50: render without 'properties' should raise")
+    except ValueError:
+        check(True, "S5-50: render without 'properties' raises a clean ValueError (not KeyError)")
+    except KeyError:
+        check(False, "S5-50: render still raises an opaque KeyError")
+    # S1-12: an HTML-only email body is recovered (tags stripped, entities unescaped), not lost
+    st = E._strip_html("<p>Rent is <b>&euro;55</b> per sq m</p>")
+    check("Rent is" in st and "€55" in st and "<" not in st,
+          "S1-12: _strip_html recovers HTML body prose (tags stripped, entities unescaped)")
+    import intake as I
+    # S0-41: a single real segment before noise ('City - FINAL') must not leak the noise
+    reg, _c, _conf = I.infer_cluster("Pilsen - FINAL.pdf", {})
+    check(reg == "Pilsen", f"S0-41: 'Pilsen - FINAL' -> region 'Pilsen' (noise stripped, got {reg!r})")
+    # S0-13: the own-output ledger pattern is ANCHORED - a client file merely CONTAINING the
+    # substring is not dropped, while our real deliverable names still are
+    check(I._is_own_output("Client_Source_Ledger_notes.pdf") is False,
+          "S0-13: a client file containing '_Source_Ledger' substring is NOT dropped")
+    check(I._is_own_output("Normal_Source_Ledger.xlsx") is True,
+          "S0-13: our real Source Ledger deliverable IS skipped")
+
+
+def audit3_dupid_cases() -> None:
+    print("audit3 gate (#32 dup-id single-pass Counter):")
+    import io as _io
+    from contextlib import redirect_stdout
+    import gate_runner as G
+    prop = lambda i: {"id": i, "country": "ES", "park": f"Park{i}", "developer": "CTP",
+                      "city": "Madrid", "status": "Existing",
+                      "photo": "data:image/png;base64,x", "warehouseArea": 40000,
+                      "warehouseRent": "€60 / sq m / year", "warehouseRentVal": 60.0}
+    # ids [1, 2, 1] - duplicate at positions 0 and 2; the report must preserve ORDER
+    # and MULTIPLICITY (one entry per duplicated occurrence) -> '[1, 1]', not '[1]'
+    data = {"meta": {}, "properties": [prop(1), prop(2), prop(1)], "pois": [], "regions": {}}
+    with tempfile.TemporaryDirectory() as td:
+        cp = Path(td) / "c.json"
+        cp.write_text(json.dumps(data), encoding="utf-8")
+        sv = sys.argv
+        sys.argv = ["gate_runner", "validate-data", str(cp)]
+        buf = _io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                try:
+                    G.main()
+                    rc = 0
+                except SystemExit as e:
+                    rc = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        finally:
+            sys.argv = sv
+        out = buf.getvalue()
+        check(rc != 0 and "duplicate property ids: [1, 1]" in out,
+              "#32: validate-data reports duplicate ids as [1, 1] (order + multiplicity preserved by Counter)")
+
+
+def reconcile_kpi_cases() -> None:
+    print("audit3 gate (#24/#34 reconcile reuses compute_kpis, no 2nd render):")
+    import build_dashboard as B
+    import gate_runner as G
+    import _common as C
+    prop = lambda i, dev, cc: {"id": i, "country": cc, "park": f"Park{i}", "developer": dev,
+                               "city": "Madrid", "status": "Existing",
+                               "photo": "data:image/png;base64,x", "warehouseArea": 40000,
+                               "warehouseRent": "€60 / sq m / year", "warehouseRentVal": 60.0}
+    # 5 properties (KPI properties=5, unique among the strip: countries=1, regions=0, developers=2)
+    data = {"meta": {"units": {"area": "sq m", "rent": "€/sq m/yr"}},
+            "properties": [prop(1, "A", "ES"), prop(2, "A", "??"), prop(3, "B", "ES"),
+                           prop(4, "B", "ES"), prop(5, "A", "ES")],
+            "pois": [], "regions": {}}
+    out_html, tokens = B.render(data)
+    kpi_expected = tokens["kpi_properties"]
+    props = [C.fill_render_sentinels(dict(p)) for p in data["properties"]]
+    kpi_direct = B.compute_kpis(props, data.get("regions", {}),
+                                (data.get("meta") or {}).get("units"))["kpi_properties"]
+    check(kpi_direct == kpi_expected and kpi_direct == str(len(data["properties"])),
+          "#24: compute_kpis kpi_properties == render() token == property count (the value reconcile now checks)")
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        cp = td / "c.json"
+        cp.write_text(json.dumps(data), encoding="utf-8")
+        built = td / "built.html"
+        built.write_text(out_html, encoding="utf-8")
+        check(call(G, "reconcile", built, "--canonical", cp) == 0,
+              "#24: reconcile PASSES the correctly-rendered built file")
+        target = f'<div class="kpi-value">{kpi_expected}</div>'
+        tampered = td / "tampered.html"
+        tampered.write_text(out_html.replace(target, f'<div class="kpi-value">{int(kpi_expected) + 1}</div>'),
+                            encoding="utf-8")
+        check(call(G, "reconcile", tampered, "--canonical", cp) != 0,
+              "#24: reconcile still BLOCKS when the hero KPI properties count is wrong")
+
+
+def selfcheck_i18n_placeholder_cases() -> None:
+    print("audit3 gate (#33 self-check guards the EN KPI-sub placeholders):")
+    import io as _io
+    import types as _types
+    from contextlib import redirect_stdout
+    import gate_runner as G
+    import i18n as I18N
+
+    def _run():
+        buf = _io.StringIO()
+        with redirect_stdout(buf):
+            rc = G.cmd_self_check(_types.SimpleNamespace())
+        return rc, buf.getvalue()
+
+    saved_a = I18N.EN.get("kpi_wh_area_sub_fmt")
+    saved_u = I18N.EN.get("kpi_rent_sub_fmt")
+    try:
+        rc_ok, _ = _run()
+        check(rc_ok == 0, "#33: self-check PASSES a healthy EN baseline")
+        I18N.EN["kpi_wh_area_sub_fmt"] = "per building"  # {area} placeholder dropped
+        rc_area, out_area = _run()
+        check(rc_area != 0 and "kpi_wh_area_sub_fmt" in out_area,
+              "#33: self-check BLOCKS when kpi_wh_area_sub_fmt loses its {area} placeholder")
+        I18N.EN["kpi_wh_area_sub_fmt"] = saved_a
+        I18N.EN["kpi_rent_sub_fmt"] = "per year"  # {unit} placeholder dropped
+        rc_unit, out_unit = _run()
+        check(rc_unit != 0 and "kpi_rent_sub_fmt" in out_unit,
+              "#33: self-check BLOCKS when kpi_rent_sub_fmt loses its {unit} placeholder")
+    finally:
+        if saved_a is not None:
+            I18N.EN["kpi_wh_area_sub_fmt"] = saved_a
+        if saved_u is not None:
+            I18N.EN["kpi_rent_sub_fmt"] = saved_u
+
+
+def conflict_singleton_cases() -> None:
+    print("audit3 merge (#44 conflict_candidates singleton short-circuit):")
+    recA = {"city": "Corby", "developer": "Prologis", "park": "Apollo", "warehouseRentVal": 55.0,
+            "__meta": {"source_type": "xlsx", "date": "2026-01-01", "prov": {}, "source_file": "a.xlsx"}}
+    recB = {"city": "Corby", "developer": "Prologis", "park": "Apollo", "warehouseRentVal": 70.0,
+            "__meta": {"source_type": "pdf", "date": "", "prov": {}, "source_file": "b.pdf"}}
+    real = merge.conflict_candidates([[recA, recB]])
+    check(len(real) == 1 and real[0]["field"] == "warehouseRentVal",
+          "#44: a 2-record cluster with a genuine rent disagreement yields exactly 1 conflict")
+    check(merge.conflict_candidates([[recA]]) == [],
+          "#44: a singleton cluster yields NO conflicts (the short-circuit is byte-identical to the len<2 skip)")
+    check(merge.conflict_candidates([]) == [],
+          "#44: an empty cluster list yields NO conflicts")
+    mixed = merge.conflict_candidates([[recA, recB], [recA]])
+    check([c["conflict_id"] for c in mixed] == [c["conflict_id"] for c in real],
+          "#44: interleaving a singleton does not change the real cluster's conflicts (same ids, same order)")
+
+
+def geometry_prebatch_cases() -> None:
+    print("audit3 image (#20 serial prewarm: one deck-wide geometry open, not per-page):")
+    import io as _io
+    import random as _r
+    try:
+        import merge as _M
+        import fitz as _fz
+        import pdfplumber as _pp
+        from PIL import Image as _Img
+    except Exception as e:
+        check(False, f"#20: setup import failed ({e})")
+        return
+
+    def _noise(seed, w=340, h=240):
+        _r.seed(seed)
+        im = _Img.new("RGB", (w, h))
+        im.putdata([(_r.randint(0, 255), _r.randint(0, 255), _r.randint(0, 255)) for _ in range(w * h)])
+        b = _io.BytesIO()
+        im.save(b, "JPEG", quality=80)
+        return b.getvalue()
+
+    def _clear():
+        IMG._PLACED_CACHE.clear()
+        IMG.close_doc_cache()
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        td = Path(td)
+        doc = _fz.open()
+        for p in range(4):
+            pg = doc.new_page(width=600, height=800)
+            pg.insert_image(_fz.Rect(60, 60, 460, 360), stream=_noise(p))
+        f = td / "deck.pdf"
+        doc.save(f)
+        doc.close()
+        recs = [{"city": "M", "park": f"P{p}",
+                 "__meta": {"source_file": "deck.pdf", "source_type": "pdf", "page_no": p}}
+                for p in range(4)]
+        # reference geometry from a pristine per-page build (BEFORE installing the counter)
+        ref = td / ".ref"
+        ref.mkdir()
+        _clear()
+        lay_ref = IMG._placed_layout(f, ref)
+        _clear()
+        # count pdfplumber.open() during a SERIAL prewarm on a fresh geometry cache
+        warm = td / ".warm"
+        warm.mkdir()
+        orig = _pp.open
+        cnt = {"n": 0}
+
+        def _counting(*a, **k):
+            cnt["n"] += 1
+            return orig(*a, **k)
+
+        _pp.open = _counting
+        # isolate GEOMETRY opens: the hero path's crop tier (_page_crops) keeps its OWN
+        # per-page pdfplumber open for the page width, which #20's minimal fix deliberately
+        # does NOT touch (it reaches into crop-scale math, a byte-identity risk). Neutralise
+        # it here so the count reflects only the placedpage geometry the fix targets.
+        _crops_orig = IMG._page_crops
+        IMG._page_crops = lambda *a, **k: []
+        try:
+            _M.prewarm_images(recs, td, warm, IMG.DEFAULT_BUDGET_KB, seconds=60, workers=1)
+        finally:
+            _pp.open = orig
+            IMG._page_crops = _crops_orig
+        _clear()
+        lay_warm = IMG._placed_layout(f, warm)
+        _clear()
+        check(lay_warm == lay_ref,
+              "#20: serial-prewarmed deck geometry is byte-identical to the per-page reference")
+        check(cnt["n"] <= 2,
+              f"#20: serial prewarm opens the deck ONCE for geometry, not once per page (geometry opens={cnt['n']}, was 4)")
+
+
+def match_memo_cases() -> None:
+    print("audit3 match (#29+#30 memoise norm + token_set_ratio, byte-identical):")
+    a = {"city": "Corby", "developer": "Prologis", "park": "Apollo Court",
+         "warehouseArea": 50000, "__meta": {"source_file": "a.pdf", "source_type": "pdf"}}
+    b = {"city": "Corby", "developer": "Prologis", "park": "Mercury House",
+         "warehouseArea": 52000, "__meta": {"source_file": "b.xlsx", "source_type": "xlsx"}}
+    key_a, key_b = match.match_key(a), match.match_key(b)
+    check(key_a == "corby|prologis|apollo court" and key_b == "corby|prologis|mercury house",
+          "#29: match_key is byte-identical after memoising norm")
+    check(match.norm("Praha 5, Česko") == "praha 5 cesko" and match.norm(None) == ""
+          and match.norm(123) == "123",
+          "#29: cached norm returns identical strings for scalar inputs incl None/int")
+    raw = match.fuzz.token_set_ratio(key_a, key_b)  # the un-cached scorer, still exposed
+    check(match._tsr(key_a, key_b) == raw,
+          "#30: cached _tsr equals the raw scorer for the same key pair (backend-agnostic)")
+    check(raw < match.MATCH_THRESHOLD,
+          "#30: the pinned pair scores below the match threshold (still 'grey')")
+    check(match.pair_class(a, b) == "grey" and match.dedupe([a, b]) == match.dedupe([a, b], None),
+          "#29+#30: pair_class/dedupe verdicts unchanged (grey; offline split == default-arg fallback)")
+
+
+def image_reuse_memo_cases() -> None:
+    print("audit3 image (#21+#38+#39 in-process decode / slide-list reuse):")
+    import io as _io
+    try:
+        import fitz as _fz
+        from PIL import Image as _Img
+    except Exception as e:
+        check(False, f"#21/#38/#39: setup import failed ({e})")
+        return
+    png = _io.BytesIO()
+    _Img.new("RGB", (400, 300), (30, 120, 200)).save(png, "PNG")
+    png = png.getvalue()
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        doc0 = _fz.open()
+        pg = doc0.new_page(width=600, height=800)
+        pg.insert_image(_fz.Rect(60, 60, 460, 360), stream=png)
+        pdf = td / "deck.pdf"
+        doc0.save(pdf)
+        doc0.close()
+
+        IMG.close_doc_cache()
+        doc = IMG._get_doc(pdf)
+        a = IMG.page_embedded_images(doc, 0)
+        b = IMG.page_embedded_images(doc, 0)
+        check(len(a) >= 1 and [(d["w"], d["h"]) for d in a] == [(d["w"], d["h"]) for d in b],
+              "#39: page_embedded_images returns an equivalent list on repeat")
+        check(a is b, "#39: page_embedded_images REUSES the decoded list (same object; decoded once per run)")
+        c1 = IMG.candidates_for_page(pdf, 0)
+        c2 = IMG.candidates_for_page(pdf, 0)
+        check(len(c1) >= 1 and [(d["w"], d["h"]) for d in c1] == [(d["w"], d["h"]) for d in c2],
+              "#21: candidates_for_page equivalent on repeat")
+        check(c1[0]["img"] is c2[0]["img"],
+              "#21: candidates_for_page reuses the decoded PIL object (no re-decode across calls)")
+        # close_doc_cache drops the memo WITHOUT corrupting results (id(doc) recycle guard)
+        IMG.close_doc_cache()
+        doc2 = IMG._get_doc(pdf)
+        a2 = IMG.page_embedded_images(doc2, 0)
+        check([(d["w"], d["h"]) for d in a2] == [(d["w"], d["h"]) for d in a],
+              "#39: after close_doc_cache the memo is dropped but results stay equivalent")
+        IMG.close_doc_cache()
+
+        # #38 slide-list + slide_pictures reuse (guarded: needs python-pptx)
+        try:
+            from pptx import Presentation as _Prs
+            from pptx.util import Inches as _In
+            prs = _Prs()
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            slide.shapes.add_picture(_io.BytesIO(png), _In(1), _In(1), _In(3), _In(2))
+            pptx = td / "deck.pptx"
+            prs.save(str(pptx))
+        except Exception:
+            pptx = None
+        if pptx is not None:
+            IMG.close_doc_cache()
+            p1 = IMG.slide_pictures(pptx, 0)
+            p2 = IMG.slide_pictures(pptx, 0)
+            check(len(p1) >= 1 and [(d["w"], d["h"]) for d in p1] == [(d["w"], d["h"]) for d in p2],
+                  "#39: slide_pictures equivalent on repeat")
+            check(p1 is p2, "#39: slide_pictures REUSES the decoded pictures list (decoded once per run)")
+            _ps = getattr(IMG, "_pptx_slides", None)
+            if _ps is not None:
+                check(_ps(pptx) is _ps(pptx),
+                      "#38: _pptx_slides reuses the enumerated slide list (no re-enumeration per call)")
+            IMG.close_doc_cache()
+
+
+def counts_once_cases() -> None:
+    print("audit3 build (#55 KPI counts derived once, byte-identical):")
+    import build_dashboard as B
+    props = [
+        {"country": "GB", "developer": "CTP", "region": "Midlands", "regionCode": "MID"},
+        {"country": "GB", "developer": "CTP", "region": "Midlands", "regionCode": "MID"},
+        {"country": "IE", "developer": "Panattoni", "region": "Dublin", "regionCode": "DUB"},
+        {"country": "IE", "developer": "CTP", "region": "Dublin", "regionCode": "DUB"},
+    ]
+    k = B.compute_kpis(props, {}, {"area": "sq m", "rent": "€/sq m/yr"}, {})
+    check(k["kpi_countries"] == "2", "#55: kpi_countries de-dups GB/GB,IE/IE -> 2")
+    check(k["kpi_developers"] == "2", "#55: kpi_developers de-dups CTP x3 + Panattoni -> 2 (no redundant re-dedup)")
+    check(k["kpi_countries_sub"] == "GB · IE",
+          "#55: kpi_countries_sub is the sorted distinct enumeration (byte-exact, single country_set)")
+
+
+def intake_memory_cases() -> None:
+    print("audit3 intake (#36 dedup-hash size-prefilter + MemoryError guard):")
+    import intake
+    import unittest.mock as _mock
+    # (a) size-prefilter: shrink the cap so a normal small file trips the oversize branch
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "small.pdf").write_bytes(b"a-real-small-brochure")   # 21 bytes > 8
+        (root / "tiny.pdf").write_bytes(b"x")                         # 1 byte <= 8
+        orig_cap = getattr(intake, "_DEDUP_MAX_BYTES", None)
+        intake._DEDUP_MAX_BYTES = 8
+        try:
+            inv = intake.discover(root)
+        finally:
+            if orig_cap is not None:
+                intake._DEDUP_MAX_BYTES = orig_cap
+        oversize = inv.get("skipped_hash_oversize", [])
+        disc = any("small.pdf" in (c.get("pdfs") or []) for c in inv.get("clusters", {}).values())
+        check("skipped_hash_oversize" in inv and "small.pdf" in oversize and disc,
+              "S36a: an oversize file skips the dedup hash but is STILL discovered as a brochure")
+        check("tiny.pdf" not in oversize,
+              "S36a: a file under the cap is hashed normally (not flagged oversize)")
+    # (b) MemoryError backstop: force the read/hash to raise MemoryError, assert no crash
+    with tempfile.TemporaryDirectory() as td2:
+        root2 = Path(td2)
+        (root2 / "boom.pdf").write_bytes(b"anything")
+        with _mock.patch.object(intake.hashlib, "sha256", side_effect=MemoryError):
+            try:
+                inv2 = intake.discover(root2)
+                ok_b = isinstance(inv2, dict) and any(
+                    "boom.pdf" in (c.get("pdfs") or []) for c in inv2.get("clusters", {}).values())
+            except MemoryError:
+                ok_b = False
+        check(ok_b, "S36b: a MemoryError during the dedup hash is CAUGHT - file kept, run not crashed")
+
+
+def pptx_slide_fail_cases() -> None:
+    print("audit3 pptx (#19 one bad slide must not mis-route the whole deck to raster):")
+    try:
+        from pptx import Presentation as _Prs
+        from pptx.util import Inches as _In
+        import interpret_prep as IP
+        import extract_pptx as PPTX
+    except Exception as e:
+        check(False, f"#19: setup import failed ({e})")
+        return
+    filler = ("City Pilsen Developer CTP Warehouse Area 40000 sq m clear height 12 m "
+              "slide {n} plus filler text to comfortably exceed the eighty character threshold")
+    with tempfile.TemporaryDirectory() as td:
+        prs = _Prs()
+        for n in range(3):
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            tb = slide.shapes.add_textbox(_In(0.5), _In(0.5), _In(9), _In(2))
+            tb.text_frame.text = filler.format(n=n + 1)
+        deck = Path(td) / "deck.pptx"
+        prs.save(str(deck))
+
+        orig = PPTX.slide_text
+        calls = {"n": 0}
+
+        def _flaky(slide):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("bad slide XML")
+            return orig(slide)
+
+        PPTX.slide_text = _flaky
+        try:
+            texts = IP._pptx_slide_texts(deck)
+            mode = IP._decide_mode(texts)
+        finally:
+            PPTX.slide_text = orig
+        check(len(texts) == 3 and mode == "text",
+              "#19: one raising slide yields '' for that slide only; the deck still routes text (2 clean slides survive)")
+        check(len(texts) == 3 and texts[1] == "" and texts[0] != "" and texts[2] != "",
+              "#19: only the raising slide is blanked; its neighbours keep their text")
+        st_fn = getattr(PPTX, "slide_texts", None)
+        if st_fn is not None:
+            calls["n"] = 0
+            PPTX.slide_text = _flaky
+            try:
+                direct = st_fn(_Prs(str(deck)))
+            finally:
+                PPTX.slide_text = orig
+            check(len(direct) == 3 and direct[1] == "" and direct[0] and direct[2],
+                  "#19: extract_pptx.slide_texts blanks ONLY the bad slide (['t','','t'])")
+
+
+def intake_resume_cases() -> None:
+    print("audit3 resume (#27 intake stamp is recursive over nested/in-place input edits):")
+    import run as RUN
+    import os as _os
+    saved_resume = RUN.RESUME
+    RUN.RESUME = True
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            inputs = root / "inputs"
+            (inputs / "sub").mkdir(parents=True)
+            top = inputs / "top.pdf"
+            top.write_bytes(b"top-file")
+            nested = inputs / "sub" / "nested.pdf"
+            nested.write_bytes(b"nested-file")
+            out = root / "inventory.json"
+            out.write_text("{}", encoding="utf-8")
+            t0 = 1_000_000
+            for p in (top, nested, inputs / "sub", inputs):
+                _os.utime(p, (t0, t0))
+            _os.utime(out, (t0 + 10, t0 + 10))   # out newer than every input -> current
+            check(RUN._is_current(out, [inputs]) is True,
+                  "S#27a: no input change -> intake stamp reports current (stage skipped/resumed)")
+            # (b) an in-place edit of a NESTED input (dir-node mtimes do NOT bubble up on NTFS)
+            _os.utime(nested, (t0 + 20, t0 + 20))
+            check(RUN._is_current(out, [inputs]) is False,
+                  "S#27b: an in-place edit of a NESTED input invalidates the intake stamp (re-runs)")
+            # (c) reset the nested edit, then an in-place edit of a TOP-LEVEL input
+            _os.utime(nested, (t0, t0))
+            _os.utime(top, (t0 + 20, t0 + 20))
+            check(RUN._is_current(out, [inputs]) is False,
+                  "S#27c: an in-place edit of a TOP-LEVEL input invalidates the intake stamp (re-runs)")
+    finally:
+        RUN.RESUME = saved_resume
+
+
+def deliver_resume_cases() -> None:
+    print("audit3 resume (#25 Stage-7 deliver has a currency guard: skip current, redo on change):")
+    try:
+        import fitz as _fz
+        import run as RUN
+    except Exception as e:
+        check(False, f"#25: setup import failed ({e})")
+        return
+    import io as _io
+    import os as _os
+    from contextlib import redirect_stdout, redirect_stderr
+
+    def _mk_text_pdf(folder: Path) -> Path:
+        # a clean born-digital flyer whose LABELS are NOT in extract_pdf's dictionary
+        # (the TEDi case) -> the only honest path is interpretation (routes to exit 3)
+        doc = _fz.open()
+        for opt, city, area, rent in (("Option 1", "Valencia", "12,500 m2", "4.20 / sqm / month"),
+                                      ("Option 2", "Sagunto", "8,750 m2", "3.90 / sqm / month")):
+            pg = doc.new_page()
+            y = 60
+            for ln in (f"VALENCIA REGION - {opt}", f"City {city}", "Owner/developer Goodman",
+                       f"Total existing space {area}", f"Warehouse - Asking rent {rent}",
+                       "This prime logistics warehouse is strategically located near the A-7 "
+                       "motorway with excellent connectivity to the Port of Valencia."):
+                pg.insert_text((40, y), ln, fontsize=11)
+                y += 22
+        f = folder / "Options - Valencia.pdf"
+        doc.save(f)
+        doc.close()
+        return f
+
+    def _spine_resume(folder, work):
+        saved = sys.argv
+        sys.argv = ["run.py", "--folder", str(folder), "--work", str(work),
+                    "--client", "TEDi", "--quiet"]   # resume ON (NO --no-resume)
+        rc = 0
+        try:
+            with redirect_stdout(_io.StringIO()), redirect_stderr(_io.StringIO()):
+                RUN.main()
+        except SystemExit as e:
+            rc = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        except Exception as e:
+            rc = f"CRASH: {type(e).__name__}: {e}"
+        finally:
+            sys.argv = saved
+        return rc
+
+    def _rec(park, city, page_no, rent_val, src_name):
+        fields = {"park": park, "developer": "Goodman", "city": city, "country": "ES",
+                  "region": "Valencia", "status": "Existing", "warehouseArea": 12500,
+                  "warehouseRent": f"€{rent_val:g} / sq m / year", "warehouseRentVal": rent_val}
+        prov = {k: f"page {page_no + 1} (text interpretation)" for k in fields}
+        return {**fields, "__meta": {"source_file": src_name, "source_type": "pdf",
+                                     "locator_base": f"page {page_no + 1}",
+                                     "page_no": page_no, "prov": prov}}
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        folder = td / "inputs"
+        folder.mkdir()
+        work = td / "work"
+        work.mkdir()
+        src = _mk_text_pdf(folder)
+        rc1 = _spine_resume(folder, work)
+        if rc1 != 3:
+            check(False, f"#25: first pass should route to interpretation (exit 3, got {rc1!r})")
+            return
+        (work / "extract" / "Valencia_vision.json").write_text(
+            json.dumps([_rec("Goodman Valencia", "Valencia", 0, 50.4, src.name),
+                        _rec("Goodman Sagunto", "Sagunto", 1, 46.8, src.name)]), encoding="utf-8")
+        rc2 = _spine_resume(folder, work)
+        deliverables = work / "deliverables"
+        dash = sorted(deliverables.glob("*.html")) if deliverables.exists() else []
+        if rc2 != 0 or not dash:
+            check(False, f"#25: second pass should deliver a dashboard (exit {rc2!r}, dash={bool(dash)})")
+            return
+        dash = dash[0]
+        m_after = dash.stat().st_mtime_ns
+        # (a) a no-change resume SKIPS deliver -> dashboard mtime unchanged
+        rc3 = _spine_resume(folder, work)
+        check(rc3 == 0 and dash.stat().st_mtime_ns == m_after,
+              "#25a: a no-change resume SKIPS deliver (dashboard mtime unchanged)")
+        # (b) canonical changes -> build + deliver RE-FIRE (dashboard re-delivered, mtime advances)
+        canonical = work / "canonical.json"
+        fut = canonical.stat().st_mtime + 100
+        _os.utime(canonical, (fut, fut))
+        rc4 = _spine_resume(folder, work)
+        check(rc4 == 0 and dash.stat().st_mtime_ns > m_after,
+              "#25b: after canonical changes, deliver RE-FIRES (never a stale skip; mtime advances)")
+
+
+def interpret_resume_cases() -> None:
+    print("audit3 resume (#28+#37 interpret_prep text-mode refreshes region/country on a re-cluster):")
+    try:
+        import fitz as _fz
+        import interpret_prep as IP
+    except Exception as e:
+        check(False, f"#28+#37: setup import failed ({e})")
+        return
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        doc = _fz.open()
+        pg = doc.new_page()
+        pg.insert_text((40, 60), "City Prague. Warehouse Area 10000 sq ft. Clear Height 12m. "
+                                 "Rent 5 EUR per sq m per year. Developer Acme. Park Logistics One.",
+                       fontsize=11)
+        pdf = td / "deck.pdf"
+        doc.save(pdf)
+        doc.close()
+        out = td / "vision"
+        e1 = IP.prepare(pdf, "RegionA", "CZ", out, resume=True)
+        check(e1.get("mode") == "text", "#28+#37: a clean text deck routes to mode 'text' (baseline)")
+        rp = e1["pages"][0].get("render") if e1.get("pages") else None
+        m0 = Path(rp).stat().st_mtime_ns if rp and Path(rp).exists() else None
+        # no-change resume: reuse the cached entry + thumbnails
+        e2 = IP.prepare(pdf, "RegionA", "CZ", out, resume=True)
+        reuse_ok = (m0 is None) or (rp and Path(rp).exists() and Path(rp).stat().st_mtime_ns == m0)
+        check(e2.get("region") == "RegionA" and reuse_ok,
+              "#28+#37: a no-change resume reuses the cached text entry + thumbnails (skipped/resumed)")
+        # re-cluster: SAME bytes, corrected region/country -> the entry must re-reflect them
+        e3 = IP.prepare(pdf, "RegionB", "PL", out, resume=True)
+        check(e3.get("region") == "RegionB" and e3.get("country") == "PL",
+              "#28+#37: a re-clustered deck (same bytes, corrected region) re-reflects the NEW "
+              "region/country, not the stale cached one")
+        text_reused = (e3.get("pages") and e1.get("pages")
+                       and e3["pages"][0].get("text") == e1["pages"][0].get("text"))
+        render_reused = (m0 is None) or (rp and Path(rp).exists() and Path(rp).stat().st_mtime_ns == m0)
+        check(bool(text_reused) and render_reused,
+              "#28+#37: the re-cluster refreshes ONLY the manifest metadata; the byte-derived "
+              "text + thumbnails stay cached")
+
+
+def load_canonical_cache_cases() -> None:
+    print("audit3 perf (#22+#35 load_canonical mtime-keyed parse-cache, deepcopy-isolated):")
+    import _common as C
+    with tempfile.TemporaryDirectory() as td:
+        cp = Path(td) / "canonical.json"
+        A = {"meta": {}, "properties": [{"id": 1, "city": "Prague"}], "pois": [], "regions": {}}
+        C.atomic_write_text(cp, json.dumps(A))
+        if hasattr(C, "_CANON_CACHE"):
+            C._CANON_CACHE.clear()
+        # (1) CACHE HIT (RED->GREEN): an unchanged canonical is parsed ONCE across two loads
+        orig = C.load_json
+        cnt = {"n": 0}
+
+        def _counting(p):
+            cnt["n"] += 1
+            return orig(p)
+
+        C.load_json = _counting
+        try:
+            d1 = C.load_canonical(cp)
+            d2 = C.load_canonical(cp)
+        finally:
+            C.load_json = orig
+        check(d1 == A and d2 == A, "#22: load_canonical returns the correct content")
+        check(cnt["n"] == 1,
+              f"#22: an unchanged canonical is parsed ONCE across two loads (in-process cache hit; parses={cnt['n']})")
+        # (2) MUTATION ISOLATION (#35): mutating a returned dict must not poison the cache/another load
+        d1["properties"][0]["city"] = "MUTATED"
+        d3 = C.load_canonical(cp)
+        check(d3["properties"][0]["city"] == "Prague",
+              "#35: a caller mutating the returned dict does NOT affect a later load (deepcopy isolation)")
+        # (3) STALE-READ / INVALIDATION (#35): an atomic rewrite (new mtime/size) must be seen
+        B = {"meta": {}, "properties": [{"id": 1, "city": "Brno"}, {"id": 2, "city": "Ostrava"}],
+             "pois": [], "regions": {}}
+        C.atomic_write_text(cp, json.dumps(B))
+        d4 = C.load_canonical(cp)
+        check(d4 == B and len(d4["properties"]) == 2,
+              "#35: a rewritten canonical (new mtime/size) invalidates the cache (no stale read)")
+        # (4) SAME-size rewrite forced to the SAME mtime_ns: st_ino still invalidates (closes the
+        #     coarse-Windows-mtime collision hole; the skill only ever writes via atomic os.replace)
+        import os as _os
+        C._CANON_CACHE.clear()
+        S1 = json.dumps({"meta": {}, "properties": [{"id": 1, "city": "AAAA"}], "pois": [], "regions": {}})
+        C.atomic_write_text(cp, S1)
+        m = cp.stat().st_mtime_ns
+        _ = C.load_canonical(cp)
+        S2 = json.dumps({"meta": {}, "properties": [{"id": 1, "city": "BBBB"}], "pois": [], "regions": {}})
+        check(len(S2) == len(S1), "#35: (precondition) the two canonicals are the same byte size")
+        C.atomic_write_text(cp, S2)
+        _os.utime(cp, ns=(m, m))  # force the SAME mtime_ns as the cached entry
+        e2 = C.load_canonical(cp)
+        check(e2["properties"][0]["city"] == "BBBB",
+              "#35: a SAME-size rewrite forced to the SAME mtime_ns still invalidates (st_ino closes the coarse-mtime hole)")
+
+
 def main() -> int:
     pdf_cases()
+    audit2_extract_cases()
+    audit2b_matcher_cases()
+    audit2c_gate_cases()
+    audit2d_cases()
     interpret_cases()
     xlsx_cases()
     tracker_map_cases()
@@ -4552,6 +5414,7 @@ def main() -> int:
     cache_cases()
     prewarm_resume_cases()
     enrich_cases()
+    geofix_cases()
     intake_cases()
     web_enrich_cases()
     vision_validate_cases()
@@ -4582,6 +5445,20 @@ def main() -> int:
     llm_hero_cases()
     image_pages_carousel_cases()
     plan_page_cases()
+    audit3_dupid_cases()
+    reconcile_kpi_cases()
+    selfcheck_i18n_placeholder_cases()
+    conflict_singleton_cases()
+    geometry_prebatch_cases()
+    match_memo_cases()
+    image_reuse_memo_cases()
+    counts_once_cases()
+    intake_memory_cases()
+    pptx_slide_fail_cases()
+    intake_resume_cases()
+    deliver_resume_cases()
+    interpret_resume_cases()
+    load_canonical_cache_cases()
     if FAILS:
         print(f"\nEXTRACT TEST: FAIL ({len(FAILS)})")
         for f in FAILS:

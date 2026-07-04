@@ -465,6 +465,14 @@ def main() -> int:
     check(call(build_dashboard, canonical, "--out", built) == 0, "build completes")
     check(call(gate_runner, "validate-html", built, "--canonical", canonical) == 0,
           "validate-html ALL-PASS (byte-identical chrome)")
+    # S6-8: on the byte-identical pass the JSON re-parse is skipped, but a byte-DIVERGED file
+    # (here a corrupted PROPS block) must still BLOCK - the inequality path (and the byte-equality
+    # floor) still bite, and the nested JSON loop does not crash.
+    _bad_html = work / "built_badjson.html"
+    _bad_html.write_text(built.read_text(encoding="utf-8").replace("const PROPS = [", "const PROPS = [{", 1),
+                         encoding="utf-8")
+    check(call(gate_runner, "validate-html", _bad_html, "--canonical", canonical) != 0,
+          "S6-8: validate-html still BLOCKS a byte-diverged file with a corrupted data block")
     check(call(gate_runner, "reconcile", built, "--canonical", canonical) == 0,
           "reconcile ALL-PASS")
     # G-i18n deterministic floor: the fixture builds English chrome, so the floor PASSES
@@ -534,6 +542,13 @@ def main() -> int:
     rc = call(final_gate, "--canonical", canonical, "--html", built,
               "--deliverables", deliverables, "--reviews", good)
     check(rc == 0, "V1/V3: final gate passes with an amber verdict + prose 'verdict: red' mention")
+
+    # S7-17: a stub/empty deliverables set must NOT pass 'present' (size + Longlist checks)
+    stub = work / "deliverables_stub"; stub.mkdir()
+    (stub / "x.html").write_text("<html></html>", encoding="utf-8")  # < 5 KB stub, no ledger/gaps/longlist
+    check(call(final_gate, "--canonical", canonical, "--html", built,
+               "--deliverables", stub, "--reviews", good) != 0,
+          "S7-17: final gate BLOCKS a stub/empty deliverables set (size + Longlist checked)")
 
     bad = work / "reviews_bad"; bad.mkdir()
     for f in ("G-trace.md", "G-images.md", "G-visual.md"):

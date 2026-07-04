@@ -202,6 +202,8 @@ def conflict_candidates(clusters: list[list[dict]]) -> list[dict]:
     `field_conflicts` array. Typically 0-3 per run (like grey pairs)."""
     out: list[dict] = []
     for cl in clusters:
+        if len(cl) < 2:
+            continue  # a <=1-record cluster can hold no value conflict (needs >=2 disagreeing records) - #44
         comm_order = sorted(cl, key=lambda r: (COMM_RANK.get(_st(r), 9), _unreliable(r), -_datekey(r)))
         spec_order = sorted(cl, key=lambda r: (_unreliable(r), SPEC_RANK.get(_st(r), 9)))
         tracker_order = sorted(cl, key=lambda r: (not _is_rich(r), _unreliable(r),
@@ -526,6 +528,7 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
     bound_plans = [r for r in cluster
                    if isinstance(r.get("plan"), str) and r["plan"].startswith("data:image/")]
     if bound_plans:
+        bound_plans.sort(key=lambda r: IMG_RANK.get(_st(r), 9))  # source-quality order, like the hero
         plan, plan_rec = bound_plans[0]["plan"], bound_plans[0]
     for r in cluster:
         if photo is not None and plan is not None:
@@ -630,15 +633,9 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
     # UNION its validated __meta.image_pages (the LLM's "these pages show THIS
     # property" pick), keyed by the resolved source. When NO record carries
     # image_pages this reduces to the page_no-only set -> byte-identical to today.
-    pages_by_src: dict[str, set] = {}
-    for r in cluster:
-        m = r.get("__meta", {})
-        if m.get("source_type") in ("pdf", "pptx") and isinstance(m.get("page_no"), int):
-            s = _resolve_source(source_dir, m.get("source_file", ""))
-            if s:
-                slot = pages_by_src.setdefault(str(s), set())
-                slot.add(m["page_no"])
-                slot.update(_meta_image_pages(m))
+    # the SAME union the anti-leak guard computes (shared helper), so the harvester and
+    # the guard can never diverge and leak a neighbouring property's page (audit S2-26).
+    pages_by_src = _cluster_pages_by_src(cluster, source_dir)
     for src_str, pgs in sorted(pages_by_src.items()):
         # the deterministic anti-leak guard (computed once over ALL clusters)
         # tells us which of these pages are FOREIGN (owned/claimed by another
@@ -742,11 +739,30 @@ def prewarm_images(all_records, source_dir, image_cache, budget_kb,
     workers = max(1, workers)
     deadline = time.monotonic() + max(1.0, seconds)
 
+    def _prebatch_geometry(specs):
+        # SERIAL/fallback only: warm each deck's pdfplumber GEOMETRY with ONE deck-wide open
+        # (via _placed_layout) instead of one open per placedpage unit (and per hero unit that
+        # reads geometry). _placed_layout writes each page's .placedpage.json exactly as
+        # _placed_page would, so the per-unit calls then all hit the cache -> byte-identical
+        # caches, merge output unchanged. The parallel path cannot share a handle across
+        # processes, so this is scoped to the serial branches only. (#20)
+        seen: set = set()
+        for spec in specs:
+            if spec[0] == "placedpage" and spec[1] not in seen:
+                seen.add(spec[1])
+                if time.monotonic() > deadline:
+                    return
+                try:
+                    IMG._placed_layout(Path(spec[1]), spec[4])
+                except Exception:
+                    pass
+
     def _run(units):
         todo = [u for u in units if not IMG._unit_cached(u)]
         if not todo or time.monotonic() > deadline:
             return
         if workers <= 1:             # serial, no process pool (workers=1 opt-out / test path)
+            _prebatch_geometry(todo)  # #20: one deck-wide geometry open, not one per page
             for u in todo:
                 if time.monotonic() > deadline:
                     break
@@ -767,6 +783,7 @@ def prewarm_images(all_records, source_dir, image_cache, budget_kb,
         except Exception:
             pool_ok = False
         if not pool_ok:              # no usable process pool -> finish serially in-process
+            _prebatch_geometry(todo)  # #20: one deck-wide geometry open, not one per page
             for u in todo:
                 if time.monotonic() > deadline:
                     break
@@ -989,6 +1006,13 @@ def main() -> None:
             MATCH_DECISIONS = loaded if isinstance(loaded, dict) else {}
         except Exception:
             MATCH_DECISIONS = {}  # best-effort, exactly like PHOTO_MAP - a bad file -> deterministic
+    # First-party map-link pins (bug #D): fill lat/lng + mapLink from each brochure page's
+    # 'click for location' maps hyperlink BEFORE clustering/geocode. The author's own pin is
+    # better than any geocoder and fully offline; this recovers the coords the current
+    # interpretation record source does not carry (the harvest used to live only in the
+    # deprecated extract_pdf own-line path). Deterministic (pure function of the PDFs) -> resume-safe.
+    if getattr(args, "source_dir", None):
+        XP.backfill_link_coords(all_records, Path(args.source_dir))
     clusters = match.dedupe(all_records, MATCH_DECISIONS or None)
     FIELD_DECISIONS = {}  # conflict_id -> {pick, reason} (cross-source value-conflict sub-agent)
     if args.field_decisions and Path(args.field_decisions).exists():
@@ -1321,18 +1345,17 @@ def main() -> None:
     # ATOMIC write: a shell-cap kill mid-write (routine in Cowork's ~45s cap) must
     # never leave a truncated canonical that --resume then treats as current
     out_path = Path(args.out)
-    tmp = out_path.with_suffix(out_path.suffix + ".tmp")
-    tmp.write_text(json.dumps(canonical, ensure_ascii=False, indent=2), encoding="utf-8")
-    import os
-    os.replace(tmp, out_path)
+    C.atomic_write_text(out_path, json.dumps(canonical, ensure_ascii=False, indent=2))
     print(f"OK canonical -> {args.out}  ({len(properties)} properties, {len(pois)} POIs)")
 
     if args.ledger:
-        with open(args.ledger, "w", newline="", encoding="utf-8") as fh:
-            w = csv.DictWriter(fh, fieldnames=list(ledger_rows[0].keys()) if ledger_rows else
-                               ["property_id", "field", "value"])
-            w.writeheader()
-            w.writerows(ledger_rows)
+        import io as _io
+        buf = _io.StringIO()
+        w = csv.DictWriter(buf, fieldnames=list(ledger_rows[0].keys()) if ledger_rows else
+                           ["property_id", "field", "value"], lineterminator="\n")
+        w.writeheader()
+        w.writerows(ledger_rows)
+        C.atomic_write_text(Path(args.ledger), buf.getvalue())  # atomic + LF, like canonical (review #2)
         print(f"OK ledger -> {args.ledger}  ({len(ledger_rows)} rows)")
 
 

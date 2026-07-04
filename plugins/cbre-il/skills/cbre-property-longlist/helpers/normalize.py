@@ -153,7 +153,7 @@ _SQM_RX = re.compile(r"sq\.?\s*m\b|sqm|\bm2\b|m²|square\s+met", re.I)
 _ACRE_RX = re.compile(r"\bacres?\b", re.I)
 _HA_RX = re.compile(r"\bha\b|hectare", re.I)
 _GBP_RX = re.compile(r"£|\bgbp\b", re.I)
-_EUR_RX = re.compile(r"€|\beur\b(?!o\w)", re.I)
+_EUR_RX = re.compile(r"€|\beuros?\b|\beur\b", re.I)
 
 
 def area_unit_of(text) -> str | None:
