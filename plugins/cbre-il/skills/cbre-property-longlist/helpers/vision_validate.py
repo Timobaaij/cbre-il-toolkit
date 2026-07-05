@@ -247,6 +247,49 @@ def validate(work: Path, source_dir: Path | None = None) -> tuple[list[str], lis
                     errors.append(f"{tag}: __meta.plan_page {pp} is not a rasterised page of "
                                   f"this deck (manifest pages: {sorted(deck['pages'])}) - it "
                                   f"would render a NEIGHBOUR'S page as the site plan")
+                elif isinstance(pno, int) and pp == pno:
+                    # page_no must be the property's OWN hero-PHOTO page; putting its plan/divider
+                    # page number in page_no binds the hero AND the whole carousel to the plan page
+                    # (this shipped a decorative/plan graphic as the hero). WARN not ERROR - a
+                    # genuine plan-only-hero property legitimately has page_no == plan_page.
+                    warnings.append(f"{tag}: __meta.page_no equals __meta.plan_page ({pno}) - "
+                                    f"page_no must be the property's OWN hero-PHOTO page, NOT its "
+                                    f"plan/divider page (put the plan in plan_page, extra photo "
+                                    f"pages in image_pages). Legitimate ONLY for a genuine "
+                                    f"plan-only-hero property; otherwise the hero + carousel bind "
+                                    f"to the plan page.")
+            # __meta.exclude_refs (the interpreter's decorative-candidate deny-list): a map of
+            # 0-based page (string key) -> candidate indices to drop from the carousel. Each key
+            # must be a page of this deck; each index a non-negative int; and it must NEVER exclude
+            # the heroRef candidate on the hero page (that would blank the carousel lead).
+            er = meta.get("exclude_refs")
+            if er is not None:
+                if not isinstance(er, dict):
+                    errors.append(f"{tag}: __meta.exclude_refs must be an object mapping a 0-based "
+                                  f"page (string key) to an array of candidate indices (or omitted)")
+                else:
+                    href = meta.get("heroRef")
+                    for pg_k, refs in er.items():
+                        try:
+                            pg_i = int(pg_k)
+                        except (TypeError, ValueError):
+                            errors.append(f"{tag}: __meta.exclude_refs key {pg_k!r} is not a page index")
+                            continue
+                        if deck and deck["pages"] and pg_i not in deck["pages"]:
+                            errors.append(f"{tag}: __meta.exclude_refs page {pg_i} is not a rasterised "
+                                          f"page of this deck (manifest pages: {sorted(deck['pages'])})")
+                        if not isinstance(refs, list):
+                            errors.append(f"{tag}: __meta.exclude_refs[{pg_k!r}] must be an array of "
+                                          f"0-based candidate indices")
+                            continue
+                        for r_ in refs:
+                            if not isinstance(r_, int) or isinstance(r_, bool) or r_ < 0:
+                                errors.append(f"{tag}: __meta.exclude_refs[{pg_k!r}] entry {r_!r} is "
+                                              f"not a non-negative integer candidate index")
+                            elif isinstance(href, int) and pg_i == pno and r_ == href:
+                                errors.append(f"{tag}: __meta.exclude_refs excludes the heroRef "
+                                              f"candidate ({href}) on the hero page - the hero must "
+                                              f"NOT be excluded from its own carousel")
             if deck and meta.get("source_file") and deck["source"] \
                     and meta["source_file"] != deck["source"]:
                 warnings.append(f"{tag}: source_file '{meta['source_file']}' differs from "

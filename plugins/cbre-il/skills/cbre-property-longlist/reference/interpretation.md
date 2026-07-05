@@ -132,7 +132,13 @@ records matching `templates/record_schema.json`:
   `locator`, **`page_no` = the manifest page's `page_no` COPIED VERBATIM** (it is
   0-based; do NOT compute or re-derive it - the integer in the manifest is the only
   correct value, and it binds this property's hero photo to its OWN page so a
-  multi-property file never leaks a neighbour's picture). `prov` =
+  multi-property file never leaks a neighbour's picture). **`page_no` MUST be the
+  page that carries this property's HERO PHOTO - NEVER a plan, divider, cover or
+  `low_text` page number.** `page_no` anchors the hero AND the whole carousel, so if
+  the photo is on page N and the site plan on page M, set `page_no` = N and put the
+  plan in `plan_page` = M (and any extra photo pages in `image_pages`); putting a
+  plan/divider page number in `page_no` binds the hero and the carousel to that page -
+  this exact mistake once shipped a decorative brand graphic as the hero. `prov` =
   `{field: "<locator> (text interpretation)"}` for every field you set (the ledger
   and G-trace key on this; the `(text interpretation)` tag tells the reviewer the
   value came from interpreting the page text).
@@ -146,6 +152,15 @@ records matching `templates/record_schema.json`:
   `planRef`. The classifier + the G-images gate VERIFY your pick: a `heroRef` that
   points to a non-photo is blocked for sign-off, and a `null`/absent `heroRef` falls
   back to the deterministic hero ladder, so an honest `null` is always safe.
+- **Mark decorative candidates for exclusion (`__meta.exclude_refs`).** While you are already
+  LOOKING at each page's candidate thumbnails, flag any candidate that is a DECORATIVE or abstract
+  graphic - brand art, a gradient or geometric-pattern (e.g. isometric-cube) background, a
+  full-bleed motif - that is NOT a real photo, aerial, render, site plan or location map. Add it to
+  `__meta.exclude_refs` = `{"<page>": [<index>, ...]}` (page in the SAME 0-based numbering as
+  `page_no`/`image_pages`; index = the candidate's `index` on that page) so it is DROPPED from the
+  carousel. NEVER list the `heroRef` candidate. A genuine site plan or location map is NOT
+  decorative - leave it (it belongs in the gallery + the Site Plan toggle); `exclude_refs` is only
+  for non-informational brand/decorative graphics. Omit it when there are none (the default).
 - **Pick the site-plan PAGE (`__meta.plan_page`).** Many site plans are VECTOR
   line-art drawn straight into the page (a whole page that IS the site plan), NOT a
   placed photo - `planRef` cannot reach those (pulled as an embedded image they go

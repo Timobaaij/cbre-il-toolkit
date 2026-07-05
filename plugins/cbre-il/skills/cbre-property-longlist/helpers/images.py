@@ -675,15 +675,49 @@ def _deck_page_photos(path: Path, page_index: int, budget_kb: int, cache_dir) ->
     return out
 
 
+def _excluded_sigs(path: Path, exclude_by_page: dict) -> set:
+    """Map each excluded candidate index (the interpreter's __meta.exclude_refs, keyed by
+    0-based page) to its image SIG. The index is the SAME candidates_for_page space heroRef
+    uses, and _photo_sig(candidates[idx].img) equals the sig the deck index stored for that
+    image (both derive from the memoised page_embedded_images), so the drop is EXACT. Bad
+    keys/indices are skipped (a validator bounds them upstream). (exclude_refs)"""
+    sigs: set = set()
+    for pg, refs in (exclude_by_page or {}).items():
+        try:
+            page = int(pg)
+        except (TypeError, ValueError):
+            continue
+        try:
+            cands = candidates_for_page(Path(path), page)
+        except Exception:
+            cands = []
+        for r in (refs or []):
+            if isinstance(r, int) and not isinstance(r, bool) and 0 <= r < len(cands):
+                try:
+                    sigs.add(_photo_sig(cands[r]["img"]))
+                except Exception:
+                    pass
+    return sigs
+
+
 def gallery_for_pages(path: Path, page_nos, budget_kb: int = DEFAULT_BUDGET_KB,
-                      cache_dir: Path | str | None = None, max_n: int = GALLERY_MAX) -> list[str]:
+                      cache_dir: Path | str | None = None, max_n: int = GALLERY_MAX,
+                      exclude_by_page: dict | None = None) -> list[str]:
     """Up to max_n photo data URIs from the given 0-based pages of a deck, best-first.
     PAGE-SCOPED so a multi-property deck contributes only THIS property's photos. Returns
     a 2-tuple (uris, total_available) so the caller can note in the Gaps Report when more
-    photos existed than the cap allowed."""
+    photos existed than the cap allowed.
+
+    exclude_by_page = {page: [candidate indices]} (the interpreter's __meta.exclude_refs -
+    candidates it judged DECORATIVE/non-building via vision). Those candidates are dropped
+    from the carousel by SIG match (no cache-key change; empty/None = byte-identical to today)."""
     pages = set(page_nos or [])
     idx = _deck_photo_index(Path(path), budget_kb, cache_dir)
     items = [e for e in idx if e["page"] in pages] if pages else idx
+    if exclude_by_page:
+        excl = _excluded_sigs(Path(path), exclude_by_page)
+        if excl:
+            items = [e for e in items if e.get("sig") not in excl]
     return [e["uri"] for e in items[:max_n]], len(items)
 
 

@@ -7,6 +7,21 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.0.6] — 2026-07-05
+### Changed
+- **Property longlist — catch and drop decorative graphics from photo carousels.**
+  The interpretation sub-agent can now flag non-building / abstract images (brand
+  art, gradient or geometric-pattern backgrounds) via a new optional
+  `__meta.exclude_refs` field (`templates/record_schema.json`), so they are dropped
+  from a property's carousel; the hero is never touched and genuine site plans and
+  location maps are kept. `helpers/contact_sheet.py` gains a `carousel_secondaries`
+  montage of every secondary slide, and the **G-images gate now reviews it** — a
+  decorative graphic that slips into a carousel reads as a "plan" to the mechanical
+  classifier, so only the vision reviewer can catch it. Supporting updates to
+  `helpers/images.py`, `helpers/merge.py` and `helpers/vision_validate.py`, guidance
+  in `reference/interpretation.md` and `reference/gates.md`, and new coverage in
+  `evals/extract_test.py`. Integrity manifest regenerated.
+
 ## [1.0.5] — 2026-07-04
 ### Added
 - **Property longlist — nearest-city and nearest-border geo layers.** Two new
@@ -201,6 +216,7 @@ How to update to the latest version is in the [README](./README.md#updating).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.0.6]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.6
 [1.0.5]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.5
 [1.0.4]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.4
 [1.0.3]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.3

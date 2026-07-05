@@ -1865,6 +1865,34 @@ def vision_validate_cases() -> None:
               and any("collapsed" in w for w in warnings),
               "uncovered pages warn about collapsed multi-property decks")
 
+        # P1 (page_no root cause): page_no must be the property's OWN hero-PHOTO page, never its
+        # plan/divider page. WARN (not error - a genuine plan-only-hero property is legit) when a
+        # record's page_no == its own plan_page (the exact mis-set that shipped a plan/decorative
+        # graphic as the hero this run).
+        write([rec(__meta={"page_no": 2, "plan_page": 2})])
+        _, warnings = VV.validate(work)
+        check(any("page_no equals" in w and "plan_page" in w for w in warnings),
+              "PAGENO-1: page_no == plan_page WARNS (plan page wrongly used as the hero-photo page)")
+        write([rec(__meta={"page_no": 1, "plan_page": 2})])
+        _, warnings = VV.validate(work)
+        check(not any("page_no equals" in w for w in warnings),
+              "PAGENO-1: a normal record (page_no != plan_page) raises NO page_no/plan_page warning")
+
+        # exclude_refs bounds (interpreter's decorative-candidate deny-list): a valid map passes;
+        # excluding the heroRef candidate on the hero page is an ERROR (would blank the carousel lead).
+        write([rec(__meta={"page_no": 1, "heroRef": 0, "exclude_refs": {"1": [1]}})])
+        errors, _ = VV.validate(work)
+        check(not any("exclude_refs" in e for e in errors),
+              "EXCL-1: a valid exclude_refs (dropping a non-hero candidate) passes")
+        write([rec(__meta={"page_no": 1, "heroRef": 0, "exclude_refs": {"1": [0]}})])
+        errors, _ = VV.validate(work)
+        check(any("exclude_refs" in e and "heroRef" in e for e in errors),
+              "EXCL-1: excluding the heroRef candidate on its own page is an ERROR")
+        write([rec(__meta={"page_no": 1, "exclude_refs": {"9": [0]}})])
+        errors, _ = VV.validate(work)
+        check(any("exclude_refs" in e and "9" in e for e in errors),
+              "EXCL-1: an exclude_refs page off the deck is an ERROR (bounds check)")
+
 
 def region_code_cases() -> None:
     print("regionCode auto-derivation + loud empty-regions failure:")
@@ -5398,6 +5426,159 @@ def load_canonical_cache_cases() -> None:
               "#35: a SAME-size rewrite forced to the SAME mtime_ns still invalidates (st_ino closes the coarse-mtime hole)")
 
 
+def gallery_sheet_cases() -> None:
+    print("audit3 image (P3 carousel-secondaries montage for the G-images vision reviewer):")
+    import contact_sheet as CS
+    if not getattr(CS, "_HAS_PIL", False):
+        check(True, "P3: Pillow absent - gallery montage degrades gracefully (skipped)")
+        return
+    import base64 as _b64
+    import io as _io
+    from PIL import Image as _Img
+
+    def _uri(color):
+        b = _io.BytesIO()
+        _Img.new("RGB", (120, 90), color).save(b, "PNG")
+        return "data:image/png;base64," + _b64.b64encode(b.getvalue()).decode("ascii")
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        hero, s1, s2 = _uri((10, 120, 60)), _uri((200, 60, 60)), _uri((60, 60, 200))
+        canon = {"properties": [
+            {"id": 1, "park": "Earlstrees", "gallery": [hero, s1, s2]},   # 2 secondaries
+            {"id": 2, "park": "EVO", "gallery": [hero]},                   # hero only -> no secondary
+            {"id": 3, "park": "Saxon"},                                    # no gallery
+        ]}
+        out = CS.build_gallery_sheet(canon, td)
+        check(out is not None and Path(out).exists(),
+              "P3: a carousel-secondaries montage is produced when a property has gallery[1:]")
+        canon2 = {"properties": [{"id": 1, "park": "X", "gallery": [hero]}, {"id": 2, "park": "Y"}]}
+        check(CS.build_gallery_sheet(canon2, td) is None,
+              "P3: no carousel secondaries anywhere -> no montage (None)")
+
+
+def exclude_refs_cases() -> None:
+    print("audit3 image (exclude_refs: interpreter vision-marks a decorative candidate -> dropped from carousel):")
+    import io as _io
+    import random as _r
+    try:
+        import fitz as _fz
+        from PIL import Image as _Img
+    except Exception as e:
+        check(False, f"exclude_refs: setup import failed ({e})")
+        return
+
+    def _noise(seed, w, h):
+        _r.seed(seed)
+        im = _Img.new("RGB", (w, h))
+        im.putdata([(_r.randint(0, 255), _r.randint(0, 255), _r.randint(0, 255)) for _ in range(w * h)])
+        b = _io.BytesIO()
+        im.save(b, "JPEG", quality=80)
+        return b.getvalue()
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        doc = _fz.open()
+        pg = doc.new_page(width=800, height=1000)
+        pg.insert_image(_fz.Rect(40, 40, 700, 520), stream=_noise(1, 640, 480))   # larger -> candidate index 0
+        pg.insert_image(_fz.Rect(40, 560, 560, 960), stream=_noise(2, 520, 400))  # smaller -> candidate index 1
+        f = td / "deck.pdf"
+        doc.save(f)
+        doc.close()
+        cache = td / ".c"
+        cache.mkdir()
+        IMG.close_doc_cache()
+        cands = IMG.candidates_for_page(f, 0)
+        check(len(cands) >= 2, f"exclude_refs: fixture has >=2 hero-size candidates (got {len(cands)})")
+        sig0 = IMG._photo_sig(cands[0]["img"])
+        IMG.close_doc_cache()
+        base, _ = IMG.gallery_for_pages(f, [0], IMG.DEFAULT_BUDGET_KB, cache)
+        IMG.close_doc_cache()
+        excl, _ = IMG.gallery_for_pages(f, [0], IMG.DEFAULT_BUDGET_KB, cache, exclude_by_page={0: [0]})
+        IMG.close_doc_cache()
+        idx = {e["sig"]: e["uri"] for e in IMG._deck_photo_index(f, IMG.DEFAULT_BUDGET_KB, cache)}
+        IMG.close_doc_cache()
+        u0 = idx.get(sig0)
+        check(u0 is not None and u0 in base,
+              "exclude_refs: candidate 0's image IS in the carousel without exclude")
+        check(u0 not in excl and len(excl) == len(base) - 1,
+              "exclude_refs: excluding candidate 0 drops EXACTLY its image from the carousel")
+        none_g, _ = IMG.gallery_for_pages(f, [0], IMG.DEFAULT_BUDGET_KB, cache, exclude_by_page=None)
+        IMG.close_doc_cache()
+        check(none_g == base, "exclude_refs: exclude_by_page=None is byte-identical to no exclude (no-op)")
+
+
+def exclude_refs_merge_cases() -> None:
+    print("audit3 image (exclude_refs end-to-end: merge honours the deny-list; canonical stays valid):")
+    import io as _io
+    import random as _r
+    from contextlib import redirect_stdout
+    try:
+        import fitz as _fz
+        import merge as _M
+        import gate_runner as _G
+        from PIL import Image as _Img
+    except Exception as e:
+        check(False, f"exclude_refs merge: setup import failed ({e})")
+        return
+
+    def _noise(seed, w, h):
+        _r.seed(seed)
+        im = _Img.new("RGB", (w, h))
+        im.putdata([(_r.randint(0, 255), _r.randint(0, 255), _r.randint(0, 255)) for _ in range(w * h)])
+        b = _io.BytesIO()
+        im.save(b, "JPEG", quality=80)
+        return b.getvalue()
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        doc = _fz.open()
+        pg = doc.new_page(width=800, height=1000)
+        pg.insert_image(_fz.Rect(40, 40, 700, 520), stream=_noise(1, 640, 480))   # candidate 0 (hero)
+        pg.insert_image(_fz.Rect(40, 560, 560, 960), stream=_noise(2, 520, 400))  # candidate 1 (secondary)
+        # UNIQUE filename: merge._SRC_RESOLVE memoises source paths by BARE filename across the
+        # whole process, so a name shared with another case (e.g. 'deck.pdf') would serve a stale
+        # deleted-temp path here (FileNotFoundError). (memory.md)
+        doc.save(td / "cube_excl_merge_deck.pdf")
+        doc.close()
+        IMG.close_doc_cache()
+
+        def _rec(exclude):
+            m = {"source_file": "cube_excl_merge_deck.pdf", "source_type": "pdf", "page_no": 0, "locator_base": "page 1",
+                 "prov": {k: "page 1" for k in ("park", "developer", "city", "country", "status", "warehouseArea")}}
+            if exclude:
+                m["exclude_refs"] = {"0": [1]}  # drop the non-hero secondary (never the hero)
+            return [{"park": "Cube Park", "developer": "Dev", "city": "Town", "country": "CZ",
+                     "status": "Existing", "warehouseArea": 20000, "__meta": m}]
+
+        def _merge(recs):
+            (td / "recs.json").write_text(json.dumps(recs), encoding="utf-8")
+            cp = td / "c.json"
+            sv = sys.argv
+            sys.argv = ["merge", "--records", str(td / "recs.json"), "--source-dir", str(td),
+                        "--out", str(cp), "--ledger", str(td / "l.csv")]
+            try:
+                with redirect_stdout(_io.StringIO()):
+                    try:
+                        _M.main()
+                    except SystemExit:
+                        pass
+            finally:
+                sys.argv = sv
+                IMG.close_doc_cache()
+            return json.loads(cp.read_text(encoding="utf-8")), cp
+
+        base_c, _ = _merge(_rec(False))
+        excl_c, excl_cp = _merge(_rec(True))
+        base_gal = base_c["properties"][0].get("gallery", [])
+        excl_gal = excl_c["properties"][0].get("gallery", [])
+        check(len(base_gal) >= 2, f"exclude_refs merge: baseline gallery carries both candidates (got {len(base_gal)})")
+        check(len(excl_gal) == len(base_gal) - 1 and excl_gal[:1] == base_gal[:1],
+              "exclude_refs merge: __meta.exclude_refs drops exactly the marked secondary (hero preserved)")
+        check(call(_G, "validate-data", excl_cp) == 0,
+              "exclude_refs merge: canonical WITH exclude_refs still passes validate-data (no schema leak)")
+
+
 def main() -> int:
     pdf_cases()
     audit2_extract_cases()
@@ -5459,6 +5640,9 @@ def main() -> int:
     deliver_resume_cases()
     interpret_resume_cases()
     load_canonical_cache_cases()
+    gallery_sheet_cases()
+    exclude_refs_cases()
+    exclude_refs_merge_cases()
     if FAILS:
         print(f"\nEXTRACT TEST: FAIL ({len(FAILS)})")
         for f in FAILS:

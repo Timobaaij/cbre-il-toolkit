@@ -1,7 +1,7 @@
 {
   "name": "cbre-il-toolkit",
   "description": "The CBRE Industrial & Logistics toolkit for Claude. Build polished, on-brand PowerPoint decks, turn a folder of property materials into an interactive longlist dashboard, draft I&L account briefings, surface evidence-backed reasons to reach out to a target company now as a ranked outreach-angles sheet with ready-to-send email hooks, map a company's warehouse and distribution network to an auditable Excel, and keep every word in the CBRE tone of voice.",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "author": {
     "name": "Timo Baaij",
     "email": "timo.baaij@cbre.com"

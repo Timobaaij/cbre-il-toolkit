@@ -159,6 +159,51 @@ def build_placeholder_audit(canonical: dict, out_dir: Path, cols: int = 4) -> Pa
     return out
 
 
+def build_gallery_sheet(canonical: dict, out_dir: Path, cols: int = 5, thumb: int = 300) -> Path | None:
+    """One montage of every SECONDARY carousel image (gallery[1:]) across all properties, so the
+    G-images reviewer inspects the CAROUSEL, not only heroes. A decorative/abstract graphic that
+    slipped into a carousel classifies as a 'plan' - indistinguishable from a real site plan to the
+    Python classifier, so ONLY a vision reviewer can catch it. The fix for a flagged slide is
+    __meta.exclude_refs (the interpreter drops that candidate) or a gallery_nonphoto_ok sign-off.
+    Heroes already live in the main contact sheet, so only gallery[1:] is tiled; None when there
+    are no secondaries."""
+    if not _HAS_PIL:
+        return None
+    cells = []  # (pid, park, slot_label, uri)
+    for p in canonical.get("properties", []):
+        gal = p.get("gallery")
+        if not isinstance(gal, list) or len(gal) < 2:
+            continue
+        for k, uri in enumerate(gal[1:], start=2):  # slot 1 = hero (main sheet); label secondaries from 2
+            if isinstance(uri, str) and uri.startswith("data:"):
+                cells.append((p.get("id"), str(p.get("park", "?"))[:28], k, uri))
+    if not cells:
+        return None
+    th = thumb
+    cell_w, cell_h = th + 2 * PAD, int(th * 0.75) + CAPTION_H + 2 * PAD
+    rows = (len(cells) + cols - 1) // cols
+    sheet = Image.new("RGB", (cols * cell_w, rows * cell_h), BG)
+    d = ImageDraw.Draw(sheet)
+    font, font_sm = _font(13), _font(11)
+    for idx, (pid, park, slot, uri) in enumerate(cells):
+        cx, cy = (idx % cols) * cell_w, (idx // cols) * cell_h
+        d.rectangle([cx + 2, cy + 2, cx + cell_w - 2, cy + cell_h - 2],
+                    fill=CELL_BG, outline=(200, 120, 60))  # amber frame = inspect
+        img = _decode(uri)
+        if img is not None:
+            img.thumbnail((th, int(th * 0.75)))
+            sheet.paste(img, (cx + PAD, cy + PAD))
+        else:
+            d.text((cx + PAD, cy + PAD), "(unreadable)", fill=(120, 0, 0), font=font)
+        d.text((cx + PAD, cy + PAD + int(th * 0.75) + 3),
+               f"#{pid} carousel slide {slot}: {park}", fill=CBRE_GREEN, font=font)
+        d.text((cx + PAD, cy + PAD + int(th * 0.75) + 19),
+               "real building photo? or decorative/abstract to exclude?", fill=(150, 80, 20), font=font_sm)
+    out = out_dir / "carousel_secondaries.png"
+    sheet.save(out, format="PNG", optimize=True)
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("canonical")
@@ -179,6 +224,12 @@ def main() -> None:
         print(f"PLACEHOLDER AUDIT: discarded candidates need review -> {audit_sheet}")
         print("The G-images reviewer must rescue a usable photo/plan or sign off each one; "
               "the images gate blocks until placeholder_audit_ack.json records the verdict.")
+    gallery_sheet = build_gallery_sheet(data, Path(args.out_dir))
+    if gallery_sheet:
+        print(f"CAROUSEL SECONDARIES: inspect for decorative/non-building slides -> {gallery_sheet}")
+        print("Flag any decorative/abstract or non-building carousel image (it classifies as a "
+              "'plan' - only vision catches it); the fix is __meta.exclude_refs (the interpreter "
+              "drops that candidate on re-run). A genuine site plan / aerial in the carousel is fine.")
     print("Hand these PNG(s) to the isolated G-images reviewer for a single exhaustive pass.")
 
 

@@ -636,6 +636,28 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
     # the SAME union the anti-leak guard computes (shared helper), so the harvester and
     # the guard can never diverge and leak a neighbouring property's page (audit S2-26).
     pages_by_src = _cluster_pages_by_src(cluster, source_dir)
+    # per-source exclude map: the interpreter's __meta.exclude_refs (0-based page -> the candidate
+    # indices it judged DECORATIVE / non-building via vision), unioned across this cluster's records
+    # for each source. Absent/empty -> no exclusion, byte-identical to today. Honoured by SIG in
+    # IMG.gallery_for_pages (never touches the hero, which is added separately above). (exclude_refs)
+    excl_by_src: dict = {}
+    for r in cluster:
+        m = r.get("__meta", {}) or {}
+        er = m.get("exclude_refs")
+        if not isinstance(er, dict) or not er:
+            continue
+        s = _resolve_source(source_dir, m.get("source_file", ""))
+        if not s:
+            continue
+        d = excl_by_src.setdefault(str(s), {})
+        for pg, refs in er.items():
+            try:
+                p = int(pg)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(refs, list):
+                d.setdefault(p, set()).update(
+                    x for x in refs if isinstance(x, int) and not isinstance(x, bool) and x >= 0)
     for src_str, pgs in sorted(pages_by_src.items()):
         # the deterministic anti-leak guard (computed once over ALL clusters)
         # tells us which of these pages are FOREIGN (owned/claimed by another
@@ -650,7 +672,8 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
             # anchor the same page it is foreign to both, and this prevents the empty-set
             # whole-deck leak.
         try:
-            uris, _total = IMG.gallery_for_pages(Path(src_str), sorted(allowed), budget_kb, image_cache)
+            uris, _total = IMG.gallery_for_pages(Path(src_str), sorted(allowed), budget_kb, image_cache,
+                                                 exclude_by_page=excl_by_src.get(src_str))
         except Exception:
             uris = []
         for uri in uris:
