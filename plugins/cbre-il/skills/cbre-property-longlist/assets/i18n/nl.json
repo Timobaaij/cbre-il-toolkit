@@ -100,6 +100,7 @@
   "sec_commercial": "Commerciële Voorwaarden (Hoofdlijnen)",
   "sec_location": "Locatie &amp; Bereikbaarheid",
   "sec_workforce": "Arbeidsmarkt &amp; Regio",
+  "sec_additional": "Aanvullende gegevens",
 
   "row_total_gla": "Totale VVO",
   "row_warehouse_area": "Magazijnoppervlak",
@@ -137,8 +138,6 @@
   "cmp_status": "Status",
   "cmp_early_access": "Vervroegde toegang",
   "cmp_certification": "Certificering",
-  "val_tbc": "Nader te bepalen",
-
   "dist_th_destination": "Bestemming",
   "dist_th_distance": "Afstand",
   "dist_th_drive_time": "Rijtijd",

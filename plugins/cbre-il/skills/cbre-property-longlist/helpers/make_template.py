@@ -37,6 +37,18 @@ from pathlib import Path
 #     the Esc handler closes the lightbox first, then the modal. CSS: .lightbox/.lb-*
 #     + `#modal-img{cursor:zoom-in}`.
 
+# v21 NOTE (2026-07-09, HAND-APPLIED to assets/dashboard_template.html like v5-v20 -
+# re-add if ever regenerating from a raw reference). Data-driven modal fields:
+#  a) detailHTML's row() now OMITS an absent row (was a T('val_tbc') placeholder); the
+#     dataset-wide FIELD_PRESENT gate is dropped from row() (per-property absence subsumes
+#     it) but RETAINED in compareHTML (a matrix needs uniform rows). The T('val_tbc') key
+#     is removed from i18n.EN + the 11 bundled JSONs - a future --patch-only/regen MUST
+#     drop the make_template val_tbc patch literal (~line 616) and the key together.
+#  b) module consts DENY_FIELDS / DENY_CONTAINERS / LABEL_OVERRIDES / autoLabel + a per-call
+#     `consumed` Set; a generic catch-all after Commercial Terms renders every real field
+#     not consumed/denylisted (flattening one level of nested scalars) under a new
+#     T('sec_additional') "Additional Details" section. Auto-labels are DATA (no T() key).
+
 # v15 NOTE (2026-06-17, HAND-APPLIED to assets/dashboard_template.html like v5-v14 -
 # re-add if ever regenerating from a raw reference). The modal description paragraph
 # `<p class="desc">${p.description}</p>` rendered UNCONDITIONALLY, so a property with no

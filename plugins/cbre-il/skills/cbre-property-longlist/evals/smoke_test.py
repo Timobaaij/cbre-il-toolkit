@@ -333,6 +333,26 @@ def main() -> int:
     if not (m_es and "España" in m_es.group(1)):
         fails.append("v20: <title> does not adapt to the project (Spanish eyebrow did not reach the tab title)")
 
+    # v21 guards: data-driven modal fields (generic catch-all + per-property omit)
+    if "const DENY_FIELDS" not in tpl or "const DENY_CONTAINERS" not in tpl:
+        fails.append("template missing the v21 denylists (DENY_FIELDS / DENY_CONTAINERS)")
+    if "const autoLabel" not in tpl:
+        fails.append("template missing the v21 autoLabel data-label helper")
+    if "const consumed = new Set()" not in tpl:
+        fails.append("template missing the v21 per-call consumed Set in detailHTML")
+    if "T('sec_additional')" not in tpl and 'T("sec_additional")' not in tpl:
+        fails.append("template missing the v21 Additional Details catch-all section header")
+    if 'T("val_tbc")' in tpl or "T('val_tbc')" in tpl:
+        fails.append("v21 regression: modal row() still emits a val_tbc placeholder (must omit absent rows)")
+    import i18n as _I18N_v21
+    if "val_tbc" in _I18N_v21.EN:
+        fails.append("v21: val_tbc must be removed from i18n.EN (now an orphan key)")
+    if "sec_additional" not in _I18N_v21.EN:
+        fails.append("v21: sec_additional missing from i18n.EN")
+    # FIELD_PRESENT is RETAINED for the compare matrix (uniform rows), just dropped from the modal row()
+    if ".filter(r => !r[2] || FIELD_PRESENT[r[2]])" not in tpl:
+        fails.append("v21: compare table must retain its FIELD_PRESENT row gating")
+
     if fails:
         print("\nSMOKE TEST: FAIL")
         for f in fails:

@@ -33,7 +33,8 @@ are the Phase-2 surface; the no-overrides path is byte-identical to Phase 1.
 
 Rules honoured here:
   - No DATA in this table. No key for the 'tbd'/'—' sentinel (it stays verbatim).
-    'val_tbc' IS chrome - the modal's present-but-unknown DISPLAY label "TBC".
+    v21: the modal no longer shows a present-but-unknown placeholder - an absent
+    field simply omits its row - so there is no 'val_tbc' chrome key any more.
   - Values are free of {{double-brace}} sequences (would trip find_leftover_tokens).
     Single-brace {area}/{unit} placeholders appear ONLY in the two KPI-sub format
     strings, consumed by .format() in Python and never emitted raw.
@@ -180,6 +181,7 @@ EN = {
     "sec_commercial": "Commercial Terms (Headline)",
     "sec_location": "Location &amp; Reach",
     "sec_workforce": "Workforce &amp; Region",
+    "sec_additional": "Additional Details",
 
     # --- Modal + compare row labels (shared row_* where identical) ----------
     "row_total_gla": "Total GLA",
@@ -219,10 +221,6 @@ EN = {
     "cmp_status": "Status",
     "cmp_early_access": "Early access",
     "cmp_certification": "Certification",
-    # the present-but-unknown DISPLAY label (chrome - localised; the canonical
-    # tbd/'—' sentinel is NOT localised)
-    "val_tbc": "TBC",
-
     # --- Distance table -----------------------------------------------------
     "dist_th_destination": "Destination",
     "dist_th_distance": "Distance",

@@ -1930,6 +1930,21 @@ const isAbsent = v => v === null || v === undefined
   || ["", "tbd", "tbc", "—", "-", "??"].includes(String(v).trim().toLowerCase());
 const FIELD_PRESENT = {};
 PROPS.forEach(p => Object.keys(p).forEach(k => { if(!isAbsent(p[k])) FIELD_PRESENT[k] = true; }));
+/* v21: data-driven modal fields. The detail modal renders EVERY real field a property has,
+   including field names that exist in no schema/template - not a hardcoded row list.
+   DENY_FIELDS = structural / derived-twin / header-or-hero-only fields (NOT a duplicate of
+   the curated display list, which is tracked dynamically via `consumed`). DENY_CONTAINERS =
+   nested objects rendered elsewhere. LABEL_OVERRIDES = optional label fixes (works empty). */
+const DENY_FIELDS = new Set([
+  'id','lat','lng','coordsApprox','regionCode','region','rentUnit','areaUnit',
+  'warehouseRentVal','officeRentVal','officeAreaVal','expansionParkVal',
+  'photo','gallery','plan','mapLink','preBaked','district',
+  'park','developer','country','city','description','motorway','breeam']);
+const DENY_CONTAINERS = new Set(['preBaked','district','gallery','isochrones']);
+const LABEL_OVERRIDES = {};
+const autoLabel = k => LABEL_OVERRIDES[k] ||
+  String(k).replace(/[_-]+/g,' ').replace(/([a-z0-9])([A-Z])/g,'$1 $2')
+           .replace(/\s+/g,' ').trim().replace(/\b\w/g, c => c.toUpperCase());
 /* v10: dataset unit convention (source units are KEPT - a UK dataset ships sq ft
    and £/sq ft/yr); merge stamps areaUnit on every property, rentUnit per record */
 const AREA_UNIT = (PROPS.find(p => p.areaUnit) || {}).areaUnit || 'sq m';
@@ -1981,9 +1996,13 @@ function detailHTML(p){
     const s = String(v).trim().toLowerCase();
     return s === "" || s === "tbd" || s === "tbc" || s === "—" || s === "-";
   };
-  const row = (k,v,key) => (key && !FIELD_PRESENT[key]) ? `` : isTbd(v)
-    ? `<div class="spec"><div class="spec-k">${k}</div><div class="spec-v" style="color:var(--muted)">${T("val_tbc")}</div></div>`
-    : `<div class="spec"><div class="spec-k">${k}</div><div class="spec-v">${v}</div></div>`;
+  const consumed = new Set();
+  const row = (label,v,key) => {
+    if(key) consumed.add(key);   // registered even when omitted, so the catch-all never
+                                 // re-renders a field a curated row owns
+    return isTbd(v) ? `` :        // v21: omit absent rows entirely (was a val_tbc placeholder)
+      `<div class="spec"><div class="spec-k">${label}</div><div class="spec-v">${v}</div></div>`;
+  };
   const d = groupedDistances(p);
   const catMeta = { city:T("poi_city"), border:T("poi_border"), air:T("poi_air"), rail:T("poi_rail"), port:T("poi_port") };
   const poiIdx = (name) => POIS.findIndex(x => x.name === name);
@@ -2072,9 +2091,34 @@ function detailHTML(p){
         row(T('row_land_price'), p.landPrice, 'landPrice'),
         p.leaseTerm ? row(T('row_lease_term'), p.leaseTerm, 'leaseTerm') : '',
         p.rentFree ? row(T('row_rent_free'), p.rentFree, 'rentFree') : '',
-        p.incentives && p.incentives !== 'Not mentioned in first offer' ? row(T('row_incentives'), p.incentives, 'incentives') : '',
+        (consumed.add('incentives'), p.incentives && p.incentives !== 'Not mentioned in first offer' ? row(T('row_incentives'), p.incentives, 'incentives') : ''),
         p.reit ? row(T('row_reit'), p.reit, 'reit') : '',
       ].join(''))}
+
+      ${(() => {
+        /* v21 generic catch-all: every real top-level field NOT already consumed by a
+           curated row and NOT structurally denylisted, plus one level of flattened scalar
+           sub-fields from any non-denylisted nested object (so e.g. distances.publicTransport
+           is never swallowed). Auto-labelled (DATA, not chrome - no T() key). */
+        const extra = [];
+        for(const k of Object.keys(p)){
+          if(consumed.has(k) || DENY_FIELDS.has(k)) continue;
+          const v = p[k];
+          if(v && typeof v === 'object' && !Array.isArray(v)){
+            if(DENY_CONTAINERS.has(k)) continue;
+            for(const sk of Object.keys(v)){
+              const sv = v[sk];
+              if(sv && typeof sv === 'object') continue;   // skip arrays / deeper nesting
+              if(!isTbd(sv)) extra.push(row(autoLabel(sk), sv));
+            }
+          } else if(!Array.isArray(v) && !isTbd(v)){
+            extra.push(row(autoLabel(k), v));
+          }
+        }
+        return extra.join('')
+          ? `<h3 class="section-title">${T('sec_additional')}</h3><div class="spec-grid">${extra.join('')}</div>`
+          : '';
+      })()}
 
       <h3 class="section-title">${T("sec_location")}</h3>
       <div class="loc-layout">

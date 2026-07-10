@@ -80,8 +80,8 @@
     "sha256": "bc9a6ce710e0fb788466060b6ae328efa3e49709e3ac3f3586dd2e122c386c35"
   },
   "helpers/i18n.py": {
-    "size": 24437,
-    "sha256": "6f2fcf3d58d84102ed22148a4c6afc3cf3637e079314ed1cb13c208a47e1ca91"
+    "size": 24417,
+    "sha256": "9fee091e77829c8616d880c130cd69ce529489725c5fa8527c5831a8ddb03554"
   },
   "helpers/images.py": {
     "size": 69672,
@@ -104,8 +104,8 @@
     "sha256": "95617df2cedeb9c39ead7f5570de9540808d4e0a7879a3daa53471ce308604d8"
   },
   "helpers/make_template.py": {
-    "size": 74900,
-    "sha256": "f6adc5f3ffc94c4c6a17924426182ce0317c264333d5af4991285981c96b746e"
+    "size": 75863,
+    "sha256": "6279f6a4ba7d0a511172fcaeef7d48b381d1940ca924d52dd6310f820c37490e"
   },
   "helpers/match.py": {
     "size": 17522,
@@ -164,56 +164,56 @@
     "sha256": "1475c1f2d6d149ed6b97935e37d2ab6bbc8850979703223a3d9377eb98f1f4c6"
   },
   "assets/i18n/cs.json": {
-    "size": 9548,
-    "sha256": "ed5fc03b068dad8bca69e9bd6bea534e1a81ef07633d63e59ffbcf0cf2840ef7"
+    "size": 9558,
+    "sha256": "a047085ffbae7e0a9d35d5fff07ee3ed9f1dfeefa53574104d29119ee6f42617"
   },
   "assets/i18n/de.json": {
-    "size": 9086,
-    "sha256": "a1b2866208b1a0b812d1bbf824cca76cd63f7bf2fecaf810eceb8a63ed223a31"
+    "size": 9098,
+    "sha256": "411cb3ac5e865099329d5de71f0f6628ec307e45b1383bad9845090968fa2af3"
   },
   "assets/i18n/es.json": {
-    "size": 9524,
-    "sha256": "db892d5b3c1ade228ee12fa7c2e0494e058917d8d57a67b67324476aaa0fe4d8"
+    "size": 9538,
+    "sha256": "5f02565a1ca67e18276c8bab9a4d3caf372c5d6c04ddb0331c7c91ba675c1f1e"
   },
   "assets/i18n/fr.json": {
-    "size": 9530,
-    "sha256": "6530f3e02d055f5a46b268a42025a7d8aa3500fb4e13e57c6e2de60fc936c00b"
+    "size": 9550,
+    "sha256": "0a29769744c722a75808b5be2d2e18811aeda57383c34a91b2ebeaa0cfda9c06"
   },
   "assets/i18n/hu.json": {
-    "size": 9922,
-    "sha256": "2b185b9ed1a922648a9181dc4f80df086aad3a06419edef10fa4d542c38925ea"
+    "size": 9931,
+    "sha256": "6c74ffb05008705df068c2a6a427a4bbab69cfa87fe98ba3721f69ceacb239cd"
   },
   "assets/i18n/it.json": {
-    "size": 9292,
-    "sha256": "12fa719f570c80bc69f49ac1d5c91832793027348cc128f80fe6d45e658eccac"
+    "size": 9307,
+    "sha256": "bd33902a528dfbecfdc233f34eea318e8ddbf39704c9b374fc0cc8c7681f0fc5"
   },
   "assets/i18n/nl.json": {
-    "size": 9058,
-    "sha256": "8b508d0fce6534a1ea3a29f8d7a677dd791e16a9bcf327b8dff72d095adcbd13"
+    "size": 9068,
+    "sha256": "f51870f41ac63ef674c9c838ab74a85b303f1ab7127783180bec52f2aedae62f"
   },
   "assets/i18n/pl.json": {
-    "size": 9547,
-    "sha256": "42a33406badf4387268b6eb29807ddd469f2f7ba957cc8a07ecf33cabd8c3d4d"
+    "size": 9559,
+    "sha256": "2a8e6498a539bee754999e5517d35f54f1cfd2ed73b7a4f0b3ed2efa0f88aa2b"
   },
   "assets/i18n/pt.json": {
-    "size": 9496,
-    "sha256": "cfd53c7700ca58721adf9ee726b68e9b60278aa6ed7dc1850eec3efc6dafb11b"
+    "size": 9511,
+    "sha256": "a8af9cda990bcd98de6126c7b8f256099af225d67e5be1cd3b0141c676df816e"
   },
   "assets/i18n/ro.json": {
-    "size": 9665,
-    "sha256": "70fe73a4bbf1348d65a3986fbe204bc1be895ea0a68d30ac977d7d2962f37322"
+    "size": 9680,
+    "sha256": "299e8098b88508b599d164da62dcd5cf8b543c95c55ae6b4ec4bd1dbb11515fc"
   },
   "assets/i18n/sk.json": {
-    "size": 9516,
-    "sha256": "0e0ad5f839c1ee3ab734c1ee6445ae429c3148e2ec8dd38774c5d1248d8cb3be"
+    "size": 9528,
+    "sha256": "5abaf4200bc9979bd7f4944187d4563d844502ce03d0b67d5536a30f66b1e3e5"
   },
   "NOTICE": {
     "size": 892,
     "sha256": "01ae142eb40ec8060aae8f1f1243576e4cc728daa25c47a66ee2a4093e6dae8c"
   },
   "assets/dashboard_template.html": {
-    "size": 760151,
-    "sha256": "3fa62b26aa1e90ffef0ed7a183ee4fbf154467e86b7528250873673fdd44a3b4"
+    "size": 762568,
+    "sha256": "b3034a2901537711c8c6bc341b7716e97e84f27f1729b6cd01d4c8f19de8629d"
   },
   "assets/dashboard_template.v18.html": {
     "size": 758003,
@@ -221,7 +221,7 @@
   },
   "assets/VERSION": {
     "size": 83,
-    "sha256": "d654e5e68371debebf98c5808c3be97586e9fe9777f7c49a43ea1c05cc419519"
+    "sha256": "b5c33f5720c13fd75ee5be0f8d623b6b6fc9ee7402f53ddb552e4432f3721e50"
   },
   "assets/poi_library.json": {
     "size": 18474,

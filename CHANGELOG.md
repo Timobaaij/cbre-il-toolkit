@@ -7,6 +7,19 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.0.7] — 2026-07-10
+### Changed
+- **Property longlist — dashboard template v21: data-driven detail modal.** A
+  property's detail-modal spec rows are now generated client-side by the
+  template's `detailHTML()` on card click (rather than baked into the static
+  HTML), and the modal gains an "additional details" section (new `sec_additional`
+  string added across all 11 bundled languages). Bumps `assets/VERSION` to v21
+  with a matching chrome hash and updates `assets/dashboard_template.html`,
+  `helpers/make_template.py` and `helpers/i18n.py`. Adds an offline Node-based
+  modal-render eval (`evals/modal_render_test.py` + `.mjs`) that executes the real
+  `detailHTML()` in `node:vm`, and refreshes `evals/smoke_test.py`. Integrity
+  manifest regenerated; smoke test passes (byte-stable chrome).
+
 ## [1.0.6] — 2026-07-05
 ### Changed
 - **Property longlist — catch and drop decorative graphics from photo carousels.**
@@ -216,6 +229,7 @@ How to update to the latest version is in the [README](./README.md#updating).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.0.7]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.7
 [1.0.6]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.6
 [1.0.5]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.5
 [1.0.4]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.4
