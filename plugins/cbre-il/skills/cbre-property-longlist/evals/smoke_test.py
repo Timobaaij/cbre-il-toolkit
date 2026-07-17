@@ -334,8 +334,11 @@ def main() -> int:
         fails.append("v20: <title> does not adapt to the project (Spanish eyebrow did not reach the tab title)")
 
     # v21 guards: data-driven modal fields (generic catch-all + per-property omit)
-    if "const DENY_FIELDS" not in tpl or "const DENY_CONTAINERS" not in tpl:
-        fails.append("template missing the v21 denylists (DENY_FIELDS / DENY_CONTAINERS)")
+    # NOTE: DENY_CONTAINERS was v21's flatten-denylist; v22 Phase 1 removes the flatten
+    # entirely (see v22 guards below), so DENY_CONTAINERS is intentionally gone and is no
+    # longer part of this guard - only DENY_FIELDS (still in use) is checked here.
+    if "const DENY_FIELDS" not in tpl:
+        fails.append("template missing the v21 DENY_FIELDS denylist")
     if "const autoLabel" not in tpl:
         fails.append("template missing the v21 autoLabel data-label helper")
     if "const consumed = new Set()" not in tpl:
@@ -352,6 +355,20 @@ def main() -> int:
     # FIELD_PRESENT is RETAINED for the compare matrix (uniform rows), just dropped from the modal row()
     if ".filter(r => !r[2] || FIELD_PRESENT[r[2]])" not in tpl:
         fails.append("v21: compare table must retain its FIELD_PRESENT row gating")
+
+    # v22 guards: render-boundary (scalars only, no flatten, locator skip)
+    if "const LOCATOR_RE" not in tpl:
+        fails.append("template missing the v22 LOCATOR_RE guard")
+    if "for(const sk of Object.keys(v))" in tpl:
+        fails.append("v22 regression: the v21 object-flatten loop is still present (must be removed)")
+    if "typeof v === 'object'" not in tpl:
+        fails.append("v22: catch-all must skip object-valued keys (scalars only)")
+
+    # v23 guard: derived numbers use a locale formatter, not raw toFixed
+    if "const nfmt" not in tpl:
+        fails.append("template missing the v23 nfmt locale number helper")
+    if "(v / 12).toFixed(2)" in tpl:
+        fails.append("v23 regression: monthly rent still uses toFixed(2) (must be nfmt)")
 
     if fails:
         print("\nSMOKE TEST: FAIL")

@@ -358,6 +358,53 @@ def main() -> int:
     check(data_nd["properties"][0].get("warehouseRentVal") == 55.0,
           "#4e: a pick of the default candidate is a no-op (precedence stands)")
 
+    # ----------------------------------------------------------------------- #
+    # I1 (v22 Phase 1 fix) - end-to-end AUDIT of the off-spec quarantine: the
+    # "never silently destroy data" invariant. A stray TOP-LEVEL object (the
+    # leak shape - a provenance/meta map that landed on the record instead of
+    # under __meta) must never become a displayed field, but it must also never
+    # vanish: it has to (a) be pulled out of the property, (b) get its OWN
+    # ledger row, and (c) surface in the Gaps Report. A genuine brand-new
+    # SCALAR attribute sitting right next to it must survive untouched
+    # (auto-show is preserved).
+    print("I1 - off-spec quarantine reaches the ledger AND the Gaps Report:")
+    owork = work / "offspec_audit"; owork.mkdir()
+    osrc = owork / "inputs"; osrc.mkdir()
+    offspec_rec = [{
+        "park": "Epsilon Park", "developer": "7R", "city": "Wroclaw", "country": "PL",
+        "status": "Existing", "warehouseArea": 22000,
+        "commune": "Katy Wroclawskie",  # genuine brand-new scalar - must be KEPT
+        "prov": {"city": "page 9 (text interpretation)",                    # off-spec
+                 "warehouseArea": "page 9 (SUPERFICIES nave total)"},       # LEAK object
+        "__meta": {"source_file": "offspec_audit_deck.pdf", "source_type": "pdf",
+                   "locator_base": "page 9",
+                   "prov": {"park": "page 9", "developer": "page 9", "city": "page 9",
+                            "country": "page 9", "status": "page 9", "warehouseArea": "page 9"}},
+    }]
+    offspec_records = owork / "offspec.json"
+    offspec_records.write_text(json.dumps(offspec_rec, ensure_ascii=False), encoding="utf-8")
+    offspec_canonical = owork / "canonical.json"
+    offspec_ledger = owork / "source_ledger.csv"
+    rc_os = call(merge, "--records", offspec_records, "--source-dir", osrc,
+                 "--out", offspec_canonical, "--ledger", offspec_ledger)
+    check(rc_os == 0, "I1: merge completes on a record carrying an off-spec top-level object")
+    data_os = json.loads(offspec_canonical.read_text(encoding="utf-8"))
+    props_os = data_os["properties"]
+    check(len(props_os) == 1 and "prov" not in props_os[0],
+          "I1: the off-spec top-level object never reaches the property (quarantined, not a field)")
+    check(props_os[0].get("commune") == "Katy Wroclawskie",
+          "I1: a genuine brand-new scalar attribute is KEPT (auto-show preserved)")
+    check(any(e.get("key") == "prov" for e in data_os["meta"].get("offspec", [])),
+          "I1: meta.offspec records the quarantined key")
+
+    os_rows = list(csv.DictReader(open(offspec_ledger, newline="", encoding="utf-8")))
+    check(any(r["record_type"] == "offspec" and r["field"] == "prov" for r in os_rows),
+          "I1: the off-spec key has its own audit ledger row (never silently dropped)")
+
+    os_gaps = deliver.gaps_report(data_os, "OffspecAudit")
+    check("Off-spec keys" in os_gaps and "prov" in os_gaps,
+          "I1: the Gaps Report lists the quarantined off-spec key")
+
     print("Stage 4 - pre-build mechanical gates (must ALL-PASS first try):")
     for cmd in (("validate-data", canonical), ("self-check",),
                 ("coverage", canonical),

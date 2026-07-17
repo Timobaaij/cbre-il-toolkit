@@ -304,6 +304,92 @@ REQUIRED_TEXT_SENTINELS = {"developer": "tbd", "city": "tbd", "park": "tbd",
 # clean string so it satisfies the schema instead of hard-failing validate-data.
 _COERCE_STR = set(STRING_FIELDS) | set(REQUIRED_TEXT_SENTINELS) | {"landPrice", "mapLink", "reit"}
 
+# --- render-boundary helpers (Phase 1) --------------------------------------
+_CANON_PROPERTY_FIELDS = None
+
+
+def canonical_property_fields() -> frozenset:
+    """Property field names the SCHEMA declares ($defs.property.properties) UNION every
+    p.<field> the template reads. Used to protect canonical CONTAINER objects
+    (gallery/preBaked/district) at the merge boundary and by the render-boundary gate.
+    NOT a display allowlist for scalars: any real scalar attribute still auto-shows."""
+    global _CANON_PROPERTY_FIELDS
+    if _CANON_PROPERTY_FIELDS is None:
+        try:
+            schema = json.loads(SCHEMA_FILE.read_text(encoding="utf-8"))
+            keys = set((((schema.get("$defs") or {}).get("property") or {})
+                        .get("properties") or {}).keys())
+        except Exception:
+            keys = set()
+        # scan the APP script only (everything from the PROPS injection marker onward) so a
+        # bundled vendor library BEFORE it (minified Leaflet, whose `p.prototype` etc. would
+        # otherwise leak noise like "prototype" into the set) can never pollute the contract.
+        tpl = load_template()
+        marker = DATA_MARKERS.get("PROPS", "")
+        idx = tpl.find(marker) if marker else -1
+        app = tpl[idx:] if idx != -1 else tpl
+        keys |= set(re.findall(r"\bp\.([A-Za-z_]\w*)", app))
+        _CANON_PROPERTY_FIELDS = frozenset(keys)
+    return _CANON_PROPERTY_FIELDS
+
+
+# a pipeline provenance-locator string is the WHOLE value "page N (...)" / "slide N (...)" /
+# a bare "page N" / "slide N" (extract_pdf prov). Anchored end-to-end + conservative so real
+# prose that merely mentions a page is never mistaken for a locator.
+_LOCATOR_RE = re.compile(r"^\s*(?:page|slide)\s+\d+\s*(?:\(.*\))?\s*$", re.IGNORECASE)
+
+
+def looks_like_locator(v) -> bool:
+    """True for a pipeline provenance-locator string (a page/source reference), never a
+    real displayable value. Deterministic."""
+    return isinstance(v, str) and bool(_LOCATOR_RE.match(v.strip()))
+
+
+# --- translation eligibility (Phase 2) --------------------------------------
+# Fields that are identifiers / proper names / structural / figure-carrying -> NEVER sent to the
+# translator. Everything else that holds prose IS eligible (the LLM makes the final prose-vs-name
+# call; these exclusions just keep obvious non-prose out). NOT a positive prose list, so a brand-
+# new prose attribute is eligible automatically.
+IDENTIFIER_FIELDS = frozenset({
+    "id", "country", "developer", "park", "city", "landlord", "motorway", "region", "regionCode",
+    "lat", "lng", "coordsApprox", "breeam", "rentUnit", "areaUnit", "mapLink", "photo", "gallery",
+    "plan", "preBaked", "district", "reit",
+    "warehouseRentVal", "officeRentVal", "officeAreaVal", "expansionParkVal",
+    # rent/price/area strings are figure+unit+currency -> kept verbatim (source convention)
+    "warehouseRent", "officeRent", "serviceCharge", "landPrice", "plotArea", "warehouseArea",
+    "officeArea", "divisibleFrom", "earlyAccess",
+})
+_TR_NUMUNIT_RE = re.compile(r"^[\s\d.,]+(?:\s?[a-zA-Z%²³/.\-]{0,8})?$")   # "12", "40,000", "12 m", "50%"
+_TR_CODE_RE = re.compile(r"^[A-Za-z]{0,4}[\-\s]?[\d][\w.\-/]*$")           # "MU-2", "A4", "D5", postcodes
+_TR_DATE_RE = re.compile(r"^\d{4}([-/.]\d{1,2}){0,2}$|^Q[1-4]\s*\d{4}$", re.IGNORECASE)
+_TR_URL_RE = re.compile(r"^(https?://|www\.|mailto:)", re.IGNORECASE)
+_TR_CURRENCY_RE = re.compile(r"[€£$¥]|/\s*(yr|mo|year|month|sq\s?m|sq\s?ft|m²)", re.IGNORECASE)
+
+
+def is_translatable_value(field: str, v) -> bool:
+    """Deterministic eligibility: True only for a free-text PROSE string worth translating.
+    Excludes identifier/name/figure fields, and values that are numbers, number+unit, codes,
+    dates, URLs, currency/rate strings, locators, or sentinels. The LLM still makes the final
+    prose-vs-proper-noun judgement on what passes; these rules only keep obvious non-prose out."""
+    if not isinstance(v, str):
+        return False
+    if field in IDENTIFIER_FIELDS:
+        return False
+    s = v.strip()
+    if not s or s.lower() in {"tbd", "tbc", "—", "-", "??", "n/a", "none"}:
+        return False
+    if looks_like_locator(s):
+        return False
+    # A multi-word PHRASE is prose even if it embeds a figure/price/URL (e.g. a description
+    # that mentions "€60/sqm") -> eligible. The figure/code/date/currency/URL exclusions apply
+    # ONLY to SHORT atomic values (a value that IS a rate/code/date, not prose containing one),
+    # so a real description is never silently withheld from translation.
+    if len(s.split()) <= 3:
+        if (_TR_URL_RE.match(s) or _TR_DATE_RE.match(s) or _TR_CODE_RE.match(s)
+                or _TR_CURRENCY_RE.search(s) or _TR_NUMUNIT_RE.match(s)):
+            return False
+    return True
+
 
 def _as_text(v):
     """Format a numeric value as a clean string for a string-typed chrome field

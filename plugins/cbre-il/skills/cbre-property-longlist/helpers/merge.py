@@ -68,6 +68,23 @@ def _date(rec):
     return rec.get("__meta", {}).get("date", "")
 
 
+def _normalise_offspec(rec: dict) -> dict:
+    """Move off-spec STRUCTURES out of the record's top level into __meta.offspec BEFORE
+    clustering, so they can never become a displayed field: (a) a dict/list whose key is
+    NOT a canonical field (a stray provenance/meta map), or (b) a scalar whose value is a
+    pipeline locator string. Genuine scalar attributes (canonical AND brand-new) and
+    canonical container objects (gallery/preBaked/district) are KEPT so auto-show is
+    preserved. Deterministic; a clean record is unchanged."""
+    canon = C.canonical_property_fields()
+    meta = rec.setdefault("__meta", {})
+    for k in [k for k in rec if k != "__meta"]:
+        v = rec[k]
+        if (isinstance(v, (dict, list)) and k not in canon) or C.looks_like_locator(v):
+            meta.setdefault("offspec", {})[k] = v
+            del rec[k]
+    return rec
+
+
 _FILE_UNRELIABLE: dict[str, bool] = {}
 
 
@@ -1020,6 +1037,9 @@ def main() -> None:
     for f in args.records:
         all_records.extend(json.loads(Path(f).read_text(encoding="utf-8")))
 
+    for _r in all_records:            # v22 Phase 1: quarantine off-spec structures pre-merge
+        _normalise_offspec(_r)
+
     compute_file_quality(all_records)  # demote mostly-poor brochures in precedence
     area_unit, rent_unit = dominant_units(all_records)
     MATCH_DECISIONS = {}  # pair_id -> 'same'|'different'|{verdict,reason} (grey-zone sub-agent)
@@ -1072,6 +1092,7 @@ def main() -> None:
         return v is None or str(v).strip().lower() in {"tbd", "—", "", "none", "??"}
 
     properties, ledger_rows, all_conflicts = [], [], []
+    meta_offspec = []   # v22 Phase 1: off-spec keys quarantined pre-merge (-> Gaps Report)
     placeholder_audit: dict = {}  # prop id -> discarded image candidates (audited, never silent)
     regions_on = bool(((_load_yaml(args.project_yaml) or {}).get("enrichment") or {}).get("regions"))
     # UNIQUE-CLAIMANT GUARD: precompute, once over ALL clusters, the per-deck pages each
@@ -1224,6 +1245,18 @@ def main() -> None:
                                             else plan_src.get("locator_base", "")))}
         merged.pop("__meta", None)
         properties.append(merged)
+        # v22 Phase 1: audit every quarantined off-spec key (never silently dropped)
+        for _r in cl:
+            for _k, _v in (_r.get("__meta", {}).get("offspec", {}) or {}).items():
+                ledger_rows.append({
+                    "property_id": i, "record_type": "offspec", "field": _k,
+                    "value": _short(_v), "source_file": _r.get("__meta", {}).get("source_file", ""),
+                    "source_locator": "", "source_type": _r.get("__meta", {}).get("source_type", ""),
+                    "extractor": "boundary", "confidence": "",
+                    "conflict_note": "off-spec structure (provenance/meta) quarantined - not a displayable value",
+                    "verified": "",
+                })
+                meta_offspec.append({"property_id": i, "key": _k, "value": _short(_v)})
         # ledger rows for every populated field (with conflict note where one occurred)
         for field, pr in prov.items():
             ledger_rows.append({
@@ -1331,6 +1364,8 @@ def main() -> None:
         # (per-key English fallback); DATA is never translated.
         "language": (args.language or "English"),
     }
+    if meta_offspec:
+        meta["offspec"] = meta_offspec
     # an explicit BCP-47 locale (e.g. de-AT) overrides the language's default region
     if str(getattr(args, "locale", "") or "").strip():
         meta["locale"] = args.locale.strip()

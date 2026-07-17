@@ -31,7 +31,10 @@ CANON = {
          "photo": PX, "gallery": [PX],
          "commune": "Katy Wroclawskie", "zoningType": "MU-2",
          "soilContaminationRisk": "Low (Phase I clear)",
-         "distances": {"publicTransport": "Bus 612, 400 m"}},
+         "distances": {"publicTransport": "Bus 612, 400 m"},
+         # v22 Phase 1: a stray provenance OBJECT + a locator-shaped scalar must NEVER show
+         "prov": {"city": "page 1 (text interpretation)", "clearHeight": "page 1 (text: Altura libre)"},
+         "someRef": "page 2 (verbatim)"},
         # THIN: none of the above extra fields
         {"id": 2, "country": "PL", "park": "Thin Park", "developer": "DevB", "city": "Poznan",
          "status": "Speculative", "warehouseArea": 20000, "warehouseRent": "tbd",

@@ -73,8 +73,15 @@ must(rich.includes('Soil Contamination Risk'), 'invented field auto-labelled ("S
 must(rich.includes('Low (Phase I clear)'), 'invented field VALUE rendered');
 must(rich.includes('Commune') && rich.includes('Zoning Type'), 'other unknown scalars rendered (Commune / Zoning Type)');
 must(rich.includes('Additional Details'), 'catch-all section header present on the rich property');
-// Bug 1 point 3 - nested scalar surfaces (flatten one level)
-must(rich.includes('Public Transport') && rich.includes('Bus 612'), 'nested distances.publicTransport surfaced');
+// v22 Phase 1: nested objects are NEVER flattened (supersedes the v21 "flatten one level"
+// behaviour asserted here through v21) - a nested scalar like distances.publicTransport
+// must NOT surface via the catch-all any more.
+must(!rich.includes('Public Transport') && !rich.includes('Bus 612, 400 m'),
+  'nested distances object is never flattened (Public Transport not surfaced)');
+// v22 Phase 1: objects are never flattened; locator strings never shown; real scalars still show.
+must(!rich.includes('page 1 (text interpretation)') && !rich.includes('page 2 (verbatim)'),
+  'no provenance-locator string shown on the card (prov object not flattened, someRef skipped)');
+must(rich.includes('Commune'), 'genuine new scalar attribute (Commune) still auto-shows');
 
 // Bug 2 - the thin property shows NO row and NO placeholder for fields it lacks
 must(!thin.includes('Soil Contamination Risk'), 'thin property has NO row for the invented field');

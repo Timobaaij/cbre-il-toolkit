@@ -7,6 +7,31 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.0.8] — 2026-07-17
+### Added
+- **Property longlist — first-party coordinates from map links (`helpers/coords.py`).**
+  A shared, pure parser pulls a landlord/agent's OWN Google/Apple/OSM maps link or
+  a `lat,lng` pair out of brochures, trackers, Excel cells and email bodies and uses
+  it verbatim (via `extract_pdf.backfill_link_coords`) — a first-party pin beats a
+  town-centre geocode and works fully offline, so a blocked geocoder no longer
+  strands a run. Coordinates are still never model-invented.
+- **Property longlist — free-text data translation (`helpers/translate.py`, exit 12).**
+  When the dashboard language differs from the source, eligible property *prose*
+  (descriptions, status) is translated by an isolated sub-agent while numbers, units,
+  codes, dates and proper names stay verbatim; the original is kept in the Source
+  Ledger, the pass is cached and resume-safe, and a blind G-lang reviewer confirms it.
+  Declinable with a `.SKIP` marker.
+### Changed
+- **Property longlist — consolidated Stage-0 setup and dashboard template v24.** The
+  broker setup is now ONE `AskUserQuestion` form (client name, enrichment extras, the
+  openrouteservice HGV key, email scope and language in a single prompt — no
+  follow-ups). Dashboard template bumped to v24 (matching chrome hash). Broad updates
+  to extraction (`extract_pdf`, `extract_pptx`, `extract_xlsx`), `merge`, `deliver`,
+  `gate_runner`, `run`, `i18n`, `make_template`, all 11 language packs and
+  `reference/{data-engine,localisation}.md`, plus new evals (coords, boundary, flyover,
+  format, xlsx-coords, backfill-coords, off-spec premerge, translate). Integrity
+  manifest regenerated (69 files); preflight and the smoke test pass.
+
 ## [1.0.7] — 2026-07-10
 ### Changed
 - **Property longlist — dashboard template v21: data-driven detail modal.** A
@@ -229,6 +254,7 @@ How to update to the latest version is in the [README](./README.md#updating).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.0.8]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.8
 [1.0.7]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.7
 [1.0.6]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.6
 [1.0.5]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.5

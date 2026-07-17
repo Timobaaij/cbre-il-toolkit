@@ -49,6 +49,36 @@ from pathlib import Path
 #     not consumed/denylisted (flattening one level of nested scalars) under a new
 #     T('sec_additional') "Additional Details" section. Auto-labels are DATA (no T() key).
 
+# v23 NOTE (2026-07-15, HAND-APPLIED like v5-v22). Right formatting (Phase 3): a client-side
+# nfmt(n,mn,mx) locale number helper; applied to rentMonthlyStr (monthly rate), rNum (workforce
+# %), rK (workforce thousands) and regional GDP bn, so derived numbers follow output.language's
+# separators. Source strings/currencies/units stay verbatim. Also folded the Phase-1 deferred
+# cleanups: removed the stale DENY_CONTAINERS mention in the module-const comment and the
+# redundant `v === null` in the catch-all.
+
+# v24 NOTE (2026-07-16, HAND-APPLIED like v5-v23 - re-add if ever regenerating). FLYOVER view:
+# a third view (tab after Grid/Map) appended as a self-contained <script> IIFE before </body> - a
+# 70/30 satellite-map + scroll-snap slide panel that flyTo()s each property, with prev/next +
+# arrow-key + marker-click nav, per-property spec slide, drive-time highlights and openModal(). It
+# reads PROPS at runtime and REUSES the chrome's generic primitives (T / fmt / nfmt / regionName /
+# AREA_UNIT / openModal / switchView[wrapped, origSwitch preserved]), so it is locale-, client- and
+# format-agnostic: no hardcoded country dict (regionName via Intl.DisplayNames), no en-US numbers
+# (fmt/nfmt on LOCALE), no hardcoded map centre (fitBounds to the geocoded PROPS). New i18n keys:
+# tab_flyover, flyover_hint, flyover_dt_title, open_in_maps, label_option, row_plot, row_developer,
+# row_motorway (EN + 11 bundled langs; machine first-cut pending CBRE house-term review). An unknown
+# rent is OMITTED (never an unsourced "On application"); plotArea is fmt()+AREA_UNIT; the maps link
+# falls back to a coord URL like the modal. Online ESRI/CARTO tiles (same sources as the main + modal
+# maps). regionName is defined LOCALLY in the IIFE (the chrome's is function-local). Frozen chrome
+# (injects no data) -> byte-identity holds; VERSION v23->v24 + new chrome_sha256.
+
+# v22 NOTE (2026-07-15, HAND-APPLIED to assets/dashboard_template.html like v5-v21 -
+# re-add if ever regenerating). Render-boundary correctness (Phase 1): the detailHTML
+# catch-all now renders real SCALAR attributes only - it no longer flattens objects one
+# level (the v21 DENY_CONTAINERS flatten is removed) and skips any value matching
+# LOCATOR_RE (a "page N (...)" / bare "page N" provenance reference). merge._normalise_offspec
+# quarantines non-canonical objects + locator scalars into __meta.offspec (ledger + Gaps)
+# before clustering. Auto-show of genuine scalar attributes (canonical or brand-new) is preserved.
+
 # v15 NOTE (2026-06-17, HAND-APPLIED to assets/dashboard_template.html like v5-v14 -
 # re-add if ever regenerating from a raw reference). The modal description paragraph
 # `<p class="desc">${p.description}</p>` rendered UNCONDITIONALLY, so a property with no

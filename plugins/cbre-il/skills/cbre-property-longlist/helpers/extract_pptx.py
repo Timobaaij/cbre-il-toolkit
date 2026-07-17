@@ -57,6 +57,31 @@ def slide_texts(prs) -> list[str]:
     return texts
 
 
+def slide_link_targets(slide) -> list[str]:
+    """Every hyperlink ADDRESS on a slide: run-level text hyperlinks + shape click actions. Used by
+    extract_pdf.backfill_link_coords to recover a first-party maps pin from a 'click for location'
+    button whose URL is not visible in the slide text. Best-effort per shape/run - a broken
+    relationship yields nothing for that shape, never aborts the slide."""
+    out: list[str] = []
+    for shape in slide.shapes:
+        try:
+            addr = shape.click_action.hyperlink.address
+            if addr:
+                out.append(str(addr))
+        except Exception:
+            pass
+        if getattr(shape, "has_text_frame", False):
+            try:
+                for para in shape.text_frame.paragraphs:
+                    for run in para.runs:
+                        addr = run.hyperlink.address
+                        if addr:
+                            out.append(str(addr))
+            except Exception:
+                pass
+    return out
+
+
 def slide_hero(slide, budget_kb: int) -> str | None:
     # the most PHOTOGRAPHIC picture on the slide (not merely the largest), so a logo
     # or branded element does not win by area - same scorer as the PDF path

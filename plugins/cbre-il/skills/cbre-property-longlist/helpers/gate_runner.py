@@ -277,7 +277,8 @@ def cmd_reconcile(args) -> int:
     issues = []
 
     m = re.search(r"const PROPS = (.*?);(?:\n|$)", html, re.DOTALL)
-    html_ids = {p["id"] for p in json.loads(m.group(1))} if m else set()
+    html_props = json.loads(m.group(1)) if m else []   # parse const PROPS ONCE (reused below)
+    html_ids = {p["id"] for p in html_props}
     canon_ids = {p["id"] for p in data["properties"]}
     if html_ids != canon_ids:
         issues.append(f"id mismatch HTML vs canonical: only-html={html_ids - canon_ids}, "
@@ -294,6 +295,18 @@ def cmd_reconcile(args) -> int:
         props, data.get("regions", {}), (data.get("meta") or {}).get("units"))["kpi_properties"]
     if f'<div class="kpi-value">{kpi_props}</div>' not in html:
         issues.append(f"hero KPI properties ({kpi_props}) not found in HTML")
+
+    # v22 Phase 1 render-boundary: no property may carry a NON-canonical object/array (a leaked
+    # provenance/meta map), and no scalar value may be a pipeline locator string.
+    canon = C.canonical_property_fields()
+    for p in html_props:   # same parsed PROPS list (no second re.search / json.loads)
+        for k, v in p.items():
+            if isinstance(v, (dict, list)) and k not in canon:
+                issues.append(f"property {p.get('id')}: non-canonical object key '{k}' reached PROPS "
+                              f"(provenance/meta must be quarantined at merge)")
+            elif C.looks_like_locator(v):
+                issues.append(f"property {p.get('id')}: field '{k}' shows a provenance-locator "
+                              f"string ('{str(v)[:40]}') instead of a value")
 
     if issues:
         for i in issues:
@@ -776,6 +789,53 @@ def cmd_enrichment(args) -> int:
 
 
 # --------------------------------------------------------------------------- #
+def cmd_translation(args) -> int:
+    """Mechanical half of the v22 Phase 2 translation gate: BLOCKS the build if the
+    translation pass did not fully do its job - a request named a non-eligible field,
+    or an eligible free-text field in the built canonical is still untranslated."""
+    import translate as TR
+    import i18n as I18N
+    issues = []
+    work = Path(args.work)
+    target_code = I18N.normalize_lang(getattr(args, "lang", "English") or "English")
+    data = C.load_canonical(Path(args.canonical))
+    tdir = work / "i18n"
+    import os as _os
+    import translate as _TR
+    if _os.environ.get(_TR.SKIP_ENV) == "1" or (tdir / "data_translate.SKIP").exists():
+        _ok("free-text translation declined (SKIP) - data shipped in source language")
+        print("STATUS: ALL-PASS")
+        return 0
+    # the on-disk cache is the raw {source_text: translation} handoff; rekey it by text_key
+    # exactly as run_stage does, so the gate's collect_requests lookup matches the bake.
+    cache = TR._hashed_cache(TR._load_cache(tdir / f"data_translations.{target_code}.json"), target_code)
+    # (1) the request (if any) must only name eligible fields
+    reqp = tdir / "data_translate_request.json"
+    if reqp.exists():
+        try:
+            req = json.loads(reqp.read_text(encoding="utf-8"))
+        except Exception:
+            req = {}
+        for it in (req.get("items") or []):
+            if not C.is_translatable_value(it.get("field", ""), it.get("text", "")):
+                issues.append(f"translate request names a NON-eligible field: {it.get('field')!r}")
+    # (2) every eligible field in the built canonical must be handled (translated or already target)
+    remaining = TR.collect_requests(data, target_code, cache)
+    if remaining:
+        ex = ", ".join(f"{r['property_id']}:{r['field']}" for r in remaining[:5])
+        issues.append(f"{len(remaining)} eligible free-text field(s) not translated to the target "
+                      f"language (e.g. {ex}) - the translation pass did not complete")
+    if issues:
+        for i in issues:
+            _bad(i)
+        print("STATUS: BLOCKED")
+        return 1
+    _ok("free-text data is translated to the target language (or already in it)")
+    print("STATUS: ALL-PASS")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -798,6 +858,9 @@ def main() -> None:
                    "REQUESTED (geocode,pois,osrm,regions) - a requested layer that left "
                    "NO enrichment record means the stage crashed/was skipped (P2-9)")
     p.set_defaults(fn=cmd_enrichment)
+    p = sub.add_parser("translation"); p.add_argument("canonical")
+    p.add_argument("--work", required=True); p.add_argument("--lang", default="English")
+    p.set_defaults(fn=cmd_translation)
     p = sub.add_parser("freeze"); p.add_argument("file")
     p.add_argument("--check", action="store_true", help="verify the file is byte-identical to the freeze snapshot")
     p.set_defaults(fn=cmd_freeze)

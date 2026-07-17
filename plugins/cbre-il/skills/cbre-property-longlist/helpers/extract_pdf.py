@@ -38,6 +38,7 @@ try:
 except Exception:
     pass
 import normalize as N
+import coords as _CO
 
 # canonical label phrase -> (field, kind). kind: text | num | rent | passthru
 LABELS = [
@@ -458,20 +459,11 @@ def parse_property_page(text: str, park, region: str, country: str,
 # FIRST-PARTY data (the brochure author pinned the site), better than any
 # geocoder and available fully offline. A real Spanish run burned a day on a
 # blocked geocoder while every page carried maps.google.com/?q=lat,lng links.
-_MAPS_URI = re.compile(
-    r"maps\.google|google\.[a-z.]{2,8}/maps|goo\.gl/maps|maps\.app\.goo\.gl|"
-    r"openstreetmap\.org|osm\.org|bing\.com/maps|maps\.apple\.com|geo:", re.I)
-_LINK_LL = [
-    # destination-of-trip / single-point keys ONLY. saddr (directions START/origin) and sll
-    # (search-viewport centre) are NOT the pinned property and _page_link_coords takes the
-    # LEFTMOST match, so an origin would win over the destination - never accept them.
-    re.compile(r"[?&](?:q|query|ll|center|daddr|destination)="
-               r"(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})"),
-    re.compile(r"@(-?\d{1,2}\.\d{3,}),(-?\d{1,3}\.\d{3,})"),
-    re.compile(r"!3d(-?\d{1,2}\.\d{3,})!4d(-?\d{1,3}\.\d{3,})"),
-    re.compile(r"/place/(-?\d{1,2}\.\d{3,}),(-?\d{1,3}\.\d{3,})"),
-    re.compile(r"\bgeo:(-?\d{1,2}\.\d{3,}),(-?\d{1,3}\.\d{3,})"),
-]
+# The map-link / coordinate grammar now lives in the shared `coords` module (one home, applied
+# across ALL text inputs by backfill_link_coords). Re-exported here under the historical names so
+# every `import extract_pdf as P` consumer (evals, vision_prep, extract_pptx) keeps working unchanged.
+_MAPS_URI = _CO.MAPS_URI
+_LINK_LL = _CO.LINK_LL
 
 
 def _page_link_coords(page) -> tuple[tuple[float, float] | None, str | None]:
@@ -537,55 +529,121 @@ def _resolve_pdf(source_dir, name):
 
 
 def backfill_link_coords(records, source_dir):
-    """Fill lat/lng + mapLink on records from their page's 'click for location' maps
-    hyperlink - the brochure author's OWN pin (first-party, better than any geocoder, fully
-    offline). Runs on records from ANY extractor (interpretation/vision/tracker), recovering
-    the first-party coordinates for the current interpretation record source - the harvest
-    used to live only in the deprecated own-line path (bug #D). A record already carrying a
-    NUMERIC coord AND a mapLink is left untouched. No-op without fitz or a resolvable PDF; it
-    never invents - a link with no parseable lat/lng still ships its URL as mapLink and the
-    coord stays a gap for geocode (a short goo.gl link needs a network resolve)."""
-    try:
-        import fitz  # noqa: F401
-    except Exception:
-        return records
+    """Fill lat/lng + mapLink from a FIRST-PARTY map link across ALL text inputs - the source
+    author's OWN pin (better than any geocoder, fully offline). Three passes:
+      A  stashed __meta.map_candidates (a list of raw strings) - Excel cells + email bodies; the
+         key is DELETED after resolving so it is never persisted to canonical.json;
+      B  PDF re-open (fitz) - the page's 'click for location' hyperlink ANNOTATIONS, then a scan of
+         the visible page TEXT for a maps URL / plain lat,lng;
+      C  PPTX re-open (python-pptx) - the slide's text + its shape/run hyperlink addresses.
+    Precedence is UNCHANGED: a record already carrying a NUMERIC coord AND a mapLink is left
+    untouched, and the resolver runs pre-geocode so a first-party pin always beats the town centre.
+    It NEVER invents - a link with no parseable lat/lng still ships its URL as mapLink and the coord
+    stays a gap (a short goo.gl link needs a network resolve). Degrades to a no-op for a pass whose
+    engine (fitz / python-pptx) or source file is absent."""
 
     def _num(v):
         return isinstance(v, (int, float)) and not isinstance(v, bool)
 
-    by_file: dict = {}
+    def _done(r):
+        return _num(r.get("lat")) and r.get("mapLink")
+
+    def _apply(r, coords, uri, loc):
+        prov = r.setdefault("__meta", {}).setdefault("prov", {})
+        if coords and not _num(r.get("lat")):
+            r["lat"], r["lng"] = coords[0], coords[1]
+            prov["lat"] = prov["lng"] = f"{loc} ({'map link' if uri else 'coordinates'})"
+        if uri and not r.get("mapLink"):
+            r["mapLink"] = uri
+            prov["mapLink"] = f"{loc} (map link)"
+
+    # Pass A: stashed candidates (deterministic; no re-open). Runs for EVERY source type; the
+    # candidate key is consumed and removed so it can never bloat or reach canonical.json.
     for r in records:
         m = r.get("__meta") or {}
-        if m.get("source_type") != "pdf":
+        cands = m.get("map_candidates")
+        if cands and not _done(r):
+            loc = m.get("locator_base") or m.get("source_file") or "source"
+            for cand in cands:
+                c, ml = _CO.coords_and_link_from_text(cand)
+                _apply(r, c, ml, loc)
+                if _done(r):
+                    break
+        if isinstance(m, dict) and "map_candidates" in m:
+            del m["map_candidates"]
+
+    # group the still-missing records by source for the re-open passes
+    by_pdf: dict = {}
+    by_pptx: dict = {}
+    for r in records:
+        if _done(r):
             continue
-        if _num(r.get("lat")) and r.get("mapLink"):
-            continue  # already has a first-party pin + link
-        pno, sf = m.get("page_no"), m.get("source_file")
-        if not isinstance(pno, int) or not sf:
+        m = r.get("__meta") or {}
+        pno, sf, st = m.get("page_no"), m.get("source_file"), m.get("source_type")
+        if not (isinstance(pno, int) and sf):
             continue
-        by_file.setdefault(str(sf), []).append((pno, r))
-    for sf, items in by_file.items():
-        path = _resolve_pdf(source_dir, sf)
-        if not path:
-            continue
+        if st == "pdf":
+            by_pdf.setdefault(str(sf), []).append((pno, r))
+        elif st == "pptx":
+            by_pptx.setdefault(str(sf), []).append((pno, r))
+
+    # Pass B: PDF re-open (annotations, then visible page text)
+    if by_pdf:
         try:
-            doc = fitz.open(str(path))
-        except Exception:
-            continue
-        try:
-            for pno, r in items:
-                if not (0 <= pno < doc.page_count):
+            import fitz  # noqa: F401
+            for sf, items in by_pdf.items():
+                path = _resolve_pdf(source_dir, sf)
+                if not path:
                     continue
-                ll, uri = _page_link_coords(doc[pno])
-                prov = r.setdefault("__meta", {}).setdefault("prov", {})
-                if ll and not _num(r.get("lat")):
-                    r["lat"], r["lng"] = ll[0], ll[1]
-                    prov["lat"] = prov["lng"] = f"page {pno + 1} (map link)"
-                if uri and not r.get("mapLink"):
-                    r["mapLink"] = uri
-                    prov["mapLink"] = f"page {pno + 1} (map link)"
-        finally:
-            doc.close()
+                try:
+                    doc = fitz.open(str(path))
+                except Exception:
+                    continue
+                try:
+                    for pno, r in items:
+                        if not (0 <= pno < doc.page_count):
+                            continue
+                        ll, uri = _page_link_coords(doc[pno])            # hyperlink annotations
+                        if ll is None or uri is None:                    # fall back to visible text
+                            try:
+                                tc, tl = _CO.coords_and_link_from_text(doc[pno].get_text())
+                            except Exception:
+                                tc, tl = None, None
+                            ll = ll or tc
+                            uri = uri or tl
+                        _apply(r, ll, uri, f"page {pno + 1}")
+                finally:
+                    doc.close()
+        except Exception:
+            pass
+
+    # Pass C: PPTX re-open (slide text + hyperlink addresses). Lazy import of extract_pptx avoids
+    # the extract_pptx -> extract_pdf module cycle at load time.
+    if by_pptx:
+        try:
+            from pptx import Presentation
+            import extract_pptx as PPTX
+            for sf, items in by_pptx.items():
+                path = _resolve_pdf(source_dir, sf)  # bare-name resolver (any extension)
+                if not path:
+                    continue
+                try:
+                    slides = list(Presentation(str(path)).slides)
+                except Exception:
+                    continue
+                for pno, r in items:
+                    if not (0 <= pno < len(slides)):
+                        continue
+                    try:
+                        blob = PPTX.slide_text(slides[pno]) + "\n" + "\n".join(
+                            PPTX.slide_link_targets(slides[pno]))
+                    except Exception:
+                        continue
+                    c, ml = _CO.coords_and_link_from_text(blob)
+                    _apply(r, c, ml, f"slide {pno + 1}")
+        except Exception:
+            pass
+
     return records
 
 

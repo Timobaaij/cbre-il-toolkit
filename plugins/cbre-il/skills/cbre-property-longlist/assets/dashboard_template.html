@@ -1332,6 +1332,8 @@ const state = { filters: { q:"", country:"", city:"", dev:"", size:0 }, sort:"id
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 const fmt = n => (typeof n === "number" && isFinite(n)) ? n.toLocaleString(LOCALE) : (n == null ? "tbd" : n);
+const nfmt = (n, mn, mx) => (typeof n === "number" && isFinite(n))
+  ? n.toLocaleString(LOCALE, {minimumFractionDigits: mn, maximumFractionDigits: mx}) : n;
 
 const R = 6371;
 function haversine(lat1, lng1, lat2, lng2){
@@ -1933,18 +1935,18 @@ PROPS.forEach(p => Object.keys(p).forEach(k => { if(!isAbsent(p[k])) FIELD_PRESE
 /* v21: data-driven modal fields. The detail modal renders EVERY real field a property has,
    including field names that exist in no schema/template - not a hardcoded row list.
    DENY_FIELDS = structural / derived-twin / header-or-hero-only fields (NOT a duplicate of
-   the curated display list, which is tracked dynamically via `consumed`). DENY_CONTAINERS =
-   nested objects rendered elsewhere. LABEL_OVERRIDES = optional label fixes (works empty). */
+   the curated display list, which is tracked dynamically via `consumed`).
+   LABEL_OVERRIDES = optional label fixes (works empty). */
 const DENY_FIELDS = new Set([
   'id','lat','lng','coordsApprox','regionCode','region','rentUnit','areaUnit',
   'warehouseRentVal','officeRentVal','officeAreaVal','expansionParkVal',
   'photo','gallery','plan','mapLink','preBaked','district',
   'park','developer','country','city','description','motorway','breeam']);
-const DENY_CONTAINERS = new Set(['preBaked','district','gallery','isochrones']);
 const LABEL_OVERRIDES = {};
 const autoLabel = k => LABEL_OVERRIDES[k] ||
   String(k).replace(/[_-]+/g,' ').replace(/([a-z0-9])([A-Z])/g,'$1 $2')
            .replace(/\s+/g,' ').trim().replace(/\b\w/g, c => c.toUpperCase());
+const LOCATOR_RE = /^\s*(?:page|slide)\s+\d+\s*(?:\(.*\))?\s*$/i;   // v22: a pipeline page/source reference, never a value
 /* v10: dataset unit convention (source units are KEPT - a UK dataset ships sq ft
    and £/sq ft/yr); merge stamps areaUnit on every property, rentUnit per record */
 const AREA_UNIT = (PROPS.find(p => p.areaUnit) || {}).areaUnit || 'sq m';
@@ -1959,7 +1961,7 @@ function rentMonthlyStr(p){
   const ru = (p.rentUnit || (RENT_CUR + "/" + RENT_PER + "/yr")).split("/");
   const cur = (ru[0] || RENT_CUR).trim();
   const per = (ru[1] || RENT_PER).trim();
-  return cur + " " + (v / 12).toFixed(2) + " / " + per + " / mo";
+  return cur + " " + nfmt(v / 12, 2, 2) + " / " + per + " / mo";
 }
 /* Total rent = GLA x rate. Total GLA = warehouse + office area; when a SEPARATE
    office rate exists, split (warehouse@warehouseRate + office@officeRate), else the
@@ -2024,8 +2026,9 @@ function detailHTML(p){
     : T("dist_status_est");
   const reg = REGIONS[p.regionCode] || null;
   const dist = p.district || null;
-  const rNum = v => (v == null || (typeof v === 'number' && isNaN(v))) ? 'tbd' : v;
-  const rK = v => (typeof v === 'number' && isFinite(v)) ? (v/1000).toFixed(0) + 'k' : 'tbd';
+  const rNum = v => (v == null || (typeof v === 'number' && isNaN(v))) ? 'tbd'
+    : (typeof v === 'number' ? v.toLocaleString(LOCALE) : v);
+  const rK = v => (typeof v === 'number' && isFinite(v)) ? Math.round(v/1000).toLocaleString(LOCALE) + 'k' : 'tbd';
   const rStr = v => (v == null || v === '') ? 'tbd' : v;
   /* v8: maps link - brochure's own link wins; else derive from the traced coordinates; else no link at all (an empty href reloaded this page) */
   const mapHref = (typeof p.mapLink === "string" && /^https?:\/\//i.test(p.mapLink)) ? p.mapLink
@@ -2096,24 +2099,16 @@ function detailHTML(p){
       ].join(''))}
 
       ${(() => {
-        /* v21 generic catch-all: every real top-level field NOT already consumed by a
-           curated row and NOT structurally denylisted, plus one level of flattened scalar
-           sub-fields from any non-denylisted nested object (so e.g. distances.publicTransport
-           is never swallowed). Auto-labelled (DATA, not chrome - no T() key). */
+        /* v22 Phase 1: auto-show any real SCALAR attribute (canonical or brand-new) that no
+           curated row already owns; NEVER an object (no flatten) and NEVER a locator string
+           (defence-in-depth - merge already quarantines these). */
         const extra = [];
         for(const k of Object.keys(p)){
           if(consumed.has(k) || DENY_FIELDS.has(k)) continue;
           const v = p[k];
-          if(v && typeof v === 'object' && !Array.isArray(v)){
-            if(DENY_CONTAINERS.has(k)) continue;
-            for(const sk of Object.keys(v)){
-              const sv = v[sk];
-              if(sv && typeof sv === 'object') continue;   // skip arrays / deeper nesting
-              if(!isTbd(sv)) extra.push(row(autoLabel(sk), sv));
-            }
-          } else if(!Array.isArray(v) && !isTbd(v)){
-            extra.push(row(autoLabel(k), v));
-          }
+          if(typeof v === 'object') continue;   // objects/arrays (incl. null) are never extras
+          if(LOCATOR_RE.test(String(v))) continue;            // a page/source reference is not a value
+          if(!isTbd(v)) extra.push(row(autoLabel(k), v));
         }
         return extra.join('')
           ? `<h3 class="section-title">${T('sec_additional')}</h3><div class="spec-grid">${extra.join('')}</div>`
@@ -2176,7 +2171,7 @@ function detailHTML(p){
             ${(sub && !isAbsent(sub)) ? `<div class="region-sub">${sub}</div>` : ''}
           </div>`;
           const gdp = (typeof reg.gdpNominalMeur === 'number')
-            ? (reg.gdpNominalMeur >= 1000 ? `€ ${(reg.gdpNominalMeur / 1000).toFixed(1)} bn`
+            ? (reg.gdpNominalMeur >= 1000 ? `€ ${nfmt(reg.gdpNominalMeur / 1000, 1, 1)} bn`
                                           : `€ ${fmt(reg.gdpNominalMeur)} M`) : null;
           const baselineAsOf = reg.populationAsOf || reg.unemploymentAsOf || '';
           /* logistics labour depth, derived from two dataset figures (no research):
@@ -2408,6 +2403,390 @@ document.addEventListener("keydown", e => {
   if(e.key==="Escape"){ if(lbOpen()) closeLightbox(); else closeModal(); }
   else if(lbOpen() && (e.key==="ArrowLeft" || e.key==="ArrowRight")) lbStep(e.key==="ArrowLeft" ? -1 : 1);
 });
+</script>
+<script>
+/* ============================================================
+   CBRE Property Longlist - FLYOVER view (v24; baked-in, generic).
+   A third view: a 70/30 satellite-map + slide panel that flies from option to
+   option. Reads the page globals PROPS + L and REUSES the chrome's own generic
+   primitives (T / fmt / nfmt / regionName / AREA_UNIT / openModal / switchView),
+   so it is locale-, client- and format-agnostic. Frozen chrome: reads PROPS at
+   runtime, injects no data. Wraps switchView (preserving origSwitch) and appends
+   a tab + the #view-flyover container; the Grid/Map chrome is untouched.
+   ============================================================ */
+(function () {
+  "use strict";
+  if (typeof PROPS === "undefined" || !window.L) { return; }
+
+  var FLY_DURATION = 1.4;
+  var ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/";
+  var order = PROPS.slice().sort(function (a, b) { return (a.id || 0) - (b.id || 0); });
+  var currentIndex = 0;
+  var flyoverMap = null;
+  var markers = [];
+  var slidesEls = [];
+  var observer = null;
+  var suppressObserverUntil = 0;
+  var built = false;
+
+  // ---------- helpers (esc/isLand local; VALUE + LABEL formatting reuse the chrome) ----------
+  function isTbd(v) {
+    return (v === null || v === undefined || v === "tbd" || v === "—" ||
+      v === "" || v === "TBD" || v === "N/A");
+  }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  function isLand(p) { return /land/i.test(p.status || ""); }
+  // regionName is function-local to populateFilters() in the chrome, so define our OWN here
+  // (same locale-aware Intl.DisplayNames impl; LOCALE is a global const). Never a hardcoded dict.
+  var regionName = (function () {
+    try {
+      var dn = new Intl.DisplayNames([LOCALE], { type: "region" });
+      return function (c) { try { return dn.of(c) || c; } catch (e) { return c; } };
+    } catch (e) { return function (c) { return c; }; }
+  })();
+
+  function driveHighlights(p) {
+    var d = (p.preBaked && p.preBaked.distances) || {};
+    var picks = {};
+    function cat(name) {
+      if (/airport/i.test(name)) return "air";
+      if (/\(port\)/i.test(name)) return "port";
+      if (/\(border\)/i.test(name)) return "border";
+      if (/terminal|rail/i.test(name)) return "rail";
+      return "city";
+    }
+    var icon = { air: "✈", rail: "▣", port: "⚓", border: "⚑", city: "◉" };
+    Object.keys(d).forEach(function (name) {
+      var o = d[name] || {}, c = cat(name);
+      if (typeof o.min !== "number") return;
+      if (!picks[c] || o.min < picks[c].min) {
+        picks[c] = { name: name, min: o.min, km: o.km, cat: c, ic: icon[c] };
+      }
+    });
+    var list = Object.keys(picks).map(function (k) { return picks[k]; });
+    list.sort(function (a, b) { return a.min - b.min; });
+    return list.slice(0, 4);
+  }
+  function cleanPoi(name) {
+    return name.replace(/\s*\((port|border)\)\s*/i, "").trim();
+  }
+
+  // ---------- slide markup ----------
+  function specRow(k, v) {
+    return '<div class="fo-spec"><span class="k">' + esc(k) + '</span><span class="v">' + esc(v) + '</span></div>';
+  }
+  function slideHtml(p, i) {
+    var loc = [p.city, regionName(p.country)].filter(Boolean).join(", ");
+    var specs = "";
+    if (typeof p.warehouseArea === "number") specs += specRow(T("row_warehouse"), fmt(p.warehouseArea) + " " + AREA_UNIT);
+    if (typeof p.plotArea === "number") specs += specRow(T("row_plot"), fmt(p.plotArea) + " " + AREA_UNIT);
+    else if (!isTbd(p.plotArea)) specs += specRow(T("row_plot"), p.plotArea);
+    if (!isTbd(p.landPrice)) specs += specRow(T("row_land_price"), p.landPrice);
+    // unknown rent is OMITTED (like every other tbd field here) - never assert an unsourced
+    // "On application" the dataset can't verify (Data Honesty: unknown = tbd, never invented).
+    if (!isTbd(p.warehouseRent)) specs += specRow(T("row_warehouse_rent"), p.warehouseRent);
+    if (!isTbd(p.developer)) specs += specRow(T("row_developer"), p.developer);
+    if (!isTbd(p.landlord)) specs += specRow(T("row_landlord"), p.landlord);
+    if (!isTbd(p.clearHeight)) specs += specRow(T("row_clear_height"), p.clearHeight);
+    if (!isTbd(p.electricity)) specs += specRow(T("row_electricity"), p.electricity);
+    if (!isTbd(p.motorway)) specs += specRow(T("row_motorway"), p.motorway);
+
+    var dts = driveHighlights(p);
+    var dtHtml = "";
+    if (dts.length) {
+      var catLabel = { air: T("poi_air"), rail: T("poi_rail"), port: T("poi_port"), border: T("poi_border"), city: T("poi_city") };
+      dtHtml = '<div class="fo-dt"><div class="fo-dt-title">' + esc(T("flyover_dt_title")) + '</div>';
+      dts.forEach(function (e) {
+        dtHtml += '<div class="fo-dt-row" title="' + esc((catLabel[e.cat] || "") + ": " + e.name) + '">' +
+          '<span class="ic">' + e.ic + '</span>' +
+          '<span class="nm">' + esc(cleanPoi(e.name)) + '</span>' +
+          '<span class="tm">' + e.min + T("unit_min") + (typeof e.km === "number" ? ' · ' + nfmt(e.km, 0, 0) + ' km' : '') + '</span>' +
+          '</div>';
+      });
+      dtHtml += '</div>';
+    }
+
+    var maps = "";
+    var mapHref = (typeof p.mapLink === "string" && /^https?:\/\//.test(p.mapLink)) ? p.mapLink
+      : (typeof p.lat === "number" && typeof p.lng === "number"
+         ? "https://www.google.com/maps?q=" + p.lat + "," + p.lng : "");
+    if (mapHref) {
+      maps = '<a class="fo-link" href="' + esc(mapHref) + '" target="_blank" rel="noopener">' + esc(T("open_in_maps")) + '</a>';
+    }
+
+    var img = p.photo ? '<img class="fo-hero" src="' + p.photo + '" alt="' + esc(p.park) + '">' : '';
+    return '<div class="fo-slide" data-idx="' + i + '">' +
+      img +
+      '<span class="fo-badge ' + (isLand(p) ? "land" : "") + '">' + esc(p.status || T("label_option")) + '</span>' +
+      '<div class="fo-name">' + esc(p.park || (T("label_option") + " " + p.id)) + '</div>' +
+      '<div class="fo-loc">' + esc(loc) + '</div>' +
+      '<div class="fo-specs">' + specs + '</div>' +
+      dtHtml +
+      '<div class="fo-actions">' +
+      '<button class="fo-link primary" onclick="openModal(' + p.id + ')">' + esc(T("card_view_details")) + '</button>' +
+      maps +
+      '</div>' +
+      '</div>';
+  }
+
+  // ---------- styles ----------
+  function injectStyles() {
+    var css = '' +
+      // position+z-index:0 gives the view its OWN stacking context, so the flyover map's Leaflet
+      // panes (z-index 400+) stay CONTAINED and can never paint over the modal/lightbox (backdrop
+      // z-index 50) when "View full details" is opened from a slide.
+      '#view-flyover{margin-top:8px;position:relative;z-index:0}' +
+      '.fo-wrap{display:flex;height:clamp(560px,80vh,900px);border:1px solid var(--line,#e6e6e6);border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 2px 14px rgba(0,0,0,.05)}' +
+      '.fo-mapcol{flex:0 0 70%;position:relative;min-width:0}' +
+      '#flyover-map{position:absolute;inset:0;height:100%;width:100%;background:#dfe4e2}' +
+      '.fo-panel{flex:0 0 30%;display:flex;flex-direction:column;border-left:1px solid var(--line,#e6e6e6);min-width:300px;background:#fff}' +
+      '.fo-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line,#eee);gap:10px}' +
+      '.fo-head .fo-title{font-weight:600;letter-spacing:.06em;color:var(--brand,#003f2d);font-size:12px;text-transform:uppercase}' +
+      '.fo-nav{display:flex;align-items:center;gap:8px}' +
+      '.fo-count{font-size:12px;color:var(--muted,#6b7280);min-width:46px;text-align:center;font-variant-numeric:tabular-nums}' +
+      '.fo-btn{width:32px;height:32px;border-radius:999px;border:1px solid var(--line,#ddd);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;background:#fff;color:var(--brand,#003f2d);padding:0}' +
+      '.fo-btn svg{width:16px;height:16px}' +
+      '.fo-btn:hover{background:var(--brand,#003f2d);color:#fff}' +
+      '.fo-btn:disabled{opacity:.35;cursor:default;background:#fff;color:var(--muted,#999)}' +
+      '.fo-slides{flex:1;overflow-y:auto;scroll-snap-type:y mandatory;scroll-behavior:smooth}' +
+      '.fo-slide{scroll-snap-align:start;min-height:100%;box-sizing:border-box;padding:0 0 20px;border-bottom:1px solid var(--line,#f0f0f0);opacity:.5;transition:opacity .3s}' +
+      '.fo-slide.active{opacity:1}' +
+      '.fo-hero{width:100%;height:190px;object-fit:cover;background:#eef1f0;display:block}' +
+      '.fo-badge{display:inline-block;margin:14px 16px 0;padding:3px 10px;border-radius:999px;font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;background:var(--brand,#003f2d);color:#fff}' +
+      '.fo-badge.land{background:#8a6d1b}' +
+      '.fo-name{margin:9px 16px 2px;font-size:20px;font-weight:600;color:#111;line-height:1.2}' +
+      '.fo-loc{margin:0 16px 12px;color:var(--muted,#6b7280);font-size:13px}' +
+      '.fo-specs{margin:0 16px;display:grid;grid-template-columns:1fr 1fr;gap:9px 14px}' +
+      '.fo-spec .k{color:var(--muted,#6b7280);text-transform:uppercase;letter-spacing:.03em;font-size:10px;display:block;margin-bottom:1px}' +
+      '.fo-spec .v{color:#111;font-weight:600;font-size:14px}' +
+      '.fo-dt{margin:16px 16px 0}' +
+      '.fo-dt-title{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted,#6b7280);margin-bottom:6px}' +
+      '.fo-dt-row{display:flex;align-items:center;gap:8px;font-size:12px;padding:4px 0;border-bottom:1px dashed #eee}' +
+      '.fo-dt-row .ic{width:16px;text-align:center;color:var(--brand,#003f2d)}' +
+      '.fo-dt-row .nm{flex:1;color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+      '.fo-dt-row .tm{font-weight:600;color:var(--brand,#003f2d);white-space:nowrap}' +
+      '.fo-actions{display:flex;gap:8px;margin:18px 16px 0;flex-wrap:wrap}' +
+      '.fo-link{font-size:12px;padding:8px 12px;border-radius:6px;border:1px solid var(--brand,#003f2d);color:var(--brand,#003f2d);cursor:pointer;background:#fff;text-decoration:none;display:inline-flex;align-items:center;gap:6px;font-family:inherit}' +
+      '.fo-link.primary{background:var(--brand,#003f2d);color:#fff}' +
+      '.fo-link:hover{opacity:.88}' +
+      '.fo-hint{padding:10px 16px;font-size:11px;color:var(--muted,#8a8f8c);border-top:1px solid var(--line,#eee);background:#fafbfb;line-height:1.5}' +
+      '.fo-marker{border-radius:50%;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)}' +
+      '@media(max-width:900px){.fo-wrap{flex-direction:column;height:auto}.fo-mapcol{flex:none;height:46vh}.fo-panel{flex:none;border-left:none;border-top:1px solid var(--line,#eee);min-width:0}.fo-slides{max-height:56vh}}';
+    var st = document.createElement("style");
+    st.id = "fo-styles";
+    st.textContent = css;
+    document.head.appendChild(st);
+  }
+
+  // ---------- DOM build (lazy, on first switch) ----------
+  function buildDom() {
+    if (built) return;
+    built = true;
+    injectStyles();
+
+    var tabs = document.querySelector(".view-tabs");
+    if (tabs) {
+      var btn = document.createElement("button");
+      btn.id = "tab-flyover";
+      btn.setAttribute("onclick", "switchView('flyover')");
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+        '<path d="M2 12l20-8-8 20-3-8-9-4z"/></svg><span>' + esc(T("tab_flyover")) + '</span>';
+      tabs.appendChild(btn);
+    }
+
+    var slidesHtml = order.map(function (p, i) { return slideHtml(p, i); }).join("");
+    var html = '<div class="fo-wrap">' +
+      '<div class="fo-mapcol"><div id="flyover-map"></div></div>' +
+      '<div class="fo-panel">' +
+      '<div class="fo-head">' +
+      '<span class="fo-title">' + esc(T("tab_flyover")) + '</span>' +
+      '<div class="fo-nav">' +
+      '<button class="fo-btn" id="fo-prev" aria-label="' + esc(T("a11y_prev_photo")) + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 18l-6-6 6-6"/></svg></button>' +
+      '<span class="fo-count" id="fo-count">1 / ' + order.length + '</span>' +
+      '<button class="fo-btn" id="fo-next" aria-label="' + esc(T("a11y_next_photo")) + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 18l6-6-6-6"/></svg></button>' +
+      '</div></div>' +
+      '<div class="fo-slides" id="fo-slides">' + slidesHtml + '</div>' +
+      '<div class="fo-hint">' + esc(T("flyover_hint")) + '</div>' +
+      '</div></div>';
+    var container = document.createElement("div");
+    container.id = "view-flyover";
+    container.style.display = "none";
+    container.innerHTML = html;
+    var mapView = document.getElementById("view-map");
+    mapView.parentNode.insertBefore(container, mapView.nextSibling);
+
+    slidesEls = Array.prototype.slice.call(container.querySelectorAll(".fo-slide"));
+    document.getElementById("fo-prev").addEventListener("click", function () { go(currentIndex - 1); });
+    document.getElementById("fo-next").addEventListener("click", function () { go(currentIndex + 1); });
+  }
+
+  // ---------- map ----------
+  function initMapOnce() {
+    if (flyoverMap) return;
+    var pts = order.filter(function (p) { return typeof p.lat === "number" && typeof p.lng === "number"; })
+                   .map(function (p) { return [p.lat, p.lng]; });
+    flyoverMap = L.map("flyover-map", { zoomControl: true, scrollWheelZoom: true, maxZoom: 19 });
+    if (pts.length) { flyoverMap.fitBounds(pts, { padding: [40, 40], maxZoom: 12 }); }
+    else { flyoverMap.setView([20, 0], 2); }
+
+    var imagery = L.tileLayer(ESRI + "World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+      maxZoom: 19, attribution: "Imagery &copy; Esri, Maxar, Earthstar Geographics"
+    });
+    var transport = L.tileLayer(ESRI + "Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}", {
+      maxZoom: 19, pane: "overlayPane"
+    });
+    var places = L.tileLayer(ESRI + "Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}", {
+      maxZoom: 19, pane: "overlayPane"
+    });
+    var hybrid = L.layerGroup([imagery, transport, places]);
+    var streets = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+      maxZoom: 19, attribution: "&copy; OpenStreetMap &copy; CARTO"
+    });
+    hybrid.addTo(flyoverMap);
+    var layerCtl = {};
+    layerCtl[T("map_layer_satellite")] = hybrid;
+    layerCtl[T("map_layer_streets")] = streets;
+    L.control.layers(layerCtl, {}, { position: "topright", collapsed: false }).addTo(flyoverMap);
+
+    order.forEach(function (p, i) {
+      if (typeof p.lat !== "number" || typeof p.lng !== "number") { markers.push(null); return; }
+      var m = L.circleMarker([p.lat, p.lng], {
+        radius: 7, color: "#ffffff", weight: 2, fillColor: "#003f2d", fillOpacity: 1, className: "fo-marker"
+      }).addTo(flyoverMap);
+      m.bindTooltip((i + 1) + ". " + (p.park || (T("label_option") + " " + p.id)), { direction: "top", offset: [0, -6] });
+      m.on("click", function () { go(i); });
+      markers.push(m);
+    });
+  }
+
+  function updateMarkers(active) {
+    markers.forEach(function (m, i) {
+      if (!m) return;
+      if (i === active) {
+        m.setStyle({ radius: 11, fillColor: "#17e88f", fillOpacity: 1, weight: 3 });
+        m.bringToFront();
+        m.openTooltip();
+      } else {
+        m.setStyle({ radius: 7, fillColor: "#003f2d", fillOpacity: 1, weight: 2 });
+        m.closeTooltip();
+      }
+    });
+  }
+
+  // ---------- navigation ----------
+  function setActive(i, opts) {
+    opts = opts || {};
+    i = Math.max(0, Math.min(order.length - 1, i));
+    var changed = (i !== currentIndex) || opts.force;
+    currentIndex = i;
+    slidesEls.forEach(function (el, k) { el.classList.toggle("active", k === i); });
+    var cnt = document.getElementById("fo-count");
+    if (cnt) cnt.textContent = (i + 1) + " / " + order.length;
+    var pv = document.getElementById("fo-prev"), nx = document.getElementById("fo-next");
+    if (pv) pv.disabled = (i === 0);
+    if (nx) nx.disabled = (i === order.length - 1);
+    if (flyoverMap) updateMarkers(i);
+    if (changed && flyoverMap) {
+      var p = order[i];
+      if (typeof p.lat === "number" && typeof p.lng === "number") {
+        var z = isLand(p) ? 15 : 16;
+        flyoverMap.flyTo([p.lat, p.lng], z, { duration: FLY_DURATION });
+      }
+    }
+    if (opts.scroll && slidesEls[i]) {
+      slidesEls[i].scrollIntoView({ behavior: opts.instant ? "auto" : "smooth", block: "start" });
+    }
+  }
+  function go(i) {
+    suppressObserverUntil = Date.now() + 850;
+    setActive(i, { scroll: true });
+  }
+
+  function setupObserver() {
+    if (observer) return;
+    var root = document.getElementById("fo-slides");
+    observer = new IntersectionObserver(function (entries) {
+      if (Date.now() < suppressObserverUntil) return;
+      entries.forEach(function (en) {
+        if (en.isIntersecting) {
+          var idx = parseInt(en.target.getAttribute("data-idx"), 10);
+          if (!isNaN(idx)) setActive(idx, { scroll: false });
+        }
+      });
+    }, { root: root, rootMargin: "-45% 0px -45% 0px", threshold: 0 });
+    slidesEls.forEach(function (el) { observer.observe(el); });
+  }
+
+  // ---------- view switching (wrap the chrome's switchView, preserve origSwitch) ----------
+  function setTabsActive(id) {
+    document.querySelectorAll(".view-tabs button").forEach(function (b) { b.classList.remove("active"); });
+    var t = document.getElementById(id);
+    if (t) t.classList.add("active");
+  }
+  function toggleChrome(show) {
+    ["toolbar", "result-meta"].forEach(function (cls) {
+      var el = document.querySelector("." + cls);
+      if (el) el.style.display = show ? "" : "none";
+    });
+  }
+
+  var origSwitch = window.switchView;
+  window.switchView = function (v) {
+    if (v === "flyover") {
+      buildDom();
+      var vg = document.getElementById("view-grid"), vm = document.getElementById("view-map"),
+        vf = document.getElementById("view-flyover");
+      if (vg) vg.style.display = "none";
+      if (vm) vm.style.display = "none";
+      if (vf) vf.style.display = "block";
+      setTabsActive("tab-flyover");
+      toggleChrome(false);
+      initMapOnce();
+      setupObserver();
+      setTimeout(function () {
+        if (flyoverMap) flyoverMap.invalidateSize();
+        setActive(currentIndex, { force: true, scroll: true, instant: true });
+        setTimeout(function () { setActive(currentIndex, { force: true }); }, 120);
+      }, 80);
+    } else {
+      var vf2 = document.getElementById("view-flyover");
+      if (vf2) vf2.style.display = "none";
+      toggleChrome(true);
+      if (typeof origSwitch === "function") origSwitch(v);
+      var tf = document.getElementById("tab-flyover");
+      if (tf) tf.classList.remove("active");
+    }
+  };
+
+  // ---------- keyboard (only when flyover visible and no modal/lightbox open) ----------
+  document.addEventListener("keydown", function (e) {
+    var vf = document.getElementById("view-flyover");
+    if (!vf || vf.style.display === "none") return;
+    var mb = document.getElementById("modal-backdrop");
+    if (mb && getComputedStyle(mb).display !== "none") return;
+    if (typeof window.lbOpen === "function" && window.lbOpen()) return;
+    var tag = (e.target && e.target.tagName) || "";
+    if (/INPUT|SELECT|TEXTAREA/.test(tag)) return;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "PageDown") {
+      e.preventDefault(); go(currentIndex + 1);
+    } else if (e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "PageUp") {
+      e.preventDefault(); go(currentIndex - 1);
+    }
+  });
+
+  // Build the tab + (hidden) view at LOAD so the Flyover tab is reachable (the tab is what
+  // triggers switchView('flyover'), so it can't be created only inside that call). The map +
+  // fly-in stay lazy - initMapOnce/setupObserver run on the first switch to 'flyover'.
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", buildDom);
+  } else {
+    buildDom();
+  }
+})();
 </script>
 </body>
 </html>

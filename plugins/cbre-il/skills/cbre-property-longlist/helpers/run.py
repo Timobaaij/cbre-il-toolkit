@@ -581,6 +581,7 @@ def main() -> None:
     import intake
     import ledger
     import merge
+    import translate
     import web_enrich
     # Pillow has NO shim (unlike PyMuPDF->fitz_shim / rapidfuzz->rapidfuzz_shim): if it is
     # absent, images.py degrades the WHOLE hero pipeline to the placeholder. Say so loudly -
@@ -1510,7 +1511,14 @@ def main() -> None:
     field_decisions_f = work / "field_decisions.json"
     if len(record_files) > 1:  # cross-source pairs need >= 2 record files
         import match as _mm
+        import merge as _merge
         _all_recs = [r for f in record_files for r in _load_records(f) if isinstance(r, dict)]
+        # Quarantine off-spec STRUCTURES pre-enumeration, exactly as merge.main does at load
+        # (~line 1041): without this, a stray non-canonical object (a leaked provenance/meta map)
+        # would surface as a spurious 'field conflict' to the field-decision sub-agent, and a
+        # locator-shaped scalar could skew a grey pair. No-op for canonical records / ledger / Gaps.
+        for _r in _all_recs:
+            _merge._normalise_offspec(_r)
         grey = _mm.grey_pairs(_all_recs)
         # the settled match decisions (best-effort): clustering for the value-conflict
         # enumeration uses the SAME match.dedupe(_all_recs, md or None) merge uses, so the
@@ -1538,7 +1546,6 @@ def main() -> None:
         # exit 10 (same resume-safety as the grey path). The fixed precedence is the
         # DEFAULT, so this never fires for a single-source / pure-brochure run, nor when no
         # field genuinely disagrees.
-        import merge as _merge
         # mirror merge.main ordering (compute_file_quality BEFORE dedupe/conflict enumeration):
         # the file-quality demotion decides the conflict candidate labels + precedence default,
         # so omitting it made the a/b/c labels map to different values than merge applies (S2-1).
@@ -2010,6 +2017,29 @@ def main() -> None:
                           f"'Region label resolution'), then re-run.")
                 sys.exit(3)
 
+    # --- Phase 2: free-text DATA translation to output.language (exit 12; mirrors exit 11) ----
+    # Runs AFTER merge/enrich/web-enrich/region-label have all settled canonical.json (a
+    # translation must see the FINAL prose, not a value enrichment/region-label might still
+    # touch) and BEFORE the pre-build gates score it. Determinism (translate.collect_requests/
+    # bake) decides WHAT needs translating and applies a cached round; the LLM (an isolated
+    # sub-agent, never this process) does the actual translation. Never sys.exit inside
+    # translate.py itself - run.py owns the exit code, exactly like every other stage here.
+    _t_rc = translate.run_stage(work, canonical, ledger_csv, lang, quiet=QUIET)
+    if _t_rc == 12:
+        req = work / "i18n" / "data_translate_request.json"
+        import i18n as _i18n
+        cache_f = work / "i18n" / f"data_translations.{_i18n.normalize_lang(lang)}.json"
+        if QUIET:
+            print(f"Translating the descriptions to {lang}… (one-time)")
+        else:
+            print(f"\nDATA TRANSLATION NEEDED -> {lang}. Dispatch an ISOLATED translation sub-agent: "
+                  f"translate the `items` in {req} (PROSE only; keep numbers/units/codes/names/dates "
+                  f"verbatim), MERGE the returned {{text: translation}} map into "
+                  f"{cache_f}, then re-run the SAME command. "
+                  f"Blind-verify as G-lang before shipping. (Or `type nul > "
+                  f"{work / 'i18n' / 'data_translate.SKIP'}` to ship the data in its source language.)")
+        sys.exit(12)
+
     # Stage 4 - pre-build gates (mechanical halves; judgement gates run separately)
     step("Checking the data") if QUIET else print("\n=== PRE-BUILD GATES (mechanical) ===")
     g1 = [run_gate(gate_runner, "self-check")]
@@ -2025,6 +2055,7 @@ def main() -> None:
     g1.append(run_gate(gate_runner, "images", canonical))
     g1.append(run_gate(gate_runner, "enrichment", canonical,
                        *(["--requested", ",".join(requested_layers)] if requested_layers else [])))
+    g1.append(run_gate(gate_runner, "translation", canonical, "--work", work, "--lang", lang))
     # the ledger validator is a pre-build gate like the others (source-traceability.md:
     # an incomplete row blocks) - it belongs IN the scorecard, not as a side note
     g1.append(run_gate(ledger, "validate", ledger_csv))

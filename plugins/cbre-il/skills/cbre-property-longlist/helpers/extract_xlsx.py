@@ -67,6 +67,7 @@ try:
 except Exception:  # sandbox without rapidfuzz: difflib-backed shim
     from rapidfuzz_shim import fuzz, process
 import normalize as N
+import coords as _CO
 
 # Alias order IS priority: the first alias is the canonical column name, later
 # ones are acceptable stand-ins (used per row only when the better column is
@@ -698,6 +699,17 @@ def detect_and_extract(path: Path, region: str = "", country: str = "",
                     rec["__meta"] = {"source_file": path.name, "source_type": "xlsx",
                                      "locator_base": ws_title, "prov": prov,
                                      "tracker_rich": tracker_rich}
+                    # First-party map-link pins: if the row did NOT already yield coordinates from a
+                    # dedicated lat/lng column, stash any maps URL / bare 'lat,lng' found in the row's
+                    # cells for the shared resolver (extract_pdf.backfill_link_coords) to parse. This
+                    # never sets coords here (the resolver owns the parse + precedence) and is bounded
+                    # to matching strings, so a large free-text cell is not copied wholesale.
+                    if not (isinstance(rec.get("lat"), (int, float))
+                            and isinstance(rec.get("lng"), (int, float))):
+                        cands = [c.strip() for c in r if isinstance(c, str)
+                                 and (_CO.MAPS_URI.search(c) or _CO.PLAIN_LL.search(c))]
+                        if cands:
+                            rec["__meta"]["map_candidates"] = cands
                     records.append(rec)
             # extraction-yield report: populated columns vs mapped columns. A
             # field-rich sheet yielding a thin parse must be LOUD, not silent.

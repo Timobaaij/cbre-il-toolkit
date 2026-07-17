@@ -71,6 +71,16 @@ EN = {
     # --- View tabs ----------------------------------------------------------
     "tab_grid": "Grid",
     "tab_map": "Map",
+    "tab_flyover": "Flyover",
+
+    # --- Flyover view (2026-07-16) + spec-row labels it reuses --------------
+    "flyover_hint": "Scroll, use the arrow keys, or the buttons to move between options. Drag and zoom the map freely; switch Satellite / Streets from the control top-right.",
+    "flyover_dt_title": "Drive-time highlights",
+    "open_in_maps": "Open in Google Maps",
+    "label_option": "Option",
+    "row_plot": "Plot area",
+    "row_developer": "Developer",
+    "row_motorway": "Motorway",
 
     # --- Toolbar / filters --------------------------------------------------
     "filter_search_label": "Search",

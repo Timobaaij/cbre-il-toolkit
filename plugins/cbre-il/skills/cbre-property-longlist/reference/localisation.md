@@ -84,3 +84,40 @@ Confirms the rendered chrome reads as a fluent, correct, complete, in-language d
   leaked-English) is also checked by G-visual (`reference/visual-qa.md`).
 
 This applies to BOTH bundled and fallback languages.
+
+## Free-text DATA translation (exit 12) — the property values follow `output.language`
+
+The chrome (labels/headings) is localised by the i18n table above; this step localises the
+free-text DATA so a description or status does not render in a different language than the
+dashboard. Target = `output.language` (ANY European language; Spanish dashboard -> Spanish values,
+Finnish -> Finnish; English default). It runs AFTER merge+enrich, so the canonical is complete.
+
+- **Determinism decides eligibility, the LLM translates.** `_common.is_translatable_value(field, v)`
+  selects free-text PROSE only: identifiers, proper names, figures, units, codes, dates,
+  currency/rate strings, locators and sentinels are NEVER sent. Eligibility is by field + value
+  pattern (NOT a positive prose list), so a brand-new auto-shown prose attribute is eligible
+  automatically. A multi-word phrase that merely embeds a figure/price is still prose (only SHORT
+  atomic figure/code/date values are excluded).
+- **Stage + handoff.** `translate.run_stage()` (called by `run.py`) collects eligible values not yet
+  in the work-dir cache (`work/i18n/data_translations.<code>.json`, keyed by source text) and, if any,
+  writes `work/i18n/data_translate_request.json` and returns 12 -> `run.py` exits 12. Dispatch an
+  ISOLATED translation sub-agent (fresh context) that translates each `text` to `output.language`,
+  keeping embedded numbers/units/codes/names/dates verbatim and returning proper names / already-target
+  values unchanged; MERGE its `{text: translation}` map into the cache; re-run. The bake applies each
+  translation to its field, KEEPS the verbatim original in the Source Ledger (`translated -> <lang>
+  (derived-from-source)`), and writes ONLY eligible fields (an identifier/figure can never be altered).
+- **Cache + resume.** The FILE is the human/agent handoff: a raw `{source_text: translation}` map
+  (what the sub-agent writes / merges). It is LANGUAGE-TAGGED as `work/i18n/data_translations.<code>.json`
+  (`<code>` = `i18n.normalize_lang(output.language)`), and `run_stage` and the gate rekey it internally
+  to `sha256(target_code + source_text)`, so switching `output.language` while REUSING the same work
+  dir keeps a SEPARATE cache per language and can never reuse the previous language's translations
+  (the earlier untagged `data_translations.json` cross-contaminated languages; no manual clear is
+  needed now). A re-run re-translates nothing, and `collect_requests` also treats a value already
+  EQUAL to a cached translation as satisfied, so a resumed run whose on-disk canonical is already
+  baked is not re-flagged (no exit-12 loop).
+- **Decline / offline.** Drop `work/i18n/data_translate.SKIP` (or set the env var
+  `CBRE_LONGLIST_SKIP_DATA_TRANSLATE=1`) to ship the data in its source language; `run_stage` and the
+  `translation` gate treat it as an acknowledged decline (used by the offline `extract_test`).
+- **Gate + review.** The mechanical `gate_runner translation` gate BLOCKS if the request named a
+  non-eligible field or any eligible field is left untranslated; the blind **G-lang** reviewer confirms
+  the shown prose reads in `output.language` and that intra-prose figures are unchanged.

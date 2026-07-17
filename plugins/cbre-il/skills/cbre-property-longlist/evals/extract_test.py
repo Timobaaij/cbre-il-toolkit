@@ -10,9 +10,15 @@ Run: python evals/extract_test.py    (exit 0 on success, 1 on any failure)
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
+
+# This suite exercises extraction -> delivery, NOT the Phase-2 free-text translation handoff
+# (that is translate_test's job). Decline the exit-12 data-translation stage for every run.main()
+# driver here so the offline spine reaches delivery instead of stalling on a handoff nobody fulfils.
+os.environ["CBRE_LONGLIST_SKIP_DATA_TRANSLATE"] = "1"
 
 HELPERS = Path(__file__).resolve().parent.parent / "helpers"
 sys.path.insert(0, str(HELPERS))
@@ -129,6 +135,11 @@ def _run_spine(folder: Path, work: Path):
     import io as _io
     from contextlib import redirect_stdout, redirect_stderr
     import run
+    # extract_test exercises extraction -> delivery, NOT the Phase-2 translation handoff (that is
+    # translate_test's job). Decline the exit-12 data-translation stage exactly as the orchestrator
+    # would for a source-language dashboard, so the offline spine reaches delivery.
+    (work / "i18n").mkdir(parents=True, exist_ok=True)
+    (work / "i18n" / "data_translate.SKIP").write_text("", encoding="utf-8")
     saved = sys.argv
     sys.argv = ["run.py", "--folder", str(folder), "--work", str(work),
                 "--client", "TEDi", "--no-resume", "--quiet"]

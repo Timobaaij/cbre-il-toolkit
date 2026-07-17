@@ -83,6 +83,17 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
     lines += ([f"- {c}" for c in cf] if cf else ["- None recorded."])
     lines.append("")
 
+    # off-spec keys quarantined at the render boundary (v22 Phase 1)
+    osp = meta.get("offspec", [])
+    lines.append("## Off-spec keys (quarantined provenance/meta - not shown on cards)")
+    if osp:
+        for e in osp:
+            lines.append(f"- property {e.get('property_id')}: `{e.get('key')}` = {e.get('value')} "
+                         f"(add to canonical.schema.json + template to display as a real value)")
+    else:
+        lines.append("- None.")
+    lines.append("")
+
     # photo matches to confirm (run.py writes <work>/photo_doubts.json) - an uncertain
     # brochure<->property pairing shows a placeholder and is surfaced as a yes/no the
     # broker can confirm to pull the photo in
