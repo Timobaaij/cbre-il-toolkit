@@ -1228,23 +1228,25 @@ def _page_has_dominant_photo(path: Path, page_index: int) -> bool:
         return True
 
 
-def page_render_plan(path: Path, page_index: int, budget_kb: int = DEFAULT_BUDGET_KB,
-                     cache_dir: Path | str | None = None, near_miss: list | None = None) -> str | None:
-    """The LLM-HINTED plan page (__meta.plan_page): render+ink-crop the page and bind it
-    to the plan slot, LENIENTLY verified - bind UNLESS it is an obvious photo (classify
-    'photo') or near-blank/all-white. The agent picked this page by LOOKING at its render,
-    so the verify only screens out a clearly-wrong pick, never demands the plan signature.
-    Returns a compressed plan data URI or None. Cached per (source, page, budget) under
-    kind='planpage' so a resume is byte-deterministic. Degrades to None without Pillow /
-    a renderer (honest null).
+PLAN_NEAR_BLANK_WHITE = 0.985  # a hinted page whiter than this is effectively empty (no real content)
 
-    `near_miss` (optional list): when the detector REJECTS the hinted page (rendered but not
-    eligible), a {page, why} entry is appended so a correctly-hinted-but-unconfirmed plan is
-    SURFACED to the Gaps Report rather than silently dropped - the honesty invariant must hold on
-    the LLM-hint tier too, not only the deterministic fallback (the marker gate can turn what used to
-    bind here into a rejection, e.g. a titled 'map' whose scale is a non-cued 'M 1:1000' or a slash
-    '1/500'). NB it is recorded on a FRESH render only; on a cache-hit resume the reason is not
-    re-derived (advisory-only, non-blocking)."""
+
+def page_render_plan(path: Path, page_index: int, budget_kb: int = DEFAULT_BUDGET_KB,
+                     cache_dir: Path | str | None = None) -> str | None:
+    """The LLM-HINTED plan page (__meta.plan_page): the interpretation sub-agent LOOKED at this page's
+    render thumbnail and judged it THIS property's site plan. TRUST that visual judgment - render the
+    page, ink-crop it, and bind it. The ONLY deterministic screen here is a BLANK / near-blank page
+    (no real content to show); the perceptual 'is it really a site plan' question is confirmed by an
+    INDEPENDENT LLM verify (the plan_verify dispatch, consulted in merge), NEVER by a pixel classifier.
+
+    WHY no classifier gate: a full-bleed COLOUR plan, a plan on ONE HALF of a 2-page spread, an
+    aerial-overlay site plan all render fine but do NOT match a white-paper line-art signature, so a
+    deterministic classify_image / white-band / marker gate mis-judged them - that gate attached 0/4
+    real plans on the live Corby decks (e.g. a genuine site plan rejected at white=0.14 vs a 0.15
+    cutoff). The classifier is the wrong tool for a PERCEPTION judgment; the LLM already made it.
+
+    Returns a plan data URI or None. Cached per (source, page, budget) under kind='planpage' (a resume
+    is byte-deterministic). Degrades to None without Pillow / a renderer (honest null)."""
     if Image is None:
         return None
     if not (isinstance(page_index, int) and not isinstance(page_index, bool) and page_index >= 0):
@@ -1253,26 +1255,10 @@ def page_render_plan(path: Path, page_index: int, budget_kb: int = DEFAULT_BUDGE
     cached = _cache_read(cf)
     if cached is not None:
         return cached or None
-    crop, sig, kind = _rendered_plan_crop(path, page_index, cache=cache_dir)
+    crop, sig, _kind = _rendered_plan_crop(path, page_index, cache=cache_dir)
     uri = None
-    if crop is not None:
-        # CONFIRM the LLM's pick with the shared detector: bind unless it is a spec page, a page a
-        # real photo dominates, a continuous-tone photo render, or (for a mis-classified page) it
-        # lacks a real plan title + drawing marker. Closes the old lenient hole that bound a hinted
-        # location-map / spec page. A rejected pick is recorded as a near-miss (not a silent drop).
-        import plan_signal as _PS
-        text = _page_plaintext(path, page_index, cache=cache_dir)
-        ok, _titled = _plan_page_eligible(kind, sig, _page_has_dominant_photo(path, page_index),
-                                          _PS.plan_title_score(text), _PS.looks_like_spec_page(text),
-                                          _PS.has_drawing_marker(text))
-        if ok:
-            uri = to_data_uri(compress(crop, PLAN_MAX_EDGE, budget_kb))
-        elif near_miss is not None:
-            near_miss.append({"page": page_index,
-                              "why": ("named the site plan by interpretation but not confirmed by the "
-                                      "detector (classified '%s'%s)"
-                                      % (kind, "; a plan title is present but no drawing marker"
-                                         if _titled else ""))})
+    if crop is not None and (sig or {}).get("white", 0.0) <= PLAN_NEAR_BLANK_WHITE:
+        uri = to_data_uri(compress(crop, PLAN_MAX_EDGE, budget_kb))  # real content -> trust the pick
     _cache_write(cf, uri)
     return uri
 

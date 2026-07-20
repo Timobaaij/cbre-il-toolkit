@@ -604,10 +604,22 @@ def cmd_images(args) -> int:
               f"honest placeholders. Add the matching brochures to enrich the cards with photos.")
     for a in (data.get("meta", {}) or {}).get("unmatchedAssets", []):
         print(f"  [note] unmatched asset: {a}")
-    n_plan = sum(1 for p in data.get("properties", [])
-                 if str(p.get("plan", "")).startswith("data:image/"))
-    print(f"  [note] site plans attached: {n_plan}/{len(data.get('properties', []))} "
-          f"(the modal's Site Plan toggle reads p.plan)")
+    props_all = data.get("properties", [])
+    n_props = len(props_all)
+    n_plan = sum(1 for p in props_all if str(p.get("plan", "")).startswith("data:image/"))
+    pnm = (data.get("meta", {}) or {}).get("planNearMiss", [])
+    print(f"  [note] site plans attached: {n_plan}/{n_props} (the modal's Site Plan toggle reads p.plan)")
+    if n_props and n_plan < n_props:
+        # SURFACE the gap (never a silent note): the images gate reviews the hero/carousel, NOT the plan
+        # slot, so a missing OR a wrong plan would otherwise pass unseen. Direct the visual-QA reviewer
+        # to inspect the plan slot (the independent-LLM verify) and to look for a MISSED plan.
+        near = f" ({len(pnm)} candidate page(s) surfaced in the Gaps Report)" if pnm else ""
+        print(f"  [ATTENTION] {n_props - n_plan} of {n_props} properties have NO site plan bound{near}. "
+              f"The images gate does NOT cover the plan slot - the visual-QA reviewer MUST (a) confirm "
+              f"each BOUND plan is genuinely THIS property's site plan (reject a location map / photo / "
+              f"contact page / neighbour's plan), and (b) look for a MISSED plan, often one half of a "
+              f"2-page spread the interpreter did not flag. To add a missed plan set its 0-based page as "
+              f"__meta.plan_page and re-run; a wrongly-bound one -> clear p.plan.")
     if issues:
         for i in issues:
             _bad(i)

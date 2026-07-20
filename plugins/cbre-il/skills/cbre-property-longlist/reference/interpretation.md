@@ -164,14 +164,19 @@ records matching `templates/record_schema.json`:
 - **Pick the site-plan PAGE (`__meta.plan_page`).** Many site plans are VECTOR
   line-art drawn straight into the page (a whole page that IS the site plan), NOT a
   placed photo - `planRef` cannot reach those (pulled as an embedded image they go
-  solid black). LOOK at each page's `render` thumbnail: if a page (often a
-  `low_text` page) IS the site plan, set `__meta.plan_page` = that page's 0-based
-  `page_no` on the property record it belongs to; else `null`/omit. Distinction:
-  `plan_page` names a FULL PAGE whose RENDER is the plan (vector line-art);
-  `planRef` is the `index` of an EMBEDDED-IMAGE plan on the property's own page.
-  `plan_page` binds the PLAN SLOT only (it never becomes the card hero). A
-  deterministic render+classify detector is the fallback + verifier, so a `null`/
-  absent `plan_page` is always safe; never invent a plan page.
+  solid black). LOOK at each page's `render` thumbnail: if a page IS or CONTAINS the
+  site plan, set `__meta.plan_page` = that page's 0-based `page_no` on the property
+  record it belongs to; else `null`/omit. **This is a VISUAL judgment and it is
+  TRUSTED**: merge renders that page and binds it (an independent visual-QA reviewer
+  later confirms the slot, per `reference/visual-qa.md`) - there is NO pixel-classifier
+  veto, so a full-bleed COLOUR plan, an aerial-overlay plan, or **a plan on ONE HALF of
+  a 2-PAGE SPREAD** (the other half an aerial / spec-icon panel / accommodation table -
+  VERY common in these decks) all qualify: flag the spread page as `plan_page` even
+  though it is not pure white-paper line-art. Distinction: `plan_page` names a FULL
+  PAGE whose RENDER is the plan; `planRef` is the `index` of an EMBEDDED-IMAGE plan on
+  the property's own page. `plan_page` binds the PLAN SLOT only (never the card hero).
+  A `null`/absent `plan_page` is safe (an offline deterministic fallback + the reviewer
+  backstop it); never invent a plan page.
 - **Set `__meta.image_pages` (the carousel scope).** List the 0-based pages
   whose photos belong to THIS property, in the SAME numbering as `page_no` (the
   manifest's). Set it for EVERY brochure topology: a single-page single-property

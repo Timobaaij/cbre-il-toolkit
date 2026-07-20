@@ -548,7 +548,6 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
     if bound_plans:
         bound_plans.sort(key=lambda r: IMG_RANK.get(_st(r), 9))  # source-quality order, like the hero
         plan, plan_rec = bound_plans[0]["plan"], bound_plans[0]
-    _hint_nm: list = []  # Tier-3 (LLM plan_page hint) near-misses -> surfaced to Gaps if no plan binds
     for r in cluster:
         if photo is not None and plan is not None:
             break
@@ -607,14 +606,12 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
             _plan_off = (plan_offlimits or {}).get(str(src), set())
             if (plan is None and isinstance(ppage, int) and not isinstance(ppage, bool)
                     and ppage >= 0 and ppage not in _plan_off):
-                _hnm: list = []
                 try:
-                    rp = IMG.page_render_plan(src, ppage, budget_kb, cache_dir=image_cache, near_miss=_hnm)
+                    rp = IMG.page_render_plan(src, ppage, budget_kb, cache_dir=image_cache)
                 except Exception:
                     rp = None
-                for _e in _hnm:  # tag + stash a rejected hint so it reaches the Gaps Report (not silent)
-                    _e["file"] = Path(src).name
-                    _hint_nm.append(_e)
+                # TRUST the interpreter's visual pick: bind unless an INDEPENDENT LLM verify judged it
+                # NOT a site plan (Phase 2, consulted below). No pixel-classifier veto here.
                 if rp:
                     plan, plan_rec = rp, r
                     meta.setdefault("prov", {})["plan"] = \
@@ -735,15 +732,8 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
                         (f"page {pno + 1} (site plan page render, detected)"
                          if isinstance(pno, int) else "site plan page render (detected)")
                 break
-        if plan is None and plan_near_miss is not None and (_nm_acc or _hint_nm):
-            # surface BOTH the LLM-hint-tier rejects (_hint_nm) and the deterministic-tier near-misses
-            # (_nm_acc); dedupe by (file, page) so a page seen on both tiers is reported once.
-            _seen = set()
-            for _e in _hint_nm + _nm_acc:
-                _k = (_e.get("file"), _e.get("page"))
-                if _k not in _seen:
-                    _seen.add(_k)
-                    plan_near_miss.append(_e)
+        if plan is None and plan_near_miss is not None and _nm_acc:
+            plan_near_miss.extend(_nm_acc)
     return photo, plan, photo_rec, plan_rec, tried, gallery[:IMG.GALLERY_MAX]
 
 

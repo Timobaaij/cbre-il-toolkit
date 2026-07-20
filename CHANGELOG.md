@@ -7,6 +7,20 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.0.10] — 2026-07-20
+### Changed
+- **Property longlist — independent Site Plan verification.** The detail modal's
+  Site Plan slot (`p.plan`) now gets its own visual-QA reviewer check, which the
+  mechanical images gate never judged: the reviewer confirms the bound image really
+  is THIS property's site plan (rejecting a location/context map, a photo, a spec
+  table, a cover/contact page, or a different property's plan) and flags a plan the
+  interpreter missed — often one half of a two-page spread. `helpers/gate_runner.py`
+  now surfaces the plan-attachment gap (plans attached vs. properties, plus
+  near-misses) so it is never a silent pass, with supporting updates to
+  `helpers/images.py`, `helpers/merge.py`, `reference/interpretation.md`,
+  `reference/visual-qa.md` and `evals/plan_detect_test.py`. Integrity manifest
+  regenerated (71 files); preflight and the smoke test pass.
+
 ## [1.0.9] — 2026-07-20
 ### Changed
 - **Property longlist — sharper site-plan detection.** A new high-precision text
@@ -267,6 +281,7 @@ How to update to the latest version is in the [README](./README.md#updating).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.0.10]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.10
 [1.0.9]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.9
 [1.0.8]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.8
 [1.0.7]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.7

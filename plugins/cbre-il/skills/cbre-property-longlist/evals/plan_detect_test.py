@@ -186,9 +186,14 @@ def _eligible_cases(ck) -> None:
 
 
 def _render_tier_cases(ck) -> None:
-    """Integration: best_plan_page_render (Tier 5) + page_render_plan (Tier 3) on synthetic fitz pages.
-    Proves the Fix-2 relaxation (a plan page carrying a hero-size LOGO now binds) and the closed
-    lenient Tier-3 hole (a hint at a photo page does not bind), while a real photo page never binds."""
+    """Integration on synthetic fitz pages of the TWO render tiers (2026-07-20 redesign):
+      * Tier 3 (page_render_plan, the LIVE LLM-hint path) TRUSTS the interpreter's visual pick - it
+        binds ANY non-blank hinted page. There is NO pixel-classifier / white-band / marker veto here
+        (that veto attached 0/4 real plans on the live Corby decks); a wrong pick is caught by the
+        independent LLM verify, and the ONLY screen is a near-BLANK page.
+      * Tier 5 (best_plan_page_render, the no-LLM OFFLINE fallback) stays CONSERVATIVE (classify 'plan'
+        in a balanced-white band; a photo / blank never binds) - with no LLM there is no pick to trust
+        and no verify to backstop."""
     import images as IMG
     try:
         import fitz
@@ -220,33 +225,6 @@ def _render_tier_cases(ck) -> None:
             px[rnd.randrange(w), rnd.randrange(h)] = (240, 240, 240)
         b = _io.BytesIO(); img.save(b, format="PNG"); return b.getvalue()
 
-    def _pale_map_page(pg):
-        # a road-map / grey-aerial palette: PALE, low-saturation plots (pale>=0.40 so classify_image
-        # reaches 'map' BEFORE the 'plan' fall-through) INTERSPERSED with near-white "paper" cells and
-        # dark cell borders. The near-white cells put the CROP's white fraction inside the 0.15-0.90
-        # band (a real to-scale plan has paper margins/legend whitespace - a fully-pale fill would be
-        # out of band and could never rescue); several distinct high-nibble tones so no single
-        # quantised colour dominates (not 'logo'); low luminance entropy + large flat blocks (not
-        # 'photo'). Drawn as vectors (no embedded raster) so _page_has_dominant_photo stays False -
-        # the classifier alone calls it 'map', exactly the aerial/location-map case the title-rescue
-        # used to wrong-bind. The dark borders reach every page edge so the ink-crop keeps the whole
-        # grid (the white cells are inside the bbox, not trimmed off as a margin).
-        tones = [(168, 160, 150), (184, 178, 168), (200, 194, 184), (216, 210, 200),
-                 (228, 222, 212), (152, 146, 138), (176, 170, 160)]
-        W, H = pg.rect.width, pg.rect.height
-        cols, rows = 4, 3
-        white_cells = {1, 4, 6, 9, 10}  # 5 of 12 cells stay near-white -> white fraction in-band
-        i = ti = 0
-        for r in range(rows):
-            for c in range(cols):
-                rect = fitz.Rect(W * c / cols, H * r / rows, W * (c + 1) / cols, H * (r + 1) / rows)
-                if i not in white_cells:
-                    col = tuple(v / 255.0 for v in tones[ti % len(tones)]); ti += 1
-                    pg.draw_rect(rect, color=col, fill=col, width=0)
-                pg.draw_rect(rect, color=(0.25, 0.25, 0.25), width=1.5)  # dark border -> bbox = full grid
-                i += 1
-        pg.draw_line(fitz.Point(0, H * 0.5), fitz.Point(W, H * 0.52), color=(0.3, 0.3, 0.3), width=3)
-
     BUD = IMG.DEFAULT_BUDGET_KB
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -257,116 +235,35 @@ def _render_tier_cases(ck) -> None:
         p2 = doc.new_page(width=600, height=420); p2.insert_image(fitz.Rect(40, 40, 560, 400), stream=_photo_jpeg(9))  # 2 photo page
         p3 = doc.new_page(width=600, height=420)                                                   # 3 photo captioned "SITE PLAN"
         p3.insert_image(fitz.Rect(40, 40, 560, 380), stream=_photo_jpeg(13)); p3.insert_text((50, 405), "SITE PLAN", fontsize=10)
-        p4 = doc.new_page(width=600, height=420)                                                   # 4 'SITE PLAN' TEXT divider (no drawing)
+        p4 = doc.new_page(width=600, height=420)                                                   # 4 'SITE PLAN' text page (no drawing)
         p4.insert_text((120, 190), "SITE PLAN", fontsize=54)
-        p5 = doc.new_page(width=600, height=420); _pale_map_page(p5)                                # 5 grey aerial / location map, titled, NO marker
-        p5.insert_text((40, 405), "SITE PLAN", fontsize=11)
-        p6 = doc.new_page(width=600, height=420); _pale_map_page(p6)                                # 6 to-scale plan classified 'map', WITH a drawing marker
-        p6.insert_text((40, 398), "SITE PLAN", fontsize=11)
-        p6.insert_text((40, 412), "Scale 1:500   Drawing No. 12", fontsize=9)
-        p7 = doc.new_page(width=600, height=420); _vector_plan_page(p7)                             # 7 real plan drawing on a spec-labelled page
-        _y = 60
-        for _t in ("City", "Madrid", "Warehouse Area", "50,000 sq m", "Clear Height", "12 m", "Status", "Existing"):
-            p7.insert_text((8, _y), _t, fontsize=8); _y += 13
-        p8 = doc.new_page(width=600, height=420); _pale_map_page(p8)                                # 8 location/overview map titled + LOCATOR scale
-        p8.insert_text((40, 398), "SITE PLAN", fontsize=11)
-        p8.insert_text((40, 412), "Scale 1:25,000", fontsize=9)
-        p9 = doc.new_page(width=600, height=420); _pale_map_page(p9)                                # 9 aerial/context titled + UNIT SCHEDULE (enumeration colons, no scale)
-        p9.insert_text((30, 388), "SITE PLAN", fontsize=11)
-        p9.insert_text((30, 402), "Unit 1: 500 sq m   Unit 2: 750 sq m", fontsize=8)
-        p9.insert_text((30, 414), "Phase 1: 2,000 sq m", fontsize=8)
+        p5 = doc.new_page(width=600, height=420)                                                   # 5 fully blank page (no content)
         f = td / "Deck.pdf"; doc.save(str(f)); doc.close()
         IMG.close_doc_cache()
 
-        u0, pno0 = IMG.best_plan_page_render(f, [0], BUD, cache_dir=td / "a")
-        ck(isinstance(u0, str) and u0.startswith("data:image/"), "render: clean VECTOR plan binds (regression)")
-        u1, pno1 = IMG.best_plan_page_render(f, [1], BUD, cache_dir=td / "b")
-        ck(isinstance(u1, str) and u1.startswith("data:image/"), "render: a plan page carrying a hero-size LOGO now binds (Fix 2)")
-        u2, pno2 = IMG.best_plan_page_render(f, [2], BUD, cache_dir=td / "c")
-        ck(u2 is None, "render: a real PHOTO page never binds the plan slot")
-        # Tier 3 (LLM hint): a real plan page binds; a hint at the photo page does NOT (closed hole)
+        # --- Tier 5 (best_plan_page_render): the conservative no-LLM OFFLINE fallback (classifier) ---
+        u0, _ = IMG.best_plan_page_render(f, [0], BUD, cache_dir=td / "a")
+        ck(isinstance(u0, str) and u0.startswith("data:image/"), "tier5: a clean VECTOR plan binds (offline fallback)")
+        u1, _ = IMG.best_plan_page_render(f, [1], BUD, cache_dir=td / "b")
+        ck(isinstance(u1, str) and u1.startswith("data:image/"), "tier5: a plan page carrying a hero-size LOGO binds")
+        u2, _ = IMG.best_plan_page_render(f, [2], BUD, cache_dir=td / "c")
+        ck(u2 is None, "tier5: a real PHOTO page never binds")
+        nm3 = []
+        u3, _ = IMG.best_plan_page_render(f, [3], BUD, cache_dir=td / "g", near_miss=nm3)
+        ck(u3 is None, "tier5: a photo page titled 'SITE PLAN' does NOT bind (photo dominates)")
+        ck(any("photo" in e.get("why", "") for e in nm3), "tier5: the photo-dominated page is recorded as a near-miss")
+
+        # --- Tier 3 (page_render_plan): the LIVE path TRUSTS the interpreter's visual pick ---
         ck(isinstance(IMG.page_render_plan(f, 0, BUD, cache_dir=td / "d"), str),
            "tier3: a plan_page hint at a real plan page binds")
-        ck(IMG.page_render_plan(f, 2, BUD, cache_dir=td / "e") is None,
-           "tier3: a plan_page hint at a PHOTO page does NOT bind (lenient hole closed)")
-        # NEAR-MISS: a photo page captioned "SITE PLAN" must NOT bind (photo dominates) but IS flagged
-        nm = []
-        u3, _ = IMG.best_plan_page_render(f, [3], BUD, cache_dir=td / "g", near_miss=nm)
-        ck(u3 is None, "near-miss: a photo page titled 'SITE PLAN' does NOT bind (photo dominates)")
-        ck(any("photo" in (e.get("why", "")) for e in nm),
-           "near-miss: the titled-but-photo-dominated page is recorded as a near-miss")
-        # WRONG-BIND FIX: a 'SITE PLAN' TEXT divider (no drawing) must NOT bind, but IS surfaced
-        nm2 = []
-        u4, _ = IMG.best_plan_page_render(f, [4], BUD, cache_dir=td / "h", near_miss=nm2)
-        ck(u4 is None, "wrong-bind: a 'SITE PLAN' TEXT divider slide (no drawing) does NOT bind")
-        ck(any("title is present" in e.get("why", "") for e in nm2),
-           "near-miss: the titled divider is surfaced to Gaps (not silently dropped)")
-        ck(IMG.page_render_plan(f, 4, BUD, cache_dir=td / "i") is None,
-           "tier3: a plan_page hint at a TEXT divider does NOT bind either")
-
-        # 2ND-REVIEW FIX #1: a page the classifier reads as 'map' (a grey AERIAL, or a genuine
-        # LOCATION map) titled "SITE PLAN" but carrying NO drawing marker must NOT bind (it used to,
-        # via the unconditional kind=='map' title-rescue); the SAME page WITH a "scale 1:500"/
-        # "drawing no" marker IS the real to-scale colour plan and still binds.
-        ccrop, _csig, ckind = IMG._rendered_plan_crop(f, 5, cache=td / "m0")
-        ck(ckind == "map", f"fixture sanity: the pale multi-tone aerial page classifies 'map' (got {ckind!r})")
-        nm5 = []
-        u5, _ = IMG.best_plan_page_render(f, [5], BUD, cache_dir=td / "j", near_miss=nm5)
-        ck(u5 is None, "fix#1: a 'map'-classified aerial titled 'SITE PLAN' with NO drawing marker does NOT bind")
-        ck(any("title is present" in e.get("why", "") for e in nm5),
-           "fix#1: the un-confirmed titled 'map' page is surfaced to Gaps as a near-miss")
-        _c6, _s6, k6 = IMG._rendered_plan_crop(f, 6, cache=td / "k0")
-        ck(k6 == "map", f"fixture sanity: the to-scale plan page also classifies 'map' (got {k6!r})")
-        u6, _ = IMG.best_plan_page_render(f, [6], BUD, cache_dir=td / "k")
-        ck(isinstance(u6, str) and u6.startswith("data:image/"),
-           "fix#1: a to-scale plan classified 'map' + a 'Scale 1:500'/'Drawing No' marker DOES bind (EVO case, marker-gated)")
-        ck(IMG.page_render_plan(f, 5, BUD, cache_dir=td / "l") is None,
-           "tier3: a plan_page hint at a titled 'map' aerial WITHOUT a marker does NOT bind either")
-        # ROUND-5 fix #2: the LLM-hint tier records a NEAR-MISS when the marker gate rejects the
-        # hinted page, so a correctly-hinted but unconfirmed plan is surfaced to Gaps, not SILENTLY
-        # dropped (matters when the hint names an off-cluster page the deterministic tier never scans).
-        nmh = []
-        uh = IMG.page_render_plan(f, 8, BUD, cache_dir=td / "t", near_miss=nmh)
-        ck(uh is None and len(nmh) == 1 and nmh[0].get("page") == 8,
-           "fix#2: a Tier-3 hint the marker gate rejects records a near-miss (not a silent drop)")
-        ck(isinstance(IMG.page_render_plan(f, 6, BUD, cache_dir=td / "n"), str),
-           "tier3: a plan_page hint at the marker-bearing to-scale plan binds")
-
-        # ROUND-3 wrong-bind fix: a location/overview map titled "SITE PLAN" that prints its own
-        # LOCATOR scale bar (1:25,000 - a topographic scale a site plan never uses) must NOT bind.
-        # The marker gate is magnitude-bounded, so "Scale 1:25,000" is NOT a to-scale drawing marker
-        # (only 1:50..1:2500 is). This is the residual hole the 3rd adversarial review found.
-        _c8, _s8, k8 = IMG._rendered_plan_crop(f, 8, cache=td / "r0")
-        ck(k8 == "map", f"fixture sanity: the locator-scale map page classifies 'map' (got {k8!r})")
-        nm8 = []
-        u8, _ = IMG.best_plan_page_render(f, [8], BUD, cache_dir=td / "r", near_miss=nm8)
-        ck(u8 is None, "round3: a titled 'map' printing a LOCATOR scale (1:25,000) does NOT bind (magnitude-bounded marker)")
-        ck(any("title is present" in e.get("why", "") for e in nm8),
-           "round3: the locator-scale map is surfaced as a near-miss, not bound")
-
-        # ROUND-4 wrong-bind fix: an aerial/context image titled "SITE PLAN" overlaying a UNIT
-        # SCHEDULE ('Unit 1: 500 sq m', 'Phase 1: 2,000 sq m') carries NO scale ratio - the
-        # enumeration colons must NOT be read as '1:500'/'1:2000' drawing markers, so it does NOT bind.
-        _c9, _s9, k9 = IMG._rendered_plan_crop(f, 9, cache=td / "s0")
-        ck(k9 == "map", f"fixture sanity: the unit-schedule aerial classifies 'map' (got {k9!r})")
-        nm9 = []
-        u9, _ = IMG.best_plan_page_render(f, [9], BUD, cache_dir=td / "s", near_miss=nm9)
-        ck(u9 is None, "round4: a titled 'map' with a unit-schedule enumeration ('Unit 1: 500') does NOT bind (no cued scale)")
-        ck(any("title is present" in e.get("why", "") for e in nm9),
-           "round4: the unit-schedule aerial is surfaced as a near-miss, not bound")
-
-        # 2ND-REVIEW FIX #4: a real plan DRAWING on a page that also carries >=2 own-line spec labels
-        # is rejected by the spec gate (never binds) but IS surfaced as a near-miss, so a legend-heavy
-        # / title-block real plan is not silently dropped.
-        _pcrop, _psig, pkind = IMG._rendered_plan_crop(f, 7, cache=td / "p0")
-        ck(pkind == "plan", f"fixture sanity: the spec-labelled plan page classifies 'plan' (got {pkind!r})")
-        ck(PS.looks_like_spec_page(IMG._page_plaintext(f, 7, cache=td / "p1")),
-           "fixture sanity: the spec-labelled plan page IS recognised as a spec page (>=2 labels)")
-        nm7 = []
-        u7, _ = IMG.best_plan_page_render(f, [7], BUD, cache_dir=td / "q", near_miss=nm7)
-        ck(u7 is None, "fix#4: a plan drawing on a spec-labelled page does NOT bind (spec gate)")
-        ck(any("visual signature" in e.get("why", "") for e in nm7),
-           "fix#4: the spec-gated plan-signature page is surfaced as a near-miss (not silently dropped)")
+        ck(isinstance(IMG.page_render_plan(f, 2, BUD, cache_dir=td / "e"), str),
+           "tier3: a hint at a PHOTO-looking page BINDS - the live path trusts the pick; a wrong pick is "
+           "caught by the independent LLM verify, not a pixel classifier (the 0/4 live-run fix)")
+        ck(isinstance(IMG.page_render_plan(f, 4, BUD, cache_dir=td / "i"), str),
+           "tier3: a hint at a full-bleed / text-heavy page BINDS too (no white-band / marker veto)")
+        ck(IMG.page_render_plan(f, 5, BUD, cache_dir=td / "z") is None,
+           "tier3: a BLANK hinted page does NOT bind (the only live-tier screen)")
+        IMG.close_doc_cache()
         IMG.close_doc_cache()
 
 
