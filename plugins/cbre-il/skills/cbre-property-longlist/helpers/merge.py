@@ -928,8 +928,8 @@ def load_hero(project_yaml: Path | None, properties: list[dict], default_date: s
         "title_html": market.get("title_html") or "logistics <em>options</em> for your next facility.",
         "lede": market.get("lede") or (
             f"{n} logistics development opportunities. Switch between the map and grid, "
-            f"filter by country, city, developer or scale, and compare up to four "
-            f"properties side-by-side with drive-time estimates to the main ports, rail "
+            f"filter by country, city, developer or scale, and compare properties "
+            f"side-by-side with drive-time estimates to the main ports, rail "
             f"terminals, airports and border crossings."),
         "footer_copyright": f"© {compiled[:4]} CBRE · {client} shortlist compiled {compiled}",
     }

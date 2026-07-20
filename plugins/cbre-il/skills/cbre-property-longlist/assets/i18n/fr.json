@@ -54,7 +54,7 @@
   "filter_search_ph": "Parc, promoteur, ville…",
   "filter_size_label": "Surface d'entrepôt min.",
   "flyover_dt_title": "Temps de trajet clés",
-  "flyover_hint": "Faites défiler, utilisez les touches fléchées ou les boutons pour passer d'une option à l'autre. Déplacez et zoomez librement la carte ; basculez Satellite / Rues via le contrôle en haut à droite.",
+  "flyover_hint": "Utilisez les touches fléchées, la barre d'espace ou les boutons pour passer d'une option à l'autre. Déplacez et zoomez librement la carte ; basculez Satellite / Rues via le contrôle en haut à droite.",
   "footer_disclaimer": "Toutes les informations fournies par CBRE dans ce document sont susceptibles d'être modifiées sans préavis. Les niveaux de loyer, la disponibilité, les spécifications techniques, les coordonnées et le calendrier sont indicatifs, fondés sur les données communiquées par le bailleur, et soumis à négociation. Les estimations de temps de trajet sont calculées à partir de la distance orthodromique avec un facteur de sinuosité routière de 1,25× pour une moyenne autoroutière de 75 km/h et ne sont fournies qu'à titre indicatif. Ne pas diffuser publiquement.",
   "img_toggle_photo": "Aérienne / Vue 3D",
   "img_toggle_plan": "Plan de masse",
@@ -181,5 +181,12 @@
   "wf_transport_storage_employment": "Emploi dans le transport &amp; l'entreposage",
   "wf_unemployment": "Chômage",
   "wf_unit_pct": "%",
-  "wf_unit_pct_eu27": "% UE27"
+  "wf_unit_pct_eu27": "% UE27",
+  "tab_compare": "Comparer",
+  "cmp_tab_title": "Comparer les options",
+  "cmp_select_all": "Tout sélectionner",
+  "cmp_clear_all": "Tout effacer",
+  "cmp_shown_count": "Comparaison : {shown} sur {total}",
+  "cmp_empty": "Aucune option sélectionnée — choisissez-en une ou plusieurs ci-dessus pour comparer.",
+  "cmp_no_match": "Aucune option ne correspond aux filtres actuels."
 }

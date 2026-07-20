@@ -72,9 +72,18 @@ EN = {
     "tab_grid": "Grid",
     "tab_map": "Map",
     "tab_flyover": "Flyover",
+    "tab_compare": "Compare",
+
+    # --- Compare view (2026-07-20; the persistent tab) ---------------------
+    "cmp_tab_title": "Compare options",
+    "cmp_select_all": "Select all",
+    "cmp_clear_all": "Clear all",
+    "cmp_shown_count": "Comparing {shown} of {total}",
+    "cmp_empty": "No options selected — pick one or more above to compare.",
+    "cmp_no_match": "No options match the current filters.",
 
     # --- Flyover view (2026-07-16) + spec-row labels it reuses --------------
-    "flyover_hint": "Scroll, use the arrow keys, or the buttons to move between options. Drag and zoom the map freely; switch Satellite / Streets from the control top-right.",
+    "flyover_hint": "Use the arrow keys, the space bar, or the buttons to move between options. Drag and zoom the map freely; switch Satellite / Streets from the control top-right.",
     "flyover_dt_title": "Drive-time highlights",
     "open_in_maps": "Open in Google Maps",
     "label_option": "Option",

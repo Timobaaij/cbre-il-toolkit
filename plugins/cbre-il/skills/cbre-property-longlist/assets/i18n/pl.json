@@ -54,7 +54,7 @@
   "filter_search_ph": "Park, deweloper, miasto…",
   "filter_size_label": "Min. powierzchnia magazynowa",
   "flyover_dt_title": "Kluczowe czasy dojazdu",
-  "flyover_hint": "Przewijaj, używaj strzałek lub przycisków, aby przechodzić między opcjami. Przeciągaj i przybliżaj mapę dowolnie; przełączaj Satelita / Ulice za pomocą kontrolki w prawym górnym rogu.",
+  "flyover_hint": "Użyj klawiszy strzałek, spacji lub przycisków, aby przełączać się między opcjami. Przeciągaj i przybliżaj mapę dowolnie; przełączaj Satelita / Ulice za pomocą kontrolki w prawym górnym rogu.",
   "footer_disclaimer": "Wszystkie informacje przekazane przez CBRE w niniejszym dokumencie mogą ulec zmianie bez powiadomienia. Poziomy czynszów, dostępność, specyfikacje techniczne, współrzędne oraz terminy mają charakter orientacyjny, opierają się na danych przekazanych przez wynajmującego i podlegają negocjacjom. Szacowane czasy przejazdu są obliczane na podstawie odległości w linii prostej ze współczynnikiem krętości dróg 1,25× przy średniej prędkości 75 km/h na autostradzie i służą wyłącznie celom orientacyjnym. Nie do dystrybucji publicznej.",
   "img_toggle_photo": "Zdjęcie lotnicze / Wizualizacja",
   "img_toggle_plan": "Plan terenu",
@@ -181,5 +181,12 @@
   "wf_transport_storage_employment": "Zatrudnienie w transporcie &amp; magazynowaniu",
   "wf_unemployment": "Bezrobocie",
   "wf_unit_pct": "%",
-  "wf_unit_pct_eu27": "% EU27"
+  "wf_unit_pct_eu27": "% EU27",
+  "tab_compare": "Porównaj",
+  "cmp_tab_title": "Porównaj opcje",
+  "cmp_select_all": "Zaznacz wszystko",
+  "cmp_clear_all": "Wyczyść wszystko",
+  "cmp_shown_count": "Porównanie: {shown} z {total}",
+  "cmp_empty": "Nie wybrano żadnych opcji — wybierz powyżej co najmniej jedną, aby porównać.",
+  "cmp_no_match": "Żadna opcja nie pasuje do bieżących filtrów."
 }

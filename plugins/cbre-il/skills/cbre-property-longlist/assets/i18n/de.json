@@ -54,7 +54,7 @@
   "filter_search_ph": "Park, Entwickler, Stadt…",
   "filter_size_label": "Min. Hallenfläche",
   "flyover_dt_title": "Fahrzeit-Highlights",
-  "flyover_hint": "Scrollen Sie, nutzen Sie die Pfeiltasten oder die Schaltflächen, um zwischen den Optionen zu wechseln. Ziehen und zoomen Sie die Karte frei; wechseln Sie Satellit / Straßen über die Steuerung oben rechts.",
+  "flyover_hint": "Nutzen Sie die Pfeiltasten, die Leertaste oder die Schaltflächen, um zwischen den Optionen zu wechseln. Ziehen und zoomen Sie die Karte frei; wechseln Sie Satellit / Straßen über die Steuerung oben rechts.",
   "footer_disclaimer": "Alle von CBRE in diesem Dokument bereitgestellten Informationen können sich ohne vorherige Ankündigung ändern. Mietniveaus, Verfügbarkeit, technische Spezifikationen, Koordinaten und Termine sind indikativ, beruhen auf Angaben des Eigentümers und stehen unter Verhandlungsvorbehalt. Fahrzeitschätzungen werden auf Basis der Großkreisentfernung mit einem Streckenfaktor von 1,25× bei einem Autobahndurchschnitt von 75 km/h berechnet und dienen nur zur Orientierung. Nicht zur öffentlichen Verbreitung bestimmt.",
   "img_toggle_photo": "Luftbild / Rendering",
   "img_toggle_plan": "Lageplan",
@@ -181,5 +181,12 @@
   "wf_transport_storage_employment": "Beschäftigung in Verkehr &amp; Lagerei",
   "wf_unemployment": "Arbeitslosigkeit",
   "wf_unit_pct": "%",
-  "wf_unit_pct_eu27": "% EU27"
+  "wf_unit_pct_eu27": "% EU27",
+  "tab_compare": "Vergleichen",
+  "cmp_tab_title": "Optionen vergleichen",
+  "cmp_select_all": "Alle auswählen",
+  "cmp_clear_all": "Alle abwählen",
+  "cmp_shown_count": "Vergleich: {shown} von {total}",
+  "cmp_empty": "Keine Optionen ausgewählt – wählen Sie oben eine oder mehrere zum Vergleich.",
+  "cmp_no_match": "Keine Optionen entsprechen den aktuellen Filtern."
 }

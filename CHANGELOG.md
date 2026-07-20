@@ -7,6 +7,24 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.0.11] — 2026-07-20
+### Added
+- **Property longlist — a persistent Compare view (dashboard template v25).** A new
+  fourth tab (after Grid, Map and Flyover) compares all properties side-by-side by
+  default, honouring the live filters and sort, with per-property deselect chips and
+  no cap. It reuses the chrome's existing `compareHTML()` renderer so it can never
+  drift from the card tick-box compare popup, which is unchanged. New i18n keys
+  (`tab_compare`, `cmp_*`) added to English and all 11 language packs.
+### Changed
+- **Property longlist — Flyover navigation.** Scrolling no longer moves between
+  options; the Flyover shows one property at a time and you navigate with the
+  prev/next buttons, arrow keys, the space bar, or a marker click (the scroll-driven
+  IntersectionObserver was removed). Template bumped to v25 (matching chrome hash),
+  with supporting updates to `helpers/i18n.py`, `helpers/make_template.py`,
+  `helpers/merge.py`, `reference/template-contract.md`, `reference/visual-qa.md` and a
+  new `evals/compare_test.py`. Integrity manifest regenerated (71 files); preflight,
+  smoke and compare tests pass.
+
 ## [1.0.10] — 2026-07-20
 ### Changed
 - **Property longlist — independent Site Plan verification.** The detail modal's
@@ -281,6 +299,7 @@ How to update to the latest version is in the [README](./README.md#updating).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.0.11]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.11
 [1.0.10]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.10
 [1.0.9]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.9
 [1.0.8]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.8

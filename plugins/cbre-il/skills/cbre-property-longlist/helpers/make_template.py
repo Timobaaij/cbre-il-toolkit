@@ -56,6 +56,21 @@ from pathlib import Path
 # cleanups: removed the stale DENY_CONTAINERS mention in the module-const comment and the
 # redundant `v === null` in the catch-all.
 
+# v25 NOTE (2026-07-20, HAND-APPLIED like v5-v24 - re-add if ever regenerating). TWO chrome edits:
+# (1) COMPARE view: a fourth tab (after Grid/Map/Flyover) appended as a self-contained <script> IIFE
+# before </body>. Compares ALL properties side-by-side by DEFAULT, honours the live filters + sort,
+# per-property deselect chips (no cap; the card tick-box popup + its 4-cap are UNTOUCHED). REUSES the
+# chrome's compareHTML(items) (the single N-agnostic renderer) + filterList/applyFilters/switchView
+# [both wrapped, origs preserved] / T / AREA_UNIT; injects no data -> byte-identity holds. Scale CSS:
+# attribute column pinned (un-stick the non-first header th; base sticks all th), overflow-x scroll,
+# min-width per column, chips wrap. New i18n keys: tab_compare, cmp_tab_title, cmp_select_all,
+# cmp_clear_all, cmp_shown_count ({shown}/{total}), cmp_empty, cmp_no_match (EN + 11 bundled langs;
+# machine first-cut pending CBRE house-term review). (2) FLYOVER nav: scrolling NO LONGER moves between
+# options (the user's request) - the IntersectionObserver was removed and the slide panel shows ONE
+# .active property at a time (display:block; others display:none); navigation is prev/next buttons,
+# arrow keys, SPACE BAR, and marker-click only. flyover_hint updated (drop "scroll", add the space bar)
+# in EN + all packs. VERSION v24->v25 + new chrome_sha256.
+
 # v24 NOTE (2026-07-16, HAND-APPLIED like v5-v23 - re-add if ever regenerating). FLYOVER view:
 # a third view (tab after Grid/Map) appended as a self-contained <script> IIFE before </body> - a
 # 70/30 satellite-map + scroll-snap slide panel that flyTo()s each property, with prev/next +
@@ -232,8 +247,8 @@ CONFIG_REPLACEMENTS = {
     ("Thirty Build-to-Suit and speculative development opportunities across the "
      "Budapest metropolitan area, the Pilsen region and the Bratislava / Trnava "
      "corridor, delivering between late-2026 and 2028. Switch between the map and "
-     "grid, filter by country, city, developer or scale, and compare up to four "
-     "properties side-by-side with drive-time estimates to the main ports, rail "
+     "grid, filter by country, city, developer or scale, and compare properties "
+     "side-by-side with drive-time estimates to the main ports, rail "
      "terminals, airports and border crossings."): "{{lede}}",
     # KPI values (anchored by their label so the digits cannot collide)
     '<div class="kpi-label">Properties</div><div class="kpi-value">30</div>':

@@ -54,7 +54,7 @@
   "filter_search_ph": "Parco, sviluppatore, città…",
   "filter_size_label": "Superficie minima magazzino",
   "flyover_dt_title": "Tempi di percorrenza principali",
-  "flyover_hint": "Scorri, usa i tasti freccia o i pulsanti per spostarti tra le opzioni. Trascina e ingrandisci la mappa liberamente; cambia Satellite / Strade dal controllo in alto a destra.",
+  "flyover_hint": "Usa i tasti freccia, la barra spaziatrice o i pulsanti per spostarti tra le opzioni. Trascina e ingrandisci la mappa liberamente; alterna Satellite / Strade dal controllo in alto a destra.",
   "footer_disclaimer": "Tutte le informazioni fornite da CBRE in questo documento sono soggette a modifiche senza preavviso. I livelli di canone, la disponibilità, le specifiche tecniche, le coordinate e le tempistiche sono indicativi, basati su dati forniti dal proprietario e soggetti a negoziazione. Le stime dei tempi di percorrenza sono calcolate sulla distanza ortodromica con un fattore di tortuosità stradale 1,25× a una media autostradale di 75 km/h e hanno valore puramente orientativo. Non destinato alla distribuzione pubblica.",
   "img_toggle_photo": "Aerea / Rendering",
   "img_toggle_plan": "Planimetria del sito",
@@ -181,5 +181,12 @@
   "wf_transport_storage_employment": "Occupazione trasporti &amp; magazzinaggio",
   "wf_unemployment": "Disoccupazione",
   "wf_unit_pct": "%",
-  "wf_unit_pct_eu27": "% UE27"
+  "wf_unit_pct_eu27": "% UE27",
+  "tab_compare": "Confronta",
+  "cmp_tab_title": "Confronta le opzioni",
+  "cmp_select_all": "Seleziona tutto",
+  "cmp_clear_all": "Deseleziona tutto",
+  "cmp_shown_count": "Confronto: {shown} di {total}",
+  "cmp_empty": "Nessuna opzione selezionata: selezionane una o più sopra per confrontare.",
+  "cmp_no_match": "Nessuna opzione corrisponde ai filtri attuali."
 }

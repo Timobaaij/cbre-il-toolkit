@@ -84,8 +84,8 @@
     "sha256": "f1b5705f60c06d694178b64a52c5ddaf6568c62a1cc78c4aeba5052bfbbabe56"
   },
   "helpers/i18n.py": {
-    "size": 24920,
-    "sha256": "dd694d7a7dd8f7277648bd96706a7cdb496b31d49c1bc6d612150c9abff5753a"
+    "size": 25341,
+    "sha256": "380b24126a5a8bbe02be67152bb6ef926d93477b249cac1c64c22dfe287343f8"
   },
   "helpers/images.py": {
     "size": 76458,
@@ -108,16 +108,16 @@
     "sha256": "3ff353bbbc8fa1694992e0d81c6328b3168f1df3765eef635cc3334322b5ac38"
   },
   "helpers/make_template.py": {
-    "size": 78368,
-    "sha256": "e9474376755f3aaa0df5d70bcf3eb572c2a8420820f56f368fd8e84e7f4296c1"
+    "size": 79725,
+    "sha256": "fd3ca232f5dab09ad73a9485797e14976ac7a3033d609f3b1ab96b6c06620257"
   },
   "helpers/match.py": {
     "size": 17522,
     "sha256": "0d1093b7f141463433190aeb27efddb677d72b150cc91dba3bcb370bd01305f3"
   },
   "helpers/merge.py": {
-    "size": 82390,
-    "sha256": "364a10d4189609130c9dfc036c09df88f0c6d9a3799141c07434512f92cd35fd"
+    "size": 82379,
+    "sha256": "18cb2b24cab076fa7effcf97da6809ab8b3a3f117b4c6bac55f851f99602cc75"
   },
   "helpers/normalize.py": {
     "size": 15376,
@@ -176,56 +176,56 @@
     "sha256": "1475c1f2d6d149ed6b97935e37d2ab6bbc8850979703223a3d9377eb98f1f4c6"
   },
   "assets/i18n/cs.json": {
-    "size": 10012,
-    "sha256": "9272c5517f22fdb4dd2d968339a20b915b981d90b921155032e33ac3d311d79c"
+    "size": 10380,
+    "sha256": "51758aa916069af3d6a21b6277b41575e41161bd332c4da7c224020dc4878fe6"
   },
   "assets/i18n/de.json": {
-    "size": 9574,
-    "sha256": "e78d75565ea598a3e2ed5507ce348078aa7d12dda28f36cc008d389a8b533997"
+    "size": 9951,
+    "sha256": "6e2d7b3c014975f7b70598a8416526ed9a0160f6b3438762350753fc4984eede"
   },
   "assets/i18n/es.json": {
-    "size": 10026,
-    "sha256": "c7872498ebb8e979c2f903bba55902b9b5c604e255dbc6dc1233b9936f3dbfb9"
+    "size": 10387,
+    "sha256": "750faa0dedfa69dfd023eb1fc1e774a7fee561078628fe9846ed2b5dcd28b265"
   },
   "assets/i18n/fr.json": {
-    "size": 10024,
-    "sha256": "aa13442c029d74b1170754f94746aa3db8b5496680b8d933e526eeba1b9b86d9"
+    "size": 10410,
+    "sha256": "2680596f4775526c77bc8652f778660584041021f0813e5a29850ed78b7380ed"
   },
   "assets/i18n/hu.json": {
-    "size": 10408,
-    "sha256": "1140941f4db330c1c27ce5b9b04d821ab2586f7964a3366a0b94e30c042bd9d5"
+    "size": 10865,
+    "sha256": "7fd31ab8e8e594c91ea3e76b9defb4dd234e2f5f28c87f6ae49b9c1b4e1c7199"
   },
   "assets/i18n/it.json": {
-    "size": 9762,
-    "sha256": "cb61b6a902591ff296bdb644ce77198cdd6397d2dac8f9ef299995062e6cee92"
+    "size": 10144,
+    "sha256": "8e895a5bb73b8a35c4a48fdf59050aaab5254a92c20cef9dc6b08f1abc5bb1c3"
   },
   "assets/i18n/nl.json": {
-    "size": 9480,
-    "sha256": "3bfe97786f3762e7ab895416161bc3ce8f8337ab55a5ecb78db02d3cd23ea1d3"
+    "size": 9860,
+    "sha256": "3a2c105432a40759dc80f7ce7a99ad479e6142cf152bfb10587087915b9a4344"
   },
   "assets/i18n/pl.json": {
-    "size": 10027,
-    "sha256": "8940d70f308d83220fe151e045fc3e91db39bc5bac086b480c93b9e34bd1b978"
+    "size": 10413,
+    "sha256": "cfcdbf5bc632934471055ad7d462bad33eec744da9c8f06b6b6a7ca2709bd423"
   },
   "assets/i18n/pt.json": {
-    "size": 9964,
-    "sha256": "474b2098469b1962159575fa9998849cb68eca9d8e0f94a07ef32233bedd15e8"
+    "size": 10331,
+    "sha256": "bf61fb2b91c5fcf5f6fdb8ee502ccfd8535485cbc35b8a6714e1bb2c69aa5172"
   },
   "assets/i18n/ro.json": {
-    "size": 10140,
-    "sha256": "bc46321f59c228ee98a5710629fbf9187846d7a009558073b2518b59e39c0f4e"
+    "size": 10530,
+    "sha256": "e4dbfa4b0f9c931be05d73a3df0d125ee6a88b1be808836ea9aa8f2ebb22086a"
   },
   "assets/i18n/sk.json": {
-    "size": 9971,
-    "sha256": "4816381cf36d79ad84266770a4b99720dfb0a29cf3305c9de977adef7336a541"
+    "size": 10356,
+    "sha256": "f3fac0fcdb7806dfeee557cec9763b73e74ef910cb593ce3f1034f2149f90c0f"
   },
   "NOTICE": {
     "size": 892,
     "sha256": "01ae142eb40ec8060aae8f1f1243576e4cc728daa25c47a66ee2a4093e6dae8c"
   },
   "assets/dashboard_template.html": {
-    "size": 782553,
-    "sha256": "768145aac53bdbfb8f40bcf2830bb04ab73fbd4d3af6819966c81057db5e58e0"
+    "size": 791303,
+    "sha256": "c8a0bbfeba0425cbf6b5996ce7ba5b980e099c710bc9e90ab7b10e778ee2d808"
   },
   "assets/dashboard_template.v18.html": {
     "size": 758003,
@@ -233,7 +233,7 @@
   },
   "assets/VERSION": {
     "size": 83,
-    "sha256": "ba47ac199b68d40f91bef0cd2c490a07f4005e7e7cef6923c52f7c479ad89170"
+    "sha256": "074a2354e1e278c111299933c50bbd9929ece867d760fe12accefb61df133ce8"
   },
   "assets/poi_library.json": {
     "size": 18474,

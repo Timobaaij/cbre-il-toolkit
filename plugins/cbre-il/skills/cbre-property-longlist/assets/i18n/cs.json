@@ -54,7 +54,7 @@
   "filter_search_ph": "Park, developer, město…",
   "filter_size_label": "Min. skladová plocha",
   "flyover_dt_title": "Klíčové dojezdové časy",
-  "flyover_hint": "Posouvejte, použijte šipky nebo tlačítka pro přechod mezi možnostmi. Mapu volně přetahujte a přibližujte; přepínejte Satelit / Ulice ovládacím prvkem vpravo nahoře.",
+  "flyover_hint": "K přepínání mezi možnostmi použijte šipky, mezerník nebo tlačítka. Mapu volně posouvejte a přibližujte; Satelitní / Ulice přepnete ovládacím prvkem vpravo nahoře.",
   "footer_disclaimer": "Veškeré informace poskytnuté společností CBRE v tomto dokumentu mohou být změněny bez předchozího upozornění. Výše nájemného, dostupnost, technické specifikace, souřadnice a časové údaje jsou orientační, vycházejí z údajů poskytnutých pronajímatelem a jsou předmětem jednání. Odhady dojezdové doby jsou vypočteny z ortodromické vzdálenosti s koeficientem klikatosti silnic 1,25× při průměrné dálniční rychlosti 75 km/h a slouží pouze pro orientaci. Není určeno k veřejnému šíření.",
   "img_toggle_photo": "Letecký pohled / Vizualizace",
   "img_toggle_plan": "Situační plán",
@@ -181,5 +181,12 @@
   "wf_transport_storage_employment": "Zaměstnanost v dopravě &amp; skladování",
   "wf_unemployment": "Nezaměstnanost",
   "wf_unit_pct": "%",
-  "wf_unit_pct_eu27": "% EU27"
+  "wf_unit_pct_eu27": "% EU27",
+  "tab_compare": "Porovnat",
+  "cmp_tab_title": "Porovnat možnosti",
+  "cmp_select_all": "Vybrat vše",
+  "cmp_clear_all": "Zrušit vše",
+  "cmp_shown_count": "Porovnání: {shown} z {total}",
+  "cmp_empty": "Nevybrány žádné možnosti – vyberte výše jednu či více k porovnání.",
+  "cmp_no_match": "Žádná možnost neodpovídá aktuálním filtrům."
 }

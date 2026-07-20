@@ -54,7 +54,7 @@
   "filter_search_ph": "Park, ontwikkelaar, stad…",
   "filter_size_label": "Min. magazijnoppervlak",
   "flyover_dt_title": "Reistijd-hoogtepunten",
-  "flyover_hint": "Scroll, gebruik de pijltjestoetsen of de knoppen om tussen opties te wisselen. Sleep en zoom vrij op de kaart; wissel Satelliet / Straten via de knop rechtsboven.",
+  "flyover_hint": "Gebruik de pijltoetsen, de spatiebalk of de knoppen om tussen opties te wisselen. Sleep en zoom vrij op de kaart; wissel tussen Satelliet / Straten met de knop rechtsboven.",
   "footer_disclaimer": "Alle door CBRE in dit document verstrekte informatie kan zonder voorafgaande kennisgeving worden gewijzigd. Huurniveaus, beschikbaarheid, technische specificaties, coördinaten en timing zijn indicatief, gebaseerd op door de verhuurder verstrekte gegevens en onderhevig aan onderhandeling. Rijtijdschattingen zijn berekend op basis van de hemelsbrede afstand met een kronkelfactor voor de weg van 1,25× bij een gemiddelde van 75 km/u op de snelweg en dienen uitsluitend ter oriëntatie. Niet voor openbare verspreiding.",
   "img_toggle_photo": "Luchtfoto / Render",
   "img_toggle_plan": "Situatietekening",
@@ -181,5 +181,12 @@
   "wf_transport_storage_employment": "Werkgelegenheid transport &amp; opslag",
   "wf_unemployment": "Werkloosheid",
   "wf_unit_pct": "%",
-  "wf_unit_pct_eu27": "% EU27"
+  "wf_unit_pct_eu27": "% EU27",
+  "tab_compare": "Vergelijken",
+  "cmp_tab_title": "Opties vergelijken",
+  "cmp_select_all": "Alles selecteren",
+  "cmp_clear_all": "Alles wissen",
+  "cmp_shown_count": "Vergelijkt {shown} van {total}",
+  "cmp_empty": "Geen opties geselecteerd — kies er hierboven een of meer om te vergelijken.",
+  "cmp_no_match": "Geen opties komen overeen met de huidige filters."
 }

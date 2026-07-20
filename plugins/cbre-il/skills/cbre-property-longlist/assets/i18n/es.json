@@ -54,7 +54,7 @@
   "filter_search_ph": "Parque, promotor, ciudad…",
   "filter_size_label": "Superficie mínima de nave",
   "flyover_dt_title": "Tiempos de trayecto destacados",
-  "flyover_hint": "Desplácese, use las teclas de flecha o los botones para moverse entre las opciones. Arrastre y haga zoom en el mapa libremente; cambie entre Satélite / Calles con el control de la esquina superior derecha.",
+  "flyover_hint": "Use las teclas de flecha, la barra espaciadora o los botones para moverse entre las opciones. Arrastre y amplíe el mapa libremente; cambie entre Satélite / Calles con el control de la esquina superior derecha.",
   "footer_disclaimer": "Toda la información facilitada por CBRE en este documento está sujeta a cambios sin previo aviso. Los niveles de renta, la disponibilidad, las especificaciones técnicas, las coordenadas y los plazos son orientativos, se basan en datos facilitados por la propiedad y están sujetos a negociación. Las estimaciones de tiempo de conducción se calculan a partir de la distancia ortodrómica con un factor de sinuosidad viaria de 1,25× a una media de autopista de 75 km/h y tienen carácter meramente orientativo. No destinado a distribución pública.",
   "img_toggle_photo": "Vista aérea / Render",
   "img_toggle_plan": "Plano de implantación",
@@ -181,5 +181,12 @@
   "wf_transport_storage_employment": "Empleo en transporte &amp; almacenamiento",
   "wf_unemployment": "Desempleo",
   "wf_unit_pct": "%",
-  "wf_unit_pct_eu27": "% UE27"
+  "wf_unit_pct_eu27": "% UE27",
+  "tab_compare": "Comparar",
+  "cmp_tab_title": "Comparar opciones",
+  "cmp_select_all": "Seleccionar todo",
+  "cmp_clear_all": "Borrar todo",
+  "cmp_shown_count": "Comparando {shown} de {total}",
+  "cmp_empty": "No hay opciones seleccionadas: elija una o más arriba para comparar.",
+  "cmp_no_match": "Ninguna opción coincide con los filtros actuales."
 }

@@ -54,7 +54,7 @@
   "filter_search_ph": "Parc, dezvoltator, oraș…",
   "filter_size_label": "Suprafață minimă depozit",
   "flyover_dt_title": "Timpi de deplasare relevanți",
-  "flyover_hint": "Derulați, folosiți tastele săgeți sau butoanele pentru a naviga între opțiuni. Trageți și măriți harta liber; comutați Satelit / Străzi din controlul din dreapta sus.",
+  "flyover_hint": "Folosiți tastele săgeți, bara de spațiu sau butoanele pentru a naviga între opțiuni. Trageți și măriți harta liber; comutați Satelit / Străzi din controlul din colțul din dreapta sus.",
   "footer_disclaimer": "Toate informațiile furnizate de CBRE în acest document pot fi modificate fără notificare prealabilă. Nivelurile chiriilor, disponibilitatea, specificațiile tehnice, coordonatele și calendarul sunt orientative, bazate pe datele furnizate de proprietar și supuse negocierii. Estimările timpilor de conducere sunt calculate pe baza distanței în linie dreaptă, cu un factor de sinuozitate rutieră de 1,25× la o medie de 75 km/h pe autostradă și au doar caracter orientativ. Nu este destinat distribuirii publice.",
   "img_toggle_photo": "Aerian / Randare",
   "img_toggle_plan": "Plan de amplasament",
@@ -181,5 +181,12 @@
   "wf_transport_storage_employment": "Ocuparea în transport &amp; depozitare",
   "wf_unemployment": "Șomaj",
   "wf_unit_pct": "%",
-  "wf_unit_pct_eu27": "% EU27"
+  "wf_unit_pct_eu27": "% EU27",
+  "tab_compare": "Compară",
+  "cmp_tab_title": "Compară opțiunile",
+  "cmp_select_all": "Selectează tot",
+  "cmp_clear_all": "Șterge tot",
+  "cmp_shown_count": "Se compară {shown} din {total}",
+  "cmp_empty": "Nicio opțiune selectată — alegeți una sau mai multe mai sus pentru comparație.",
+  "cmp_no_match": "Nicio opțiune nu corespunde filtrelor curente."
 }

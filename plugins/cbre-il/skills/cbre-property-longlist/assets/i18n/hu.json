@@ -54,7 +54,7 @@
   "filter_search_ph": "Park, fejlesztő, város…",
   "filter_size_label": "Min. raktárterület",
   "flyover_dt_title": "Fő menetidő-adatok",
-  "flyover_hint": "Görgessen, használja a nyílbillentyűket vagy a gombokat az opciók közötti váltáshoz. Húzza és nagyítsa a térképet szabadon; váltson Műhold / Utcák között a jobb felső vezérlővel.",
+  "flyover_hint": "A lehetőségek közötti váltáshoz használja a nyílbillentyűket, a szóközt vagy a gombokat. A térképet szabadon húzhatja és nagyíthatja; a Műhold / Utcák nézet a jobb felső vezérlővel váltható.",
   "footer_disclaimer": "A CBRE által a jelen dokumentumban közölt minden információ előzetes értesítés nélkül változhat. A bérleti díjszintek, a rendelkezésre állás, a műszaki specifikációk, a koordináták és az ütemezés tájékoztató jellegűek, a tulajdonos által szolgáltatott adatokon alapulnak, és tárgyalás tárgyát képezik. A menetidő-becslések nagykörös (gömbi) távolságból, 1,25× útkanyargósági tényezővel, 75 km/h átlagos autópálya-sebesség mellett számítottak, és kizárólag tájékozódási célt szolgálnak. Nyilvános terjesztésre nem alkalmas.",
   "img_toggle_photo": "Légifelvétel / Látványterv",
   "img_toggle_plan": "Telephelyrajz",
@@ -181,5 +181,12 @@
   "wf_transport_storage_employment": "Szállítási &amp; raktározási foglalkoztatás",
   "wf_unemployment": "Munkanélküliség",
   "wf_unit_pct": "%",
-  "wf_unit_pct_eu27": "% EU27"
+  "wf_unit_pct_eu27": "% EU27",
+  "tab_compare": "Összehasonlítás",
+  "cmp_tab_title": "Lehetőségek összehasonlítása",
+  "cmp_select_all": "Összes kijelölése",
+  "cmp_clear_all": "Összes törlése",
+  "cmp_shown_count": "{total} közül {shown} összehasonlítása",
+  "cmp_empty": "Nincs kiválasztott lehetőség – válasszon egyet vagy többet fent az összehasonlításhoz.",
+  "cmp_no_match": "Egyetlen lehetőség sem felel meg a jelenlegi szűrőknek."
 }

@@ -2425,8 +2425,6 @@ document.addEventListener("keydown", e => {
   var flyoverMap = null;
   var markers = [];
   var slidesEls = [];
-  var observer = null;
-  var suppressObserverUntil = 0;
   var built = false;
 
   // ---------- helpers (esc/isLand local; VALUE + LABEL formatting reuse the chrome) ----------
@@ -2552,9 +2550,12 @@ document.addEventListener("keydown", e => {
       '.fo-btn svg{width:16px;height:16px}' +
       '.fo-btn:hover{background:var(--brand,#003f2d);color:#fff}' +
       '.fo-btn:disabled{opacity:.35;cursor:default;background:#fff;color:var(--muted,#999)}' +
-      '.fo-slides{flex:1;overflow-y:auto;scroll-snap-type:y mandatory;scroll-behavior:smooth}' +
-      '.fo-slide{scroll-snap-align:start;min-height:100%;box-sizing:border-box;padding:0 0 20px;border-bottom:1px solid var(--line,#f0f0f0);opacity:.5;transition:opacity .3s}' +
-      '.fo-slide.active{opacity:1}' +
+      // v25: ONE property at a time - navigation is arrows / next-prev / space ONLY, never scroll
+      // (the user asked that scrolling not move between options). Only the .active slide is shown;
+      // any overflow scrolls WITHIN that slide and never advances the property.
+      '.fo-slides{flex:1;overflow-y:auto}' +
+      '.fo-slide{display:none;min-height:100%;box-sizing:border-box;padding:0 0 20px}' +
+      '.fo-slide.active{display:block}' +
       '.fo-hero{width:100%;height:190px;object-fit:cover;background:#eef1f0;display:block}' +
       '.fo-badge{display:inline-block;margin:14px 16px 0;padding:3px 10px;border-radius:999px;font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;background:var(--brand,#003f2d);color:#fff}' +
       '.fo-badge.land{background:#8a6d1b}' +
@@ -2697,29 +2698,14 @@ document.addEventListener("keydown", e => {
         flyoverMap.flyTo([p.lat, p.lng], z, { duration: FLY_DURATION });
       }
     }
-    if (opts.scroll && slidesEls[i]) {
-      slidesEls[i].scrollIntoView({ behavior: opts.instant ? "auto" : "smooth", block: "start" });
+    if (changed) {
+      var sl = document.getElementById("fo-slides");   // start the newly-shown slide at its top
+      if (sl) sl.scrollTop = 0;
     }
   }
-  function go(i) {
-    suppressObserverUntil = Date.now() + 850;
-    setActive(i, { scroll: true });
-  }
-
-  function setupObserver() {
-    if (observer) return;
-    var root = document.getElementById("fo-slides");
-    observer = new IntersectionObserver(function (entries) {
-      if (Date.now() < suppressObserverUntil) return;
-      entries.forEach(function (en) {
-        if (en.isIntersecting) {
-          var idx = parseInt(en.target.getAttribute("data-idx"), 10);
-          if (!isNaN(idx)) setActive(idx, { scroll: false });
-        }
-      });
-    }, { root: root, rootMargin: "-45% 0px -45% 0px", threshold: 0 });
-    slidesEls.forEach(function (el) { observer.observe(el); });
-  }
+  // v25: navigation is EXPLICIT only (prev/next buttons, arrow keys, space bar, marker click) - there
+  // is no scroll-driven property change anymore, so the old IntersectionObserver is gone.
+  function go(i) { setActive(i, { force: false }); }
 
   // ---------- view switching (wrap the chrome's switchView, preserve origSwitch) ----------
   function setTabsActive(id) {
@@ -2746,10 +2732,9 @@ document.addEventListener("keydown", e => {
       setTabsActive("tab-flyover");
       toggleChrome(false);
       initMapOnce();
-      setupObserver();
       setTimeout(function () {
         if (flyoverMap) flyoverMap.invalidateSize();
-        setActive(currentIndex, { force: true, scroll: true, instant: true });
+        setActive(currentIndex, { force: true });
         setTimeout(function () { setActive(currentIndex, { force: true }); }, 120);
       }, 80);
     } else {
@@ -2771,8 +2756,9 @@ document.addEventListener("keydown", e => {
     if (typeof window.lbOpen === "function" && window.lbOpen()) return;
     var tag = (e.target && e.target.tagName) || "";
     if (/INPUT|SELECT|TEXTAREA/.test(tag)) return;
-    if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "PageDown") {
-      e.preventDefault(); go(currentIndex + 1);
+    if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "PageDown"
+        || e.key === " " || e.code === "Space") {
+      e.preventDefault(); go(currentIndex + 1);   // space bar advances (and never scrolls the page)
     } else if (e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "PageUp") {
       e.preventDefault(); go(currentIndex - 1);
     }
@@ -2786,6 +2772,144 @@ document.addEventListener("keydown", e => {
   } else {
     buildDom();
   }
+})();
+</script>
+<script>
+/* ============================================================
+   CBRE Property Longlist - COMPARE view (v25; baked-in, generic).
+   A fourth tab: compares ALL properties side-by-side by DEFAULT, honouring the live
+   filters + sort, with per-property deselect chips (no cap). REUSES the chrome's own
+   compareHTML(items) - the single N-agnostic comparison renderer (FIELD_PRESENT-gated
+   rows + largest-warehouse / lowest-rent highlights recomputed over whatever subset it
+   is given), so this tab and the card tick-box popup can never drift. Its selection is
+   INDEPENDENT of state.compare (the popup + its 4-cap are untouched). Reads PROPS at
+   runtime, injects no data. Wraps switchView + applyFilters (preserving the chain, which
+   already includes Flyover). Any client / format / language / N (4, 8, 12+).
+   ============================================================ */
+(function () {
+  "use strict";
+  if (typeof PROPS === "undefined" || typeof compareHTML !== "function") { return; }
+  var selected = new Set(PROPS.map(function (p) { return p.id; }));  // default: ALL (any N)
+  var built = false;
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  function label(p) { return p.park || p.city || (T("label_option") + " " + p.id); }
+
+  function injectStyles() {
+    if (document.getElementById("cmpv-styles")) { return; }
+    var css = '' +
+      '#view-compare{margin-top:8px}' +
+      '.cmpv-controls{background:#fff;border:1px solid var(--line,#e6e6e6);border-radius:10px;padding:14px 16px;margin-bottom:14px}' +
+      '.cmpv-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}' +
+      '.cmpv-title{font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--brand,#003f2d)}' +
+      '.cmpv-count{font-size:12px;color:var(--muted,#6b7280);font-variant-numeric:tabular-nums}' +
+      '.cmpv-chips{display:flex;flex-wrap:wrap;gap:8px}' +
+      '.cmpv-chip{display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border-radius:999px;border:1px solid var(--brand,#003f2d);background:var(--brand,#003f2d);color:#fff;font-size:12px;font-family:inherit;cursor:pointer;line-height:1.2;transition:opacity .15s}' +
+      '.cmpv-chip .tick{width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;border:1.5px solid currentColor;font-size:9px;line-height:1}' +
+      '.cmpv-chip.off{background:#fff;color:var(--muted,#6b7280);border-color:var(--line,#d5d9d7)}' +
+      '.cmpv-chip.off .tick{opacity:.35}' +
+      '.cmpv-chip:hover{opacity:.85}' +
+      '.cmpv-actions{display:flex;gap:16px;margin-top:12px}' +
+      '.cmpv-link{font-size:12px;color:var(--brand,#003f2d);background:none;border:none;cursor:pointer;font-family:inherit;padding:0;text-decoration:underline}' +
+      '.cmpv-panel{background:#fff;border:1px solid var(--line,#e6e6e6);border-radius:10px;overflow:hidden}' +
+      '.cmpv-empty{background:#fff;border:1px solid var(--line,#e6e6e6);border-radius:10px;padding:44px 16px;text-align:center;color:var(--muted,#6b7280);font-size:14px}' +
+      // compareHTML was built for the modal; neutralise its modal chrome inside the tab.
+      '#view-compare .modal-close{display:none}' +
+      '#view-compare .modal-body{padding:0}' +
+      // SCALE to many properties: the attribute column stays pinned while the property columns
+      // scroll horizontally. The base .cmp-table th sticks EVERY th at left:0 (fine for the modal's
+      // few columns, but the header property cells would overlap under a wide scroll), so un-stick the
+      // non-first header cells here and reset the modal's -40px bleed margin.
+      '#view-compare .cmp-table-wrap{overflow-x:auto;margin:0;padding:0}' +
+      '#view-compare .cmp-table thead th:not(:first-child){position:static}' +
+      '#view-compare .cmp-table th{min-width:150px}' +
+      '#view-compare .cmp-table th:first-child{min-width:170px}';
+    var st = document.createElement("style"); st.id = "cmpv-styles"; st.textContent = css;
+    document.head.appendChild(st);
+  }
+
+  function buildDom() {
+    if (built) { return; } built = true; injectStyles();
+    var tabs = document.querySelector(".view-tabs");
+    if (tabs && !document.getElementById("tab-compare")) {
+      var btn = document.createElement("button");
+      btn.id = "tab-compare";
+      btn.setAttribute("onclick", "switchView('compare')");
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="7" height="16" rx="1"/><rect x="14" y="4" width="7" height="16" rx="1"/></svg><span>' + esc(T("tab_compare")) + '</span>';
+      tabs.appendChild(btn);
+    }
+    if (!document.getElementById("view-compare")) {
+      var c = document.createElement("div");
+      c.id = "view-compare"; c.style.display = "none";
+      c.innerHTML =
+        '<div class="cmpv-controls"><div class="cmpv-head"><span class="cmpv-title">' + esc(T("cmp_tab_title")) + '</span><span class="cmpv-count" id="cmpv-count"></span></div>' +
+        '<div class="cmpv-chips" id="cmpv-chips"></div>' +
+        '<div class="cmpv-actions"><button class="cmpv-link" id="cmpv-all">' + esc(T("cmp_select_all")) + '</button><button class="cmpv-link" id="cmpv-none">' + esc(T("cmp_clear_all")) + '</button></div></div>' +
+        '<div id="cmpv-body"></div>';
+      var anchor = document.getElementById("view-flyover") || document.getElementById("view-map") || document.getElementById("view-grid");
+      anchor.parentNode.insertBefore(c, anchor.nextSibling);
+      // "Select all" / "Clear all" operate on the CURRENT filtered set (not all PROPS).
+      c.querySelector("#cmpv-all").addEventListener("click", function () { filterList().forEach(function (p) { selected.add(p.id); }); render(); });
+      c.querySelector("#cmpv-none").addEventListener("click", function () { filterList().forEach(function (p) { selected.delete(p.id); }); render(); });
+    }
+  }
+
+  function render() {
+    var vc = document.getElementById("view-compare"); if (!vc) { return; }
+    var filtered = filterList();                        // honours the active filters + sort
+    var chips = document.getElementById("cmpv-chips");
+    chips.innerHTML = filtered.map(function (p) {
+      var on = selected.has(p.id);
+      return '<button class="cmpv-chip' + (on ? '' : ' off') + '" data-id="' + p.id + '"><span class="tick">' + (on ? '&#10003;' : '') + '</span>' + esc(label(p)) + '</button>';
+    }).join("");
+    Array.prototype.slice.call(chips.querySelectorAll(".cmpv-chip")).forEach(function (b) {
+      b.addEventListener("click", function () {
+        var id = +b.getAttribute("data-id");
+        if (selected.has(id)) { selected.delete(id); } else { selected.add(id); }
+        render();
+      });
+    });
+    var shown = filtered.filter(function (p) { return selected.has(p.id); });
+    var cnt = document.getElementById("cmpv-count");
+    if (cnt) { cnt.textContent = T("cmp_shown_count").replace("{shown}", shown.length).replace("{total}", filtered.length); }
+    var body = document.getElementById("cmpv-body");
+    body.innerHTML = (filtered.length === 0)
+      ? '<div class="cmpv-empty">' + esc(T("cmp_no_match")) + '</div>'
+      : (shown.length
+          ? '<div class="cmpv-panel">' + compareHTML(shown) + '</div>'
+          : '<div class="cmpv-empty">' + esc(T("cmp_empty")) + '</div>');
+  }
+
+  var origSwitch = window.switchView;
+  window.switchView = function (v) {
+    if (v === "compare") {
+      buildDom();
+      ["view-grid", "view-map", "view-flyover"].forEach(function (id) { var el = document.getElementById(id); if (el) el.style.display = "none"; });
+      var vc = document.getElementById("view-compare"); if (vc) vc.style.display = "block";
+      document.querySelectorAll(".view-tabs button").forEach(function (b) { b.classList.remove("active"); });
+      var tc = document.getElementById("tab-compare"); if (tc) tc.classList.add("active");
+      // Compare KEEPS the filters + sort toolbar visible (unlike Flyover, which hides them).
+      ["toolbar", "result-meta"].forEach(function (cls) { var el = document.querySelector("." + cls); if (el) el.style.display = ""; });
+      render();
+    } else {
+      var vc2 = document.getElementById("view-compare"); if (vc2) vc2.style.display = "none";
+      var tc2 = document.getElementById("tab-compare"); if (tc2) tc2.classList.remove("active");
+      if (typeof origSwitch === "function") origSwitch(v);
+    }
+  };
+
+  var origApply = window.applyFilters;
+  window.applyFilters = function () {
+    if (typeof origApply === "function") origApply();
+    var vc = document.getElementById("view-compare");
+    if (vc && vc.style.display !== "none") render();   // live-update while Compare is the active view
+  };
+
+  if (document.readyState === "loading") { document.addEventListener("DOMContentLoaded", buildDom); }
+  else { buildDom(); }
 })();
 </script>
 </body>

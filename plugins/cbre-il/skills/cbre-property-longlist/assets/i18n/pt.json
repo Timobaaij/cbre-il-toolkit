@@ -54,7 +54,7 @@
   "filter_search_ph": "Parque, promotor, cidade…",
   "filter_size_label": "Área mínima de armazém",
   "flyover_dt_title": "Destaques de tempo de percurso",
-  "flyover_hint": "Percorra, use as teclas de seta ou os botões para navegar entre as opções. Arraste e amplie o mapa livremente; alterne Satélite / Ruas no controlo no canto superior direito.",
+  "flyover_hint": "Use as teclas de seta, a barra de espaço ou os botões para alternar entre as opções. Arraste e amplie o mapa livremente; alterne Satélite / Ruas no controlo no canto superior direito.",
   "footer_disclaimer": "Toda a informação fornecida pela CBRE neste documento está sujeita a alteração sem aviso prévio. Os níveis de renda, a disponibilidade, as especificações técnicas, as coordenadas e os prazos são indicativos, baseiam-se em dados fornecidos pelo senhorio e estão sujeitos a negociação. As estimativas de tempo de condução são calculadas a partir da distância de círculo máximo com um fator de sinuosidade rodoviária de 1,25× a uma média de autoestrada de 75 km/h e servem apenas para orientação. Não destinado a distribuição pública.",
   "img_toggle_photo": "Aérea / Render",
   "img_toggle_plan": "Planta do Local",
@@ -181,5 +181,12 @@
   "wf_transport_storage_employment": "Emprego em transporte &amp; armazenagem",
   "wf_unemployment": "Desemprego",
   "wf_unit_pct": "%",
-  "wf_unit_pct_eu27": "% UE27"
+  "wf_unit_pct_eu27": "% UE27",
+  "tab_compare": "Comparar",
+  "cmp_tab_title": "Comparar opções",
+  "cmp_select_all": "Selecionar tudo",
+  "cmp_clear_all": "Limpar tudo",
+  "cmp_shown_count": "A comparar {shown} de {total}",
+  "cmp_empty": "Nenhuma opção selecionada — escolha uma ou mais acima para comparar.",
+  "cmp_no_match": "Nenhuma opção corresponde aos filtros atuais."
 }
