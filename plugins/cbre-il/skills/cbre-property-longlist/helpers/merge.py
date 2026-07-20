@@ -519,7 +519,8 @@ def plan_offlimits_pages(clusters: list[list[dict]], source_dir: Path) -> list[d
 def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
                  image_cache: Path | None = None,
                  foreign_pages: dict[str, set] | None = None,
-                 plan_offlimits: dict[str, set] | None = None
+                 plan_offlimits: dict[str, set] | None = None,
+                 plan_near_miss: list | None = None
                  ) -> tuple[str, str | None, dict | None, dict | None, list, list]:
     """(photo_uri, plan_uri, photo_rec, plan_rec, tried_pages, gallery) for a merged property.
 
@@ -547,6 +548,7 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
     if bound_plans:
         bound_plans.sort(key=lambda r: IMG_RANK.get(_st(r), 9))  # source-quality order, like the hero
         plan, plan_rec = bound_plans[0]["plan"], bound_plans[0]
+    _hint_nm: list = []  # Tier-3 (LLM plan_page hint) near-misses -> surfaced to Gaps if no plan binds
     for r in cluster:
         if photo is not None and plan is not None:
             break
@@ -605,10 +607,14 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
             _plan_off = (plan_offlimits or {}).get(str(src), set())
             if (plan is None and isinstance(ppage, int) and not isinstance(ppage, bool)
                     and ppage >= 0 and ppage not in _plan_off):
+                _hnm: list = []
                 try:
-                    rp = IMG.page_render_plan(src, ppage, budget_kb, cache_dir=image_cache)
+                    rp = IMG.page_render_plan(src, ppage, budget_kb, cache_dir=image_cache, near_miss=_hnm)
                 except Exception:
                     rp = None
+                for _e in _hnm:  # tag + stash a rejected hint so it reaches the Gaps Report (not silent)
+                    _e["file"] = Path(src).name
+                    _hint_nm.append(_e)
                 if rp:
                     plan, plan_rec = rp, r
                     meta.setdefault("prov", {})["plan"] = \
@@ -703,15 +709,20 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
     # only when the plan slot is still empty; a no-plan property keeps an honest None (today's
     # behaviour). Cached per (source, page, budget) -> byte-deterministic resume.
     if plan is None:
+        _nm_acc: list = []  # near-miss pages (a plan signal that a precision guard rejected)
         for src_str, pgs in sorted(pages_by_src.items()):
             allowed = pgs - (foreign_pages or {}).get(src_str, set())
             if not allowed:
                 continue
+            _nm: list = []
             try:
                 uri, pno = IMG.best_plan_page_render(Path(src_str), sorted(allowed),
-                                                     budget_kb, image_cache)
+                                                     budget_kb, image_cache, near_miss=_nm)
             except Exception:
                 uri, pno = None, None
+            for _e in _nm:
+                _e["file"] = Path(src_str).name
+                _nm_acc.append(_e)
             if uri:
                 plan = uri
                 plan_rec = next((r for r in cluster
@@ -724,6 +735,15 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
                         (f"page {pno + 1} (site plan page render, detected)"
                          if isinstance(pno, int) else "site plan page render (detected)")
                 break
+        if plan is None and plan_near_miss is not None and (_nm_acc or _hint_nm):
+            # surface BOTH the LLM-hint-tier rejects (_hint_nm) and the deterministic-tier near-misses
+            # (_nm_acc); dedupe by (file, page) so a page seen on both tiers is reported once.
+            _seen = set()
+            for _e in _hint_nm + _nm_acc:
+                _k = (_e.get("file"), _e.get("page"))
+                if _k not in _seen:
+                    _seen.add(_k)
+                    plan_near_miss.append(_e)
     return photo, plan, photo_rec, plan_rec, tried, gallery[:IMG.GALLERY_MAX]
 
 
@@ -1103,6 +1123,7 @@ def main() -> None:
     # the BROADER per-deck other-owned set for the plan_page HINT (which may name any page,
     # not just the cluster's own) - so an LLM plan_page can never bind a neighbour's plan.
     plan_offlimits_by_cluster = plan_offlimits_pages(clusters, source_dir)
+    plan_near_miss_all: list = []  # per-property near-miss plan pages -> Gaps Report (light Fix 4)
     for i, cl in enumerate(clusters, start=1):
         merged, prov, conflicts = merge_cluster(cl, FIELD_DECISIONS or None)
         merged["id"] = i
@@ -1144,10 +1165,15 @@ def main() -> None:
                         prov[fld]["locator"] = (f"{prov[fld].get('locator', '')} "
                                                 f"(converted {merged['areaUnit']} -> {area_unit})").strip()
         merged["areaUnit"] = area_unit
+        _cluster_nm: list = []
         merged["photo"], plan_uri, photo_rec, plan_rec, tried_pages, gallery = attach_media(
             cl, source_dir, args.image_budget_kb, image_cache=image_cache,
             foreign_pages=foreign_by_cluster[i - 1],
-            plan_offlimits=plan_offlimits_by_cluster[i - 1])
+            plan_offlimits=plan_offlimits_by_cluster[i - 1],
+            plan_near_miss=_cluster_nm)
+        if not plan_uri and _cluster_nm:  # a page LOOKED plan-ish but no plan bound -> surface it
+            plan_near_miss_all.append({"property": merged.get("park") or merged.get("city") or "?",
+                                       "city": merged.get("city", ""), "pages": _cluster_nm})
         merged["gallery"] = gallery  # carousel photos (hero first); always >= [photo]
         # PHOTO MATCH OVERRIDE (P0-1): a 0-record brochure the sub-agent CONFIDENTLY
         # matched to this property supplies the hero, scanned across the whole deck
@@ -1366,6 +1392,8 @@ def main() -> None:
     }
     if meta_offspec:
         meta["offspec"] = meta_offspec
+    if plan_near_miss_all:
+        meta["planNearMiss"] = plan_near_miss_all
     # an explicit BCP-47 locale (e.g. de-AT) overrides the language's default region
     if str(getattr(args, "locale", "") or "").strip():
         meta["locale"] = args.locale.strip()

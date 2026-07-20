@@ -7,6 +7,19 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.0.9] — 2026-07-20
+### Changed
+- **Property longlist — sharper site-plan detection.** A new high-precision text
+  signal (`helpers/plan_signal.py` with a curated multilingual title/marker lexicon
+  `assets/plan_lexicon.json`) rescues designed site-plan pages that the pixel
+  classifier misreads as a photo or map — it matches real plan titles ("SITE PLAN",
+  "Lageplan", "plan de masse", and the like) and drawing markers, and deliberately
+  ignores spec-sheet vocabulary so it never fires on a spec table. Wired into
+  `helpers/images.py` (`_plan_page_eligible`), with supporting updates to
+  `helpers/merge.py` and `helpers/deliver.py`, and a new `evals/plan_detect_test.py`.
+  Integrity manifest regenerated (71 files, now guarding the lexicon); preflight and
+  the smoke test pass.
+
 ## [1.0.8] — 2026-07-17
 ### Added
 - **Property longlist — first-party coordinates from map links (`helpers/coords.py`).**
@@ -254,6 +267,7 @@ How to update to the latest version is in the [README](./README.md#updating).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.0.9]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.9
 [1.0.8]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.8
 [1.0.7]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.7
 [1.0.6]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.6

@@ -1,0 +1,25 @@
+{
+  "_comment": "High-precision SITE-PLAN title + drawing-marker vocabulary (2026-07-17; curated 2026-07-20 after the 2nd review; marker set narrowed 2026-07-20 after the 3rd review). Used by helpers/plan_signal.py to RESCUE a designed site-plan page the pixel classifier mis-reads as photo/map, and ONLY in that role. Store native orthography (case/accents); plan_signal folds both the lexicon and the page text via normalize._norm_city (accent/case-insensitive) plus apostrophe stripping. PRECISION RULES (a WRONG image in the trace-less Site Plan slot is worse than a miss, so keep this tight): (1) plan_titles are LAYOUT titles only - a to-scale SITE-LAYOUT drawing. DELIBERATELY EXCLUDES: amenity words (dock/yard/parking/clear height) = spec-sheet vocabulary; LOCATION / overview titles (Standortplan, Ubersichtsplan, plan de situation, plano de situacion, plan de incadrare, situatietekening) = a different artefact (a locator map, not the layout); and low-precision / false-friend titles (estate plan, plattegrond, bare planimetria = interior floor plan, plan du site = FR sitemap). Do NOT re-add these 'helpfully'. (2) drawing_markers here are the ENGLISH drawing-sheet PHRASES a to-scale drawing carries and an aerial/location map does not ('drawing no', 'sheet no', 'not to scale', ...); together with a to-scale scale RATIO they GATE the kind=='map' title-rescue (a titled 'map' page binds ONLY with a marker). NOTE: the SCALE-RATIO marker is NOT a token here - it is computed in plan_signal._scale_ratio_marker, which requires (a) a MULTILINGUAL scale-CUE word (scale/Maßstab/échelle/escala/schaal/skala/...) immediately before the ratio and (b) a SMALL, site-plan denominator (50..2500). Do NOT add 'scale 1:' or bare ratio tokens back: 'scale 1:' is magnitude-blind (it matched a 1:25000 LOCATOR scale bar exactly as a 1:500 plan = the 3rd-review wrong-bind) and bare '1:2500' matched inside '1:25000' via the isalpha() word boundary; and a BARE '1:N' with no cue matches a unit-schedule enumeration colon ('Unit 1: 500 sq m'), a clock/drive time ('1:50') or a dilution ('1:250') = the 4th-review wrong-bind. The cue list is multilingual, so the ratio path stays LANGUAGE-INDEPENDENT (no English word needed). Extend per market, keeping both rules.",
+  "version": 3,
+  "plan_titles": [
+    "site plan", "site layout", "site plan layout", "proposed site plan", "indicative site plan",
+    "masterplan", "master plan", "plot plan", "block plan", "general arrangement", "site masterplan",
+    "layout plan",
+    "lageplan", "geländeplan", "bebauungsplan", "grundstücksplan",
+    "plan de masse", "plan d'implantation", "plan d'ensemble", "plan d'aménagement",
+    "plano de emplazamiento", "plano de implantación", "plano de conjunto",
+    "plano de parcela", "plano de ordenación",
+    "planimetria generale", "planimetria di progetto", "planimetria d'insieme",
+    "situatieplan", "terreinplan", "inrichtingsplan",
+    "plan zagospodarowania", "plan zagospodarowania terenu", "plan sytuacyjny",
+    "planta de localização", "planta de implantação", "planta de situação", "planta de conjunto",
+    "situační plán", "celková situace", "situace stavby", "koordinační situace",
+    "situačný plán", "situácia stavby", "celková situácia",
+    "helyszínrajz", "telepítési rajz", "beépítési terv",
+    "plan de situație", "plan de amplasament",
+    "situationsplan", "situasjonsplan", "asemapiirros", "afsætningsplan"
+  ],
+  "drawing_markers": [
+    "not to scale", "do not scale", "drawing no", "drawing number", "dwg no", "sheet no"
+  ]
+}

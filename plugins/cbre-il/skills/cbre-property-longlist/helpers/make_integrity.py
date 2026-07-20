@@ -29,7 +29,8 @@ TARGETS = (
        # truncated label_ledger silently degrades multilingual extraction. The three
        # big datasets ship GZIPPED (.json.gz) to keep the skill under the org upload-
        # size cap - enrich._load_asset_json reads .json.gz (or a rebuilt plain .json).
-       "assets/poi_library.json", "assets/label_ledger.json", "assets/poi_dataset.json.gz",
+       "assets/poi_library.json", "assets/label_ledger.json", "assets/plan_lexicon.json",
+       "assets/poi_dataset.json.gz",
        "assets/regions_dataset.json.gz", "assets/cities_dataset.json.gz",
        # the >=100k European city POI layer + complete OSM border-crossing dataset (both
        # nearest-of-complete-set; a truncated copy would degrade nearest-city / nearest-border)

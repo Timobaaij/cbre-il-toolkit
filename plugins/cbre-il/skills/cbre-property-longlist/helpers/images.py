@@ -1141,15 +1141,110 @@ def _rendered_plan_crop(path: Path, page_index: int, dpi: int = PLAN_RENDER_DPI,
         return (None, {}, None)
 
 
+PLAN_TITLE_MIN = 1.0  # plan_signal.plan_title_score at/above which a real plan TITLE rescues a page
+
+
+def _plan_page_eligible(kind, sig, has_photo, title_score, is_spec, has_marker) -> tuple:
+    """Unified plan-page acceptance, shared by page_render_plan (LLM-hint tier) AND
+    best_plan_page_render (deterministic fallback) so the two never diverge. Returns (ok, titled).
+
+    Precision gates FIRST (a WRONG image in the authoritative, trace-less Site Plan slot is worse than
+    a miss):
+      * a SPEC / availability page (>=2 own-line labels) is never a site plan;
+      * a page a real PHOTO dominates (`has_photo`: a sizable embedded raster the CLASSIFIER reads as
+        continuous-tone 'photo' - measured by tone, not colourfulness, so a low-colour warehouse photo
+        is caught) is a property/photo page, never a plan - this REPLACES the old blunt 'image-light
+        only' gate, so a designed plan carrying a small logo/legend/north-arrow now qualifies;
+      * a continuous-tone whole-page render (classify 'photo') is a photo/aerial, never a plan.
+    Then accept on EITHER:
+      * VISUAL: the classifier calls it 'plan' inside the balanced-white band - a real drawing needs
+        no title or marker (a vector plan often has no extractable text at all); OR
+      * TITLE-RESCUE: a page the classifier mis-read as 'map' but that carries BOTH a real plan TITLE
+        ('site plan'/'Lageplan'/'plan de masse'/...) AND a to-scale DRAWING MARKER ('scale 1:500'/
+        'drawing no'/...). The marker gate (2nd-review fix) is what separates a genuine to-scale
+        colour/aerial-overlay site plan (has one) from a photographic AERIAL or a genuine LOCATION /
+        overview map (titled "Site Plan" but carrying no drawing furniture) - the latter used to
+        wrong-bind. A 'text'/'logo' page (a bare 'SITE PLAN' divider/agenda that merely NAMES a plan)
+        is never rescued, and only inside the SAME tight white band.
+    `titled` reports the title hit (used for ranking + near-miss)."""
+    titled = (title_score or 0.0) >= PLAN_TITLE_MIN
+    if is_spec:
+        return (False, titled)
+    if has_photo:
+        return (False, titled)
+    if kind == "photo":
+        return (False, titled)
+    white = (sig or {}).get("white", 0.0)
+    in_band = 0.15 <= white <= 0.90
+    visual_ok = (kind == "plan") and in_band
+    title_ok = titled and in_band and (kind == "map") and bool(has_marker)
+    return ((visual_ok or title_ok), titled)
+
+
+def _page_plaintext(path: Path, page_index: int, cache: Path | str | None = None) -> str:
+    """Extracted plain text of a page for the plan title-signal + spec gate. '' on any failure or a
+    page with no text layer (a vector plan whose labels are drawn strokes yields '' -> the page falls
+    through to the pure-VISUAL path unchanged; text never rescues nor blocks such a page on its own).
+    Mirrors _rendered_plan_crop's PDF/PPTX doc handling; docs are cached in _DOC_CACHE."""
+    try:
+        path = Path(path)
+        if path.suffix.lower() == ".pptx":
+            pdf = soffice_pdf(path, cache)
+            if pdf is None:
+                return ""
+            doc = _get_doc(pdf)
+        else:
+            doc = _get_doc(path)
+        if not (0 <= page_index < doc.page_count):
+            return ""
+        return doc[page_index].get_text() or ""
+    except Exception:
+        return ""
+
+
+def _page_has_dominant_photo(path: Path, page_index: int) -> bool:
+    """True if the page carries a sizable EMBEDDED raster the CLASSIFIER reads as continuous-tone
+    'photo' - a property/photo page, never a site plan. Uses classify_image (TONE), NOT the
+    colourfulness photographic_score (a low-colour warehouse photo scores ~3.7, below any useful
+    colourfulness floor), and scans ALL embedded rasters >= 200x200 (not only the >=320x200 hero
+    list), so a sub-hero-width portrait photo is still seen. A logo/legend/north-arrow classifies
+    'logo'/'plan', not 'photo', so it does NOT disqualify (the point of relaxing the image-light gate).
+
+    FAILS CLOSED (2nd-review fix #3): on any scan/decode error this returns True (assume a photo may
+    dominate -> an honest MISS), never False. Every other failure in the plan path falls toward a
+    miss; a False here would be the one precision-UNSAFE default, letting a real photo/aerial page
+    with a plan caption slip into the trace-less Site Plan slot."""
+    try:
+        path = Path(path)
+        if path.suffix.lower() == ".pptx":
+            raws = slide_pictures(path, page_index)
+        else:
+            raws = page_embedded_images(_get_doc(path), page_index)
+        for im in raws:
+            if im.get("w", 0) >= 200 and im.get("h", 0) >= 200 and classify_image(im.get("img")) == "photo":
+                return True
+        return False
+    except Exception:
+        return True
+
+
 def page_render_plan(path: Path, page_index: int, budget_kb: int = DEFAULT_BUDGET_KB,
-                     cache_dir: Path | str | None = None) -> str | None:
+                     cache_dir: Path | str | None = None, near_miss: list | None = None) -> str | None:
     """The LLM-HINTED plan page (__meta.plan_page): render+ink-crop the page and bind it
     to the plan slot, LENIENTLY verified - bind UNLESS it is an obvious photo (classify
     'photo') or near-blank/all-white. The agent picked this page by LOOKING at its render,
     so the verify only screens out a clearly-wrong pick, never demands the plan signature.
     Returns a compressed plan data URI or None. Cached per (source, page, budget) under
     kind='planpage' so a resume is byte-deterministic. Degrades to None without Pillow /
-    a renderer (honest null)."""
+    a renderer (honest null).
+
+    `near_miss` (optional list): when the detector REJECTS the hinted page (rendered but not
+    eligible), a {page, why} entry is appended so a correctly-hinted-but-unconfirmed plan is
+    SURFACED to the Gaps Report rather than silently dropped - the honesty invariant must hold on
+    the LLM-hint tier too, not only the deterministic fallback (the marker gate can turn what used to
+    bind here into a rejection, e.g. a titled 'map' whose scale is a non-cued 'M 1:1000' or a slash
+    '1/500'). NB it is recorded on a FRESH render only; on a cache-hit resume the reason is not
+    re-derived (advisory-only, non-blocking)."""
     if Image is None:
         return None
     if not (isinstance(page_index, int) and not isinstance(page_index, bool) and page_index >= 0):
@@ -1161,59 +1256,88 @@ def page_render_plan(path: Path, page_index: int, budget_kb: int = DEFAULT_BUDGE
     crop, sig, kind = _rendered_plan_crop(path, page_index, cache=cache_dir)
     uri = None
     if crop is not None:
-        # LENIENT: reject only an obvious photo or a near-blank page; bind anything else
-        # (the LLM looked at the render and chose THIS page as the plan).
-        white = sig.get("white", 0.0)
-        if kind != "photo" and white <= 0.985:
+        # CONFIRM the LLM's pick with the shared detector: bind unless it is a spec page, a page a
+        # real photo dominates, a continuous-tone photo render, or (for a mis-classified page) it
+        # lacks a real plan title + drawing marker. Closes the old lenient hole that bound a hinted
+        # location-map / spec page. A rejected pick is recorded as a near-miss (not a silent drop).
+        import plan_signal as _PS
+        text = _page_plaintext(path, page_index, cache=cache_dir)
+        ok, _titled = _plan_page_eligible(kind, sig, _page_has_dominant_photo(path, page_index),
+                                          _PS.plan_title_score(text), _PS.looks_like_spec_page(text),
+                                          _PS.has_drawing_marker(text))
+        if ok:
             uri = to_data_uri(compress(crop, PLAN_MAX_EDGE, budget_kb))
+        elif near_miss is not None:
+            near_miss.append({"page": page_index,
+                              "why": ("named the site plan by interpretation but not confirmed by the "
+                                      "detector (classified '%s'%s)"
+                                      % (kind, "; a plan title is present but no drawing marker"
+                                         if _titled else ""))})
     _cache_write(cf, uri)
     return uri
 
 
 def best_plan_page_render(path: Path, page_nos, budget_kb: int = DEFAULT_BUDGET_KB,
-                          cache_dir: Path | str | None = None) -> tuple:
-    """DETERMINISTIC fallback (no LLM hint): over the given (per-property) pages, render+
-    ink-crop+classify and pick the most plan-like page. CONSERVATIVE so it never fabricates
-    a plan on a real deck - a page qualifies ONLY when classify_image == 'plan' AND its
-    white fraction is balanced (0.15-0.90, the page_plan signature - paper + drawn ink),
-    explicitly NOT a photo and NOT a map. Returns (uri, page_no) for the best (highest
-    balance) qualifying page, else (None, None). The page set is SORTED so the result is a
-    pure function of (source, pages). Each candidate page's URI is cached per
-    (source, page, budget) under kind='planpage'. Degrades to (None, None) without Pillow /
-    a renderer."""
+                          cache_dir: Path | str | None = None, near_miss: list | None = None) -> tuple:
+    """DETERMINISTIC fallback (no LLM hint): over the given (per-property) pages, render+ink-crop+
+    classify and pick the most plan-like page via the shared `_plan_page_eligible` predicate - so a
+    designed plan carrying a small logo/legend (previously disqualified by the blunt image-light
+    gate) now binds, and a full-bleed COLOUR-background plan the classifier mis-reads is rescued when
+    its page carries a real plan TITLE - while a real PHOTO page, a SPEC page and an untitled
+    location-map never bind (a wrong image in the Site Plan slot is worse than a miss). Prefers a
+    TITLED plan, then the most balanced white/ink page. Returns (uri, page_no) or (None, None); the
+    page set is SORTED so the result is a pure function of (source, pages); each bound page's URI is
+    cached per (source, page, budget) under kind='planpage'. Degrades to (None, None) without Pillow.
+    `near_miss` (optional list) collects pages that LOOKED plan-ish but a guard rejected (a positive
+    plan signal that did not bind), so a genuinely missed plan surfaces to the Gaps Report."""
     if Image is None:
         return (None, None)
-    best = None  # (balance, page_no, uri)
+    import plan_signal as _PS
+    best = None  # ((titled, balance), page_no, uri)
     for pno in sorted({p for p in (page_nos or [])
                        if isinstance(p, int) and not isinstance(p, bool) and p >= 0}):
-        # CONSERVATIVE GATE 1: only a page with NO hero-size EMBEDDED image is eligible.
-        # A genuine vector site-plan page is image-light (the plan is drawn vector content,
-        # not a placed raster); a page that already carries a hero-size embedded image is a
-        # property/photo page whose plan, if any, comes via the embedded planRef / page_plan
-        # tier - never this whole-page render fallback. This keeps the detector off ordinary
-        # photo pages (so an existing offline fixture never spuriously gains a plan).
-        try:
-            if candidates_for_page(path, pno):
-                continue
-        except Exception:
-            pass
         crop, sig, kind = _rendered_plan_crop(path, pno, cache=cache_dir)
         if crop is None:
             continue
+        text = _page_plaintext(path, pno, cache=cache_dir)
+        is_spec = _PS.looks_like_spec_page(text)
+        title = _PS.plan_title_score(text)
+        has_photo = _page_has_dominant_photo(path, pno)
+        has_marker = _PS.has_drawing_marker(text)
+        ok, titled = _plan_page_eligible(kind, sig, has_photo, title, is_spec, has_marker)
         white = sig.get("white", 0.0)
-        if kind != "plan" or not (0.15 <= white <= 0.90):
-            continue  # not the plan signature (a photo/map/text/blank page never binds)
+        in_band = 0.15 <= white <= 0.90
         balance = 4.0 * white * (1.0 - white)
+        if not ok:
+            # NEAR-MISS: a page carrying a positive plan signal (classify 'plan', or a plan title)
+            # that a precision guard rejected -> surface it so a real missed plan is visible.
+            if near_miss is not None:
+                if is_spec and titled:
+                    near_miss.append({"page": pno,
+                                      "why": "classified as a spec page but carries a plan title"})
+                elif is_spec and kind == "plan" and in_band:
+                    # a real plan DRAWING on a page that also carries >=2 own-line labels (a legend /
+                    # title-block) - the spec gate rejected it; surface it so it is not silently lost.
+                    near_miss.append({"page": pno,
+                                      "why": "classified as a spec page but has the site-plan visual signature"})
+                elif not is_spec and (kind == "plan" or titled):
+                    why = ("a real photo dominates the page" if has_photo
+                           else "classified '%s' outside the plan white-balance band" % kind if kind == "plan"
+                           else "classified '%s'; a plan title is present but not visually confirmed" % kind if titled
+                           else "")
+                    if why:
+                        near_miss.append({"page": pno, "why": why})
+            continue
         cf = _cache_file(path, pno, budget_kb, "planpage", cache_dir)
         uri = _cache_read(cf)
         if uri is None:
             uri = to_data_uri(compress(crop, PLAN_MAX_EDGE, budget_kb))
             _cache_write(cf, uri)
-        # a cached "" is a prior negative for this (source,page,budget) - leave it; never
-        # recompute/overwrite (that would defeat resume + the shared planpage-cache contract).
-        # A "" is falsy, so the `if uri` below skips it - the page simply does not bind.
-        if uri and (best is None or balance > best[0]):
-            best = (balance, pno, uri)
+        # prefer a VISUAL plan (kind=='plan') over a title-rescued 'map', then a titled page, then
+        # the most balanced - so a real drawing beats a merely-named page in the same cluster.
+        rank = (1 if kind == "plan" else 0, 1 if titled else 0, balance)
+        if uri and (best is None or rank > best[0]):
+            best = (rank, pno, uri)
     if best is None:
         return (None, None)
     return (best[2], best[1])

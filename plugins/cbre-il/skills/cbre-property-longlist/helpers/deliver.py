@@ -94,6 +94,22 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
         lines.append("- None.")
     lines.append("")
 
+    # possible site plans not captured: a page LOOKED plan-ish (classified 'plan' out of band, or
+    # carried a plan title) but a precision guard rejected it and no plan bound - surfaced so a
+    # genuinely missed plan is visible (never binds a wrong image; honest miss over false plan).
+    pnm = meta.get("planNearMiss", [])
+    lines.append("## Possible site plans not captured")
+    if pnm:
+        for e in pnm:
+            for pg in e.get("pages", []):
+                loc = f"{pg.get('file', '?')} page {int(pg.get('page', 0)) + 1}"
+                lines.append(f"- **{e.get('property', '?')}** ({e.get('city', '')}): {loc} - "
+                             f"{pg.get('why', '')} (check the deck; if it is the site plan, "
+                             f"set __meta.plan_page)")
+    else:
+        lines.append("- None.")
+    lines.append("")
+
     # photo matches to confirm (run.py writes <work>/photo_doubts.json) - an uncertain
     # brochure<->property pairing shows a placeholder and is surfaced as a yes/no the
     # broker can confirm to pull the photo in
