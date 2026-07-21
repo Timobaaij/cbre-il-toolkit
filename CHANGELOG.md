@@ -7,6 +7,16 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.0.12] — 2026-07-21
+### Changed
+- **Property longlist — Stage-0 setup is now a single `visualize` widget.** The broker
+  setup (client name, enrichment extras, openrouteservice key, email scope, language)
+  is presented as ONE `visualize` elicitation widget showing all five questions in a
+  single box and submitted together, instead of `AskUserQuestion` — never one question
+  at a time, with a plain-text single-message fallback when the tool is unavailable.
+  Adds `reference/setup-form.md` (the elicitation form and how to render it) and updates
+  `SKILL.md` to match.
+
 ## [1.0.11] — 2026-07-20
 ### Added
 - **Property longlist — a persistent Compare view (dashboard template v25).** A new
@@ -299,6 +309,7 @@ How to update to the latest version is in the [README](./README.md#updating).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.0.12]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.12
 [1.0.11]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.11
 [1.0.10]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.10
 [1.0.9]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.9
