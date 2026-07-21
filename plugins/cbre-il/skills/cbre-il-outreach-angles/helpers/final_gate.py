@@ -157,15 +157,31 @@ def field_span(blk, field):
     return "\n".join(span)
 
 
-def section_body(text, heading_prefix):
-    """Return the body of the first section whose heading starts with heading_prefix."""
-    m = re.search(r"^" + re.escape(heading_prefix) + r".*$", text, re.M)
+def section_body(text, heading_prefix, flags=re.M):
+    """Return the body of the first section whose heading starts with heading_prefix.
+    Pass flags=re.M|re.I for case-insensitive heading matching."""
+    m = re.search(r"^" + re.escape(heading_prefix) + r".*$", text, flags)
     if not m:
         return ""
     start = m.end()
     nxt = re.search(r"^##\s", text[start:], re.M)
     end = start + nxt.start() if nxt else len(text)
     return text[start:end]
+
+
+def strip_inference_block(t):
+    """Return t with the '## Reading the signals' block removed. That block is the Stage 3.5
+    abductive inference block: it is explicitly inferential, quarantined, and inherently full of
+    absence/tension language ("no real-estate resolution", a disconfirming "no evidence of ..."
+    line), which would otherwise false-trip the content-integrity FAIL checks (no_unsourced_absence,
+    saturation). Its own quality is the reviewer's job and its own advisory WARN; only the global
+    dash check and that WARN apply to it, not the sourced-angle content checks."""
+    m = re.search(r"^##\s+Reading the signals.*$", t, re.M | re.I)
+    if not m:
+        return t
+    nxt = re.search(r"^##\s", t[m.end():], re.M)
+    end = m.end() + nxt.start() if nxt else len(t)
+    return t[:m.start()] + t[end:]
 
 
 def has_table_row(text):
@@ -209,6 +225,10 @@ def check_evidence(evidence_text):
 
 def check_sheet(text, ledger_text):
     results = []
+    # Content-integrity FAIL checks run on the sheet WITHOUT the Stage 3.5 inference block, which is
+    # quarantined and inherently full of absence/tension language. The global dash check still uses
+    # the full text, and the inference block gets its own advisory WARN below.
+    text_ex = strip_inference_block(text)
 
     # 1. Banned dashes (sheet is authored text; ledger may quote sources, so skip it).
     dash_lines = [i + 1 for i, ln in enumerate(text.splitlines()) if DASH_RE.search(ln)]
@@ -244,7 +264,7 @@ def check_sheet(text, ledger_text):
             "'The situation in plain English' and 'Angles' present")
 
     # 5. Item-level checks (only when ranked items exist).
-    blocks = find_angle_blocks(text)
+    blocks = find_angle_blocks(text_ex)
     no_call_verdict = bool(re.search(
         r"do not call|no live reason to call|no shortlist angle is live|"
         r"no opportunity is developable", text, re.I))
@@ -419,8 +439,8 @@ def check_sheet(text, ledger_text):
                 f"{len(ageing_rows)} ageing row(s) carry a refresh outcome")
 
     # 6c. Footprint completeness reconciliation. Top-level so it runs on every sheet.
-    combined = text + "\n" + (ledger_text or "")
-    if has_saturation_claim(text):
+    combined = text_ex + "\n" + (ledger_text or "")
+    if has_saturation_claim(text_ex):
         if RECON_GAP_RE.search(combined):
             add(results, "FAIL", "footprint_reconciliation",
                 "saturation/complete-network claim present while reconciliation is 'UNRESOLVED GAP'")
@@ -437,7 +457,7 @@ def check_sheet(text, ledger_text):
         add(results, "PASS", "footprint_reconciliation", "no saturation claim to reconcile")
 
     # 6d. Absence is a gap, never evidence.
-    if ABSENCE_RE.search(text):
+    if ABSENCE_RE.search(text_ex):
         add(results, "FAIL", "no_unsourced_absence",
             "sheet contains search-emptiness language ('found no' / 'could not find' / "
             "'no evidence of' / ...); absence is a gap, not evidence, and a non-existence "
@@ -470,6 +490,36 @@ def check_sheet(text, ledger_text):
             + "); corroborate any load-bearing figure with a primary source (filing/IR/RNS) or a second row")
     else:
         add(results, "PASS", "aggregator_sources", "no aggregator-only sourcing detected in the ledger")
+
+    # 6g. Inference block advisory (WARN only). The Stage 3.5 abductive block is optional and
+    # quarantined; if present, sanity-check its shape (bet count, confirm/kill lines, two-fact
+    # grounding). Bet QUALITY is the reviewer's job, so this never FAILs a run.
+    inf = section_body(text, "## Reading the signals", re.M | re.I)
+    bet_starts = [m.start() for m in re.finditer(r"^###\s+Bet\b", inf, re.M)]
+    if bet_starts:
+        problems = []
+        if len(bet_starts) > 4:
+            problems.append(f"{len(bet_starts)} bets exceed the cap of 4")
+        for i, s in enumerate(bet_starts):
+            e = bet_starts[i + 1] if i + 1 < len(bet_starts) else len(inf)
+            span = inf[s:e]
+            miss = []
+            if "What would confirm it:" not in span:
+                miss.append("a tripwire ('What would confirm it:')")
+            if "What would kill it:" not in span:
+                miss.append("a disconfirming line ('What would kill it:')")
+            if len(re.findall(r"\[FACT\b", span)) < 2:
+                miss.append("two grounding [FACT]s")
+            if miss:
+                problems.append(f"bet {i + 1} lacks " + " and ".join(miss))
+        if problems:
+            add(results, "WARN", "inference_block",
+                "; ".join(problems) + " (advisory; the reviewer owns bet quality)")
+        else:
+            add(results, "PASS", "inference_block",
+                f"{len(bet_starts)} bet(s), each with a tripwire, a disconfirming line and >=2 [FACT]s")
+    else:
+        add(results, "PASS", "inference_block", "no inference bets (block absent or empty)")
 
     # 7. Length heuristic (WARN only; the page cap is retired for the deliverable).
     words = len(re.findall(r"\S+", text))

@@ -7,6 +7,20 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.0.13] — 2026-07-21
+### Added
+- **`cbre-il-outreach-angles` — Stage 3.5 abductive synthesis (“Reading the signals”).**
+  A new orchestrator pass reads the FULL merged evidence set (including the low-signal
+  and pressure findings the angle logic discards) and asks what un-announced decisions,
+  if any, would best explain the whole pattern of signals (up to four; zero allowed,
+  never padded). Each hypothesis is fenced — two independent sourced facts, a shown
+  reasoning chain, a real-estate consequence, a named public tripwire, a disconfirming
+  line and an epistemic label — and lands in a separate, internal `## Reading the signals`
+  block that never enters the ranked list or affects developability scoring (“the
+  deliverable of a bet is the tripwire, not the guess”). Updates `helpers/final_gate.py`,
+  `helpers/render_html.py`, `reference/evidence-and-ledger.md` (the inference fence),
+  `reference/output-template.md` and `evals/smoke_test.py`.
+
 ## [1.0.12] — 2026-07-21
 ### Changed
 - **Property longlist — Stage-0 setup is now a single `visualize` widget.** The broker
@@ -309,6 +323,7 @@ How to update to the latest version is in the [README](./README.md#updating).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.0.13]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.13
 [1.0.12]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.12
 [1.0.11]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.11
 [1.0.10]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.10

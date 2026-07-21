@@ -315,6 +315,69 @@ expect(check_status(PRIMARY_PATH, "aggregator_sources") == "PASS",
        "an aggregator token in a URL path (host is ir.acme.com) must NOT WARN aggregator_sources")
 
 
+# --- Stage 3.5 inference block (quarantined; advisory-only) ---------------------
+
+INFER = """## Reading the signals (inferred, not confirmed)
+Internal use, not client-facing.
+
+### Bet 1: Acme is weighing a second regional hub
+The bet: they add a regional distribution centre to cut service distance. [INFERENCE]
+Shape: a mid-size DC, likely in the south.
+Why I think this: online growth since 2024 [FACT, A2] set against a single national hub [FACT, C1]; together they imply a widening service gap.
+What would confirm it: a planning or permit filing for a new DC on the regional portal.
+What would kill it: a stated decision to expand the existing hub instead, or no evidence of any site search within 12 months.
+Confidence and horizon: Low, 12 to 24 months.
+
+"""
+GOOD_INF = GOOD.replace("## Source Ledger", INFER + "## Source Ledger")
+gi = fg.check_sheet(GOOD_INF, "")
+gi_names = {r["check"] for r in gi}
+gi_fails = {r["check"] for r in gi if r["status"] == "FAIL"}
+expect(not gi_fails, f"GOOD + a well-formed inference block should have no FAILs, got: {gi_fails}")
+expect("angle3_fields" not in gi_names,
+       "a '### Bet' must NOT be counted as a ranked angle (no angle3 checks)")
+expect(check_status(GOOD_INF, "inference_block") == "PASS",
+       "a well-formed single bet (>=2 [FACT], confirm + kill) must PASS inference_block")
+expect(check_status(GOOD_INF, "no_unsourced_absence") == "PASS",
+       "a bet's 'no evidence of ...' disconfirming line must NOT trip no_unsourced_absence (block is excised)")
+
+# Missing disconfirming line -> WARN (never FAIL).
+INFER_NO_KILL = INFER.replace("What would kill it: a stated decision to expand the existing hub instead, or no evidence of any site search within 12 months.\n", "")
+expect(check_status(GOOD.replace("## Source Ledger", INFER_NO_KILL + "## Source Ledger"), "inference_block") == "WARN",
+       "a bet missing 'What would kill it:' must WARN inference_block")
+expect("inference_block" not in {r["check"] for r in fg.check_sheet(GOOD.replace("## Source Ledger", INFER_NO_KILL + "## Source Ledger"), "") if r["status"] == "FAIL"},
+       "the inference-block check must never FAIL a run")
+
+# More than four bets -> WARN.
+BET = ("### Bet {n}: move {n} [INFERENCE]\n"
+       "Why I think this: fact one [FACT, A2] and fact two [FACT, C1].\n"
+       "What would confirm it: a permit filing.\n"
+       "What would kill it: a stated decision otherwise.\n")
+INFER_5 = "## Reading the signals (inferred, not confirmed)\nInternal use.\n" + "".join(BET.format(n=i) for i in range(1, 6))
+expect(check_status(INFER_5, "inference_block") == "WARN", "more than four bets must WARN inference_block")
+
+# No block at all -> PASS (the block is optional).
+expect(check_status(GOOD, "inference_block", GOOD) == "PASS", "a sheet with no inference block must PASS inference_block")
+
+# Renderer: the block renders as an internal, quarantined section with bet cards.
+inf_html = rh.render(GOOD_INF)
+expect('class="internal-banner"' in inf_html and "Not client-facing" in inf_html,
+       "render must flag the inference block as internal / not client-facing")
+expect('class="bet-card"' in inf_html, "render must build a bet card per bet")
+
+# Case-insensitive heading: a title-cased "## Reading the Signals" must still be excised and counted
+# (the renderer matches case-insensitively, so the gate must too, or a valid block false-FAILs).
+INFER_TC = INFER.replace("## Reading the signals (inferred, not confirmed)",
+                         "## Reading the Signals (inferred, not confirmed)")
+GOOD_TC = GOOD.replace("## Source Ledger", INFER_TC + "## Source Ledger")
+expect(check_status(GOOD_TC, "no_unsourced_absence") == "PASS",
+       "a title-cased inference heading must still be excised (no false no_unsourced_absence FAIL)")
+expect(check_status(GOOD_TC, "inference_block") == "PASS",
+       "the advisory must find bets under a title-cased heading, not report 'no bets'")
+expect(not [r for r in fg.check_sheet(GOOD_TC, "") if r["status"] == "FAIL"],
+       "a well-formed title-cased inference block must not FAIL the sheet")
+
+
 # --- report ---------------------------------------------------------------------
 
 if failures:

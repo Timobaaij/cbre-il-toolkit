@@ -78,6 +78,24 @@ Real but not-yet-developable or not-yet-sourced signals, one plain line each, wi
 would activate them. Generic ESG pledges, ongoing expansion trends with no company-specific anchor, and
 clockless background signals live here, never in the ranked list.
 
+## Reading the signals (inferred, not confirmed)
+INTERNAL use, not client-facing. Reasoned bets on moves the company has NOT announced, built by
+connecting sourced facts already in the evidence file (Stage 3.5). Each is an inference, labelled as one,
+with the public signal that would confirm it. Zero to four bets; do not pad. These are NOT opportunities
+to pitch and NOT ranked angles: they carry no developability or readiness label, are not in the at-a-glance
+table, and never count toward the five-to-seven. They are where to point the next research pass and the
+next conversation. The value is the tripwire, not the guess.
+
+### Bet 1: [one plain sentence naming the un-announced move]
+The bet: [what you think they are weighing, in plain words] [INFERENCE]
+Shape: [what, roughly where, roughly how big, if inferable from the facts]
+Why I think this: [the reasoning chain, naming the two or more sourced facts and the logic joining them; reference the evidence ids, each fact tagged [FACT]]
+What would confirm it: [the single most likely public tripwire, mapped to a named source class (investment-incentive or zone register, planning or permit portal, company or statutory-registry filing, clustered hiring, developer or contractor PR)]
+What would kill it: [the disconfirming evidence or event, stated plainly]
+Confidence and horizon: [Low / Medium, and the rough time window; be honest, most start Low]
+
+### Bet 2: [...]   (hard cap of four; if there is no disciplined bet, write "No inferred bets clear the fence this run" and stop)
+
 ## Jargon buster
 Placed at the foot of the sheet, as a reference the reader consults. One bullet per specialist term
 actually used anywhere above, each defined in plain words (a sentence or two, a plain-English analogy is
@@ -105,7 +123,7 @@ It produces one self-contained `.html` file (all CSS inline, no external assets,
 
 ## Worked example (illustrative, dates are placeholders, not real)
 
-See `Gerresheimer/sheet-plain-english.md` in the project for a full worked example of the markdown structure: a levered pharma-packaging manufacturer with a dated refinancing deadline and an untapped owned-property estate, whose strongest opportunity (a sale-and-leaseback to raise cash before the refinancing) leads the list, each opportunity written plain-English-first with the evidence beneath, a jargon buster defining Schuldschein, Lazard, covenant, sale-and-leaseback and the rest, and an at-a-glance table.
+The worked-example shape (illustrative, not a real company): a levered manufacturer with a dated refinancing deadline and an owned-property estate. Its ranked list leads with the highest-developability opportunity whose ANCHOR is a sourced `[FACT]` (for example a multi-plant carve-out with a dated separation decision), while a larger-in-theory but inference-anchored play (a sale-and-leaseback whose freehold is only inferred) sits BELOW it, capped at Medium under the anchor-quality rule and titled as an open question ("freehold to confirm"), never as "owned". Each opportunity is written plain-English-first with the evidence beneath; an at-a-glance table opens the list; a jargon buster at the foot defines the specialist terms; and the internal `## Reading the signals` block may carry a few fenced abductive bets, each with a tripwire and a disconfirming line. (Live client runs are kept outside the skill folder.)
 
 The item to **reject from the ranked list** (watch-list at best): "As sustainability rises up the agenda, we would welcome a conversation about your net-zero commitments." No company-specific anchor, no consequence, heard from ten brokers already.
 
@@ -123,6 +141,7 @@ Read the whole sheet once with fresh eyes and confirm:
 - No item is **framed as "owned"** when ownership is only inferred: its title and at-a-glance pose the open question, and an item whose evidence points away from ownership is a watch-list line, not a confident ranked slot.
 - The ranked list is **not padded**: every angle earns its place, and a thin or highly speculative one sits on the watch-list rather than filling a slot to reach five.
 - Fact, inference and assumption are distinct throughout; any peer pattern is grounded or framed as experience, never an invented statistic.
+- The internal `## Reading the signals` block (if present) is fenced: at most four bets, each grounded in two or more cited `[FACT]`s with a shown reasoning chain, a real-estate consequence, a named public tripwire and a disconfirming line, tagged `[INFERENCE]`/`[ASSUMPTION]`; it is marked internal, is not in the at-a-glance table, and no bet carries a developability or readiness label. Zero bets is fine; never pad it.
 - The ranked list may be as few as zero (then the watch-list and a no-call verdict still ship); it is never padded to a number.
 - Footprint is reconciled against all-Europe coverage, never sales geography; the ledger carries the coverage map and `RECONCILIATION: RECONCILED` only when every country is evidence-positive-with-source or evidence-absent-after-a-real-native-language-search, otherwise `UNRESOLVED GAP` (which ships and only bars saturation wording).
 - Nothing on the sheet says or implies "we found no X" as evidence; a centralised or single-DC model appears only when positively sourced.

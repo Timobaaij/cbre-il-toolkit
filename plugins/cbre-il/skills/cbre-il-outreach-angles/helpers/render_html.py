@@ -94,8 +94,17 @@ ul.watch{margin:0;padding-left:18px}
 ul.watch li{margin:0 0 8px}
 code{background:#eef2f0;border-radius:4px;padding:1px 5px;font-size:.9em}
 .ledger-note{font-size:14px;color:var(--muted)}
+section.internal{background:#faf7ef;border:1px dashed #d8c9a0;margin:0 -40px;padding:22px 40px}
+section.internal h2{color:#7a5c00}
+.internal-banner{background:#4a3a12;color:#ffdf9e;border-radius:6px;padding:8px 12px;font-size:12px;font-weight:700;margin:0 0 14px;text-transform:uppercase;letter-spacing:.05em}
+.bet-card{border:1px solid #e5dcc2;border-left:4px solid #b8860b;border-radius:8px;background:#fffdf7;padding:14px 16px;margin:12px 0}
+.bet-h{margin:0 0 8px;font-size:15.5px;color:#5c4700;font-family:Georgia,serif;display:flex;gap:8px;align-items:baseline}
+.bet-tag{background:#b8860b;color:#fff;font-family:"Segoe UI",sans-serif;font-size:11.5px;font-weight:700;border-radius:5px;padding:2px 7px;white-space:nowrap}
+.bet-field{margin:0 0 6px;font-size:14.5px;color:#39443f}
+.bet-lbl{font-weight:700;color:#5c4700}
 footer.foot{padding:18px 40px 30px;color:var(--muted);font-size:12.5px;border-top:1px solid #edf0ee}
 @media print{body{background:#fff}.wrap{box-shadow:none;max-width:100%}
+  section.internal{display:none !important}
   details.evidence{border:0}details.evidence summary{display:none}details.evidence[open] .ev-body,
   details.evidence .ev-body{display:block !important}details.evidence:not([open]) .ev-body{display:block}}
 """
@@ -306,12 +315,50 @@ def render_angles(lines):
     return "".join(cards)
 
 
+def render_bet(bet_lines):
+    """Render one '### Bet N: ...' block as an internal bet card."""
+    title_line = bet_lines[0].strip()
+    m = re.match(r"^###\s+(Bet\s+\d+):\s*(.*)$", title_line)
+    label = m.group(1) if m else "Bet"
+    title = m.group(2).strip() if m else title_line.lstrip("# ")
+    fields, order, cur = {}, [], None
+    for ln in bet_lines[1:]:
+        s = ln.strip()
+        fm = re.match(r"^([A-Z][A-Za-z '/]+):\s?(.*)$", s)
+        if fm:
+            cur = fm.group(1).strip()
+            fields[cur] = fm.group(2).strip()
+            order.append(cur)
+        elif s and cur:
+            fields[cur] = (fields[cur] + " " + s).strip()
+    rows = "".join(
+        f'<p class="bet-field"><span class="bet-lbl">{esc(k)}:</span> {inline(fields[k])}</p>'
+        for k in order if fields[k])
+    return (f'<div class="bet-card"><h3 class="bet-h"><span class="bet-tag">{esc(label)}</span>'
+            f'<span>{inline(title)}</span></h3>{rows}</div>')
+
+
+def render_inference(lines):
+    """Render the internal '## Reading the signals' block: intro prose + one card per bet."""
+    text = "\n".join(lines)
+    starts = [m.start() for m in re.finditer(r"^###\s+Bet\b.*$", text, re.M)]
+    intro = render_paragraphs(text[:(starts[0] if starts else len(text))].splitlines())
+    if not starts:
+        return intro
+    cards = []
+    for i, s in enumerate(starts):
+        e = starts[i + 1] if i + 1 < len(starts) else len(text)
+        cards.append(render_bet(text[s:e].splitlines()))
+    return intro + "".join(cards)
+
+
 SECTION_RENDERERS = [
     ("situation in plain english", "situation", render_paragraphs),
     ("jargon buster", "jargon", render_jargon),
     ("why this is a live prospect", "prospect-sec", None),  # special-cased below
     ("at a glance", "glance", render_table),
     ("angles", "angles", render_angles),
+    ("reading the signals", "internal", render_inference),
     ("watch", "watch", render_watchlist),
     ("source ledger", "ledger", render_paragraphs),
 ]
@@ -366,8 +413,14 @@ def render(md_text):
         if rendered is None:
             rendered = render_paragraphs(sec_lines)
         is_jargon = "jargon" in key
-        sec_class = "situation" if cls == "situation" else ("jargon-sec" if is_jargon else "")
-        sec_html = f'<section class="{sec_class}"><h2>{inline(heading)}</h2>{rendered}</section>'
+        is_internal = cls == "internal"
+        sec_class = ("situation" if cls == "situation"
+                     else "jargon-sec" if is_jargon
+                     else "internal" if is_internal
+                     else "")
+        banner = ('<div class="internal-banner">Internal thinking aid: inferred, not confirmed. '
+                  'Not client-facing.</div>') if is_internal else ""
+        sec_html = f'<section class="{sec_class}"><h2>{inline(heading)}</h2>{banner}{rendered}</section>'
         if is_jargon:
             # The jargon buster always renders at the foot of the sheet, as a reference
             # the reader consults, regardless of where it sits in the source markdown.
