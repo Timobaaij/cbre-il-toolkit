@@ -510,6 +510,10 @@ def check_sheet(text, ledger_text):
                 miss.append("a disconfirming line ('What would kill it:')")
             if len(re.findall(r"\[FACT\b", span)) < 2:
                 miss.append("two grounding [FACT]s")
+            if not re.search(r"(?im)^\s*move[ -]type:", span):
+                miss.append("a Move type")
+            if not re.search(r"(?im)^\s*posture:", span):
+                miss.append("a Posture read")
             if miss:
                 problems.append(f"bet {i + 1} lacks " + " and ".join(miss))
         if problems:

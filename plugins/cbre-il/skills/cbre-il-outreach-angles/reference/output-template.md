@@ -84,17 +84,19 @@ connecting sourced facts already in the evidence file (Stage 3.5). Each is an in
 with the public signal that would confirm it. Zero to four bets; do not pad. These are NOT opportunities
 to pitch and NOT ranked angles: they carry no developability or readiness label, are not in the at-a-glance
 table, and never count toward the five-to-seven. They are where to point the next research pass and the
-next conversation. The value is the tripwire, not the guess.
+next conversation. The value is the tripwire, not the guess. Each bet reasons in two steps: first enumerate the real-estate move-types the tension could take, then let the company's posture (additive or defensive) select the live one; where a mixed posture makes two types live, carry two bets. Every bet is a EUROPEAN move. Once the move-type is chosen, each bet is deepened by one bounded research pass and then strengthened, dropped, or promoted: a bet that firms into a hard dated trigger belongs in the ranked list, not here, and a shipped bet's confidence reflects that deepen pass.
 
 ### Bet 1: [one plain sentence naming the un-announced move]
 The bet: [what you think they are weighing, in plain words] [INFERENCE]
-Shape: [what, roughly where, roughly how big, if inferable from the facts]
-Why I think this: [the reasoning chain, naming the two or more sourced facts and the logic joining them; reference the evidence ids, each fact tagged [FACT]]
+Move type: [one from the menu: expand capacity / enter a new country / consolidate duplicate sites / close a facility / exit a country / relocate / change tenure / swing in-house or 3PL]
+Posture: [additive / defensive / mixed, named from cited facts; this is what selects this move-type over its opposite, e.g. why "enter" and not "close"]
+Shape: [what, roughly WHERE IN EUROPE, roughly how big, if inferable from the facts]
+Why I think this: [the reasoning chain, naming the two or more sourced facts and the logic joining them (reference the evidence ids, each fact tagged [FACT]); note the other move-types the tension could have taken and why the posture picks this one]
 What would confirm it: [the single most likely public tripwire, mapped to a named source class (investment-incentive or zone register, planning or permit portal, company or statutory-registry filing, clustered hiring, developer or contractor PR)]
 What would kill it: [the disconfirming evidence or event, stated plainly]
 Confidence and horizon: [Low / Medium, and the rough time window; be honest, most start Low]
 
-### Bet 2: [...]   (hard cap of four; if there is no disciplined bet, write "No inferred bets clear the fence this run" and stop)
+### Bet 2: [...]   (a second bet is often a DIFFERENT move-type off a MIXED posture, e.g. a defensive consolidation bet beside an additive entry bet; hard cap of four; if there is no disciplined bet, write "No inferred bets clear the fence this run" and stop)
 
 ## Jargon buster
 Placed at the foot of the sheet, as a reference the reader consults. One bullet per specialist term
@@ -141,7 +143,7 @@ Read the whole sheet once with fresh eyes and confirm:
 - No item is **framed as "owned"** when ownership is only inferred: its title and at-a-glance pose the open question, and an item whose evidence points away from ownership is a watch-list line, not a confident ranked slot.
 - The ranked list is **not padded**: every angle earns its place, and a thin or highly speculative one sits on the watch-list rather than filling a slot to reach five.
 - Fact, inference and assumption are distinct throughout; any peer pattern is grounded or framed as experience, never an invented statistic.
-- The internal `## Reading the signals` block (if present) is fenced: at most four bets, each grounded in two or more cited `[FACT]`s with a shown reasoning chain, a real-estate consequence, a named public tripwire and a disconfirming line, tagged `[INFERENCE]`/`[ASSUMPTION]`; it is marked internal, is not in the at-a-glance table, and no bet carries a developability or readiness label. Zero bets is fine; never pad it.
+- The internal `## Reading the signals` block (if present) is fenced: at most four bets, each grounded in two or more cited `[FACT]`s with a shown reasoning chain, a named **move-type** and the **posture** that selects it, a **European** real-estate consequence, a named public tripwire and a disconfirming line, tagged `[INFERENCE]`/`[ASSUMPTION]`; it is marked internal, is not in the at-a-glance table, and no bet carries a developability or readiness label. Where a mixed posture makes two move-types live, two bets of different types are carried, not collapsed. Zero bets is fine; never pad it.
 - The ranked list may be as few as zero (then the watch-list and a no-call verdict still ship); it is never padded to a number.
 - Footprint is reconciled against all-Europe coverage, never sales geography; the ledger carries the coverage map and `RECONCILIATION: RECONCILED` only when every country is evidence-positive-with-source or evidence-absent-after-a-real-native-language-search, otherwise `UNRESOLVED GAP` (which ships and only bars saturation wording).
 - Nothing on the sheet says or implies "we found no X" as evidence; a centralised or single-DC model appears only when positively sourced.

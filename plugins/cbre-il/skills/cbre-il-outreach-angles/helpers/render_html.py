@@ -324,7 +324,7 @@ def render_bet(bet_lines):
     fields, order, cur = {}, [], None
     for ln in bet_lines[1:]:
         s = ln.strip()
-        fm = re.match(r"^([A-Z][A-Za-z '/]+):\s?(.*)$", s)
+        fm = re.match(r"^([A-Z][A-Za-z '/-]+):\s?(.*)$", s)
         if fm:
             cur = fm.group(1).strip()
             fields[cur] = fm.group(2).strip()

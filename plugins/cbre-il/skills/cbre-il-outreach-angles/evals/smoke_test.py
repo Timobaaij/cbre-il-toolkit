@@ -322,7 +322,9 @@ Internal use, not client-facing.
 
 ### Bet 1: Acme is weighing a second regional hub
 The bet: they add a regional distribution centre to cut service distance. [INFERENCE]
-Shape: a mid-size DC, likely in the south.
+Move type: expand or enter (a second regional site).
+Posture: additive, given the sourced online growth and capacity investment.
+Shape: a mid-size DC in southern Europe.
 Why I think this: online growth since 2024 [FACT, A2] set against a single national hub [FACT, C1]; together they imply a widening service gap.
 What would confirm it: a planning or permit filing for a new DC on the regional portal.
 What would kill it: a stated decision to expand the existing hub instead, or no evidence of any site search within 12 months.
@@ -348,6 +350,17 @@ expect(check_status(GOOD.replace("## Source Ledger", INFER_NO_KILL + "## Source 
 expect("inference_block" not in {r["check"] for r in fg.check_sheet(GOOD.replace("## Source Ledger", INFER_NO_KILL + "## Source Ledger"), "") if r["status"] == "FAIL"},
        "the inference-block check must never FAIL a run")
 
+# Missing the Move type / Posture two-step fields -> WARN (never FAIL).
+INFER_NO_MT = INFER.replace("Move type: expand or enter (a second regional site).\n", "")
+expect(check_status(GOOD.replace("## Source Ledger", INFER_NO_MT + "## Source Ledger"), "inference_block") == "WARN",
+       "a bet missing its Move type must WARN inference_block (two-step shape enforced, advisory)")
+
+# The hyphenated 'Move-type:' authoring variant (matching the prose 'move-type') is tolerated.
+INFER_HY = INFER.replace("Move type: expand or enter (a second regional site).",
+                         "Move-type: expand or enter (a second regional site).")
+expect(check_status(GOOD.replace("## Source Ledger", INFER_HY + "## Source Ledger"), "inference_block") == "PASS",
+       "a hyphenated 'Move-type:' label must still satisfy the Move type check")
+
 # More than four bets -> WARN.
 BET = ("### Bet {n}: move {n} [INFERENCE]\n"
        "Why I think this: fact one [FACT, A2] and fact two [FACT, C1].\n"
@@ -364,6 +377,8 @@ inf_html = rh.render(GOOD_INF)
 expect('class="internal-banner"' in inf_html and "Not client-facing" in inf_html,
        "render must flag the inference block as internal / not client-facing")
 expect('class="bet-card"' in inf_html, "render must build a bet card per bet")
+expect("Move type" in inf_html and "Posture" in inf_html,
+       "render must surface the two-step Move type and Posture fields")
 
 # Case-insensitive heading: a title-cased "## Reading the Signals" must still be excised and counted
 # (the renderer matches case-insensitively, so the gate must too, or a valid block false-FAILs).

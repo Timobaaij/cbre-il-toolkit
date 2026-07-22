@@ -7,6 +7,21 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.0.14] — 2026-07-22
+### Changed
+- **`cbre-il-outreach-angles` — Stage 3.5 abductive synthesis now reasons in structured
+  steps.** Rather than leaping from an unresolved tension to a single guess, each bet is
+  worked in three steps: (1) enumerate the real-estate move-types a tension admits
+  (expand, enter, consolidate, close, exit, relocate, change tenure, in-house vs 3PL) and
+  drop responses with no European property consequence; (2) gate by the company's posture
+  (additive vs defensive vs mixed) to select which move-type is live — a mixed posture can
+  carry two bets; (3) run ONE bounded, bet-specific research pass for soft corroboration,
+  then strengthen, drop, or promote the bet (a bet that gains a hard dated trigger becomes
+  a ranked angle, not a bet). Every bet is a European move, and the inference fence now
+  records the move-type and the posture that selected it. Updates `helpers/final_gate.py`,
+  `helpers/render_html.py`, `reference/evidence-and-ledger.md`, `reference/output-template.md`
+  and `evals/smoke_test.py`.
+
 ## [1.0.13] — 2026-07-21
 ### Added
 - **`cbre-il-outreach-angles` — Stage 3.5 abductive synthesis (“Reading the signals”).**
@@ -323,6 +338,7 @@ How to update to the latest version is in the [README](./README.md#updating).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.0.14]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.14
 [1.0.13]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.13
 [1.0.12]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.12
 [1.0.11]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.11
