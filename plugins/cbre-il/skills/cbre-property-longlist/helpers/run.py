@@ -1957,7 +1957,10 @@ def main() -> None:
         if unresolved_labels:
             rl_out = work / "extract" / "region_labels.json"
             rl_out.parent.mkdir(parents=True, exist_ok=True)
-            cached_keys = set(enrich._region_labels_cache().keys())
+            # ANSWERED keys, not the bind cache's: _region_labels_cache() drops declined
+            # (code=null) entries - correct for binding, but as the "already asked" set it
+            # re-emitted a declined label's job every re-run and exit 3 never converged.
+            cached_keys = enrich._region_labels_answered_keys()
             # scope the candidate list to the country prefixes already present in the project
             # (fork rec B): cross-country false binds become impossible; fall back to the full
             # list only for a single-property project with no known country anywhere.

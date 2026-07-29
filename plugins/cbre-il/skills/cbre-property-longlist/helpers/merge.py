@@ -1235,7 +1235,8 @@ def main() -> None:
                             files += IMG.slide_image_audit(
                                 srcf, pno, audit_dir, f"prop{i}", cache_dir=image_cache)
                         else:
-                            files += IMG.page_image_audit(srcf, pno, audit_dir, f"prop{i}")
+                            files += IMG.page_image_audit(srcf, pno, audit_dir, f"prop{i}",
+                                                          cache_dir=image_cache)
                     except Exception:
                         pass
                 unit = "slide" if tried_pages[0][2] == "pptx" else "page"

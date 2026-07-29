@@ -1312,6 +1312,30 @@ def _region_labels_cache() -> dict:
     return out
 
 
+def _region_labels_answered_keys() -> set:
+    """EVERY answered resolution key in work/extract/region_labels.json - code-bearing
+    AND declined (code null) alike - for the exit-3 job emitter's "already asked" set.
+    A strict superset of _region_labels_cache()'s keys, built the same way from the same
+    file. The two views MUST stay separate: the bind path rightly drops declines (a null
+    never binds a code), but the emitter must NOT re-ask them - keyed on the bind cache,
+    a legitimately declined label re-emitted its job on every re-run and the exit-3
+    round-trip never converged (the sub-agent is instructed 'null over a guess', so it
+    declined again, forever). A declined label is asked ONCE, then falls back to the
+    self-documenting difflib gap."""
+    f = CACHE_DIR / "extract" / "region_labels.json"
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    out: set = set()
+    for r in (data.get("resolutions") if isinstance(data, dict) else None) or []:
+        if not isinstance(r, dict):
+            continue
+        out.add(_region_label_key(r.get("raw_label"), r.get("country_cc") or r.get("country"),
+                                  r.get("city")))
+    return out
+
+
 def _ok_region_city(c) -> bool:
     return isinstance(c, str) and bool(c.strip()) and \
         c.strip().lower() not in ("tbd", "tbc", "??", "—", "-", "n/a", "na")

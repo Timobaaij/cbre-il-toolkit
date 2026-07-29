@@ -7,6 +7,18 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.0.15] — 2026-07-29
+### Fixed
+- **Property longlist — two Cowork-resume convergence bugs.** (1) The placeholder-image
+  audit now shares the SAME persistent on-disk geometry cache the image pickers use
+  (threaded through `_page_crops`), so a resumed merge — the ~40-second shell-cap
+  kill/re-run cycle — no longer re-parses a whole deck's page geometry uncached on every
+  pass. (2) The region-label prompt loop now treats the ANSWERED keys as the "already
+  asked" set (not the bind cache, which drops declined `code=null` entries), so a declined
+  label is no longer re-emitted every re-run and the exit-3 handshake actually converges.
+  Touches `helpers/enrich.py`, `helpers/images.py`, `helpers/merge.py` and `helpers/run.py`,
+  with a new `evals/audit_resume_test.py` covering both traps.
+
 ## [1.0.14] — 2026-07-22
 ### Changed
 - **`cbre-il-outreach-angles` — Stage 3.5 abductive synthesis now reasons in structured
@@ -338,6 +350,7 @@ How to update to the latest version is in the [README](./README.md#updating).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.0.15]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.15
 [1.0.14]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.14
 [1.0.13]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.13
 [1.0.12]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.12

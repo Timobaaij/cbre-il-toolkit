@@ -729,14 +729,22 @@ def gallery_for_deck(path: Path, budget_kb: int = DEFAULT_BUDGET_KB,
     return [e["uri"] for e in idx[:max_n]], len(idx)
 
 
-def page_image_audit(pdf_path: Path, page_index: int, out_dir: Path, tag: str) -> list[str]:
+def page_image_audit(pdf_path: Path, page_index: int, out_dir: Path, tag: str,
+                     cache_dir: Path | str | None = None) -> list[str]:
     """The PLACEHOLDER AUDIT: dump EVERY image candidate on the page - all embedded
     images regardless of size, plus the geometry crops - as labelled thumbnails.
     A placeholder is never a silent default: when the pickers found nothing, a
     human/reviewer must be able to SEE the discard pile and sign off that nothing
     in it was a usable photo or plan (the failure this audits was a real site plan
     filtered out twice - by the size floor, then by the photo scorer - with nobody
-    ever shown what was discarded). Returns the written file paths."""
+    ever shown what was discarded). Returns the written file paths.
+
+    cache_dir is the pickers' persistent image cache and MUST be passed on a merge
+    run: on a resumed run the pickers return from disk without touching the geometry
+    layer, so the audit's _page_crops call is what pays for _placed_layout - uncached
+    (cache_dir=None) that is a full pdfplumber re-parse of the deck, redone and thrown
+    away EVERY re-run, which under the ~40s shell-cap kill/re-run cycle is exactly the
+    infinite re-run trap the per-page geometry cache exists to prevent."""
     if Image is None:
         return []  # no Pillow: no audit montage (placeholders are surfaced honestly elsewhere)
     out_dir = Path(out_dir)
@@ -761,7 +769,7 @@ def page_image_audit(pdf_path: Path, page_index: int, out_dir: Path, tag: str) -
     except Exception:
         pass
     try:
-        for i, c in enumerate(_page_crops(pdf_path, page_index), start=1):
+        for i, c in enumerate(_page_crops(pdf_path, page_index, cache_dir=cache_dir), start=1):
             _save(c["crop"], "region", i)
     except Exception:
         pass
