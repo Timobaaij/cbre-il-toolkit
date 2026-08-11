@@ -689,8 +689,22 @@ svg.leaflet-image-layer.leaflet-interactive path {
   --line:#CAD1D3; --line-soft:#E3E8E7; --bg:#F5F7F7;
   --panel:#FFFFFF;
   --hu:#003F2D; --cz:#C8102E; --sk:#0B4EA2;
-  --font-display:'Financier Display', Georgia, serif;
-  --font-body:'Calibre', -apple-system, 'Segoe UI', Arial, sans-serif;
+  /* CJK tail (v27): the CBRE faces are Latin-only and are embedded as base64 woff2, so a
+     zh/ja/ko dashboard resolved every ideograph through the browser's per-glyph last-resort
+     fallback. These are SYSTEM family names - the file must stay self-contained, so a
+     webfont is not an option. Tail placement means a Latin dashboard never reaches them:
+     they apply only to glyphs absent from every face before them. SC first, then TC, JP, KR,
+     so the next non-Latin language costs no template bump.
+     SANS for both, deliberately: there is no CBRE CJK display face, and the serif
+     candidates (Songti SC is macOS-only, SimSun is the Windows equivalent) render poorly
+     at small sizes and differ per platform. A consistent, legible sans beats a serif that
+     only looks right on one OS. */
+  --font-display:'Financier Display', Georgia, 'PingFang SC', 'Microsoft YaHei',
+    'Noto Sans CJK SC', serif;
+  --font-body:'Calibre', -apple-system, 'Segoe UI', Arial, 'PingFang SC', 'Microsoft YaHei',
+    'Noto Sans CJK SC', 'Source Han Sans SC', 'PingFang TC', 'Microsoft JhengHei',
+    'Hiragino Kaku Gothic ProN', 'Yu Gothic', 'Apple SD Gothic Neo', 'Malgun Gothic',
+    sans-serif;
   --font-mono:'Space Mono', 'Courier New', monospace;
   --radius:2px; --shadow:0 1px 2px rgba(0,63,45,.05), 0 8px 24px rgba(0,63,45,.06);
   --shadow-lg:0 4px 12px rgba(0,63,45,.08), 0 24px 60px rgba(0,63,45,.16);
@@ -844,6 +858,7 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;background:var(--bran
 .poi-popup .poi-note{font-size:12px;color:var(--ink-2);margin-top:4px}
 
 .cm{width:24px;height:24px;border-radius:50%;border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35),0 0 0 1px rgba(0,0,0,.2);display:grid;place-items:center;background:#003F2D;color:#fff;font-size:11px;font-weight:700;font-family:var(--font-body)}
+.cm.cm-approx{border-style:dashed;border-color:#ffd27a}
 .cm.prop-hu{background:var(--hu)}
 .cm.prop-cz{background:var(--cz)}
 .cm.prop-sk{background:var(--sk)}
@@ -1280,7 +1295,7 @@ footer .container{ color:var(--light-grey); }
 
 <footer>
   <div class="container">
-    <div class="disclaimer" data-i18n="footer_disclaimer">All information provided by CBRE in this document is subject to change without notice. Rent levels, availability, technical specifications, coordinates and timing are indicative, based on landlord-provided data, and subject to negotiation. Drive-time estimates are calculated from great-circle distance with a 1.25× road winding factor at a 75 km/h motorway average and are for orientation only. Not for public distribution.</div>
+    <div class="disclaimer" data-i18n="footer_disclaimer">All information provided by CBRE in this document is subject to change without notice. Rent levels, availability, technical specifications, coordinates and timing are indicative, based on landlord-provided data, and subject to negotiation. Drive times are indicative and for orientation only. Not for public distribution.</div>
     <div>{{footer_copyright}}</div>
   </div>
 </footer>
@@ -1331,6 +1346,12 @@ const state = { filters: { q:"", country:"", city:"", dev:"", size:0 }, sort:"id
 
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
+// "is this a REAL number I may rank, compare or feed to a map?" - the one guard for every
+// numeric consumer. An unknown is JSON null (warehouseRentVal), an absent key (warehouseArea)
+// or the literal "tbd", and JS coerces all three into arithmetic silently: null - 4.2 === -4.2,
+// undefined < n === false, +"tbd" === NaN. fmt/nfmt/initSizeSlider/minRentIdx/the Flyover map
+// each guarded this inline; the sorters, the size filter and the main map did not.
+const NUMOK = v => typeof v === "number" && isFinite(v);
 const fmt = n => (typeof n === "number" && isFinite(n)) ? n.toLocaleString(LOCALE) : (n == null ? "tbd" : n);
 const nfmt = (n, mn, mx) => (typeof n === "number" && isFinite(n))
   ? n.toLocaleString(LOCALE, {minimumFractionDigits: mn, maximumFractionDigits: mx}) : n;
@@ -1483,7 +1504,15 @@ function filterList(){
     if(f.country && p.country !== f.country) return false;
     if(f.city && p.city !== f.city) return false;
     if(f.dev && p.developer !== f.dev) return false;
-    if(p.warehouseArea < f.size) return false;
+    // v31: an area-less property (a LAND/plot option: plotArea + landPrice, no warehouse) drops out
+    // only once the broker RAISES the slider above its floor - not at rest. v26 guarded the size
+    // filter against a tbd with `f.size > 0`, which was right while the slider started at 0; v13 then
+    // made the bounds DATA-DRIVEN, so el.min === SIZE_MIN === the smallest real area (35,000 here) and
+    // the default `f.size` is already > 0. The two together hid every area-less option on FIRST LOAD -
+    // from the grid, the count and the map - and the slider cannot go below its own min, so the card
+    // was unreachable by any interaction. Comparing against SIZE_MIN keeps v26's intent (an unknown
+    // does not satisfy an ACTIVE size filter) while restoring "every option is visible at rest".
+    if(!NUMOK(p.warehouseArea) ? f.size > SIZE_MIN : p.warehouseArea < f.size) return false;
     if(f.q){
       const q = f.q.toLowerCase();
       const hay = [p.park, p.developer, p.city, p.motorway, p.country].join(" ").toLowerCase();
@@ -1491,14 +1520,32 @@ function filterList(){
     }
     return true;
   });
+  // A 'tbd' / absent numeric must never be RANKED as if it were a number: warehouseRentVal is
+  // JSON null for an unpriced property and warehouseArea can be absent entirely, so
+  // (null - 4.2) === -4.2 used to sort the UNPRICED option to the TOP of "Rent (lowest)" - the
+  // slot a broker reads as best value - and the same for "Area (largest)". NUMSORT keeps every
+  // unknown at the BOTTOM regardless of direction (it is not cheapest and not biggest; it is
+  // unknown). initSizeSlider / minRentIdx / the Flyover map already guarded this way.
+  // ALWAYS called as NUMSORT(a.field, b.field, dir) - never with the arguments swapped to get
+  // a descending order, or the sink logic inverts and floats unknowns to the TOP. Direction is
+  // applied ONLY to the numeric comparison; an unknown sorts last in BOTH directions, because
+  // it is neither the cheapest nor the dearest, neither the biggest nor the smallest.
+  const NUMSORT = (av,bv,dir)=>{
+    const ao = NUMOK(av), bo = NUMOK(bv);
+    if(!ao && !bo) return 0;
+    if(!ao) return 1;          // a is unknown -> a goes after b
+    if(!bo) return -1;         // b is unknown -> a goes before b
+    return dir * (av - bv);
+  };
+  const STRSORT = (x,y)=>String(x==null?"":x).localeCompare(String(y==null?"":y));
   const sorters = {
     "id": (a,b)=>a.id-b.id,
-    "size-desc": (a,b)=>b.warehouseArea-a.warehouseArea,
-    "size-asc": (a,b)=>a.warehouseArea-b.warehouseArea,
-    "rent-asc": (a,b)=>a.warehouseRentVal-b.warehouseRentVal,
-    "rent-desc": (a,b)=>b.warehouseRentVal-a.warehouseRentVal,
-    "city": (a,b)=>a.city.localeCompare(b.city),
-    "dev": (a,b)=>a.developer.localeCompare(b.developer),
+    "size-desc": (a,b)=>NUMSORT(a.warehouseArea,b.warehouseArea,-1),
+    "size-asc": (a,b)=>NUMSORT(a.warehouseArea,b.warehouseArea,1),
+    "rent-asc": (a,b)=>NUMSORT(a.warehouseRentVal,b.warehouseRentVal,1),
+    "rent-desc": (a,b)=>NUMSORT(a.warehouseRentVal,b.warehouseRentVal,-1),
+    "city": (a,b)=>STRSORT(a.city,b.city),
+    "dev": (a,b)=>STRSORT(a.developer,b.developer),
   };
   list.sort(sorters[state.sort]);
   return list;
@@ -1546,7 +1593,7 @@ function cardHTML(p){
       <div class="dev-line">${p.developer} · ${p.motorway}</div>
       <h3 class="card-title">${p.park}</h3>
       <div class="spec-row">
-        <div class="spec"><div class="spec-k">${T("row_warehouse")}</div><div class="spec-v">${fmt(p.warehouseArea)} ${AREA_UNIT}</div></div>
+        <div class="spec"><div class="spec-k">${T("row_warehouse")}</div><div class="spec-v">${areaStr(p.warehouseArea)}</div></div>
         <div class="spec"><div class="spec-k">${T("row_clear_height")}</div><div class="spec-v">${p.clearHeight}</div></div>
         <div class="spec"><div class="spec-k">${T("row_status")}</div><div class="spec-v small">${p.status}</div></div>
         <div class="spec"><div class="spec-k">${T("row_early_access")}</div><div class="spec-v">${p.earlyAccess}</div></div>
@@ -1592,8 +1639,19 @@ function initMap(){
   L.control.layers({ [T("map_layer_streets")]: streetsLayer, [T("map_layer_satellite")]: satelliteLayer }, null, { position: 'topright', collapsed: false }).addTo(map);
 
   PROPS.forEach(p => {
+    // An UNLOCATED property is an expected shipped state (a property can legitimately have no
+    // lat/lng - the gates drop coords from the core set when un-geocoded). L.latLng THROWS on
+    // NaN/undefined, and that throw used to escape initMap() mid-loop: markers appeared only up
+    // to the first unlocated property, POI markers never rendered AT ALL, fitBounds never ran,
+    // and the map sat on its hardcoded default view. Skip it instead - it has no position to
+    // draw, and the card/modal already show its data honestly.
+    if(!NUMOK(p.lat) || !NUMOK(p.lng)) return;
     const icon = L.divIcon({
-      className: "", html: `<div class="cm prop-${p.country.toLowerCase()}">${p.id}</div>`,
+      // v34: a town-centre geocode is drawn with a DASHED ring, so an approximate pin is
+      // visibly approximate on the map itself - the surface the broker actually looks at.
+      // The modal has disclosed coordsApprox since v6, but the marker did not, so a village
+      // centroid and a surveyed site were indistinguishable at a glance.
+      className: "", html: `<div class="cm prop-${String(p.country||"").toLowerCase()}${p.coordsApprox ? " cm-approx" : ""}">${p.id}</div>`,
       iconSize: [24,24], iconAnchor: [12,12]
     });
     const m = L.marker([p.lat, p.lng], { icon }).addTo(map);
@@ -1603,6 +1661,7 @@ function initMap(){
   });
 
   POIS.forEach((poi, i) => {
+    if(!NUMOK(poi.lat) || !NUMOK(poi.lng)) return;  // same guard: one bad POI must not kill the map
     const label = poi.type === "city" ? "" : poi.type.charAt(0).toUpperCase();
     const icon = L.divIcon({
       className: "", html: `<div class="cm ${poi.type}">${label}</div>`,
@@ -1630,7 +1689,8 @@ function propPopupHTML(p){
     <div class="popup-body">
       <div class="popup-ref">№ ${String(p.id).padStart(2,'0')} · ${p.country} · ${p.city}</div>
       <h4 class="popup-title">${p.park}</h4>
-      <div class="popup-meta">${p.developer} · ${fmt(p.warehouseArea)} ${AREA_UNIT} · ${p.motorway}</div>
+      <div class="popup-meta">${p.developer} · ${areaStr(p.warehouseArea)} · ${p.motorway}</div>
+      ${p.coordsApprox ? `<div class="popup-meta" style="color:#b06000">${T("modal_approx_note")}</div>` : ''}
       <a href="#" class="popup-btn" onclick="event.preventDefault();openModal(${p.id})">${T("map_view_details")}</a>
     </div>
   `;
@@ -1669,7 +1729,7 @@ function refreshMap(list){
     <div class="map-list-item" onclick="flyToProperty(${p.id})">
       <div class="mli-head"><span class="mli-flag ${p.country.toLowerCase()}"></span><span class="mli-ref">№ ${String(p.id).padStart(2,'0')}</span></div>
       <div class="mli-title">${p.park}</div>
-      <div class="mli-meta">${p.city} · ${p.developer} · ${fmt(p.warehouseArea)} ${AREA_UNIT}</div>
+      <div class="mli-meta">${p.city} · ${p.developer} · ${areaStr(p.warehouseArea)}</div>
     </div>
   `).join("");
 }
@@ -1942,7 +2002,7 @@ const DENY_FIELDS = new Set([
   'warehouseRentVal','officeRentVal','officeAreaVal','expansionParkVal',
   'photo','gallery','plan','mapLink','preBaked','district',
   'park','developer','country','city','description','motorway','breeam']);
-const LABEL_OVERRIDES = {};
+const LABEL_OVERRIDES = {epc:'EPC'};
 const autoLabel = k => LABEL_OVERRIDES[k] ||
   String(k).replace(/[_-]+/g,' ').replace(/([a-z0-9])([A-Z])/g,'$1 $2')
            .replace(/\s+/g,' ').trim().replace(/\b\w/g, c => c.toUpperCase());
@@ -1992,6 +2052,31 @@ function glaVal(p){
   return w + o;
 }
 function glaStr(p){ const g = glaVal(p); return g == null ? "—" : fmt(g) + " " + AREA_UNIT; }
+/* v28: ONE way to render an area. The unit is appended only to a real NUMBER, because the
+   fields it is used on are number|string|null:
+     - a STRING plotArea already carries its own unit, so concatenating produced
+       "31.629 acres (12.8 ha) sq ft" on the modal and in Compare;
+     - an ABSENT warehouseArea (a plot-only record is a supported shape) rendered
+       fmt(undefined) -> "tbd", and the concatenation shipped "tbd sq ft" on the card, the
+       map popup, the map list, the modal and Compare - and in the modal it also defeated
+       row()'s tbd-omit, so a row that should vanish was printed instead.
+   NUMOK is the v26 numeric guard and the Flyover already got this right at v24; this is
+   that pattern, hoisted so every caller shares it. (B11) */
+function areaStr(p, blank){ return NUMOK(p) ? fmt(p) + " " + AREA_UNIT
+                                            : (p == null || p === "" ? (blank === undefined ? "tbd" : blank)
+                                                                     : String(p)); }
+/* v32: officeArea is the ONE area canonical stores as a STRING, with officeAreaVal as its numeric
+   twin (warehouseArea and plotArea are numbers). areaStr passes a string through untouched - which
+   is right for a plotArea reading "31.629 acres (12.8 ha)" but shipped a bare "1200" for the office
+   directly beneath a warehouse area reading "45,000 sq m": no separator, no unit, on ~25 of 37
+   properties. So prefer the numeric twin, and fall back to the string whenever it carries any
+   LETTER - a stated unit of its own, or the `tbd` sentinel - because there appending AREA_UNIT
+   would corrupt it (v28's exact caution). Routing officeArea through areaStr alone does NOT fix
+   this; the string never reaches the numeric branch. */
+function officeAreaStr(p){
+  const s = p.officeArea == null ? "" : String(p.officeArea);
+  return areaStr(NUMOK(p.officeAreaVal) && !/[a-z]/i.test(s) ? p.officeAreaVal : p.officeArea);
+}
 function detailHTML(p){
   const isTbd = v => {
     if(v === null || v === undefined) return true;
@@ -2061,9 +2146,9 @@ function detailHTML(p){
 
       ${(rowsHtml => rowsHtml ? `<h3 class="section-title">${T("sec_availability")}</h3><div class="spec-grid">${rowsHtml}</div>` : '')([
         row(T('row_total_gla'), glaStr(p), 'warehouseArea'),
-        row(T('row_warehouse_area'), fmt(p.warehouseArea) + ' ' + AREA_UNIT, 'warehouseArea'),
-        row(T('row_office_area'), p.officeArea, 'officeArea'),
-        row(T('row_plot_area'), p.plotArea ? fmt(p.plotArea) + ' ' + AREA_UNIT : '—', 'plotArea'),
+        row(T('row_warehouse_area'), areaStr(p.warehouseArea), 'warehouseArea'),
+        row(T('row_office_area'), officeAreaStr(p), 'officeArea'),
+        row(T('row_plot_area'), areaStr(p.plotArea), 'plotArea'),
         row(T('row_divisible_from'), p.divisibleFrom, 'divisibleFrom'),
         row(T('row_expansion_building'), p.expansionBuilding, 'expansionBuilding'),
         row(T('row_expansion_park'), p.expansionPark, 'expansionPark'),
@@ -2310,9 +2395,9 @@ function compareHTML(items){
     [T('cmp_early_access'), p=>p.earlyAccess, 'earlyAccess'],
     [T('row_permitting'), p=>p.permitting, 'permitting'],
     [T('row_total_gla'), p=>glaStr(p), 'warehouseArea'],
-    [T('row_warehouse_area'), p=>fmt(p.warehouseArea)+' '+AREA_UNIT, 'warehouseArea'],
-    [T('row_office_area'), p=>p.officeArea, 'officeArea'],
-    [T('row_plot_area'), p=>p.plotArea ? fmt(p.plotArea)+' '+AREA_UNIT : '—', 'plotArea'],
+    [T('row_warehouse_area'), p=>areaStr(p.warehouseArea), 'warehouseArea'],
+    [T('row_office_area'), p=>officeAreaStr(p), 'officeArea'],
+    [T('row_plot_area'), p=>areaStr(p.plotArea), 'plotArea'],
     [T('row_divisible_from'), p=>p.divisibleFrom, 'divisibleFrom'],
     [T('row_expansion_building'), p=>p.expansionBuilding, 'expansionBuilding'],
     [T('row_expansion_park'), p=>p.expansionPark, 'expansionPark'],
@@ -2334,6 +2419,25 @@ function compareHTML(items){
     [T('row_rent_free'), p=>p.rentFree || '—', 'rentFree'],
     [T('cmp_certification'), p=>p.breeam || '—', 'breeam'],
   ].filter(r => !r[2] || FIELD_PRESENT[r[2]]);
+  /* v33 per-property completeness: the curated list above is hand-written, so a field the
+     DATASET carries but nobody wrote a row for was absent from the comparison entirely -
+     landPrice, incentives, reit and epc all were, as is any brand-new scalar an
+     interpretation record introduces (meta.newFields). Derive the remainder from
+     FIELD_PRESENT so the comparison can never be thinner than the data. FIELD_PRESENT is
+     dataset-wide by design: a comparison is a matrix, so its ROWS are the union and a
+     property lacking the field shows the honest unknown in ITS cell only. Rows whose field
+     no property carries are still dropped by the v9 gate above. Sorted for determinism. */
+  const curatedKeys = new Set(rows.map(r => r[2]).filter(Boolean));
+  const autoRows = Object.keys(FIELD_PRESENT)
+    .filter(k => !curatedKeys.has(k) && !DENY_FIELDS.has(k))
+    .filter(k => !PROPS.some(p => p[k] !== null && typeof p[k] === 'object'))
+    .sort()
+    .map(k => [autoLabel(k), p => {
+      const v = p[k];
+      if(v === null || v === undefined || String(v).trim() === '') return 'tbd';
+      return LOCATOR_RE.test(String(v)) ? 'tbd' : v;
+    }, k]);
+  rows.push(...autoRows);
   const distRows = [
     [T('cmp_nearest_city'), p=>{ const d = groupedDistances(p).city[0]; if(!d) return 'tbd'; return `${d.name.replace(/\s*\([^)]*\)\s*$/,'')} · ${d.km} km (~${fmtMin(d.min)})`; }],
     [T('cmp_nearest_border'), p=>{ const d = groupedDistances(p).border[0]; if(!d) return 'tbd'; return `${d.name.replace(/\s*\([^)]*\)\s*$/,'')} · ${d.km} km (~${fmtMin(d.min)})`; }],
@@ -2342,7 +2446,14 @@ function compareHTML(items){
     [T('cmp_nearest_seaport'), p=>{ const d = groupedDistances(p).port[0]; if(!d) return 'tbd'; return `${d.name.replace(/\s*\([^)]*\)\s*$/,'')} · ${d.km} km (~${fmtMin(d.min)})`; }],
   ];
   const allRows = [...rows, ...distRows];
-  const minSizeIdx = items.reduce((best,p,i)=> p.warehouseArea > items[best].warehouseArea ? i : best, 0);
+  // largest warehouse among NUMERIC areas only. Seeded at index 0 with no type guard, an
+  // area-less property at index 0 stayed "best" (undefined > n is false), so the CBRE-green
+  // "largest warehouse" flag landed on a cell rendering 'tbd' - and it self-triggered, because
+  // Compare is fed filterList(): "sort by largest, then compare" put it at index 0 every time.
+  // -1 means there is no numeric area to highlight (mirrors minRentIdx below).
+  const minSizeIdx = items.reduce((best,p,i)=>
+    (NUMOK(p.warehouseArea)
+      && (best < 0 || p.warehouseArea > items[best].warehouseArea)) ? i : best, -1);
   // lowest rent among NUMERIC rents only - a tbd/null rent must never count as 0 and
   // "win" lowest (null < n is true in JS); -1 means no numeric rent to highlight.
   const minRentIdx = items.reduce((best,p,i)=>
@@ -2480,8 +2591,11 @@ document.addEventListener("keydown", e => {
   function slideHtml(p, i) {
     var loc = [p.city, regionName(p.country)].filter(Boolean).join(", ");
     var specs = "";
-    if (typeof p.warehouseArea === "number") specs += specRow(T("row_warehouse"), fmt(p.warehouseArea) + " " + AREA_UNIT);
-    if (typeof p.plotArea === "number") specs += specRow(T("row_plot"), fmt(p.plotArea) + " " + AREA_UNIT);
+    /* the outer guards stay: the Flyover OMITS an absent spec row rather than printing tbd.
+       Rendering goes through areaStr so there is exactly one place that decides how an area
+       is written (v28) - output here is unchanged, this was already correct at v24. */
+    if (NUMOK(p.warehouseArea)) specs += specRow(T("row_warehouse"), areaStr(p.warehouseArea));
+    if (NUMOK(p.plotArea)) specs += specRow(T("row_plot"), areaStr(p.plotArea));
     else if (!isTbd(p.plotArea)) specs += specRow(T("row_plot"), p.plotArea);
     if (!isTbd(p.landPrice)) specs += specRow(T("row_land_price"), p.landPrice);
     // unknown rent is OMITTED (like every other tbd field here) - never assert an unsourced
@@ -2492,6 +2606,30 @@ document.addEventListener("keydown", e => {
     if (!isTbd(p.clearHeight)) specs += specRow(T("row_clear_height"), p.clearHeight);
     if (!isTbd(p.electricity)) specs += specRow(T("row_electricity"), p.electricity);
     if (!isTbd(p.motorway)) specs += specRow(T("row_motorway"), p.motorway);
+    /* v33 per-property completeness: after the curated rows, show EVERY OTHER real scalar
+       THIS property carries - the same catch-all the modal has had since v22. Until now the
+       slide was a fixed 9-row list, so a field the modal displayed (sprinklers, permitting,
+       rent-free, divisible-from, expansion, office rent, incentives, a brand-new key an
+       interpretation record introduced) was invisible in Flyover for every property. The
+       rule is per-property: A with 10 filled fields shows 10 rows, B with 15 shows 15, and
+       an absent field renders nothing anywhere. Reuses the chrome's DENY_FIELDS/autoLabel/
+       LOCATOR_RE/isAbsent script globals (same lexical scope, like T/nfmt/AREA_UNIT above)
+       and no-ops if a future chrome drops them. Object.keys order = canonical key order, so
+       the output stays byte-deterministic. */
+    if (typeof DENY_FIELDS !== "undefined" && typeof autoLabel === "function") {
+      var foCurated = { warehouseArea:1, plotArea:1, landPrice:1, warehouseRent:1,
+                        developer:1, landlord:1, clearHeight:1, electricity:1, motorway:1,
+                        park:1, city:1, country:1 };
+      var foAbsent = (typeof isAbsent === "function") ? isAbsent : isTbd;
+      Object.keys(p).forEach(function (k) {
+        if (foCurated[k] || DENY_FIELDS.has(k)) { return; }
+        var v = p[k];
+        if (v === null || typeof v === "object") { return; }
+        if (typeof LOCATOR_RE !== "undefined" && LOCATOR_RE.test(String(v))) { return; }
+        if (foAbsent(v)) { return; }
+        specs += specRow(autoLabel(k), v);
+      });
+    }
 
     var dts = driveHighlights(p);
     var dtHtml = "";
@@ -2538,11 +2676,29 @@ document.addEventListener("keydown", e => {
       // panes (z-index 400+) stay CONTAINED and can never paint over the modal/lightbox (backdrop
       // z-index 50) when "View full details" is opened from a slide.
       '#view-flyover{margin-top:8px;position:relative;z-index:0}' +
-      '.fo-wrap{display:flex;height:clamp(560px,80vh,900px);border:1px solid var(--line,#e6e6e6);border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 2px 14px rgba(0,0,0,.05)}' +
-      '.fo-mapcol{flex:0 0 70%;position:relative;min-width:0}' +
+      // v35: 88vh, not 80vh. The frame height and the hero height together decide how much of an
+      // option is readable without scrolling. MEASURED on the 30-property build at 1600x1000, by
+      // activating each slide directly (a keyboard/button sweep is unreliable here - on a slide
+      // whose panel scrolls, ArrowRight scrolls the panel instead of advancing, which silently
+      // re-measures one slide and reports a flattering zero):
+      //   80vh + 22vh hero -> 30/30 options scroll, worst overflow 239px
+      //   88vh + 17vh hero -> 22/30 scroll, worst overflow  99px   <- shipped
+      // Four spec columns was tried and is WORSE (worst 164px, wrapped values 60 vs 31): narrower
+      // columns make values wrap, and a wrapped value is taller than the row it saved. A rich
+      // option genuinely cannot fit ~20 attributes in a fixed frame without shrinking the type,
+      // so the residual scroll is a disclosed trade, not an oversight - and it stays INSIDE the
+      // panel, never advancing the property (v25).
+      '.fo-wrap{display:flex;height:clamp(600px,88vh,980px);border:1px solid var(--line,#e6e6e6);border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 2px 14px rgba(0,0,0,.05)}' +
+      // v35: a SLIDE with a map on it, not a map with a caption. The option details and the map
+      // split the frame 50/50 and the details lead (order:1, so they sit LEFT - the slide reading
+      // order, content first). At the old 70/30 the panel was 403px: values broke mid-phrase
+      // ('€63 / sq m /' + 'year', 'Eurovalley, a.s.' + '/ ReONE'), only about half the attributes
+      // were above the fold, and on a greenfield site 70% of the frame was empty field. At 50/50
+      // it is 671px on a 1600px screen - enough for THREE spec columns and unwrapped values.
+      '.fo-mapcol{flex:0 0 50%;order:2;position:relative;min-width:0}' +
       '#flyover-map{position:absolute;inset:0;height:100%;width:100%;background:#dfe4e2}' +
-      '.fo-panel{flex:0 0 30%;display:flex;flex-direction:column;border-left:1px solid var(--line,#e6e6e6);min-width:300px;background:#fff}' +
-      '.fo-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line,#eee);gap:10px}' +
+      '.fo-panel{flex:0 0 50%;order:1;display:flex;flex-direction:column;border-right:1px solid var(--line,#e6e6e6);min-width:0;background:#fff}' +
+      '.fo-head{display:flex;align-items:center;justify-content:space-between;padding:15px var(--fo-pad,26px);border-bottom:1px solid var(--line,#eee);gap:10px}' +
       '.fo-head .fo-title{font-weight:600;letter-spacing:.06em;color:var(--brand,#003f2d);font-size:12px;text-transform:uppercase}' +
       '.fo-nav{display:flex;align-items:center;gap:8px}' +
       '.fo-count{font-size:12px;color:var(--muted,#6b7280);min-width:46px;text-align:center;font-variant-numeric:tabular-nums}' +
@@ -2556,27 +2712,35 @@ document.addEventListener("keydown", e => {
       '.fo-slides{flex:1;overflow-y:auto}' +
       '.fo-slide{display:none;min-height:100%;box-sizing:border-box;padding:0 0 20px}' +
       '.fo-slide.active{display:block}' +
-      '.fo-hero{width:100%;height:190px;object-fit:cover;background:#eef1f0;display:block}' +
-      '.fo-badge{display:inline-block;margin:14px 16px 0;padding:3px 10px;border-radius:999px;font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;background:var(--brand,#003f2d);color:#fff}' +
+      // the hero is deliberately SHORTER than the old fixed 190px in vh terms: the panel now
+      // carries three columns of specs plus the drive times, and on a data-rich option the last
+      // rows fell below the fold. Trading image height for content is the whole point of a slide.
+      '.fo-hero{width:100%;height:clamp(150px,17vh,215px);object-fit:cover;background:#eef1f0;display:block}' +
+      '.fo-badge{display:inline-block;margin:15px var(--fo-pad,26px) 0;padding:4px 11px;border-radius:999px;font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;background:var(--brand,#003f2d);color:#fff}' +
       '.fo-badge.land{background:#8a6d1b}' +
-      '.fo-name{margin:9px 16px 2px;font-size:20px;font-weight:600;color:#111;line-height:1.2}' +
-      '.fo-loc{margin:0 16px 12px;color:var(--muted,#6b7280);font-size:13px}' +
-      '.fo-specs{margin:0 16px;display:grid;grid-template-columns:1fr 1fr;gap:9px 14px}' +
-      '.fo-spec .k{color:var(--muted,#6b7280);text-transform:uppercase;letter-spacing:.03em;font-size:10px;display:block;margin-bottom:1px}' +
-      '.fo-spec .v{color:#111;font-weight:600;font-size:14px}' +
-      '.fo-dt{margin:16px 16px 0}' +
-      '.fo-dt-title{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted,#6b7280);margin-bottom:6px}' +
+      '.fo-name{margin:10px var(--fo-pad,26px) 3px;font-size:clamp(21px,1.9vw,29px);font-weight:600;color:#111;line-height:1.15}' +
+      '.fo-loc{margin:0 var(--fo-pad,26px) 16px;color:var(--muted,#6b7280);font-size:14px}' +
+      // THREE columns - the extra width becomes data, not white space
+      '.fo-specs{margin:0 var(--fo-pad,26px);display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px 22px}' +
+      '.fo-spec .k{color:var(--muted,#6b7280);text-transform:uppercase;letter-spacing:.03em;font-size:10px;display:block;margin-bottom:2px}' +
+      '.fo-spec .v{color:#111;font-weight:600;font-size:15px;line-height:1.3}' +
+      // drive times in two columns, the heading spanning both (rows are direct children)
+      '.fo-dt{margin:20px var(--fo-pad,26px) 0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 22px}' +
+      '.fo-dt-title{grid-column:1/-1;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted,#6b7280);margin-bottom:6px}' +
       '.fo-dt-row{display:flex;align-items:center;gap:8px;font-size:12px;padding:4px 0;border-bottom:1px dashed #eee}' +
       '.fo-dt-row .ic{width:16px;text-align:center;color:var(--brand,#003f2d)}' +
       '.fo-dt-row .nm{flex:1;color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
       '.fo-dt-row .tm{font-weight:600;color:var(--brand,#003f2d);white-space:nowrap}' +
-      '.fo-actions{display:flex;gap:8px;margin:18px 16px 0;flex-wrap:wrap}' +
+      '.fo-actions{display:flex;gap:8px;margin:20px var(--fo-pad,26px) 0;flex-wrap:wrap}' +
       '.fo-link{font-size:12px;padding:8px 12px;border-radius:6px;border:1px solid var(--brand,#003f2d);color:var(--brand,#003f2d);cursor:pointer;background:#fff;text-decoration:none;display:inline-flex;align-items:center;gap:6px;font-family:inherit}' +
       '.fo-link.primary{background:var(--brand,#003f2d);color:#fff}' +
       '.fo-link:hover{opacity:.88}' +
-      '.fo-hint{padding:10px 16px;font-size:11px;color:var(--muted,#8a8f8c);border-top:1px solid var(--line,#eee);background:#fafbfb;line-height:1.5}' +
+      '.fo-hint{padding:11px var(--fo-pad,26px);font-size:11px;color:var(--muted,#8a8f8c);border-top:1px solid var(--line,#eee);background:#fafbfb;line-height:1.5}' +
       '.fo-marker{border-radius:50%;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)}' +
-      '@media(max-width:900px){.fo-wrap{flex-direction:column;height:auto}.fo-mapcol{flex:none;height:46vh}.fo-panel{flex:none;border-left:none;border-top:1px solid var(--line,#eee);min-width:0}.fo-slides{max-height:56vh}}';
+      // narrow screens keep the MAP first (it orients you before the numbers) and drop the specs
+      // to two columns - three would be ~110px each and the values would wrap again.
+      '@media(max-width:1100px){.fo-specs{grid-template-columns:repeat(2,minmax(0,1fr))}.fo-dt{grid-template-columns:1fr}}' +
+      '@media(max-width:900px){.fo-wrap{flex-direction:column;height:auto}.fo-mapcol{flex:none;order:1;height:46vh}.fo-panel{flex:none;order:2;border-right:none;border-top:1px solid var(--line,#eee);min-width:0}.fo-slides{max-height:56vh}:root{--fo-pad:18px}}';
     var st = document.createElement("style");
     st.id = "fo-styles";
     st.textContent = css;

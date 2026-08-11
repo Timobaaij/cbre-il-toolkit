@@ -56,6 +56,26 @@ from pathlib import Path
 # cleanups: removed the stale DENY_CONTAINERS mention in the module-const comment and the
 # redundant `v === null` in the catch-all.
 
+# v26 NOTE (2026-07-30, HAND-APPLIED like v5-v25 - re-add if ever regenerating). ONE theme: a 'tbd'
+# must never be treated as a NUMBER by the chrome. New single guard `NUMOK(v)` next to $/$$/fmt
+# (`typeof v === "number" && isFinite(v)`), then back-ported to the four consumers that lacked it
+# while fmt/nfmt/initSizeSlider/minRentIdx/the Flyover map already had it inline:
+#   (1) SORTERS - new NUMSORT(x,y,dir) sinks every unknown to the BOTTOM in both directions, and
+#       STRSORT null-guards city/dev. Before: warehouseRentVal is JSON null for an unpriced
+#       property, so (null - 4.2) === -4.2 sorted the UNPRICED option to the TOP of
+#       "Rent (lowest)" - the slot a broker reads as best value; same for "Area (largest)".
+#   (2) SIZE FILTER - `undefined < n` is false, so an area-less property passed EVERY size floor
+#       and was counted in "N properties shown". Now it only survives an unset (0) floor.
+#   (3) COMPARE `minSizeIdx` - was seeded at index 0 with no type guard, so an area-less property
+#       at index 0 kept the CBRE-green "largest warehouse" flag on a cell rendering 'tbd'. Now -1
+#       = nothing to highlight, mirroring minRentIdx. (Self-triggering before: Compare is fed
+#       filterList(), so "sort by largest, then compare" put it at index 0 every time.)
+#   (4) MAIN MAP - L.latLng THROWS on NaN, and the throw escaped initMap() mid-loop: markers only
+#       up to the first UNLOCATED property, NO POI markers at all, no fitBounds, map stranded on
+#       the default view. An unlocated property is an expected shipped state. Now skipped (props
+#       AND pois); the Flyover map already guarded. Also null-guarded p.country.toLowerCase().
+# Data-only guards - no new keys, no i18n, no layout change; PROPS/UI/POIS contracts untouched.
+
 # v25 NOTE (2026-07-20, HAND-APPLIED like v5-v24 - re-add if ever regenerating). TWO chrome edits:
 # (1) COMPARE view: a fourth tab (after Grid/Map/Flyover) appended as a self-contained <script> IIFE
 # before </body>. Compares ALL properties side-by-side by DEFAULT, honours the live filters + sort,
@@ -284,7 +304,7 @@ CONFIG_REPLACEMENTS = {
 # was applied DIRECTLY to assets/dashboard_template.html, because the raw reference
 # HTML is not on disk to regenerate from. If a raw reference is ever re-supplied and
 # you regenerate, you must re-add that block here as POST_PATCHES (and keep VERSION
-# at v6+). See reference/template-contract.md and reference/memory.md.
+# at v6+). See reference/template-contract.md.
 #
 # v6 NOTE (2026-06-05): the detailHTML "Workforce & Region" guard (reg/dist null-safe
 # + rNum/rK/rStr honest-tbd helpers + an honest placeholder when neither exists) was
@@ -1046,7 +1066,9 @@ def patch_template(out_path: str, version_path: str, label: str) -> None:
     # guard: do not double-patch an already-i18n template
     if "const UI =" in text or "data-i18n" in text:
         fail("template already contains i18n markup (const UI / data-i18n) - patch-only "
-             "expects the pre-i18n frozen template; restore assets/dashboard_template.v18.html first")
+             "expects the pre-i18n frozen (v18) template, which is no longer kept anywhere; "
+             "this path is historical - hand-edit the live template instead "
+             "(reference/template-contract.md 'Versioning')")
 
     # 1. INJECT_BLOCK immediately before the ROUTES line
     text = _apply_once(text, INJECT_BLOCK_ANCHOR, INJECT_BLOCK + INJECT_BLOCK_ANCHOR,

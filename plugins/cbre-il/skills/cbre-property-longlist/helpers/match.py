@@ -13,6 +13,12 @@ Cross-source pairs also match by COORDINATE PROXIMITY (<= 300 m, no developer
 disagreement, no material size conflict): an unknown city defeats every text
 key, so a vision record with the real city never matched its city-less twin -
 first-party pins decide it instead.
+
+The ambiguous remainder is pre-filtered to a GREY set an LLM adjudicates. That
+pre-filter deliberately does NOT treat a shared city as a signal on its own: a
+longlist is usually one town, so the city distinguishes nothing there and made
+the grey set quadratic in the skill's most common corpus. See
+`_cross_source_grey`. (I9)
 """
 from __future__ import annotations
 
@@ -76,6 +82,35 @@ def _area(r):
     return float(v) if isinstance(v, (int, float)) else None
 
 
+def _area_pair(a, b):
+    """The two records' warehouse areas on a COMMON footing, or (None, None) when they
+    cannot honestly be compared.
+
+    The size test used to take the raw floats with NO unit attached - and merge does not
+    convert units until AFTER dedupe. So a sq ft record and a sq m record of the SAME
+    building sit 90.7% apart, tripped the >15% rule, and were classed `forbidden`; since
+    `grey_pairs` EXCLUDES forbidden, the pair was never written to match_candidates.json and
+    the LLM was never asked. That is the wrong-number path that actually fires. (The
+    GIA-vs-net basis gap the item was filed for is typically 5-12%, i.e. UNDER the
+    threshold - the weaker half.)
+
+    Python may convert when both units are stated, or REFUSE to compare when the footing is
+    unknown. It never decides whether two records are the same property: refusing to compare
+    sends the pair to the LLM, which is exactly where that judgement belongs. (B10)"""
+    aa, ba = _area(a), _area(b)
+    if aa is None or ba is None:
+        return None, None
+    ua = str(a.get("areaUnit") or "").strip().lower()
+    ub = str(b.get("areaUnit") or "").strip().lower()
+    if ua == ub:                      # same stated unit, or neither states one
+        return aa, ba
+    if not ua or not ub:              # one silent side: the footing is UNKNOWN, so a gap
+        return None, None             # is not evidence - do not block on it
+    if {ua, ub} == {"sq ft", "sq m"}:
+        return (aa, ba * (N.SQFT_PER_SQM if ua == "sq ft" else 1.0 / N.SQFT_PER_SQM))
+    return None, None                 # an unrecognised unit pairing is not comparable
+
+
 COORD_MERGE_KM = 0.3  # two pins this close are one site (a park spans ~100-250 m)
 
 
@@ -116,6 +151,29 @@ def _distinctive_tokens(park) -> set:
     return {t for t in norm(park).split() if t and t not in _GENERIC_PARK and not t.isdigit()}
 
 
+def _grey_city_tokens(a: dict, b: dict) -> set:
+    """The PAIR's city tokens (union, so the result is order-independent)."""
+    return set(norm(a.get("city")).split()) | set(norm(b.get("city")).split())
+
+
+def _grey_tokens(park, city_tokens: set) -> set:
+    """`_distinctive_tokens` for the GREY pre-filter ONLY, with the pair's city tokens
+    removed. A town name inside a park string is not identity: the tracker writes
+    'EVO 169, Sallow Road, Corby NN17 5JX', so on a single-market longlist - the normal
+    corpus for this skill - EVERY record carries the town as a "distinctive" token, and
+    an unrelated pair looked corroborated by it. Measured on the Corby run: it was the
+    only corroborating signal on 1 of 14 grey pairs, and it was spurious. (I9)
+
+    DELIBERATELY NOT APPLIED IN `_cross_source_auto`'s containment branch, and that
+    asymmetry is the safety property, not an oversight. Shrinking a set can only ever ADD
+    subset relations: {alpha, corby} vs {alpha, beta} is neither-subset today, but strip
+    'corby' and {alpha} <= {alpha, beta} - a NEW auto-merge, in the one tier that merges
+    without asking anybody. Here every change can only move a pair grey -> 'no', which is
+    the split direction, so the same strip is safe. The eval carries that fixture as a
+    positive control."""
+    return _distinctive_tokens(park) - city_tokens
+
+
 def _same_source_verdict(a: dict, b: dict) -> bool:
     # Within one source, two pages with the same park name are usually distinct
     # buildings/phases - EXCEPT a true restatement of one unit (a summary-table
@@ -149,8 +207,14 @@ def _cross_source_forbidden(a: dict, b: dict) -> bool:
     as a developer. A cross-source dev-disagreement pair therefore falls through to
     _cross_source_grey (same city / ~2 km / shared distinctive park token / fuzzy 70-88)
     and the LLM adjudicates it. _cross_source_auto is UNCHANGED - its coord-net auto
-    path still REQUIRES developer agreement, so a disagreement goes to grey, never auto."""
-    aa, ba = _area(a), _area(b)
+    path still REQUIRES developer agreement, so a disagreement goes to grey, never auto.
+
+    The size test is FOOTING-AWARE (B10): a mixed-unit pair is converted before comparing,
+    and an unknown footing refuses to block. `_cross_source_auto` deliberately keeps the raw
+    comparison - it only ever DECLINES to auto-merge on an apparent size gap, which is the
+    conservative direction, and a pair it declines now falls through to grey for the LLM
+    instead of being vetoed here."""
+    aa, ba = _area_pair(a, b)
     if aa and ba and abs(aa - ba) / max(aa, ba) > 0.15:
         return True
     return False
@@ -224,23 +288,75 @@ RECALL_KM = COORD_MERGE_KM  # the auto coord-net radius (a grey pin is wider, se
 
 
 def _cross_source_grey(a: dict, b: dict) -> bool:
-    """RECALL pre-filter: a cross-source pair that is NOT forbidden and NOT auto, but
-    is plausible enough to ask the LLM about - same normalised city, OR within ~2 km,
-    OR sharing >= 1 distinctive park token, OR a borderline fuzzy key in [70, 88).
-    The union of the signals match.py already trusts, capped to plausible pairs, so the
-    grey set stays a handful (typically 0-5) rather than an O(n^2) LLM call."""
-    ca, cb = norm(a.get("city")), norm(b.get("city"))
-    if ca and cb and ca == cb:
-        return True
+    """RECALL pre-filter: a cross-source pair that is NOT forbidden and NOT auto, but is
+    plausible enough to ask the LLM about - within ~2 km, OR sharing >= 1 distinctive park
+    token (city tokens excluded), OR a borderline fuzzy key in [70, 88), OR same city AND
+    the same KNOWN developer.
+
+    SAME CITY ALONE IS NOT A SIGNAL (I9). A property longlist is by definition usually one
+    town or one market, so every record shares the city and it distinguishes nothing - yet
+    it was a sufficient disjunct on its own, which made the grey set quadratic in exactly
+    the skill's most common corpus. Measured on the Corby run (4 properties, tracker + 4
+    brochures, reconstructed): 14 grey pairs, 13 of them resting on the town's name and
+    nothing else, 28 LLM judgements, ZERO merges. Under this rule: 1 pair, 2 judgements,
+    and the survivor is the one true cross-source match that `auto` misses (its two stated
+    areas sit 9.2% apart, over the containment branch's 5% ceiling).
+
+    WHY THE DEVELOPER STILL EARNS A CITY-PAIRED SIGNAL, when the city cannot stand alone:
+    the developer DISCRIMINATES in a single-market corpus and the city does not. One
+    developer building in one town is a small subset of pairs; 'both in Corby' is every
+    pair. The developer connects two records in either of two forms, and both are needed:
+
+      * BOTH developers known and equal - keeps a same-city/same-developer/different-park
+        pair visible (Apollo Court vs Mercury House, both Prologis: fuzzy 65.5, disjoint
+        tokens, no coords, so it has no other signal);
+      * one record's known developer appearing as a distinctive token in the OTHER's park
+        string. This is the same identity evidence the containment branch uses, crossing
+        the developer/park field boundary - and it is how real corpora are shaped: a
+        brochure names the scheme 'Panattoni Park Doncaster' while the tracker carries the
+        developer in a marketing name or address. It rescues the live TEMU pair pinned by
+        evals/source_authority_test.py (B48), where the tracker's park reads 'Panattoni
+        Doncaster 770, Blyth Road, Harworth' and the brochure's DEVELOPER is Panattoni.
+        Without it, a broker's disclosed city correction - made precisely so the two
+        records could be compared - would have had no route to make the pair askable.
+
+    Neither form needs an area guard: a pair whose areas differ by more than 15% is already
+    `forbidden`, which `pair_class` tests before grey. A CLOSE area match was considered as
+    a signal in its own right and rejected - sheds in one market are all similar sizes, so
+    on the Corby corpus alone it would have re-admitted most of the pairs this rule removes.
+    That is why >15% is a veto here and <15% is not evidence.
+
+    THE CHANGE CAN ONLY MOVE PAIRS grey -> 'no'. Every signal removed was a disjunct and
+    nothing is added; the `auto` and `forbidden` tiers are untouched. So with
+    `decisions=None` - every offline path - the clustering verdict is byte-identical
+    (`same_property` returns False for grey-without-a-decision and for 'no' alike). The one
+    behavioural change is that a demoted pair can no longer be merged by an LLM 'same':
+    that is an over-SPLIT risk, never an over-merge, and the coverage dedupe gate catches a
+    wrong split. Accepted, and asserted in evals/grey_prefilter_test.py.
+
+    RESIDUAL, recorded not fixed: a single-developer single-city corpus still fires the
+    fourth disjunct on every pair inside 15% area. Strictly better than firing on every
+    pair regardless, and such a pair is worth asking about."""
     la, lb = _latlng(a), _latlng(b)
     if la and lb and _km(la, lb) <= GREY_COORD_KM:
         return True
-    da_, db_ = _distinctive_tokens(a.get("park")), _distinctive_tokens(b.get("park"))
+    city_tokens = _grey_city_tokens(a, b)
+    da_ = _grey_tokens(a.get("park"), city_tokens)
+    db_ = _grey_tokens(b.get("park"), city_tokens)
     if da_ and db_ and (da_ & db_):
         return True
     score = _tsr(match_key(a), match_key(b))
     if GREY_LOW <= score < MATCH_THRESHOLD:
         return True
+    ca, cb = norm(a.get("city")), norm(b.get("city"))
+    if ca and cb and ca == cb:
+        ka, kb = _known_dev(a), _known_dev(b)
+        if ka and kb and ka == kb:
+            return True
+        # an unknown developer ('tbd'/'??') is neither agreement nor evidence - `_known_dev`
+        # returns "" for it, so both forms below are inert on it by construction
+        if (ka and ka in db_) or (kb and kb in da_):
+            return True
     return False
 
 
@@ -248,7 +364,10 @@ def pair_class(a: dict, b: dict) -> str:
     """Classify a record PAIR into one of four tiers:
       'auto'      - merge deterministically (today's confident TRUE paths)
       'grey'      - cross-source, not forbidden, not auto, but clears the recall
-                    pre-filter: the genuinely ambiguous middle the LLM adjudicates
+                    pre-filter: the genuinely ambiguous middle the LLM adjudicates.
+                    A SHARED CITY ALONE DOES NOT CLEAR IT (I9) - it needs a pin
+                    within ~2 km, a shared distinctive park token, a borderline
+                    fuzzy key, or the same known developer in that city
       'forbidden' - a HARD blocker (>15% size conflict / same-source differing area);
                     can NEVER merge, even on an LLM 'same' verdict. A developer
                     disagreement is NOT forbidden - it falls to 'grey' for the LLM.
@@ -322,7 +441,13 @@ def grey_pairs(records: list[dict]) -> list[dict]:
     pair_class is 'grey'. Each entry carries a stable order-independent `pair_id` and
     BOTH full records, ready for work/match_candidates.json. Deterministic: a fixed
     iteration order and a content-keyed id mean the same records always yield the same
-    pair set and ids. Typical longlists yield 0-5 grey pairs (often 0)."""
+    pair set and ids.
+
+    The pre-filter is what keeps this small: it is the enumeration that is O(n^2), while
+    the LLM cost is O(grey pairs). Before I9 a shared city alone qualified, so a
+    single-market longlist put a QUADRATIC number of pairs in front of two LLM passes -
+    a 4-property Corby corpus produced 14 pairs / 28 judgements / 0 merges. With the city
+    no longer sufficient on its own, that corpus yields 1."""
     out: list[dict] = []
     seen: set = set()
     n = len(records)

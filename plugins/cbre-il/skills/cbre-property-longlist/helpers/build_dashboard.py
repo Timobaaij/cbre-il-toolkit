@@ -37,6 +37,33 @@ def _fmt_thousands_k(lo: float, hi: float) -> str:
     return f"{one(lo)} - {one(hi)}k"
 
 
+def _hero_copy(hero: dict, ui: dict, n: int) -> dict:
+    """The three hero CONFIG TOKENS (eyebrow / title_html / lede), localised.
+
+    Precedence: whatever the broker authored in project.yaml ships VERBATIM (in any
+    language, unmodified - no English prefix is composed onto it any more); a BLANK value
+    falls back to the dashboard language's default from the i18n table. These three used
+    to be hard-coded English literals in merge.load_hero, which is why the largest text on
+    the page rendered in English in all 12 supported languages.
+
+    {count} is filled with .replace(), NOT .format(): a translator's stray brace must
+    degrade the lede, never crash the build. And a pack whose hero_lede_fmt LOST {count}
+    self-heals to the EN string rather than shipping a lede with no number - the graceful
+    path matters because cmd_i18n runs POST-build, so a blocking check here would be an
+    unclearable exit 7 for a bundled language (its pack is a shipped, integrity-tracked
+    asset with no runtime override). Everything here is derived from canonical + the
+    resolved UI, so validate-html's byte-identity re-render is unaffected."""
+    lede_fmt = str(ui.get("hero_lede_fmt") or "")
+    if "{count}" not in lede_fmt:
+        lede_fmt = str(I18N.EN.get("hero_lede_fmt", ""))
+    return {
+        "eyebrow": str(hero.get("eyebrow") or "").strip() or str(ui.get("hero_eyebrow") or ""),
+        "title_html": (str(hero.get("title_html") or "").strip()
+                       or str(ui.get("hero_title_html") or "")),
+        "lede": str(hero.get("lede") or "").strip() or lede_fmt.replace("{count}", str(n)),
+    }
+
+
 def _doc_title(hero: dict, meta: dict) -> str:
     """The browser-tab <title> ({{doc_title}}). An explicit hero.doc_title wins (authored
     per project, in the chosen language); else DERIVE from the eyebrow / headline / client
@@ -60,8 +87,17 @@ def compute_kpis(props: list[dict], regions: dict, units: dict | None = None,
     # CHROME (localised), the figures/enumerations they wrap are DATA (untouched).
     ui = ui or {}
 
+    # the unknown sentinels, in one place: 'tbd' is a TRUTHY STRING, so a truthiness-only
+    # filter counts every unknown as a real value. `countries` and `region_codes` below were
+    # each fixed for this (with audit references); `developers` was not, and shipped
+    # "Developers 3 / Major landlords" for a two-landlord longlist - a FABRICATED count in the
+    # client-facing KPI band. Worse, `reconcile` "validates" the hero KPI by re-running THIS
+    # function, so the gate agreed with the wrong number. Filter once, use everywhere.
+    _UNKNOWN = {"??", "tbd", "tbc", "n/a", "na", "none", "—", "-", ""}
+
     def distinct(key):
-        return [v for v in {p.get(key) for p in props if p.get(key)}]
+        return [v for v in {p.get(key) for p in props if p.get(key)}
+                if str(v).strip().lower() not in _UNKNOWN]
 
     # dataset unit convention (merge meta.units; source units are KEPT). The hero
     # rent range only aggregates rents quoted in the DOMINANT convention - a lone
@@ -146,15 +182,23 @@ def render(data: dict, strict: bool = True) -> tuple[str, dict]:
     template = C.load_template()
 
     # --- 1. config tokens -----------------------------------------------------
+    # HERO COPY is resolved here, not in merge: a blank eyebrow/title_html/lede picks up
+    # the LOCALISED default from the i18n table (they were English literals in
+    # merge.load_hero, so the biggest text on the page was English in every language);
+    # a broker-authored value ships verbatim. Derived from canonical + the resolved UI,
+    # so validate-html's byte-identity re-render is unaffected.
+    hero_copy = _hero_copy(hero, ui, len(props))
     tokens = {
         "topbar_meta": hero.get("topbar_meta", ""),
-        "eyebrow": hero.get("eyebrow", ""),
-        "title_html": hero.get("title_html", ""),
-        "lede": hero.get("lede", ""),
+        "eyebrow": hero_copy["eyebrow"],
+        "title_html": hero_copy["title_html"],
+        "lede": hero_copy["lede"],
         "footer_copyright": hero.get("footer_copyright", ""),
         # browser-tab <title> ({{doc_title}}): adapts per project + language (was a
         # hardcoded "CEE Logistics Property Shortlist" default baked into the template).
-        "doc_title": _doc_title(hero, meta),
+        # Fed the RESOLVED hero so the tab derives from the localised eyebrow/headline
+        # instead of the now-blank merge value.
+        "doc_title": _doc_title({**hero, **hero_copy}, meta),
     }
     # dist_mode reflects the BUILD-time enrichment state so the dashboard can label
     # the distance/drive-time columns honestly (est. = straight-line, car / HGV =
@@ -170,6 +214,17 @@ def render(data: dict, strict: bool = True) -> tuple[str, dict]:
     # endonym/label is \uXXXX-escaped. < and > are escaped to < / > so the
     # JSON cannot break out of the <script> block. NOT quoted (it is a JS object
     # literal); locale IS quoted in the template.
+    #
+    # HOW TO VERIFY A CJK (or any non-Latin) BUILD - read this before grepping:
+    # ensure_ascii=True means the output file contains NO raw CJK bytes. A `zh`
+    # dashboard ships each Chinese character as a 6-byte \uXXXX escape inside a JS
+    # string literal, which the browser decodes correctly - the build is RIGHT and
+    # the shipped file is pure ASCII.
+    # So a raw-byte grep for the target script FAILS ON A CORRECT BUILD. Do not
+    # "fix" that. Verify by loading the HTML, or by grepping for the \uXXXX escapes
+    # (json.dumps(s)[1:-1] gives you the needle for a string s).
+    # Do NOT switch to ensure_ascii=False: it would move rendered bytes for every
+    # language, drift the oracle, and re-open the U+2028/U+2029 hole noted below.
     ui_body = json.dumps(ui, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
     bs = chr(92)
     ui_body = ui_body.replace("<", bs + "u003c").replace(">", bs + "u003e")
@@ -187,6 +242,8 @@ def render(data: dict, strict: bool = True) -> tuple[str, dict]:
         body = json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
         # escape < > so source-derived text (brochure caption / email body) cannot
         # break out of the <script> block; ensure_ascii also escapes U+2028/U+2029.
+        # Non-Latin DATA is \uXXXX-escaped here too - see the ui_json comment above
+        # for why a raw-byte grep for CJK fails on a CORRECT build.
         bs = chr(92)  # one backslash; build the JS < / > escapes without source ambiguity
         body = body.replace("<", bs + "u003c").replace(">", bs + "u003e")
         return f"const {name} = {body};"

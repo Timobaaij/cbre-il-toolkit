@@ -24,6 +24,7 @@ import csv
 import datetime as _dt
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -82,7 +83,346 @@ def _normalise_offspec(rec: dict) -> dict:
         if (isinstance(v, (dict, list)) and k not in canon) or C.looks_like_locator(v):
             meta.setdefault("offspec", {})[k] = v
             del rec[k]
+    # B7: a brand-new SCALAR is deliberately KEPT (v22 auto-show) - but it is no longer kept
+    # SILENTLY. `postcode` shipped on half the properties of a live run while the Gaps Report's
+    # off-spec section read "None.", because that section only ever covered quarantined
+    # structures. A section asserting "None" while a non-schema key reaches the client is a false
+    # statement in the honesty document. Recorded here, rendered by deliver.py; the value itself
+    # ships exactly as before.
+    for k in rec:
+        if k == "__meta" or k in canon:
+            continue
+        if isinstance(rec[k], (dict, list)):
+            continue                       # a surviving container is canonical by definition above
+        nf = meta.setdefault("new_fields", [])
+        if k not in nf:
+            nf.append(k)
     return rec
+
+
+# BREEAM vs EPC (B5). Two DIFFERENT certificates on different scales: BREEAM grades
+# sustainability design (Pass / Good / Very Good / Excellent / Outstanding), an EPC grades
+# energy efficiency on a letter band (A+ / A / B). Neither substitutes for the other, and
+# "BREEAM A+" is not a rating that exists.
+_BREEAM_GRADE = re.compile(r"\b(?:pass|good|very\s+good|excellent|outstanding|unclassified)\b", re.I)
+_EPC_BAND = re.compile(r"^(?:target\s+)?(?:epc\s*)?[A-G]\+?$", re.I)
+_EPC_TOKEN = re.compile(r"\bepc\b[\s:.\-]*", re.I)
+_CERT_SENTINELS = {"", "tbd", "tbc", "—", "-", "??", "n/a", "none", "null"}
+
+
+def _cert_unknown(v) -> bool:
+    return v is None or str(v).strip().lower() in _CERT_SENTINELS
+
+
+def _route_certifications(rec: dict) -> dict:
+    """Re-file a certification that landed in the wrong field, BEFORE clustering. (B5)
+
+    The extractor dictionary no longer treats `epc` as a breeam alias and the interpretation
+    contract names the distinction, so nothing SHOULD arrive misfiled. This is the backstop
+    that makes the fix retroactive: a warm work dir, a cached interpretation record, or any
+    future source that conflates the two self-corrects instead of shipping an impossible grade
+    to a client card. It is why the fix needs no re-interpretation round.
+
+    Deterministic and conservative:
+      * `breeam` holding a letter BAND (and no BREEAM word) is not a BREEAM grade. It moves to
+        `epc` when `epc` is free; when `epc` is already taken it goes to `__meta.offspec`
+        (preserved for audit, surfaced in the Gaps Report's off-spec section, never displayed)
+        and `breeam` becomes an honest gap. It is never left where it is.
+      * `epc` holding a BREEAM WORD is the mirror case and moves the other way.
+      * The provenance key moves WITH the value, so the Source Ledger row follows the field
+        and the re-route is stated in its locator rather than laundered.
+      * A redundant leading "EPC" token is dropped from the value, because the field label
+        already says EPC ("EPC A+" would otherwise render as "EPC: EPC A+"). "Target" is kept.
+      * A clean record is returned unchanged.
+    """
+    meta = rec.setdefault("__meta", {})
+    prov = meta.get("prov") if isinstance(meta.get("prov"), dict) else None
+
+    def _move(src: str, dst: str, value: str, why: str) -> None:
+        rec.pop(src, None)
+        if _cert_unknown(rec.get(dst)):
+            rec[dst] = value
+            if prov and src in prov:
+                prov[dst] = f"{prov.pop(src)} (re-filed from {src}: {why})"
+        else:
+            meta.setdefault("offspec", {})[f"{src}_misfiled"] = value
+            if prov and src in prov:
+                prov.pop(src)
+
+    b = rec.get("breeam")
+    if isinstance(b, str) and not _cert_unknown(b) \
+            and _EPC_BAND.match(b.strip()) and not _BREEAM_GRADE.search(b):
+        _move("breeam", "epc", _EPC_TOKEN.sub("", b).strip(),
+              "an EPC letter band is not a BREEAM grade")
+
+    e = rec.get("epc")
+    if isinstance(e, str) and not _cert_unknown(e) \
+            and _BREEAM_GRADE.search(e) and not _EPC_BAND.match(e.strip()):
+        _move("epc", "breeam", e.strip(), "a BREEAM grade is not an EPC band")
+    return rec
+
+
+# ---------------------------------------------------------------------------- #
+# DURABLE MANUAL CORRECTIONS (P1-4)
+#
+# THE BUG. The only sanctioned remedy for a flagged datum was "edit the records in work/extract/".
+# Those files are DERIVED: anything that invalidates extraction regenerates them and silently
+# discards the correction. Live symptom - a corrected tracker cell reverted TWICE, two properties
+# stopped clustering, the property count went 12 -> 13 with no message at all, and the only visible
+# effect was a coverage gate failing on a thin record several steps later.
+#
+# Overrides live OUTSIDE the derived artefacts (work/overrides.json) and are re-applied on EVERY
+# run, so a correction survives re-extraction by construction.
+#
+# WHAT THIS DOES NOT DO. It never judges whether a correction is right, never invents one, and
+# never guesses a target: zero matches or an ambiguous match applies NOTHING and reports. Python
+# verifies the target exists (0 / 1 / N) and prepares the evidence; the human authors the value and
+# the required `why`.
+_OV_ROW_RX = re.compile(r"^\s*(?P<sheet>.+?)!r(?P<row>\d+)")
+
+# An override may never inject structure, media or an identity. These are NOT ordinary fields.
+_OV_FORBIDDEN = frozenset({"id", "__meta", "hero", "gallery", "plan", "preBaked", "photo",
+                           "district", "regionCode"})
+# areaUnit / rentUnit are DENIED outright (owner decision). A unit flip is the 10.76x error class:
+# it is applied BEFORE dominant_units, so correcting the one record that tips the vote silently
+# relabels EVERY figure in the dataset, and nothing downstream catches it - the area magnitude
+# cross-check is blind across the whole realistic warehouse range.
+_OV_DENIED_UNITS = frozenset({"areaUnit", "rentUnit"})
+
+
+def load_overrides(path, extra_fields=()) -> tuple[list[dict], list[str]]:
+    """Parse + validate work/overrides.json. Returns (entries, invalid_reasons). NEVER raises.
+
+    Refuses at LOAD time anything that could produce an incomplete ledger row - an empty `why`,
+    an empty `where.source_file`, an empty/blank `set` value - because `ledger.REQUIRED` includes
+    source_locator and source_type, and an empty required column hard-blocks the build at exit 6.
+    That is exactly the trap the translation bake fell into on a live run.
+
+    `extra_fields` (B7) widens "an existing field" to include field names actually PRESENT ON THE
+    RECORDS, not just those the schema/template declare. Callers pass the loaded records' key set.
+
+    WHY. `_normalise_offspec` deliberately KEEPS a brand-new scalar attribute from an interpretation
+    record (v22 Phase 1 auto-show), so an isolated LLM could introduce a field that this audited,
+    `verified_by`-attributed, ledger-recorded human path was forbidden to use - the exact inversion
+    of where latitude belongs. Live symptom: an override setting `epc` was refused while the property
+    beside it displayed an `epc` an LLM had introduced.
+
+    The protection that matters is UNCHANGED: a typo (`breeem`) is on no record and in no schema, so
+    it still matches nothing and is still refused. Only a field the dataset genuinely has becomes
+    reachable. Default `()` keeps every existing caller's behaviour byte-identical."""
+    p = str(path or "").strip()
+    if not p:
+        return [], []
+    f = Path(p)
+    if not f.exists():
+        return [], []
+    try:
+        raw = json.loads(f.read_text(encoding="utf-8"))
+    except Exception as e:
+        return [], [f"{f.name} is not valid JSON ({type(e).__name__}) - NO override was applied"]
+    if not isinstance(raw, list):
+        return [], [f"{f.name} must be a JSON LIST of override entries - NO override was applied"]
+    # B7: "an existing field" = what the schema/template declare, UNION what the records actually
+    # carry. A typo is in neither, so it is still refused.
+    declared = C.canonical_property_fields()
+    on_records = {str(k) for k in (extra_fields or ()) if str(k) and k != "__meta"}
+    canon = declared | on_records
+    out: list[dict] = []
+    bad: list[str] = []
+    seen_ids: set = set()
+    for n, e in enumerate(raw, start=1):
+        tag = f"entry #{n}"
+        if not isinstance(e, dict):
+            bad.append(f"{tag} is not an object")
+            continue
+        oid = str(e.get("id") or "").strip()
+        tag = f"override {oid}" if oid else tag
+        if not oid:
+            bad.append(f"{tag}: missing a non-empty \"id\"")
+            continue
+        if oid in seen_ids:
+            bad.append(f"{tag}: duplicate id - ids must be unique")
+            continue
+        where = e.get("where")
+        if not isinstance(where, dict) or not str(where.get("source_file") or "").strip():
+            bad.append(f"{tag}: \"where.source_file\" is required and must be non-empty")
+            continue
+        unknown = [k for k in where if k not in ("source_file", "sheet", "row", "page_no")]
+        if unknown:
+            bad.append(f"{tag}: unrecognised \"where\" key(s) {unknown} - refused rather than "
+                       f"matched partially (a typo must never widen the match)")
+            continue
+        sets = e.get("set")
+        if not isinstance(sets, dict) or not sets:
+            bad.append(f"{tag}: \"set\" is required and must name at least one field")
+            continue
+        if not str(e.get("why") or "").strip():
+            bad.append(f"{tag}: a non-empty \"why\" is required - it ships in the Source Ledger "
+                       f"and the Gaps Report")
+            continue
+        clean: dict = {}
+        for fld, val in sets.items():
+            if fld in _OV_DENIED_UNITS:
+                bad.append(f"{tag}: setting {fld!r} is DENIED - it is applied before the dataset "
+                           f"unit vote, so it can silently relabel every figure (the 10.76x "
+                           f"class). Correct the AREA/RENT figures themselves instead.")
+                continue
+            if fld in _OV_FORBIDDEN:
+                bad.append(f"{tag}: {fld!r} is structural/derived and can never be overridden")
+                continue
+            if fld not in canon:
+                # Say WHAT was checked, so a broker can tell a typo from a field this corpus
+                # genuinely does not have. The old wording named only "canonical", which was
+                # misleading once a field could exist on a record without being declared.
+                bad.append(f"{tag}: {fld!r} is not a property field of this dataset - it is "
+                           f"declared in no schema and present on no record, so an override "
+                           f"would be INVENTING it. An override may only correct a field that "
+                           f"already exists. Check the spelling against the Source Ledger's "
+                           f"`field` column.")
+                continue
+            if isinstance(val, (dict, list)):
+                bad.append(f"{tag}: {fld!r} must be a scalar, not {type(val).__name__}")
+                continue
+            if val is None or not str(val).strip():
+                bad.append(f"{tag}: {fld!r} is empty - write the literal \"tbd\" if the correction "
+                           f"is that the value is unknown")
+                continue
+            clean[fld] = val
+        if not clean:
+            continue                      # every field was refused; reasons already recorded
+        seen_ids.add(oid)
+        exp = e.get("expect") if isinstance(e.get("expect"), dict) else {}
+        out.append({"id": oid, "where": dict(where), "set": clean, "expect": exp,
+                    "why": str(e["why"]).strip(),
+                    "verified_by": str(e.get("verified_by") or "").strip(),
+                    "multi": "all" if str(e.get("multi") or "").lower() == "all" else "one"})
+    return out, bad
+
+
+def _ov_record_matches(rec: dict, where: dict) -> bool:
+    """Every key PRESENT in `where` must match (AND); absent keys are not constraints.
+
+    The LIST INDEX is deliberately NOT a predicate: re-extraction can drop, add or reorder
+    records, and an index-keyed override would then silently correct the WRONG property - which is
+    the very failure class this fix exists to prevent. Row identity comes from __meta.prov values,
+    which carry "<Sheet>!r<N>" verbatim (1-based SPREADSHEET rows, as a human reads them in Excel).
+    """
+    m = rec.get("__meta") or {}
+    want_file = str(where.get("source_file") or "").strip().lower()
+    # basename + case-insensitive: a work-dir path vs a bare filename must not decide whether a
+    # correction applies
+    if Path(str(m.get("source_file") or "")).name.strip().lower() != Path(want_file).name:
+        return False
+    if where.get("page_no") is not None:
+        if m.get("page_no") != where.get("page_no"):
+            return False
+    if where.get("row") is not None:
+        want_row, want_sheet = int(where["row"]), str(where.get("sheet") or "").strip()
+        hit = False
+        for loc in (m.get("prov") or {}).values():
+            mm = _OV_ROW_RX.match(str(loc))
+            if not mm or int(mm.group("row")) != want_row:
+                continue
+            if want_sheet and mm.group("sheet").strip() != want_sheet:
+                continue
+            hit = True
+            break
+        if not hit:
+            return False
+    elif where.get("sheet"):
+        if str(m.get("locator_base") or "").strip() != str(where["sheet"]).strip():
+            return False
+    return True
+
+
+def apply_overrides(all_records: list[dict], overrides: list[dict]) -> dict:
+    """Apply each override to the PRE-MERGE records. Returns a report; mutates matched records.
+
+    NEVER creates a record. There is no append/insert/extend on `all_records` anywhere in this
+    function - zero matches is a report entry, not a synthesised property.
+    """
+    report: dict = {"applied": [], "stale": [], "ambiguous": [], "superseded": [], "invalid": []}
+    for ov in overrides:
+        hits = [r for r in all_records if _ov_record_matches(r, ov["where"])]
+        w = ov["where"]
+        at = (f"{w.get('sheet') or ''}!r{w['row']}" if w.get("row") is not None
+              else (f"page_no {w['page_no']}" if w.get("page_no") is not None else "the whole file"))
+        if not hits:
+            report["stale"].append({
+                "id": ov["id"], "where": w, "set": ov["set"], "why": ov["why"],
+                "reason": (f"matched NOTHING: no record from '{w['source_file']}' at {at}. The "
+                           f"correction was NOT applied. Fix `where` or delete the entry from "
+                           f"work/overrides.json.")})
+            continue
+        if len(hits) > 1 and ov["multi"] != "all":
+            report["ambiguous"].append({
+                "id": ov["id"], "where": w, "set": ov["set"], "why": ov["why"],
+                "reason": (f"matched {len(hits)} records from '{w['source_file']}' at {at} - "
+                           f"applied NOTHING (fails closed). Narrow `where` with a sheet+row or "
+                           f"page_no, or set \"multi\": \"all\" if every match really should "
+                           f"change.")})
+            continue
+        for rec in hits:
+            old: dict = {}
+            stale_field = False
+            for fld, new in ov["set"].items():
+                cur = rec.get(fld)
+                if fld in ov["expect"] and str(cur) != str(ov["expect"][fld]):
+                    report["superseded"].append({
+                        "id": ov["id"], "where": w, "set": {fld: new}, "why": ov["why"],
+                        "reason": (f"`expect` said {fld} == {ov['expect'][fld]!r} but the record "
+                                   f"now holds {cur!r} - applied NOTHING for that field. A row was "
+                                   f"probably inserted upstream, so this entry may now point at a "
+                                   f"DIFFERENT property. Re-check it against the source.")})
+                    stale_field = True
+                    continue
+                old[fld] = cur
+                rec[fld] = N.clean_value(new) if isinstance(new, str) else new
+                m = rec.setdefault("__meta", {})
+                base = str((m.get("prov") or {}).get(fld) or m.get("locator_base") or "")
+                m.setdefault("prov", {})[fld] = (
+                    f"{base} (manual override {ov['id']}: {ov['why']})".strip())
+                # pin it through precedence, and stamp the record so the ledger emitter can find
+                # it after clustering. Stamped on the RECORD (not keyed on id()) so it survives
+                # any copy a future refactor introduces.
+                lock = set(m.get("override_locked") or ())
+                lock.add(fld)
+                m["override_locked"] = sorted(lock)
+                ids = list(m.get("override_ids") or [])
+                if ov["id"] not in ids:
+                    ids.append(ov["id"])
+                m["override_ids"] = ids
+            if not old:
+                continue
+            # re-quarantine: the value went through the same render boundary as any extracted one
+            _normalise_offspec(rec)
+            report["applied"].append({
+                "id": ov["id"], "where": w, "set": {k: ov["set"][k] for k in old},
+                "old": old, "why": ov["why"], "verified_by": ov["verified_by"],
+                "locator": at, "partial": stale_field})
+    return report
+
+
+def _report_overrides(report: dict, out_path: Path) -> None:
+    """Print every non-applied outcome UNCONDITIONALLY and persist the report for run.py.
+
+    merge has no --quiet of its own, but run.py's call() swallows child stdout under --quiet - so
+    the file is what lets run.py re-surface these lines to the orchestrator.
+    """
+    for a in report.get("applied", []):
+        print(f"[OVERRIDE] {a['id']} applied to {a['where']['source_file']} {a['locator']}: "
+              + ", ".join(f"{k}: {a['old'].get(k)!r} -> {v!r}" for k, v in a["set"].items()))
+    for key, tag in (("stale", "STALE OVERRIDE"), ("ambiguous", "AMBIGUOUS OVERRIDE"),
+                     ("superseded", "SUPERSEDED OVERRIDE")):
+        for s in report.get(key, []):
+            print(f"[{tag}] {s['id']} {s['reason']}")
+    for iv in report.get("invalid", []):
+        print(f"[INVALID OVERRIDE] {iv} - this entry does NOTHING until it is fixed.")
+    try:
+        if any(report.get(k) for k in ("applied", "stale", "ambiguous", "superseded", "invalid")):
+            C.atomic_write_text(out_path, json.dumps(report, ensure_ascii=False, indent=2))
+    except Exception:
+        pass  # the report is evidence, never a reason to fail the merge
 
 
 _FILE_UNRELIABLE: dict[str, bool] = {}
@@ -110,6 +450,76 @@ def compute_file_quality(records: list[dict]) -> dict[str, bool]:
 
 def _unreliable(r) -> bool:
     return _FILE_UNRELIABLE.get((r.get("__meta", {}) or {}).get("source_file", ""), False)
+
+
+def stated_total_for(cluster: list, merged: dict, area_unit: str) -> dict | None:
+    """P1-1: the source's OWN stated total area for this property, aligned to the dataset unit.
+
+    OPTIONAL by design. A record carries `__meta.statedTotalArea` only when its source PRINTS a
+    total (a GIA/GEA/GLA-qualified tracker size, or a schedule whose TOTAL line the interpreter
+    copied). A deck without one yields None and the arithmetic gate skips that property entirely.
+
+    Returns None - never a guess - whenever the comparison would not be sound:
+      * no record in the cluster carries a numeric stated total;
+      * the unit is unknown or unrecognised, OR the record's area unit was ASSUMED rather than
+        stated (merge does NOT convert in that case, so the figures are not commensurable and a
+        comparison would be the 10.76x unit-flip class the skill exists to prevent).
+
+    The conversion reuses `N.SQFT_PER_SQM` with the SAME factor expression as the per-record area
+    alignment below, so the stated total can never be scaled differently from the fields it is
+    compared against.
+    """
+    best = None
+    for r in cluster:
+        m = r.get("__meta", {}) or {}
+        v = m.get("statedTotalArea")
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not v > 0:
+            continue
+        unit = str(m.get("statedTotalUnit") or r.get("areaUnit") or "").strip()
+        if unit not in ("sq ft", "sq m"):
+            continue          # unknown unit -> not comparable, and we do NOT infer one
+        best = {"value": float(v), "unit": unit,
+                "source_file": m.get("source_file", ""),
+                "locator": m.get("statedTotalLocator") or m.get("locator_base", "")}
+        break
+    if best is None:
+        return None
+    if merged.get("areaUnitAssumed"):
+        # the record never stated its unit, so its areas were labelled but NOT converted
+        return None
+    if best["unit"] != area_unit:
+        f = N.SQFT_PER_SQM if area_unit == "sq ft" else 1.0 / N.SQFT_PER_SQM
+        best["value"] = round(best["value"] * f)
+        best["locator"] = f"{best['locator']} (converted {best['unit']} -> {area_unit})".strip()
+        best["unit"] = area_unit
+    # the fields the chrome's glaVal() actually sums - quoted, not re-derived
+    best["contributors"] = ["warehouseArea", "officeAreaVal"]
+    return best
+
+
+_INTERNAL_FLAGS = ("areaUnitAssumed", "rentUnitAssumed")
+
+
+def strip_internal_flags(merged: dict) -> dict:
+    """Move merge's own working flags off the property, immediately before it ships. (B05)
+
+    The v21 modal renders EVERY key a property carries, including names in no schema - so a
+    bare `areaUnitAssumed` shipped a raw untranslated row "Area Unit Assumed: true" onto a
+    broker's client card. `extract_xlsx` sets `rentUnitAssumed` on the SOURCE record, which
+    merge copies up, so it leaked the same way; the tracker path is the common trigger, and
+    fixing one name without the other leaves the defect live.
+
+    These are internal state, not data: `stated_total_for` reads areaUnitAssumed earlier in
+    the merge to refuse an unconverted stated total. The AUDITABLE copy is
+    `canonical.meta.unitAssumptions`, which is what the Gaps Report reads - so nothing is
+    lost by dropping the per-property flag. They are parked under `__meta`, which the caller
+    pops on the next line.
+
+    Any future internal flag goes in `_INTERNAL_FLAGS`, NEVER on the record top level."""
+    for f in _INTERNAL_FLAGS:
+        if f in merged:
+            merged.setdefault("__meta", {})[f] = merged.pop(f)
+    return merged
 
 
 def dominant_units(records: list[dict]) -> tuple[str, str]:
@@ -155,58 +565,411 @@ _RENT_GATE_FIELDS = {"warehouseRent", "warehouseRentVal", "officeRent"}
 _AREA_GATE_FIELDS = {"warehouseArea", "plotArea", "officeArea", "officeAreaVal"}
 
 
-def _pick_passes_gate(field: str, value, rent_unit: str | None,
-                      area_unit: str | None = None) -> bool:
-    """Run a candidate VALUE through its field's deterministic plausibility check
-    before an LLM override is honoured (the verifier from the #4 design). A rent
-    must sit in its own per-area band (and a numeric must parse), an area must be
-    > 0 AND inside its conservative plausibility band (the area twin of the rent
-    band; the picked record's areaUnit chooses the band, else the sq m band), a
-    coordinate must be in bounds. A field with NO defined gate returns False so
-    precedence stands (the override is never honoured, only annotated). A pick that
-    fails is DISCARDED and the fixed precedence is kept (it NEVER blocks the build)."""
+# I10. Two sources stating the SAME fact in different notation is not a disagreement. Both conflict
+# sites used to compare with raw string identity, so "12.5 m" vs "12.5" and "1000 KVA" vs "1 MVA" were
+# reported as source conflicts - ~24 of 34 on one live run. Each cost an LLM adjudication AND diluted
+# the Gaps Report's "Source conflicts" section, which is the one list a broker acts on: padding it
+# with notation trains them to skim past the material entries beside it. Equivalence here must be
+# PROVEN; anything unrecognised stays a conflict, because a false "same" would SWALLOW a real
+# disagreement, which is a Data Honesty Standard failure of the same class as a fabricated value.
+_UNIT_FAMILY = {
+    "kva": ("power", 1.0), "kv a": ("power", 1.0), "mva": ("power", 1000.0),
+    "sq ft": ("area", 1.0), "sqft": ("area", 1.0), "sf": ("area", 1.0),
+    "sq m": ("area", 10.7639104), "sqm": ("area", 10.7639104),
+    "m2": ("area", 10.7639104), "m²": ("area", 10.7639104),
+    "m": ("len", 1.0), "metre": ("len", 1.0), "metres": ("len", 1.0),
+    "meter": ("len", 1.0), "meters": ("len", 1.0),
+    "kn/sq m": ("load", 1.0), "kn/m2": ("load", 1.0), "kn/m²": ("load", 1.0),
+    "kn": ("load", 1.0), "kn/sqm": ("load", 1.0),
+}
+_NUM_UNIT_RX = re.compile(r"^\s*([-+]?[\d,]*\.?\d+)\s*(.*?)\s*$")
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ["january", "february", "march", "april", "may", "june", "july", "august",
+     "september", "october", "november", "december"])}
+_ENUM_EQ_FIELDS = {"status", "breeam", "epc"}
+_ENUM_STRIP_RX = re.compile(
+    r"\bfor\s+immediate\s+occupation\b|\bupon\s+completion\b"
+    r"|\b(?:target(?:ing|ed)?|breeam|epc|now|immediately)\b", re.I)
+
+
+def _num_unit(v):
+    """(scaled_number, family, scale) or None. A bare number yields family None - a wildcard that
+    matches any family, so "12.5 m" == 12.5. An UNRECOGNISED unit suffix returns None, because an
+    unknown unit is not proof of anything."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return (float(v), None, 1.0)
+    m = _NUM_UNIT_RX.match(str(v))
+    if not m:
+        return None
+    try:
+        num = float(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
+    tail = re.sub(r"[\s.]+$", "", m.group(2)).strip().lower()
+    if not tail:
+        return (num, None, 1.0)
+    fam = _UNIT_FAMILY.get(tail)
+    if fam is None:
+        return None
+    return (num * fam[1], fam[0], fam[1])
+
+
+def _as_month(v):
+    """(year, month) at MONTH precision, or None - so an ISO date and 'April 2026' compare."""
+    s = str(v).strip()
+    m = re.match(r"^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$", s)
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+    m = re.match(r"^([A-Za-z]+)\s+(\d{4})$", s)
+    if m and m.group(1).lower() in _MONTHS:
+        return (int(m.group(2)), _MONTHS[m.group(1).lower()])
+    return None
+
+
+def _enum_token(v):
+    return re.sub(r"[^a-z0-9]+", " ", _ENUM_STRIP_RX.sub(" ", str(v)).lower()).strip()
+
+
+def _values_equivalent(field: str, a, b) -> bool:
+    """Do these two values denote the SAME fact? Proof required; the default is False."""
+    if a is None or b is None:
+        return False
+    sa, sb = str(a).strip(), str(b).strip()
+    if not sa or not sb:
+        return False
+    if sa == sb:
+        return True
+    na, nb = _num_unit(a), _num_unit(b)
+    if na and nb:
+        fa, fb = na[1], nb[1]
+        if fa is None or fb is None or fa == fb:
+            hi = max(abs(na[0]), abs(nb[0]))
+            # 0.1% absorbs a source's own rounding (12,220 sq m vs 131,536 sq ft) while keeping a
+            # real 0.27% area disagreement visible.
+            return abs(na[0] - nb[0]) <= max(1e-9, hi * 0.001)
+        return False
+    ma, mb = _as_month(a), _as_month(b)
+    if ma and mb:
+        return ma == mb
+    if field in _ENUM_EQ_FIELDS:
+        ta, tb = _enum_token(a), _enum_token(b)
+        if ta and tb and ta == tb:
+            return True
+    if field == "park":
+        lo, hi = sorted((sa.lower(), sb.lower()), key=len)
+        if lo and re.search(r"(?:^|\W)" + re.escape(lo) + r"(?:\W|$)", hi):
+            return True
+    return False
+
+
+_ENUM_GATE_FIELDS = {"breeam", "epc"}
+_COUNT_GATE_FIELDS = {"loadingDocks", "overheadDoors", "truckParking", "carParking"}
+_FEET_RX = re.compile(r"\b(?:ft|feet|foot)\b|'", re.I)
+_EPC_GATE_RX = re.compile(r"^(?:target(?:ing|ed)?\s+)?(?:epc\s*)?[A-G]\+?$", re.I)
+
+
+def _pick_gate_verdict(field: str, value, rent_unit: str | None = None,
+                       area_unit: str | None = None) -> str:
+    """Does this value pass its field's deterministic plausibility check? (B3)
+
+    Returns "pass", "fail", or "none" - and the THREE states are the whole point. The predecessor
+    returned a bool whose final line was `return False  # no defined gate -> precedence stands`, so
+    "there is no gate for this field" and "this value failed its gate" were indistinguishable. Two
+    consequences, both live:
+
+      * an adjudicated override on ANY field outside rents/areas/lat-lng was discarded
+        unconditionally, and the discard was narrated to the broker as a plausibility failure by a
+        gate that does not exist ("failed breeam plausibility gate"). One run adjudicated 34
+        conflicts across two rounds; only a rent, an area or a coordinate could ever have moved.
+      * where a gate DID exist, a failing candidate caused the precedence winner to be reinstated -
+        so the gate could protect the default but never catch it. An impossible BREEAM "A+" reached
+        a client card that way.
+
+    The enum/count/height gates below are deliberately conservative, because a gate that fires now
+    strikes a field to "tbd": `breeam` passes on CONTAINING a band word (so "Target BREEAM
+    Excellent" and "Excellent (targeted)" are fine and only a non-band fails), and an eaves height
+    stated in FEET returns "none" rather than being judged against a metre band."""
     if field in _RENT_GATE_FIELDS:
         num = value if isinstance(value, (int, float)) and not isinstance(value, bool) \
             else N.extract_first_number(str(value))
         if num is None:
-            return False
+            return "fail"
         unit = rent_unit or (N.rent_unit_of_text(str(value)) if isinstance(value, str) else None)
         lo, hi = N.rent_unit_band(unit)
-        return lo <= num <= hi
+        return "pass" if lo <= num <= hi else "fail"
     if field in _AREA_GATE_FIELDS:
         num = value if isinstance(value, (int, float)) and not isinstance(value, bool) \
             else N.extract_first_number(str(value))
         if num is None or num <= 0:
-            return False
+            return "fail"
         lo, hi = N.area_band_for(area_unit)
-        return lo <= num <= hi
+        return "pass" if lo <= num <= hi else "fail"
     if field in ("lat", "lng"):
         if not isinstance(value, (int, float)) or isinstance(value, bool):
-            return False
-        return (-90 <= value <= 90) if field == "lat" else (-180 <= value <= 180)
-    return False  # no defined gate -> precedence stands (the pick can only annotate)
+            return "fail"
+        ok = (-90 <= value <= 90) if field == "lat" else (-180 <= value <= 180)
+        return "pass" if ok else "fail"
+    if field in _ENUM_GATE_FIELDS:
+        s = str(value).strip()
+        if field == "breeam":
+            return "pass" if _BREEAM_GRADE.search(s) else "fail"
+        return "pass" if _EPC_GATE_RX.match(s) else "fail"
+    if field in _COUNT_GATE_FIELDS:
+        num = value if isinstance(value, (int, float)) and not isinstance(value, bool) \
+            else N.extract_first_number(str(value))
+        if num is None or num < 0 or num > 2000 or float(num) != int(num):
+            return "fail"
+        return "pass"
+    if field == "clearHeight":
+        if _FEET_RX.search(str(value)):
+            return "none"   # an imperial height must never be judged against a metre band
+        num = value if isinstance(value, (int, float)) and not isinstance(value, bool) \
+            else N.extract_first_number(str(value))
+        return "pass" if (num is not None and 3 <= num <= 30) else "fail"
+    return "none"
 
 
-def conflict_id(cluster_key: str, field: str, values: list) -> str:
-    """A STABLE, ORDER-INDEPENDENT id for a value conflict: a sha1 of the merged
-    property's match_key + field + the SORTED set of disagreeing values. The id
-    depends ONLY on the conflict's content (identity + field + the value set), not
-    on record-file order, so a cached verdict in work/field_decisions.json keyed by
-    it is reproducible across re-runs. Mirrors match.pair_id."""
+def _pick_passes_gate(field: str, value, rent_unit: str | None,
+                      area_unit: str | None = None) -> bool:
+    """Back-compatible boolean wrapper over _pick_gate_verdict (True only on an explicit "pass")."""
+    return _pick_gate_verdict(field, value, rent_unit, area_unit) == "pass"
+
+
+def cluster_anchor(cluster: list) -> str:
+    """A stable, order-independent identity for a CLUSTER, built from WHICH RECORDS are in
+    it - never from their values.
+
+    `match_key(cluster[0])` was neither: it depended on record-file order, and it moved
+    whenever the winning record's park/city text moved. Anchoring on the member records'
+    (source_file, locator) means a corrected VALUE leaves the anchor untouched, which is
+    exactly the property conflict_id needs. (B09)
+
+    B6: the per-record key deliberately EXCLUDES `page_no`, and every other presentational
+    `__meta` binding (`heroRef`, `plan_page`, `image_pages`, `exclude_refs`). `page_no` is not
+    record identity - the interpretation contract defines it as the page carrying this
+    property's HERO PHOTO, which is routinely NOT the page its text came from. Including it
+    meant an image-only repair re-keyed every conflict_id for that property: on live runs a
+    Raven Park hero rebind re-keyed 9 settled value decisions and a Rockingham 161 rebind
+    re-keyed 2, each costing a fresh exit-10 round and an LLM dispatch to re-derive answers
+    whose candidate values, sources, locators and defaults were byte-identical. The repairs
+    that trigger it are exactly the ones the G-images gate asks for, so the two mechanisms
+    fought each other.
+
+    Dropping it cannot create a collision: two options described on the SAME page of one deck
+    share `locator_base` AND `page_no` (the contract binds both to that page), so their keys
+    were already identical. The only pairs `page_no` separated were a single record whose text
+    page and hero page diverge - one property, not two. `evals/anchor_stability_test.py` proves
+    both halves rather than asserting them."""
     import hashlib
-    parts = chr(0).join(sorted(str(v) for v in values))
-    raw = f"{cluster_key}|{field}|{parts}"
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+    ids = []
+    for r in cluster or []:
+        m = (r.get("__meta") or {})
+        ids.append(f"{m.get('source_file', '')}#{m.get('locator_base', '')}")
+    return hashlib.sha1(chr(0).join(sorted(ids)).encode("utf-8")).hexdigest()[:16]
+
+
+def candidates_sig(values: list) -> str:
+    """A short signature of the disagreeing VALUE SET. Recorded alongside a conflict so a
+    changed candidate set is auditable - it is deliberately NOT part of conflict_id. (B09)"""
+    import hashlib
+    return hashlib.sha1(chr(0).join(sorted(str(v) for v in values))
+                        .encode("utf-8")).hexdigest()[:12]
+
+
+def conflict_id(cluster_key: str, field: str, values: list | None = None) -> str:
+    """A STABLE, ORDER-INDEPENDENT id for a value conflict: sha1 of the cluster ANCHOR and
+    the field.
+
+    The value set used to be part of the hash, and that was the defect: CORRECTING one of
+    the disagreeing values re-minted the conflict's own id, so the adjudication the broker
+    had already given was orphaned. And because the QA improvement round's remedy is
+    `work/overrides.json` - which merge applies BEFORE clustering but run.py's enumeration
+    never applies at all - the two sides computed different ids and merge SILENTLY DROPPED
+    every adjudicated pick for that property, with no Gaps line. Not a re-ask loop: a
+    silent loss.
+
+    There is exactly ONE conflict per (cluster, field) by construction, so dropping the
+    values cannot collide two live conflicts. `values` is still accepted (callers pass it)
+    but only feeds `candidates_sig`, which is recorded separately so a changed candidate set
+    stays visible without moving the handle. (B09)"""
+    import hashlib
+    return hashlib.sha1(f"{cluster_key}|{field}".encode("utf-8")).hexdigest()[:16]
+
+
+# ---------------------------------------------------------------- gross vs net area (B55)
+# extract_xlsx ALREADY derives the net warehouse figure when an office column sits in the SAME
+# tracker row (`warehouseArea = GIA - office`). It cannot when the office figure lives in the
+# BROCHURE, because that is a different record and only comparable after clustering. Merge is the
+# only place holding both halves, and it used to do nothing with them: it saw two numbers for one
+# field and raised a value conflict. 11 of 48 on a live run, every one resolved the same way by a
+# sub-agent, and INCONSISTENTLY across rounds - a mechanical question asked of a judge.
+GROSS_AWARE_FIELDS = frozenset({"warehouseArea"})
+
+
+def is_gross_area(rec) -> bool:
+    """Is this record's `warehouseArea` the source's GROSS whole-building figure?
+
+    True when it equals the record's own `__meta.statedTotalArea`. extract_xlsx sets that only for
+    a GIA/GEA/GLA-qualified size, and leaves it EQUAL to warehouseArea only when it could not
+    subtract an office area - so the office is still inside the number. No heuristic: this is a
+    structural fact the extractor itself recorded."""
+    if not isinstance(rec, dict):
+        return False
+    m = rec.get("__meta") or {}
+    st, wa = m.get("statedTotalArea"), rec.get("warehouseArea")
+    if isinstance(st, bool) or isinstance(wa, bool):
+        return False
+    if not isinstance(st, (int, float)) or not isinstance(wa, (int, float)):
+        return False
+    return float(st) == float(wa)
+
+
+def _gross_split(cluster, field) -> tuple:
+    """(non_gross, gross) for a cluster holding BOTH kinds, else ([], []).
+
+    Returning ([], []) is what keeps this safe. A tracker-only property has no net alternative, so
+    it KEEPS its gross figure rather than losing its only area - dropping a client's sole area
+    figure would be far worse than carrying a slightly gross one. Two gross or two net candidates
+    fall through to the existing precedence untouched."""
+    if field not in GROSS_AWARE_FIELDS:
+        return ([], [])
+    have = [r for r in (cluster or [])
+            if isinstance(r, dict) and isinstance(r.get(field), (int, float))
+            and not isinstance(r.get(field), bool)]
+    gross = [r for r in have if is_gross_area(r)]
+    non_gross = [r for r in have if not is_gross_area(r)]
+    if not gross or not non_gross:
+        return ([], [])
+    return (non_gross, gross)
 
 
 def _ordered_for_field(field, cluster, comm_order, spec_order, tracker_order, has_rich):
     """The precedence order merge_cluster applies for one field (single source of
     truth so conflict_candidates and merge_cluster agree on the default winner)."""
     if field in COMMERCIAL:
-        return comm_order
-    if has_rich and field in TRACKER_AUTHORITATIVE:
-        return tracker_order
-    return spec_order
+        base = comm_order
+    elif has_rich and field in TRACKER_AUTHORITATIVE:
+        base = tracker_order
+    else:
+        base = spec_order
+    # B55: a GROSS whole-building figure loses to an explicit net one, whatever the source
+    # precedence would otherwise say. The gross number CONTAINS the office area, so using it as
+    # `warehouseArea` double-counts the moment the chrome adds officeArea back to derive GLA -
+    # the 498,723 + 58,509 defect class. Applied here so both callers inherit it and cannot drift.
+    non_gross, _gross = _gross_split(cluster, field)
+    if non_gross:
+        rank = {id(r): 0 for r in non_gross}
+        return sorted(base, key=lambda r: rank.get(id(r), 1))
+    return base
+
+
+def collect_source_languages(records: list) -> dict:
+    """{iso_code: count} of the languages the interpretation agents DECLARED. (B54)
+
+    The agent is reading the deck anyway, so declaring its language costs nothing - and it lets
+    run.py skip an entire translation round when the source already matches the dashboard
+    language. A 12-property English run with an English dashboard previously queued 53 items for
+    an English-to-English translation: a full agent dispatch plus a shell round-trip, on the most
+    common configuration there is.
+
+    Python only COUNTS here; the model judges what language the deck is in."""
+    out: dict = {}
+    for r in records or []:
+        v = (r.get("__meta") or {}).get("source_lang") if isinstance(r, dict) else None
+        if isinstance(v, str) and v.strip():
+            k = v.strip().lower()
+            out[k] = out.get(k, 0) + 1
+    return out
+
+
+def cluster_label(cluster: list[dict]) -> str:
+    """A human-readable name for one cluster, for a broker-facing question or Gaps line."""
+    for r in cluster or []:
+        for f in ("park", "name", "address", "city"):
+            v = r.get(f)
+            if isinstance(v, str) and v.strip() and not N.looks_unknown(v):
+                city = r.get("city")
+                if f != "city" and isinstance(city, str) and city.strip() \
+                        and not N.looks_unknown(city) and city.strip().lower() not in v.lower():
+                    return f"{v.strip()}, {city.strip()}"
+                return v.strip()
+    return "(unnamed option)"
+
+
+def cluster_families(cluster: list[dict]) -> set:
+    """The set of source families ('tracker'/'brochures') evidencing one cluster."""
+    import clarify as _CQ
+    return {f for f in (_CQ.record_family(r) for r in cluster or []) if f}
+
+
+def authority_extras(clusters: list[list[dict]]) -> dict:
+    """family -> [cluster labels evidenced ONLY by that family].
+
+    Computed from SETTLED clusters, so a brochure record that merged into a tracker row is
+    correctly NOT an extra. This is the input to the broker's source-authority question and
+    the exact set `apply_source_authority` would drop."""
+    # A DISAGREEMENT NEEDS TWO SOURCES. On a single-family corpus - a pure brochure run, or a
+    # tracker-only run - every cluster is trivially "evidenced by only one family", which is
+    # not a discrepancy at all: there is no second source that could have listed it. Asking
+    # then would stop a broker mid-run to arbitrate between one source and nothing, and the
+    # only honest answer would re-select everything. Return no extras, so no question fires
+    # and the filter is a no-op. (Caught by evals/cowork_sim.py on a 4-deck, no-tracker corpus.)
+    present = set()
+    for cl in clusters or []:
+        present |= cluster_families(cl)
+    if len(present) < 2:
+        return {}
+    out = {"tracker": [], "brochures": []}
+    for cl in clusters or []:
+        fams = cluster_families(cl)
+        if len(fams) == 1:
+            fam = next(iter(fams))
+            if fam in out:
+                out[fam].append(cluster_label(cl))
+    return {k: v for k, v in out.items() if v}
+
+
+def apply_source_authority(clusters: list[list[dict]], authority: str) -> tuple:
+    """Split settled clusters into (kept, dropped) per the broker's source-authority answer.
+
+    A cluster is KEPT when at least one of its records comes from the authoritative family.
+    `authority` of 'union' (or anything unrecognised, or absent) keeps everything, so a run
+    without an answer is byte-identical to the historical behaviour.
+
+    THREE deliberate safety properties, because this is the only code in the skill that can
+    remove a client's property from their own longlist:
+      * A cluster evidenced by NEITHER family (an email-only or image-only option) is always
+        KEPT - the filter only ever excludes on positive evidence of the other family.
+      * If the filter would empty the dataset, NOTHING is dropped. That means a mis-detected
+        source family degrades to the union rather than shipping an empty dashboard.
+      * `dropped` is returned, never discarded: every exclusion is named in the Gaps Report.
+    """
+    import clarify as _CQ
+    fam = str(authority or "").strip().lower()
+    if fam not in _CQ.AUTHORITY_FAMILIES:
+        return list(clusters or []), []
+    kept, dropped = [], []
+    for cl in clusters or []:
+        fams = cluster_families(cl)
+        # keep on positive evidence, or when no family evidences it at all (email/image-only)
+        if fam in fams or not fams:
+            kept.append(cl)
+        else:
+            dropped.append({
+                "name": cluster_label(cl),
+                "evidenced_by": sorted(fams),
+                "source_files": sorted({str((r.get("__meta") or {}).get("source_file") or "")
+                                        for r in cl if (r.get("__meta") or {}).get("source_file")}),
+                "why": (f"not evidenced by the {fam}, which you set as the guiding source for "
+                        f"what belongs on this longlist"),
+            })
+    if not kept:
+        # fail OPEN: an authority that matches nothing is far more likely a mis-detection than
+        # a client with zero properties. Ship the union and let the Gaps Report say so.
+        return list(clusters or []), []
+    return kept, dropped
 
 
 def conflict_candidates(clusters: list[list[dict]]) -> list[dict]:
@@ -231,18 +994,29 @@ def conflict_candidates(clusters: list[list[dict]]) -> list[dict]:
         for r in cl:
             fields.update(k for k in r if k != "__meta")
         for field in sorted(fields):
+            # B55: a gross-vs-net area disagreement is settled by the deterministic basis rule in
+            # _ordered_for_field, not by a sub-agent. Enumerating it asked a model to re-derive
+            # the same mechanical answer once per property (11 times on a live run) and let two
+            # rounds answer it differently. merge_cluster still records the discarded gross figure
+            # in meta.conflicts, so nothing is hidden - only the pointless adjudication is gone.
+            if _gross_split(cl, field)[0]:
+                continue
             order = _ordered_for_field(field, cl, comm_order, spec_order, tracker_order, has_rich)
             cands: list[dict] = []
-            seen_vals: set = set()
+            seen_vals: list = []   # raw values (a list value is unhashable)
             for r in order:
                 if field not in r:
                     continue
                 v = r[field]
                 if N.looks_unknown(v) and field not in ("landPrice", "reit"):
                     continue
-                if str(v) in seen_vals:
-                    continue  # the same value from two records is not a disagreement
-                seen_vals.add(str(v))
+                # I10: the same value from two records is not a disagreement - and neither is the
+                # SAME FACT in different notation ("1000 KVA" vs "1 MVA"). Suppressing the variant
+                # here is what stops it being offered for adjudication; merge_cluster records it in
+                # its `variants` out-param so it still reaches the broker.
+                if any(_values_equivalent(field, v, sv) for sv in seen_vals):
+                    continue
+                seen_vals.append(v)
                 meta = r.get("__meta", {})
                 st = meta.get("source_type", "")
                 cands.append({
@@ -263,8 +1037,12 @@ def conflict_candidates(clusters: list[list[dict]]) -> list[dict]:
                 continue  # not a genuine conflict (one or zero distinct non-unknown values)
             values = [c["value"] for c in cands]
             out.append({
-                "conflict_id": conflict_id(merged_key, field, values),
+                # anchored on WHICH RECORDS are in the cluster, not on cl[0]'s match_key and
+                # not on the values - so a corrected value keeps the same handle (B09)
+                "conflict_id": conflict_id(cluster_anchor(cl), field, values),
                 "cluster_key": merged_key,
+                "cluster_anchor": cluster_anchor(cl),
+                "candidates_sig": candidates_sig(values),
                 "field": field,
                 "candidates": cands,
                 "default": cands[0]["label"],  # the precedence winner (order[0])
@@ -272,7 +1050,12 @@ def conflict_candidates(clusters: list[list[dict]]) -> list[dict]:
     return out
 
 
-def merge_cluster(cluster: list[dict], decisions: dict | None = None) -> tuple[dict, dict, dict]:
+def merge_cluster(cluster: list[dict], decisions: dict | None = None,
+                  variants: dict | None = None) -> tuple[dict, dict, dict]:
+    """`variants` is an OPTIONAL out-parameter (I10): pass a dict and it is filled with
+    field -> note for every pair that states the same fact in different notation. It is an
+    out-param rather than a fourth return value deliberately - the 3-tuple has thirteen call
+    sites across the eval battery, and widening it would have been churn and risk for nothing."""
     out: dict = {}
     prov: dict = {}
     conflicts: dict = {}  # field -> "discarded <val> from <file> (kept <winner>)"
@@ -286,6 +1069,11 @@ def merge_cluster(cluster: list[dict], decisions: dict | None = None) -> tuple[d
                                                    SPEC_RANK.get(_st(r), 9)))
     has_rich = any(_is_rich(r) for r in cluster)
     cluster_key = match.match_key(cluster[0]) if cluster else ""
+    # The conflict handle anchors on WHICH RECORDS are in the cluster, never on cluster[0]'s
+    # match_key (order-dependent, and it moves when a value is corrected). conflict_candidates
+    # computes the identical anchor - if these two ever diverge, every adjudicated pick is
+    # silently dropped, which is precisely the bug. (B09)
+    _anchor = cluster_anchor(cluster)
     # rent-unit hint for the per-field plausibility gate (the cluster's stated unit,
     # else the €/sq m default) - so a £/sq ft override is judged against its own band.
     rent_unit = next((r.get("rentUnit") for r in cluster if r.get("rentUnit")), None)
@@ -296,11 +1084,22 @@ def merge_cluster(cluster: list[dict], decisions: dict | None = None) -> tuple[d
 
     for field in sorted(fields):  # sorted -> deterministic output bytes
         order = _ordered_for_field(field, cluster, comm_order, spec_order, tracker_order, has_rich)
+        # P1-4 PRECEDENCE PIN. `out[field]`/`prov[field]` are set by the FIRST record in `order`
+        # holding a non-unknown value, so overriding a record that LOSES the precedence contest
+        # would change nothing visible - a silent no-op that looks exactly like the bug the
+        # override was written to fix. Explicit order: broker override > LLM pick > precedence.
+        # Compared by id(), never by `in` (dict equality would also pull in an identical sibling).
+        # Byte-identical when nothing is locked.
+        _locked = [r for r in order
+                   if field in set((r.get("__meta") or {}).get("override_locked") or ())]
+        if _locked:
+            _lids = {id(r) for r in _locked}
+            order = _locked + [r for r in order if id(r) not in _lids]
         chosen = None
         # candidate records that hold a distinct non-unknown value, in precedence
         # order (used both for the discard note and the override lookup)
         cand_recs: list[dict] = []
-        seen_vals: set = set()
+        seen_vals: list = []   # raw values (a list value is unhashable)
         for r in order:
             if field not in r:
                 continue
@@ -315,13 +1114,45 @@ def merge_cluster(cluster: list[dict], decisions: dict | None = None) -> tuple[d
                     "source_file": meta.get("source_file", ""),
                     "source_type": meta.get("source_type", ""),
                     "locator": meta.get("prov", {}).get(field, meta.get("locator_base", "")),
+                    # THE FOOTING OF THIS FIELD'S OWN SUPPLIER (B39). Every field resolves its
+                    # own precedence contest, so an area can come from one record while
+                    # `areaUnit` comes from another - and one dataset-wide label was then
+                    # applied to all of them, scaling a figure by 10.7639 on a unit its own
+                    # source never stated. `prov` is local to main() and never serialised into
+                    # canonical, so recording it here cannot move a rendered byte.
+                    # B58: a FIELD may state its own unit - a site area in acres inside a sq ft
+                    # brochure is the normal UK shape. Prefer it; fall back to the record-level
+                    # areaUnit. Without this the figure had nowhere to go, and two agents on one
+                    # run split between dropping it and converting it themselves.
+                    "areaUnitOfSource": (r.get(f"{field}Unit") or r.get("areaUnit") or None),
                 }
+            elif str(v) != str(chosen) and _values_equivalent(field, v, chosen):
+                # I10: the same fact in different notation. NOT a conflict - but recorded, because
+                # nothing may be silently dropped. It ships in its own Gaps Report section.
+                # The `str(v) != str(chosen)` guard matters: an IDENTICAL value from a second record
+                # was always a silent no-op and must stay one, not become a "variant" note.
+                if variants is not None and field not in variants:
+                    variants[field] = (
+                        f"'{v}' from {meta.get('source_file','?')} states the same value as "
+                        f"'{chosen}' in different notation - no action needed")
             elif str(v) != str(chosen):
                 # a different non-unknown value lost the precedence contest - record it
-                conflicts[field] = (f"discarded '{v}' from {meta.get('source_file','?')} "
-                                    f"(kept '{chosen}')")
-            if str(v) not in seen_vals:
-                seen_vals.add(str(v))
+                # B55: when the GROSS basis rule is what demoted it, say so. "discarded X (kept
+                # Y)" is true but leaves a broker guessing why two sources disagree by exactly
+                # the office area; this names the reason and confirms the figure is not lost.
+                if _gross_split(cluster, field)[0] and is_gross_area(r):
+                    conflicts[field] = (
+                        f"discarded the GROSS whole-building '{v}' from "
+                        f"{meta.get('source_file','?')} (kept the warehouse-only '{chosen}'): the "
+                        f"gross figure already contains the office area, so using it here would "
+                        f"double-count once GLA is derived. It is retained as the stated total.")
+                else:
+                    conflicts[field] = (f"discarded '{v}' from {meta.get('source_file','?')} "
+                                        f"(kept '{chosen}')")
+            # I10: a value EQUIVALENT to one already collected is not a second candidate, so it
+            # never makes this field a "genuine conflict" and never costs an adjudication.
+            if not any(_values_equivalent(field, v, sv) for sv in seen_vals):
+                seen_vals.append(v)
                 cand_recs.append(r)
         # LLM VALUE-CONFLICT OVERRIDE (#4): a GENUINE conflict (>= 2 distinct non-
         # unknown values) may carry a cached sub-agent pick keyed by an order-
@@ -330,9 +1161,10 @@ def merge_cluster(cluster: list[dict], decisions: dict | None = None) -> tuple[d
         # AND (b) that value PASSES the field's deterministic plausibility gate. A
         # pick that fails the gate, names no candidate, or selects the default is
         # ignored and precedence stands. SELECTION-ONLY: never a free/invented value.
-        if decisions and len(cand_recs) >= 2:
+        # `not _locked`: an LLM pick must never un-pick a HUMAN correction (P1-4).
+        if decisions and len(cand_recs) >= 2 and not _locked:
             values = [c[field] for c in cand_recs]
-            cid = conflict_id(cluster_key, field, values)
+            cid = conflict_id(_anchor, field, values)
             verdict = decisions.get(cid)
             if isinstance(verdict, dict):
                 pick = verdict.get("pick")
@@ -344,22 +1176,85 @@ def merge_cluster(cluster: list[dict], decisions: dict | None = None) -> tuple[d
             if pick in labels and pick != labels[0]:  # a non-default candidate pick
                 picked = cand_recs[labels.index(pick)]
                 pv = picked[field]
-                if _pick_passes_gate(field, pv, rent_unit, picked.get("areaUnit")):
+                _verdict = _pick_gate_verdict(field, pv, rent_unit, picked.get("areaUnit"))
+                if _verdict in ("pass", "none"):
                     out[field] = pv
                     pmeta = picked.get("__meta", {})
                     prov[field] = {
                         "source_file": pmeta.get("source_file", ""),
                         "source_type": pmeta.get("source_type", ""),
                         "locator": pmeta.get("prov", {}).get(field, pmeta.get("locator_base", "")),
+                        # the OVERRIDE's own footing - an LLM pick changes which record
+                        # supplied the number, so it must change the unit it is scaled on (B39)
+                        "areaUnitOfSource": picked.get("areaUnit") or None,
                     }
+                    # B3: an UNGATED field's selection is now HONOURED and labelled, not silently
+                    # dropped. The adjudicator only ever selects among values that already exist in
+                    # the sources, so honouring it cannot invent data - whereas discarding it made
+                    # the whole adjudication round decorative for every non-numeric field.
+                    _tag = ("" if _verdict == "pass"
+                            else " [unverified: no deterministic gate is defined for this field, so "
+                                 "the selection is honoured but not machine-checked]")
                     conflicts[field] = (f"LLM override -> '{pv}' from "
                                         f"{pmeta.get('source_file','?')} (precedence default was "
-                                        f"'{chosen}'){f': {reason}' if reason else ''}")
+                                        f"'{chosen}'){_tag}"
+                                        f"{f': {reason}' if reason else ''}")
                 else:
-                    # the pick failed its plausibility gate - precedence stands, noted
-                    conflicts[field] = (f"LLM pick '{pv}' rejected (failed {field} "
-                                        f"plausibility gate); kept precedence '{chosen}'"
-                                        + (f". {conflicts.get(field, '')}" if conflicts.get(field) else ""))
+                    # B3: the pick failed a REAL gate. Keep the default only if the default passes
+                    # that same gate. The predecessor always reinstated the default, so the gate
+                    # could protect it but never catch it - if neither value is plausible the honest
+                    # outcome is a struck field, not an unverified one.
+                    if _pick_gate_verdict(field, chosen, rent_unit) == "pass":
+                        conflicts[field] = (
+                            f"LLM pick '{pv}' rejected: it fails the {field} plausibility gate. "
+                            f"Kept the precedence default '{chosen}', which passes that same gate."
+                            + (f" {conflicts.get(field, '')}" if conflicts.get(field) else ""))
+                    else:
+                        out[field] = "tbd"
+                        conflicts[field] = (
+                            f"BOTH values rejected for {field}: the LLM pick '{pv}' and the "
+                            f"precedence default '{chosen}' each fail the {field} plausibility "
+                            f"gate, so the field is struck to tbd rather than shipping an "
+                            f"unverified value. Confirm the real value with the agent.")
+        # B3: gate the PRECEDENCE WINNER as well. The gate used to run ONLY on an LLM override, so
+        # it could protect the default but never catch it - which is how an impossible BREEAM 'A+'
+        # shipped from a single source, with no conflict and no override involved at all. Only
+        # fields with an explicit gate are affected ("none" is a no-op), and an already-unknown
+        # value is left alone so this cannot clobber the notes written above.
+        if field in out and not N.looks_unknown(out[field]) \
+                and _pick_gate_verdict(field, out[field], rent_unit) == "fail":
+            _bad = out[field]
+            out[field] = "tbd"
+            _src = (prov.get(field) or {}).get("source_file") or "?"
+            conflicts[field] = (
+                f"'{_bad}' from {_src} fails the {field} plausibility gate, so the field is "
+                f"struck to tbd rather than shipping an implausible value. Confirm the real value "
+                f"with the agent."
+                + (f" {conflicts[field]}" if conflicts.get(field) else ""))
+    # SOURCE-INTERNAL disagreements. Everything above detects a conflict BETWEEN records, so a
+    # source that contradicts ITSELF was invisible to the whole conflict machinery: one brochure
+    # page whose schedule totals 180 docks while its own spec block says 170, another whose
+    # schedule totals 50,843 m2 under a headline of 53,564 m2. The extractor SAW both figures and
+    # could only mention the loser in prose inside its prov locator, so conflict_note stayed
+    # empty, meta.conflicts never carried it, and the Gaps Report told the broker there was
+    # nothing to settle. An extractor may now declare `__meta.source_conflicts = {field: note}`
+    # and it lands in the same channel as every other conflict: the ledger's conflict_note and
+    # the Gaps Report's "Source conflicts" section.
+    # A cross-source note WINS the slot (it explains which record was discarded, which the broker
+    # needs first) and the source-internal one is appended after it, so nothing is lost either way.
+    # The note is printed VERBATIM with only its file appended - no prefix is imposed. The same
+    # channel has to carry two shapes honestly: "the schedule says 180 docks, the spec block says
+    # 170" and "the deck quotes a rent RANGE of 3.50-3.75 per month, the card ships the low end" -
+    # and a hardcoded "disagrees with itself" would misdescribe the second. The extractor writes a
+    # complete sentence; the pipeline decides only WHERE it appears.
+    for r in cluster:
+        for field, note in ((r.get("__meta") or {}).get("source_conflicts") or {}).items():
+            note = str(note).strip()
+            if not note or field not in out:
+                continue
+            src = ((r.get("__meta") or {}).get("source_file")) or "?"
+            line = f"{note} [{src}]"
+            conflicts[field] = f"{conflicts[field]} {line}" if conflicts.get(field) else line
     return out, prov, conflicts
 
 
@@ -381,20 +1276,19 @@ _SRC_RESOLVE: dict[str, Path | None] = {}
 
 def _resolve_source(source_dir: Path, name: str) -> Path | None:
     """A record's source_file is a bare filename, but inputs may live in subfolders
-    (intake scans recursively) - resolve directly, then by recursive name search
-    (memoised; name-equality walk, not rglob, so glob metacharacters in client
-    filenames cannot break it). Without this, a subfolder brochure's hero image
-    silently degraded to the placeholder."""
+    (intake scans recursively) - resolve directly, then by recursive name search.
+    Memoised here; the SEARCH lives in _common.resolve_by_name so merge,
+    vision_validate and extract_pdf cannot disagree about which file a name means.
+    Without this, a subfolder brochure's hero image silently degraded to the placeholder."""
     if not name:
         return None
-    if name in _SRC_RESOLVE:
-        return _SRC_RESOLVE[name]
-    cand = source_dir / name
-    if not cand.is_file():
-        cand = next((p for p in source_dir.rglob("*") if p.is_file() and p.name == name), None) \
-            if source_dir.exists() else None
-    _SRC_RESOLVE[name] = cand if (cand and cand.is_file()) else None
-    return _SRC_RESOLVE[name]
+    # keyed on (dir, name): the memo used to key on the NAME alone, so a second source_dir
+    # in the same process was served the first one's hit (B13)
+    key = (str(source_dir), str(name))
+    if key in _SRC_RESOLVE:
+        return _SRC_RESOLVE[key]
+    _SRC_RESOLVE[key] = C.resolve_by_name(source_dir, name)
+    return _SRC_RESOLVE[key]
 
 
 def _meta_image_pages(meta: dict) -> list[int]:
@@ -516,11 +1410,71 @@ def plan_offlimits_pages(clusters: list[list[dict]], source_dir: Path) -> list[d
     return out
 
 
+def _plan_reject_norm(source_file, page_no=None) -> tuple[str, str]:
+    """The two ack forms a plan rejection may take, normalised: a bare '<file>' (reject
+    EVERY plan from that file) and '<file>#<1-based page>' (reject just that page).
+
+    Keyed on (file, page) rather than on a property/cluster key ON PURPOSE: whether a page
+    IS a site plan is a fact about the PAGE, so the answer stays valid when clustering,
+    ids or areas change. A cluster-keyed ack would be orphaned by the next data edit -
+    the same defect that orphans conflict_id (BACKLOG.md item B09)."""
+    nm = Path(str(source_file or "")).name.strip().lower()
+    if isinstance(page_no, int) and not isinstance(page_no, bool) and page_no >= 0:
+        return nm, f"{nm}#{page_no + 1}"
+    return nm, nm
+
+
+def _plan_is_rejected(rejected, source_file, page_no=None) -> bool:
+    """True when the visual-QA reviewer rejected this (file, page) as a site plan."""
+    if not rejected:
+        return False
+    bare, keyed = _plan_reject_norm(source_file, page_no)
+    return bare in rejected or keyed in rejected
+
+
+def load_plan_rejected(path) -> set:
+    """Read `plan_rejected` out of the visual-QA ack file into a normalised key set.
+
+    Accepts '<file>', '<file>#<1-based page>', or {"source_file": ..., "page": <1-based>}.
+    Best-effort like every other decision file: a missing/corrupt ack NEVER blocks a merge,
+    it just means nothing is rejected."""
+    out: set = set()
+    try:
+        p = Path(path)
+        if not p.exists():
+            return out
+        loaded = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return out
+    if not isinstance(loaded, dict):
+        return out
+    for entry in (loaded.get("plan_rejected") or []):
+        try:
+            if isinstance(entry, dict):
+                nm = Path(str(entry.get("source_file") or "")).name.strip().lower()
+                pg = entry.get("page")
+                if not nm:
+                    continue
+                # the ack states a 1-BASED page (what the reviewer and the ledger see)
+                out.add(f"{nm}#{int(pg)}" if isinstance(pg, (int, float)) else nm)
+            elif isinstance(entry, str) and entry.strip():
+                s = entry.strip().lower()
+                if "#" in s:
+                    f, _, pg = s.rpartition("#")
+                    out.add(f"{Path(f).name.strip()}#{pg.strip()}")
+                else:
+                    out.add(Path(s).name.strip())
+        except Exception:
+            continue
+    return out
+
+
 def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
                  image_cache: Path | None = None,
                  foreign_pages: dict[str, set] | None = None,
                  plan_offlimits: dict[str, set] | None = None,
-                 plan_near_miss: list | None = None
+                 plan_near_miss: list | None = None,
+                 plan_rejected: set | None = None
                  ) -> tuple[str, str | None, dict | None, dict | None, list, list]:
     """(photo_uri, plan_uri, photo_rec, plan_rec, tried_pages, gallery) for a merged property.
 
@@ -543,8 +1497,15 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
     if embedded:
         embedded.sort(key=lambda r: IMG_RANK.get(_st(r), 9))
         photo, photo_rec = embedded[0]["photo"], embedded[0]
+    # A REJECTED plan never binds, in ANY tier (the reviewer's judgement is durable across
+    # rebuilds). Guarding all four tiers matters: clearing p.plan in canonical only survived
+    # while merge happened to resume-skip, so the next extract edit re-bound the same wrong
+    # image - observed re-binding three times in one session.
     bound_plans = [r for r in cluster
-                   if isinstance(r.get("plan"), str) and r["plan"].startswith("data:image/")]
+                   if isinstance(r.get("plan"), str) and r["plan"].startswith("data:image/")
+                   and not _plan_is_rejected(plan_rejected,
+                                             r.get("__meta", {}).get("source_file"),
+                                             r.get("__meta", {}).get("page_no"))]
     if bound_plans:
         bound_plans.sort(key=lambda r: IMG_RANK.get(_st(r), 9))  # source-quality order, like the hero
         plan, plan_rec = bound_plans[0]["plan"], bound_plans[0]
@@ -574,7 +1535,8 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
             pref = meta.get("planRef")
             if photo is None and isinstance(href, int):
                 try:
-                    h = IMG.embedded_by_index(src, page_no, href, budget_kb)
+                    h = IMG.embedded_by_index(src, page_no, href, budget_kb,
+                                              cache_dir=image_cache)
                 except Exception:
                     h = None
                 if h:
@@ -582,9 +1544,11 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
                     # stash the locator so the caller's prov['photo'] reflects the LLM pick
                     meta.setdefault("prov", {})["photo"] = \
                         f"page {page_no + 1} (hero chosen by interpretation)"
-            if plan is None and isinstance(pref, int):
+            if (plan is None and isinstance(pref, int)
+                    and not _plan_is_rejected(plan_rejected, src.name, page_no)):
                 try:
-                    pp = IMG.embedded_by_index(src, page_no, pref, budget_kb)
+                    pp = IMG.embedded_by_index(src, page_no, pref, budget_kb,
+                                               cache_dir=image_cache)
                 except Exception:
                     pp = None
                 if pp:
@@ -605,7 +1569,8 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
             # pages), so it uses the BROAD plan_offlimits set, not the narrow foreign_pages.
             _plan_off = (plan_offlimits or {}).get(str(src), set())
             if (plan is None and isinstance(ppage, int) and not isinstance(ppage, bool)
-                    and ppage >= 0 and ppage not in _plan_off):
+                    and ppage >= 0 and ppage not in _plan_off
+                    and not _plan_is_rejected(plan_rejected, src.name, ppage)):
                 try:
                     rp = IMG.page_render_plan(src, ppage, budget_kb, cache_dir=image_cache)
                 except Exception:
@@ -631,7 +1596,11 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
                     continue
                 if photo is None and h:
                     photo, photo_rec = h, r
-                if plan is None and p:
+                # Tier 5 (the deterministic classifier) is the tier that bound an INTERIOR
+                # PHOTO as a site plan on a live run. The rejection is honoured here too;
+                # the PHOTO is deliberately never affected - only the plan slot.
+                if (plan is None and p
+                        and not _plan_is_rejected(plan_rejected, src.name, page_no)):
                     plan, plan_rec = p, r
     if photo is None:
         photo, photo_rec = IMG.placeholder(), None
@@ -705,10 +1674,31 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
     # balanced white fraction, never a photo/map/blank). Plan slot ONLY (never the hero). Runs
     # only when the plan slot is still empty; a no-plan property keeps an honest None (today's
     # behaviour). Cached per (source, page, budget) -> byte-deterministic resume.
+    #
+    # WHY THIS SUBTRACTS ONLY foreign_pages, AND NOT plan_offlimits - the asymmetry with Tier 3
+    # is deliberate and closed, not an oversight. It was filed as a leak (B40) and is not one.
+    # Both sets are projections of the SAME `_page_allowed` rule over the same ownership tuple
+    # and differ only in DOMAIN: this loop iterates the cluster's OWN claimed pages, so
+    # subtracting foreign_pages already leaves exactly the pages that SATISFY _page_allowed,
+    # while plan_offlimits contains only pages that FAIL it. The two are therefore disjoint
+    # here by construction and Tier 5 cannot bind a neighbour's page. Tier 3 needs the broader
+    # set because an LLM plan_page HINT may name ANY page, not just this cluster's own.
+    # Adding `allowed -= plan_offlimits` here is a provable no-op - and worse than useless: a
+    # guard that can never fire implies the sets differ in that direction, which is how B40 got
+    # filed in the first place.
     if plan is None:
         _nm_acc: list = []  # near-miss pages (a plan signal that a precision guard rejected)
         for src_str, pgs in sorted(pages_by_src.items()):
             allowed = pgs - (foreign_pages or {}).get(src_str, set())
+            # A page the visual-QA reviewer REJECTED as a site plan must not be re-bound here
+            # either. This was the one plan path of five with no ack check - and it is the tier
+            # the incident report blames for binding an interior warehouse photo into the Site
+            # Plan slot, so "reject it" failed to stick in exactly the place it was needed.
+            # Filtering `allowed` rather than testing the result means the scan moves on to the
+            # next-best page instead of giving up on the deck. (B04)
+            if plan_rejected:
+                allowed = {p for p in allowed
+                           if not _plan_is_rejected(plan_rejected, Path(src_str).name, p)}
             if not allowed:
                 continue
             _nm: list = []
@@ -748,6 +1738,7 @@ def prewarm_images(all_records, source_dir, image_cache, budget_kb,
     import os
     import time
     from concurrent.futures import ProcessPoolExecutor, as_completed
+    from concurrent.futures import TimeoutError as _FTimeout
     if image_cache is None:
         return (0, 0)
     cache_str = str(image_cache)
@@ -819,19 +1810,50 @@ def prewarm_images(all_records, source_dir, image_cache, budget_kb,
                 IMG._prewarm_unit(u)
             return
         pool_ok = True
+        # THE BUDGET MUST BOUND WALL TIME. Two leaks made `seconds` advisory only:
+        #   (1) as_completed(futs) with NO timeout only yields when a future COMPLETES, so the
+        #       deadline below was never TESTED while every in-flight unit was slow; and
+        #   (2) `break` left the `with` block, whose __exit__ calls shutdown(wait=True) and
+        #       JOINS every still-running worker (the wait=False/cancel_futures call only ever
+        #       cancelled units that had not started).
+        # Measured with the old idiom: a 2.0s budget took 12.2s. Worst case was far uglier - a
+        # `slidehero` unit shells out to soffice with timeout=180 and no cross-worker locking, so
+        # N workers each convert the SAME pptx; the shell cap then killed the run before merge
+        # was ever reached, and the converted PDF only lands on success, so the next round
+        # started from zero. Now: an explicit try/finally that NEVER joins, plus a best-effort
+        # terminate so a runaway converter cannot hold the process at interpreter exit either.
+        ex = None
         try:
-            with ProcessPoolExecutor(max_workers=workers) as ex:
-                futs = [ex.submit(IMG._prewarm_unit, u) for u in todo]
-                for f in as_completed(futs):
+            ex = ProcessPoolExecutor(max_workers=workers)
+            futs = [ex.submit(IMG._prewarm_unit, u) for u in todo]
+            try:
+                for f in as_completed(futs, timeout=max(0.1, deadline - time.monotonic())):
                     try:
                         f.result()
                     except Exception:
                         pool_ok = False  # a broken pool (restricted spawn/fork) -> serial-fill
                     if time.monotonic() > deadline:
-                        ex.shutdown(wait=False, cancel_futures=True)
                         break
+            except _FTimeout:
+                pass  # budget spent with units still in flight - exactly what the bound is for
         except Exception:
             pool_ok = False
+        finally:
+            if ex is not None:
+                # STOP WAITING, but do NOT kill and do NOT join.
+                #   * `wait=False, cancel_futures=True` cancels units that have NOT started and
+                #     returns control immediately - that is what bounds the parent's wall time.
+                #   * We deliberately do NOT terminate the in-flight workers. Prewarm is a pure
+                #     accelerator whose units each write their OWN atomic cache file, so a unit
+                #     allowed to finish BANKS work that merge would otherwise redo serially inside
+                #     its own smaller window. Terminating them threw that work away, which made
+                #     merge slower, made it miss the shell cap, and turned every miss into another
+                #     kill/resume round - i.e. MORE bash, the opposite of the intent.
+                #   * We also do not JOIN (the original bug): the parent proceeds to merge now.
+                try:
+                    ex.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
         if not pool_ok:              # no usable process pool -> finish serially in-process
             _prebatch_geometry(todo)  # #20: one deck-wide geometry open, not one per page
             for u in todo:
@@ -861,7 +1883,21 @@ def canonicalize(p: dict) -> dict:
     # £/sq ft/yr (rentUnit), never converted to €/m² (FX would be invention).
     val = p.get("warehouseRentVal")
     if isinstance(val, (int, float)):
-        p["warehouseRent"] = N.rent_display(val, p.get("rentUnit"))
+        # Recover the unit from the EXISTING display string when `rentUnit` is absent. An
+        # agent-written "60 EUR/m2/año" states the currency and the basis - just not in the
+        # field the renderer reads - and since rent_display no longer invents a default
+        # (B06), regenerating straight from a missing rentUnit would DISCARD a unit the
+        # source actually gave and render "60 (unit not stated)". The unit is only unknown
+        # when neither field carries it. This mirrors the else-branch below, which has
+        # always parsed the display text.
+        _u = p.get("rentUnit")
+        if not _u:
+            _d = p.get("warehouseRent")
+            if isinstance(_d, str) and _d.strip() and not N.looks_unknown(_d):
+                _u = N.rent_unit_of_text(_d)
+                if _u:
+                    p["rentUnit"] = _u
+        p["warehouseRent"] = N.rent_display(val, _u)
     else:
         disp = p.get("warehouseRent")
         if isinstance(disp, str) and disp.strip() and not N.looks_unknown(disp):
@@ -916,21 +1952,28 @@ def load_hero(project_yaml: Path | None, properties: list[dict], default_date: s
     client = (cfg.get("client") or {}).get("name") or "Client"
     market = cfg.get("market") or {}
     out = cfg.get("output") or {}
-    eyebrow = market.get("eyebrow") or "Property Shortlist"
     region_label = market.get("region_label") or ""
     # compiled date: project.yaml wins; else the inputs' date (deterministic per
     # input set); wall-clock today only as the last resort
     compiled = out.get("compiled_date") or default_date or _dt.date.today().isoformat()
-    n = len(properties)
+    # HERO COPY: carry ONLY what the broker authored. The eyebrow / headline / lede
+    # DEFAULTS are no longer English literals here - they live in i18n.py as
+    # hero_eyebrow / hero_title_html / hero_lede_fmt and are applied by
+    # build_dashboard._hero_copy in the dashboard's own language. Two consequences,
+    # both deliberate:
+    #   * a BLANK value stays blank through merge and picks up the LOCALISED default at
+    #     render time, so the largest text on the page is no longer English-only (it was
+    #     English in all 12 supported languages);
+    #   * a NON-BLANK value ships VERBATIM. The old composition
+    #     (`eyebrow if "shortlist" in eyebrow.lower() else f"Property Shortlist · {eyebrow}"`)
+    #     is GONE: that test was an ASCII substring probe, so a non-Latin eyebrow could
+    #     never satisfy it and was force-prefixed with English. A broker who wants the
+    #     prefix now writes the whole eyebrow.
     hero = {
         "topbar_meta": (f"{region_label} · {compiled}".strip(" ·")) or compiled,
-        "eyebrow": eyebrow if "shortlist" in eyebrow.lower() else f"Property Shortlist · {eyebrow}",
-        "title_html": market.get("title_html") or "logistics <em>options</em> for your next facility.",
-        "lede": market.get("lede") or (
-            f"{n} logistics development opportunities. Switch between the map and grid, "
-            f"filter by country, city, developer or scale, and compare properties "
-            f"side-by-side with drive-time estimates to the main ports, rail "
-            f"terminals, airports and border crossings."),
+        "eyebrow": market.get("eyebrow") or "",
+        "title_html": market.get("title_html") or "",
+        "lede": market.get("lede") or "",
         "footer_copyright": f"© {compiled[:4]} CBRE · {client} shortlist compiled {compiled}",
     }
     return hero
@@ -1035,12 +2078,35 @@ def main() -> None:
                     "field's plausibility gate (rent band / area > 0 / coord bounds) - a failing or "
                     "absent pick keeps precedence. Absent -> precedence is the offline fallback "
                     "(byte-identical to today).")
+    ap.add_argument("--plan-rejected", dest="plan_rejected", default="",
+                    help="visual-QA ack file (work/placeholder_audit_ack.json). Its "
+                         "`plan_rejected` list names site plans the reviewer rejected, as "
+                         "'<file>#<1-based page>' (or a bare '<file>', or "
+                         "{source_file, page}); merge then binds NO plan from that page in "
+                         "any tier and emits no plan ledger row for it.")
     ap.add_argument("--match-conflicts", help="JSON [str, ...] of ADVISORY grey-match disagreement "
                     "lines (the blind match verifier disagreed with the matching pass; run.py "
                     "computes them in pure Python). Folded verbatim into meta.conflicts -> the Gaps "
                     "'Source conflicts' section. Does NOT change clustering (the matching pass's "
                     "verdict already drove --match-decisions). Absent / empty -> no extra line "
                     "(byte-identical to today).")
+    ap.add_argument("--answers", default="", help="the WORK DIR holding clarify_state.json - "
+                    "answers to the clarification questions run.py asked (exit 13). A unit "
+                    "confirmed by the broker is a SOURCE STATEMENT and fills areaUnit/rentUnit "
+                    "with provenance; unlike --overrides it is allowed to, because it was asked "
+                    "for and is attributed, not a blind correction. (B38)")
+    ap.add_argument("--overrides", default="", help="JSON list of DURABLE manual corrections "
+                    "(work/overrides.json). Applied to the pre-merge records AFTER extraction and "
+                    "BEFORE clustering on every run, so a correction SURVIVES re-extraction "
+                    "instead of being discarded with the derived work/extract records. Each entry "
+                    "targets an EXISTING record by (source_file [, sheet+row | page_no]) and sets "
+                    "an EXISTING canonical field: it can never create a property, a record or a "
+                    "new field, and areaUnit/rentUnit are DENIED. Every applied correction emits "
+                    "an explicit `override` ledger row (source_type='override') and lands in "
+                    "meta.overrides -> the Gaps Report; an entry matching ZERO records, or "
+                    "ambiguously MANY, applies NOTHING and is reported as stale/ambiguous on "
+                    "stdout, in <work>/overrides_report.json and in the Gaps Report. "
+                    "Absent / empty / malformed -> byte-identical to today.")
     args = ap.parse_args()
 
     all_records = []
@@ -1049,6 +2115,39 @@ def main() -> None:
 
     for _r in all_records:            # v22 Phase 1: quarantine off-spec structures pre-merge
         _normalise_offspec(_r)
+        _route_certifications(_r)     # B5: an EPC never ships as a BREEAM grade
+
+    # DURABLE MANUAL CORRECTIONS (P1-4). Applied HERE - after extraction + _normalise_offspec and
+    # BEFORE compute_file_quality / dominant_units / match.dedupe - because all three consume the
+    # corrected values: dedupe is what makes a corrected city or park RE-JOIN the right cluster
+    # (the live 12 -> 13 symptom), dominant_units is what counts a corrected figure, and
+    # compute_file_quality is what ranks the source. Applying merely "before dedupe" would miss
+    # the latter two.
+    # B7: hand the guard the field names the records actually carry, so an override can reach any
+    # field this dataset genuinely has - not only the ones a schema anticipated.
+    _rec_fields = {k for r in all_records if isinstance(r, dict) for k in r if k != "__meta"}
+    OVERRIDES, OV_INVALID = load_overrides(getattr(args, "overrides", "") or "",
+                                           extra_fields=_rec_fields)
+    OV_REPORT = apply_overrides(all_records, OVERRIDES)
+    OV_REPORT["invalid"] = OV_INVALID
+    _report_overrides(OV_REPORT, Path(args.out).resolve().parent / "overrides_report.json")
+
+    # ANSWERED CLARIFICATIONS (B38). Same position and the same reasoning as the overrides
+    # above - dominant_units and dedupe both consume a unit, so an answer has to land before
+    # them. Distinct channel deliberately: `overrides.json` may never set areaUnit/rentUnit
+    # (a blind correction to the record that tips the vote silently relabels the dataset),
+    # whereas this is an ANSWER to a question the pipeline asked about a named source, carrying
+    # its own provenance. Asked, answered, attributed - the opposite of silent.
+    if getattr(args, "answers", ""):
+        try:
+            import clarify as _CQ
+            _n_ans = _CQ.apply_answers(
+                all_records, (_CQ.load_state(Path(args.answers)).get("answers") or {}))
+            if _n_ans:
+                print(f"  ({_n_ans} clarification answer(s) applied - each has a `prov` entry "
+                      f"naming it as a confirmed unit, not a source reading)")
+        except Exception as e:
+            print(f"  (clarification answers not applied: {e})", file=sys.stderr)
 
     compute_file_quality(all_records)  # demote mostly-poor brochures in precedence
     area_unit, rent_unit = dominant_units(all_records)
@@ -1067,6 +2166,24 @@ def main() -> None:
     if getattr(args, "source_dir", None):
         XP.backfill_link_coords(all_records, Path(args.source_dir))
     clusters = match.dedupe(all_records, MATCH_DECISIONS or None)
+    # SOURCE AUTHORITY (B47). The broker was asked - once clustering had SETTLED - which source
+    # decides what BELONGS on the longlist, and their answer is applied HERE, on the settled
+    # clusters, so an option evidenced only by the non-guiding source is excluded rather than
+    # shipped as a phantom extra. Unanswered / 'union' keeps every cluster, so a run without
+    # an answer is byte-identical to before. Everything excluded is carried into meta and
+    # named in the Gaps Report - this must never be a silent drop.
+    EXCLUDED = []
+    if getattr(args, "answers", ""):
+        try:
+            import clarify as _CQ
+            _auth = _CQ.settled_authority(
+                _CQ.load_state(Path(args.answers)).get("answers") or {})
+            clusters, EXCLUDED = apply_source_authority(clusters, _auth)
+            if EXCLUDED:
+                print(f"  ({len(EXCLUDED)} option(s) excluded - you set the {_auth} as the "
+                      f"guiding source; each is named in the Gaps Report)")
+        except Exception as e:
+            print(f"  (source authority not applied: {e})", file=sys.stderr)
     FIELD_DECISIONS = {}  # conflict_id -> {pick, reason} (cross-source value-conflict sub-agent)
     if args.field_decisions and Path(args.field_decisions).exists():
         try:
@@ -1075,6 +2192,13 @@ def main() -> None:
         except Exception:
             FIELD_DECISIONS = {}  # best-effort, exactly like MATCH_DECISIONS - a bad file -> precedence
     source_dir = Path(args.source_dir)
+    # Site plans the visual-QA reviewer REJECTED (`plan_rejected` in the ack file). Loaded
+    # here so every rebuild honours it - the remedy "clear p.plan in canonical.json" only
+    # held while merge resume-skipped, which made it non-terminating.
+    PLAN_REJECTED = load_plan_rejected(args.plan_rejected) if args.plan_rejected else set()
+    if PLAN_REJECTED:
+        print(f"[merge] site plan(s) rejected at visual QA, not binding: "
+              f"{sorted(PLAN_REJECTED)}")
     PHOTO_MAP = {}  # match_key -> brochure relpath (confident photo matches from the sub-agent)
     if args.photo_map and Path(args.photo_map).exists():
         try:
@@ -1102,7 +2226,11 @@ def main() -> None:
         return v is None or str(v).strip().lower() in {"tbd", "—", "", "none", "??"}
 
     properties, ledger_rows, all_conflicts = [], [], []
+    all_variants: list = []   # I10: meta.notationVariants - same value, stated differently
+    override_rows: list = []   # P1-4: explicit `override` ledger rows, appended after the loop
+                               # so the property rows keep their existing order and bytes
     meta_offspec = []   # v22 Phase 1: off-spec keys quarantined pre-merge (-> Gaps Report)
+    meta_newfields = []  # B7: brand-new scalar keys KEPT and auto-shown (-> Gaps Report)
     placeholder_audit: dict = {}  # prop id -> discarded image candidates (audited, never silent)
     regions_on = bool(((_load_yaml(args.project_yaml) or {}).get("enrichment") or {}).get("regions"))
     # UNIQUE-CLAIMANT GUARD: precompute, once over ALL clusters, the per-deck pages each
@@ -1114,8 +2242,15 @@ def main() -> None:
     # not just the cluster's own) - so an LLM plan_page can never bind a neighbour's plan.
     plan_offlimits_by_cluster = plan_offlimits_pages(clusters, source_dir)
     plan_near_miss_all: list = []  # per-property near-miss plan pages -> Gaps Report (light Fix 4)
+    unit_assumptions: list = []    # areas whose unit the SOURCE never stated -> Gaps Report
+    # B58: {property_id: [(field, raw value, unrecognised unit)]}. A figure the dataset cannot
+    # express is withdrawn rather than mislabelled, and its gap row must say THAT instead of
+    # claiming the source was silent - the false-absence claim both critical reviewers blocked on.
+    withheld_units: dict = {}
+    stated_totals: dict = {}       # P1-1: id -> the SOURCE's own stated total area (arithmetic gate)
     for i, cl in enumerate(clusters, start=1):
-        merged, prov, conflicts = merge_cluster(cl, FIELD_DECISIONS or None)
+        variants: dict = {}   # I10: same fact, different notation - reported, not adjudicated
+        merged, prov, conflicts = merge_cluster(cl, FIELD_DECISIONS or None, variants)
         merged["id"] = i
         merged = canonicalize(merged)
         # regionCode auto-derivation: the workforce block keys on regionCode, but no
@@ -1146,21 +2281,82 @@ def main() -> None:
         # record converts ARITHMETICALLY (prov-noted). Currency is never touched
         # (FX would be invention) - a lone €/m² rent in a £/sq ft dataset keeps
         # its own honest unit and simply sits out the hero rent range.
-        if merged.get("areaUnit") and merged["areaUnit"] != area_unit:
-            f = N.SQFT_PER_SQM if area_unit == "sq ft" else 1.0 / N.SQFT_PER_SQM
-            for fld in ("warehouseArea", "plotArea", "officeAreaVal"):
-                if isinstance(merged.get(fld), (int, float)):
-                    merged[fld] = round(merged[fld] * f)
-                    if fld in prov:
-                        prov[fld]["locator"] = (f"{prov[fld].get('locator', '')} "
-                                                f"(converted {merged['areaUnit']} -> {area_unit})").strip()
+        # PER-FIELD CONVERSION, EACH ON ITS OWN SUPPLIER'S FOOTING (B39).
+        #
+        # This used to branch on ONE merged `areaUnit` and apply it to all three fields. But
+        # every field resolves its own precedence contest, so `warehouseArea` can come from one
+        # record while `areaUnit` comes from another - and the number was then scaled by
+        # 10.7639 on a unit its own source never stated. Measured: 134,549 sq ft shipped as
+        # 1,448,272, with an EMPTY meta.unitAssumptions and no conflict note, i.e. more silent
+        # than the unit-silent case below that this machinery was built for.
+        #
+        # Both remedies the backlog proposed were measured and are WRONG - each relocates the
+        # identical error onto plotArea (a 40,000 sq m plot shipping as 40,000 "sq ft" against a
+        # true 430,556): pinning the label to warehouseArea's supplier fixes one field by
+        # mislabelling the others, and refusing to merge a mixed-unit cluster does the same AND
+        # destroys the legitimate merge B10 exists to enable. The ordering was never the
+        # problem; applying ONE label to values from DIFFERENT records was.
+        #
+        # A field whose own supplier stated NO unit is still never converted and still records
+        # the assumption - inferring it would be the invention the skill forbids.
+        _silent_any = False
+        _withheld: list = []   # B58: (field, raw value, its unrecognised unit)
+        for fld in ("warehouseArea", "plotArea", "officeAreaVal"):
+            if not isinstance(merged.get(fld), (int, float)):
+                continue
+            _u = (prov.get(fld) or {}).get("areaUnitOfSource")
+            if not _u:
+                _silent_any = True
+                if fld in prov:
+                    prov[fld]["locator"] = (f"{prov[fld].get('locator', '')} "
+                                            f"(unit not stated in source; {area_unit} assumed)").strip()
+            elif _u != area_unit:
+                # B58: general over sq ft / sq m / acres / ha, not just the metric-imperial pair.
+                # An UNRECOGNISED unit yields None: the figure is then neither converted nor kept
+                # under a unit it is not in - it is WITHDRAWN and disclosed in its gap row,
+                # because shipping it would mislabel it and dropping it silently would repeat the
+                # false "absent in all sources" this change exists to fix.
+                f = N.area_factor(_u, area_unit)
+                if f is None:
+                    _withheld.append((fld, merged[fld], _u))
+                    merged.pop(fld, None)
+                    prov.pop(fld, None)
+                    continue
+                _raw = merged[fld]
+                merged[fld] = round(merged[fld] * f)
+                if fld in prov:
+                    prov[fld]["locator"] = (
+                        f"{prov[fld].get('locator', '')} "
+                        f"(stated as {_raw:g} {_u}; converted at {f:g} "
+                        f"{area_unit} per {_u})").strip()
+        if _withheld:
+            withheld_units[i] = list(_withheld)
+        if _silent_any:
+            # ANY area field with a silent supplier flags the property, so stated_total_for's
+            # refusal stays exactly as conservative as before.
+            merged["areaUnitAssumed"] = True
+            unit_assumptions.append({
+                "id": i,   # join by ID, never by park name (B38)
+                "property": merged.get("park") or merged.get("city") or f"#{i}",
+                "field": "areaUnit", "assumed": area_unit,
+                "why": ("the source stated a numeric area but no unit; the dataset's dominant "
+                        "unit was assumed and the figure was NOT converted"),
+            })
         merged["areaUnit"] = area_unit
+        # P1-1: lift the source's own stated total (if any) into meta, NOT onto the property -
+        # a new top-level scalar would render in the v21 modal on the client's card. Placed AFTER
+        # the unit alignment above so it is compared against fields in the same unit, and after
+        # `areaUnitAssumed` is set so the helper can refuse an un-converted record.
+        _st = stated_total_for(cl, merged, area_unit)
+        if _st:
+            stated_totals[str(i)] = _st
         _cluster_nm: list = []
         merged["photo"], plan_uri, photo_rec, plan_rec, tried_pages, gallery = attach_media(
             cl, source_dir, args.image_budget_kb, image_cache=image_cache,
             foreign_pages=foreign_by_cluster[i - 1],
             plan_offlimits=plan_offlimits_by_cluster[i - 1],
-            plan_near_miss=_cluster_nm)
+            plan_near_miss=_cluster_nm,
+            plan_rejected=PLAN_REJECTED)
         if not plan_uri and _cluster_nm:  # a page LOOKED plan-ish but no plan bound -> surface it
             plan_near_miss_all.append({"property": merged.get("park") or merged.get("city") or "?",
                                        "city": merged.get("city", ""), "pages": _cluster_nm})
@@ -1260,6 +2456,10 @@ def main() -> None:
                             "locator": (plan_src.get("prov", {}).get("plan")
                                         or (f"page {pno + 1} (site plan)" if isinstance(pno, int)
                                             else plan_src.get("locator_base", "")))}
+        # THE CHOKE POINT: internal working flags must never reach a client card (B05).
+        # This is the one place a property is appended, so it is the one place the sweep
+        # has to happen - and it must stay immediately above the pop that drops __meta.
+        strip_internal_flags(merged)
         merged.pop("__meta", None)
         properties.append(merged)
         # v22 Phase 1: audit every quarantined off-spec key (never silently dropped)
@@ -1274,6 +2474,45 @@ def main() -> None:
                     "verified": "",
                 })
                 meta_offspec.append({"property_id": i, "key": _k, "value": _short(_v)})
+            # B7: brand-new SCALAR keys are KEPT and auto-shown, so they must be DISCLOSED. Without
+            # this, a non-schema field (live: `postcode` on half the properties) shipped while the
+            # Gaps Report's off-spec section read "None." - that section only ever covered
+            # quarantined structures.
+            for _k in (_r.get("__meta", {}).get("new_fields") or []):
+                if _k in merged:
+                    meta_newfields.append({"property_id": i, "key": _k,
+                                           "source_file": _r.get("__meta", {}).get("source_file", "")})
+        # P1-4: one EXPLICIT correction row per applied override, emitted HERE and not at load
+        # time because property_id only exists after clustering. This is the auditable artefact:
+        # `grep ,override, source_ledger.csv` lists every manual touch in one command, and the
+        # Source Ledger xlsx shows it in the record_type column, so a correction is DISCLOSED as a
+        # correction instead of being laundered into what looks like an extracted row. (The field's
+        # own property row is already correct for free - the applier rewrote the record's prov
+        # string, so its locator ends with "(manual override ...)".)
+        for _r in cl:
+            _rm = _r.get("__meta") or {}
+            for _oid in (_rm.get("override_ids") or []):
+                _oa = next((a for a in OV_REPORT.get("applied", []) if a["id"] == _oid), None)
+                if not _oa:
+                    continue
+                for _f, _new in _oa["set"].items():
+                    override_rows.append({
+                        "property_id": i, "record_type": "override", "field": _f,
+                        "value": _short(_new) or "tbd",
+                        "source_file": _oa["where"]["source_file"],
+                        "source_locator": (f"work/overrides.json#{_oa['id']} at {_oa['locator']}"
+                                           f" | was: {_short(_oa['old'].get(_f))} -> now: "
+                                           f"{_short(_new)} | why: {_oa['why']}"),
+                        # non-empty and != "gap": ledger.REQUIRED is satisfied by construction and
+                        # trace-coverage still counts the field as traced. An override can never
+                        # make a field untraceable, and never launders one into a gap-free field
+                        # without leaving this row behind.
+                        "source_type": "override", "extractor": "manual",
+                        "confidence": "manual",
+                        "conflict_note": ("manual correction applied post-extraction; "
+                                          "work/extract was NOT edited"),
+                        "verified": ("yes" if _oa.get("verified_by") else ""),
+                    })
         # ledger rows for every populated field (with conflict note where one occurred)
         for field, pr in prov.items():
             ledger_rows.append({
@@ -1300,11 +2539,21 @@ def main() -> None:
                     # ledger value, or the row fails ledger validate
                     "value": (str(val).strip() if val is not None and str(val).strip() else "tbd"),
                     "source_file": "(none)",
-                    "source_locator": "absent in all sources", "source_type": "gap",
+                    # B58: a gap row may NEVER claim a source is silent about a value the source
+                    # in fact states. When the figure was withdrawn because its unit is one this
+                    # dataset cannot express, say exactly that.
+                    "source_locator": next(
+                        (f"stated as {w[1]:g} {w[2]} in the source, in a unit this dataset "
+                         f"cannot express; not converted"
+                         for w in withheld_units.get(i, []) if w[0] == field),
+                        "absent in all sources"),
+                    "source_type": "gap",
                     "extractor": "", "confidence": "", "conflict_note": "", "verified": "no",
                 })
         for field, note in conflicts.items():
             all_conflicts.append(f"id {i} {field}: {note}")
+        for field, note in variants.items():
+            all_variants.append(f"id {i} {field}: {note}")
 
     # SEMANTIC VERIFIER (grey-match): fold the blind verifier's ADVISORY disagreement lines
     # into meta.conflicts so the Gaps 'Source conflicts' section surfaces them. These do NOT
@@ -1372,6 +2621,7 @@ def main() -> None:
                           default_date=generated_date),
         "sourceFiles": sorted({r.get("__meta", {}).get("source_file", "?") for r in all_records}),
         "conflicts": all_conflicts,
+        "notationVariants": all_variants,
         "placeholderAudit": placeholder_audit,
         # the dataset's unit convention (source units KEPT) - the builder formats
         # the hero KPI strip and its sub-labels from this
@@ -1383,8 +2633,34 @@ def main() -> None:
     }
     if meta_offspec:
         meta["offspec"] = meta_offspec
+    # B7: conditional, mirroring meta["offspec"] - a run with no new fields must be
+    # byte-identical to before this change.
+    if meta_newfields:
+        meta["newFields"] = meta_newfields
     if plan_near_miss_all:
         meta["planNearMiss"] = plan_near_miss_all
+    if unit_assumptions:  # an ASSUMED unit is an honest gap, never a silent stamp
+        meta["unitAssumptions"] = unit_assumptions
+    if stated_totals:  # P1-1: input to `gate_runner arithmetic`; absent when no source states one
+        meta["statedTotals"] = stated_totals
+    # B47: options EXCLUDED by the broker's source-authority answer. CONDITIONAL, exactly like
+    # meta["overrides"] above, so a run without an authority answer stays byte-identical. A
+    # property removed from a client's own longlist must be visible, so this rides into the
+    # Gaps Report rather than vanishing between two runs with different answers.
+    if EXCLUDED:
+        meta["excluded"] = EXCLUDED
+    # B54: the languages the interpretation agents declared. CONDITIONAL, like every other
+    # optional meta key above, so a run where nothing declares one stays byte-identical.
+    _src_langs = collect_source_languages(all_records)
+    if _src_langs:
+        meta["sourceLanguages"] = _src_langs
+    # P1-4: CONDITIONAL, mirroring meta["offspec"]/["unitAssumptions"] - an overrides-free run must
+    # stay byte-identical to today, which is what fixture_test/smoke_test guard.
+    if any(OV_REPORT.get(k) for k in ("applied", "stale", "ambiguous", "superseded", "invalid")):
+        meta["overrides"] = {k: OV_REPORT[k] for k in
+                             ("applied", "stale", "ambiguous", "superseded", "invalid")
+                             if OV_REPORT.get(k)}
+    ledger_rows += override_rows
     # an explicit BCP-47 locale (e.g. de-AT) overrides the language's default region
     if str(getattr(args, "locale", "") or "").strip():
         meta["locale"] = args.locale.strip()

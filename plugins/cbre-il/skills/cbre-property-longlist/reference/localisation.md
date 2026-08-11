@@ -12,17 +12,38 @@ sourced). The machinery lives in `helpers/i18n.py`; see also `reference/config.m
 `i18n.py` carries a `SUPPORTED` registry - the AUTHORITATIVE list of every base language the
 skill can present, each with a default BCP-47 locale and the accepted names/endonyms.
 
-- **Bundled (instant, 12):** `en` (the authoritative English baseline) + `de fr es it nl pl
-  pt cs sk hu ro`, each shipped as `assets/i18n/<code>.json`. These render with zero extra
-  round-trips; `is_bundled(code)` is true.
+- **Bundled (instant, 13):** `en` (the authoritative English baseline) + `de fr es it nl pl
+  pt cs sk hu ro` + `zh` (Simplified Chinese), each shipped as `assets/i18n/<code>.json`.
+  These render with zero extra round-trips; `is_bundled(code)` is true.
 - **Fallback-eligible (translated on demand):** the other SUPPORTED European Latin-script
   languages - currently Danish `da`, Swedish `sv`, Norwegian `nb`, Finnish `fi`, Icelandic
   `is`, Irish `ga`, Croatian `hr`, Slovenian `sl`, Estonian `et`, Latvian `lv`, Lithuanian
   `lt`, Maltese `mt`, Catalan `ca`, Galician `gl`, Luxembourgish `lb`. `is_supported` is
   true, `is_bundled` is false, so `needs_fallback` is true.
-- **Unsupported (non-Latin / nonsense):** anything that does not resolve (e.g. Greek,
-  Klingon, gibberish) -> `normalize_lang` returns `'en'` and the dashboard renders in
+- **Unsupported (nonsense / an unsupported script):** anything that does not resolve (e.g.
+  Greek, Klingon, gibberish) -> `normalize_lang` returns `'en'` and the dashboard renders in
   English. No request, no crash - English is the correct answer.
+
+### Script scope - why Chinese is in, and what a further non-Latin language costs
+The registry is European Latin-script **plus Simplified Chinese** (`zh`, bundled, locale
+`zh-CN`; accepted as "Chinese", "Mandarin", "zh", "zh-Hans", "中文", "简体中文"). Chinese was
+added because the chrome is a CLOSED string table (the exact EN key set, asserted by the
+i18n gate), so a non-Latin script costs nothing structurally. Four things had to hold, and they are what to re-check before adding
+another non-Latin language (Japanese, Korean, Arabic, Greek):
+1. `const UI` is injected as JSON, so the script is irrelevant to the template contract and
+   the build stays byte-deterministic.
+2. `_vkey`/`norm_key` fold via `str.isalnum()`, which is true for CJK - a regex like
+   `[^a-z0-9]` would have deleted the characters (the same trap that would delete `ł`/`ø`/`ß`).
+3. The G-i18n BCP-47 floor accepts `zh-CN` (and would accept a 4-letter script subtag such
+   as `zh-Hans`).
+4. **Fonts:** CJK glyphs are NOT in the CBRE font stack (Financier Display / Calibre), so
+   headings and labels render through the browser's per-glyph system fallback (Microsoft
+   YaHei, PingFang SC, Noto Sans SC). That is correct and legible but not typographically
+   identical to the Latin builds. The chrome is byte-frozen and version-pinned, so adding a
+   CJK font fallback is a TEMPLATE change (VERSION + `chrome_sha256` bump + eval updates),
+   deliberately NOT done for `zh`.
+Right-to-left scripts (Arabic, Hebrew) would additionally need layout direction, which the
+frozen chrome does not implement - that is a template project, not a table entry.
 
 `normalize_lang` resolves a SUPPORTED language (bundled OR fallback-eligible) to ITS OWN
 code (Danish/`da`/`da-DK` -> `da`); only a genuinely unknown value returns `'en'`.
@@ -41,7 +62,7 @@ Flow (mirrors the exit 3/9/10 request-manifest pattern):
    it writes a **request manifest** and **exits 11**.
    - Manifest: `work/i18n/<code>_request.json` =
      `{"code", "language", "locale", "en_sha", "instructions", "cache_path", "skip_path",
-     "strings": <the 175 EN chrome strings>}`.
+     "strings": <every EN chrome string - the full key set>}`.
    - The orchestrator dispatches an ISOLATED translation sub-agent: translate every value in
      `strings` to the language; keep the JSON KEYS, the `{area}`/`{unit}` placeholders, the
      `&amp;`/`&lt;`/`&gt;` entities, any leading glyph (the `●` bullet), and the invariants
@@ -70,7 +91,7 @@ Flow (mirrors the exit 3/9/10 request-manifest pattern):
 Confirms the rendered chrome reads as a fluent, correct, complete, in-language dashboard.
 
 - **Deterministic floor** (`gate_runner.py i18n`, in the post-build sequence + the eval
-  battery): `const UI` is the exact EN key set (175); no UI value carries an unfilled
+  battery): `const UI` is the exact EN key set (set equality, no count to rot); no UI value carries an unfilled
   `{{token}}`; `const LOCALE` is a well-formed BCP-47 tag whose primary subtag matches the
   resolved language; for a language EXPECTED to be localised (bundled, or `meta.ui_overrides`
   present) the UI differs from EN in >= 40% of non-invariant keys (the **silent-fallback

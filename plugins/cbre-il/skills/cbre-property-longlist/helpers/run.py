@@ -63,7 +63,8 @@ never misdiagnose):
       other records (a pure brochure run) this never fires - the vision path runs.
  10 = cross-source adjudication needed (TWO kinds, one round-trip): after the
       deterministic matcher has auto-merged the confident pairs and hard-BLOCKED the
-      impossible ones (developer disagreement / >15% size conflict), (a) some GREY-ZONE
+      impossible ones (a >15% size conflict; a developer disagreement is a GREY pair
+      the sub-agent adjudicates, never a hard block), (a) some GREY-ZONE
       cross-source MATCH pairs may remain (cross-source, not forbidden, not auto, but
       plausibly the same property - same city / within ~2 km / a shared distinctive park
       token / a borderline fuzzy key), AND (b) some genuine cross-source VALUE CONFLICTS
@@ -80,17 +81,37 @@ never misdiagnose):
       (the common case) this never fires; offline (no decisions files) the deterministic
       matcher + the fixed precedence are the fallbacks.
  11 = dashboard-language FALLBACK needed: the chosen language is a SUPPORTED European
-      Latin-script language that is NOT one of the bundled 12, and there is no valid
+      Latin-script language that is NOT one of the bundled 13, and there is no valid
       work-dir translation cache yet. The spine writes a request manifest
       work/i18n/<code>_request.json ({code, language, locale, en_sha, instructions,
-      strings: the 175 EN chrome strings}) and exits 11. Dispatch an ISOLATED translation
+      strings: every EN chrome string}) and exits 11. Dispatch an ISOLATED translation
       sub-agent: translate every value to <language>, keep the JSON keys + the
       {area}/{unit} placeholders + the &amp;/glyph/CBRE/OSRM/BREEAM/etc. invariants, add
       "_en_sha":"<en_sha>", save the flat {key:value} to work/i18n/<code>.json, then re-run
       the SAME command (the cache is baked into canonical.meta.ui_overrides by merge and
       reproduced byte-for-byte by render/validate-html). Blind-verify it as G-i18n before
       shipping. Decline with `type nul > work/i18n/<code>.SKIP` to fall back to English. An
-      UNSUPPORTED language (non-Latin / nonsense) never fires this - it renders English.
+      UNSUPPORTED language (an unsupported script such as Greek, or nonsense) never fires
+      this - it renders English. Simplified Chinese (zh) is BUNDLED, so it never fires here.
+ 12 = free-text DATA translation needed: property free-text (description/status/prose
+      attributes) does not yet match output.language. The spine writes
+      work/i18n/data_translate_request.json ({items: [{property_id, field, text}]}) and
+      exits 12. Dispatch an ISOLATED translation sub-agent over ONLY that request (PROSE
+      only - numbers, units, codes, dates and proper names stay verbatim), MERGE its
+      {text: translation} map into work/i18n/data_translations.<code>.json, then re-run
+      the SAME command (the deterministic bake writes only eligible fields; the Source
+      Ledger keeps the verbatim original). Blind-verify as G-lang. Decline by dropping
+      work/i18n/data_translate.SKIP. Cached + resume-safe: once baked it never re-fires.
+ 13 = CLARIFICATION needed - a source is genuinely ambiguous (a unit-silent area or
+      rent, a brochure-vs-tracker record-count mismatch). The spine writes
+      work/questions.json and exits 13. Route each question by asked_of: "agent" =
+      dispatch an ISOLATED sub-agent with the named source (never answer from the
+      orchestrator's own context); "broker" = put ALL broker questions to the user in
+      ONE plain-language message. Write work/answers.json as {"<id>": "<answer>"} (ids
+      verbatim; where options is given, one of those exact strings), then re-run. Every
+      question is asked ONCE: answer what is actually known, leave the rest, and the run
+      proceeds with the honest gap named in each question's if_unanswered - never invent
+      an answer to clear the list.
 
 Each stage runs IN-PROCESS: the helper modules are imported once and their
 main() is called directly, rather than spawning a fresh `python` subprocess per
@@ -114,6 +135,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import re
@@ -122,8 +144,64 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-QUIET = False  # set by --quiet: emit only plain-English step markers, swallow sub-output
+QUIET = True  # DEFAULT (B27); --verbose opts out. Quiet = plain-English step markers
+              # only, sub-output swallowed. The failure-safe default: a broker-facing
+              # run that forgets a flag stays clean, and the handoff instructions the
+              # orchestrator needs print regardless (see _say_orchestrator).
 RESUME = False  # set by --resume: skip a stage whose output is already current (gates/freeze never skipped)
+
+
+# B58: fields the pipeline ASSIGNS, so a reader must never be asked for them. Everything
+# else in _common.canonical_property_fields() is a reader-fillable field and ships in the
+# exit-3 manifest's `fields` list. `warehouseRentVal` deliberately STAYS on the reader list
+# (the contract requires the numeric annual rate); the other *Val twins are derived.
+_PIPELINE_ASSIGNED_FIELDS = frozenset({
+    "id", "photo", "plan", "gallery", "preBaked", "regionCode", "coordsApprox",
+    "officeAreaVal", "officeRentVal", "expansionParkVal",
+})
+
+
+# B58: the three rules that make `fields` a FLOOR, not a ceiling. A module constant, not an
+# inline literal, so evals/capture_contract_test.py can assert the assembled string (an
+# implicitly-concatenated literal is unsearchable in source - which is how the first version
+# of that eval failed).
+_FIELD_RULES = (
+    "CAPTURE EVERY ROW THE PAGE STATES - `fields` is the canonical registry, NOT a limit. "
+    "Three rules, in order of how often they are broken: "
+    "(1) A STATED NEGATIVE IS DATA, NEVER AN ABSENCE. 'Not charged', 'No', 'None', 'N/A' are "
+    "positive commercial statements - ship them as the value. Only a blank row, or one the "
+    "deck marks tbd/TBC/BTS/TBS, is unknown. Shipping the unknown sentinel instead tells the "
+    "broker to go and ask an agent a question the deck already answered. "
+    "(2) THE SCHEMA IS OPEN (`additionalProperties: true`). If a stated row has no obvious "
+    "home in `fields`, DO NOT DROP IT - emit it under a descriptive camelCase key of your own "
+    "(e.g. yardRent, railSiding). The dashboard auto-shows any real scalar attribute and the "
+    "Gaps Report discloses it via meta.newFields. "
+    "(3) 'There is no field for X' is never a reason to omit X. If you are about to write that "
+    "sentence in your report, emit the field instead. "
+    "(4) WRITE A VALUE THE WAY THE SOURCE PRINTS IT. A dimensioned value carries its unit in "
+    "the value itself - '10,000 sq. m', not '5000'; '10 m', not '10' - because the dashboard "
+    "shows most fields verbatim and a bare magnitude beside a written sibling quotes a "
+    "different quantity to the client. Copy the printed form; do not normalise, round or strip "
+    "the unit, and do not ADD a unit the page does not print. A pure count ('72' loading docks) "
+    "is correctly bare - the rule is about dimensioned quantities. If a page states a magnitude "
+    "whose unit you genuinely cannot read, return the number, say so in that field's prov, and "
+    "the value-format gate will surface it for the broker to settle."
+)
+
+
+def _reader_field_list() -> list:
+    """The canonical fields an interpretation sub-agent may fill, sorted for determinism.
+
+    Generated from the registry rather than restated, so the handoff can never drift from
+    what merge/the dashboard actually carry - the drift is exactly what made three readers
+    drop stated rows on a live run.
+    """
+    try:
+        import _common as C
+        fields = set(C.canonical_property_fields())
+    except Exception:                      # registry unavailable -> say so, never guess
+        return []
+    return sorted(fields - _PIPELINE_ASSIGNED_FIELDS)
 
 
 class _Buf(io.StringIO):
@@ -254,6 +332,75 @@ def load_yaml(p: Path) -> dict:
               f"safe defaults - fix or delete that file and re-run to apply your settings.",
               file=sys.stderr)
         return {}
+
+
+def _stamp_source_relpath(records, rel: str) -> int:
+    """Stamp `__meta.source_relpath` on records whose source relpath the caller KNOWS.
+
+    Every extractor writes `source_file` as a bare BASENAME - deliberately, because an
+    extractor is root-blind - so two same-named inputs in different subfolders are
+    indistinguishable downstream. `resolve_by_name` made the choice between them deterministic
+    (B13); this makes it unambiguous. run.py is the right place to do it because it is the only
+    layer that holds both the record file and the inventory relpath that produced it.
+
+    ADDITIVE (B43 phase 1): `source_file` is untouched, nothing reads `source_relpath` yet, and
+    `_common.source_key()` falls back to the basename - so this pass changes no output byte.
+    That is intentional: the stamp is proven to EXIST before anything depends on it, which is
+    this project's 'test the PATH, not the function' lesson applied in advance instead of after
+    a fourth dead-wiring incident. Phases 2-4 (which consumers opt in) are B45."""
+    n = 0
+    rel = str(rel or "").replace("\\", "/")
+    if not rel:
+        return 0
+    for r in records or []:
+        if isinstance(r, dict):
+            r.setdefault("__meta", {})["source_relpath"] = rel
+            n += 1
+    return n
+
+
+def _code_stamp(work, name: str, paths) -> Path:
+    """Record a digest of the LIVE BYTES of the helpers a stage depends on. (B42)
+
+    No resume predicate carried any code identity, so editing a helper left every work dir
+    resuming past the stage that helper feeds. The obvious stamps are both wrong:
+    `assets/VERSION` is the TEMPLATE version and does not move for a `merge.py` edit, and
+    `sha256(integrity.json)` only moves when a human remembers to run `make_integrity.py` -
+    and preflight merely notes a stale manifest to stderr, which `mcp__shell` does not surface.
+    Live bytes cannot go stale.
+
+    Takes PATHS rather than module names so an eval can point it at temp copies - that is what
+    makes it testable, and testability is the whole difference between this and a stamp nobody
+    can prove works. `_write_if_changed`, so an unchanged closure does not churn the mtime and
+    re-fire the stage on every run."""
+    h = hashlib.sha256()
+    for p in sorted(str(x) for x in paths):
+        try:
+            h.update(Path(p).read_bytes())
+        except Exception:
+            h.update(b"\0")
+    return _write_if_changed(Path(work) / f".code_{name}", h.hexdigest()[:16])
+
+
+def _engine_stamp(work: Path) -> Path:
+    """Record the ACTIVE image engine in the work dir and return the stamp path.
+
+    `_is_current` compares mtimes of INPUT FILES, so it is blind to the environment that
+    produced an output - which made the engine tag inside the image cache keys INERT on the
+    real path: the documented degraded-then-native workflow resume-skipped merge entirely,
+    never consulted the image cache, and served the poisoned negative while printing
+    "native PyMuPDF". Turning the engine into a FILE is what lets the existing predicate see
+    it, with no change to _is_current itself.
+
+    `_write_if_changed`, so an unchanged engine does not churn the mtime and re-fire merge
+    on every run; a changed one bumps it exactly once and everything downstream recomputes.
+    Existing work dirs therefore recompute ONCE when this lands, which is intended. (B17)"""
+    try:
+        import images as _IMG
+        tag = _IMG._engine_tag()
+    except Exception:
+        tag = "unknown"
+    return _write_if_changed(Path(work) / ".engine_stamp", tag)
 
 
 def _is_current(out, inputs) -> bool:
@@ -400,11 +547,162 @@ def _deck_is_low_quality(files) -> bool:
 
 
 def _vkey(s: str) -> str:
-    """Case-/diacritic-/space-insensitive comparison key (a vision sub-agent that
-    normalised 'Cataluña' to 'Catalunya_vision.json' must still match)."""
+    """Case-/diacritic-/SEPARATOR-insensitive comparison key, so a sub-agent's sanitised
+    filename still matches its region: `East_Midlands_vision.json` == region `East Midlands`.
+
+    Drops every non-alphanumeric SEPARATOR (space, `_`, `-`, `.`, `,`, `/`) but KEEPS letters
+    that are not ASCII (`ł`, `ø`, `ß`), because those carry meaning - a blunt `[^a-z0-9]` strip
+    would silently turn 'Łódź' into 'odz' and could collide with an unrelated region.
+
+    Why separators matter: intake derives region labels from the filename segment after ' - ',
+    so multi-word regions are routine, and folding ONLY spaces left the commonest sanitisation
+    of all - space -> '_' or '-' - unmatched. `East_Midlands_vision.json` was then never
+    recognised as an answer, the deck was re-prepped and re-emitted, the sub-agent wrote the
+    same filename again, and exit 3 never converged (a deck job has no `.SKIP` escape). The
+    records WERE loaded, so the run held the data and still could not pass the gate.
+
+    NOT a transliterator: 'Cataluña' and 'Catalunya' do NOT match (ñ -> n is a diacritic fold,
+    ñ -> ny is a language rule). That was true before this fold widened too; the old docstring
+    claimed otherwise."""
     import unicodedata
-    return "".join(c for c in unicodedata.normalize("NFKD", str(s))
-                   if not unicodedata.combining(c)).casefold().replace(" ", "")
+    folded = "".join(c for c in unicodedata.normalize("NFKD", str(s))
+                     if not unicodedata.combining(c)).casefold()
+    return "".join(c for c in folded if c.isalnum())
+
+
+def _lang_skip(canonical_obj: dict, target_code: str) -> bool:
+    """Is the DATA already in the dashboard's language? (B54)
+
+    True ONLY when at least one record declared a source language and EVERY declared code equals
+    the target. Anything else - a mixed corpus, a different language, or no declaration at all -
+    returns False and the exit-12 round fires exactly as it does today.
+
+    Records that declare nothing (tracker rows, which have no interpretation agent) are assumed
+    to share the declared deck language. That assumption is DISCLOSED in the SKIP note and the
+    Gaps Report rather than made silently, so a broker whose tracker is in a different language
+    from the brochures can see it and re-run."""
+    tgt = str(target_code or "").strip().lower()
+    if not tgt:
+        return False
+    langs = ((canonical_obj or {}).get("meta") or {}).get("sourceLanguages")
+    if not isinstance(langs, dict) or not langs:
+        return False
+    return {str(k).strip().lower() for k in langs} == {tgt}
+
+
+def _deck_label(d: dict) -> str:
+    """A manifest deck's routing label, new key first. (B51)
+
+    It is emitted as `cluster_label` because it is derived from the input FILENAME and is NOT
+    evidence - three of eleven interpretation agents copied it into the record as the property's
+    `region` and cited it to the deck's own page, on decks where the string appears nowhere.
+    Renaming the key is what makes that copy impossible; `region` is the legacy name and is still
+    READ so a warm work dir holding an older manifest keeps resuming instead of being forced
+    through a fresh interpretation round."""
+    if not isinstance(d, dict):
+        return ""
+    return str(d.get("cluster_label") or d.get("region") or "")
+
+
+def _record_field_names(work: Path) -> set:
+    """Field names the already-extracted records carry, for the override guard's "does this field
+    exist?" test. (B7)
+
+    The startup announcement runs BEFORE extraction, so on a first pass this is empty and the guard
+    falls back to the schema/template set - which is correct, since there are no records for an
+    override to correct yet. On any resumed run the extract dir is populated and this makes the
+    startup check agree with merge's own, so a broker never sees an `[INVALID OVERRIDE]` warning for
+    an entry merge will happily apply. Best-effort by design: a missing or malformed file
+    contributes nothing and never raises."""
+    out: set = set()
+    try:
+        for f in sorted((work / "extract").glob("*.json")):
+            try:
+                recs = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(recs, dict):
+                recs = recs.get("records") or []
+            for r in recs if isinstance(recs, list) else []:
+                if isinstance(r, dict):
+                    out |= {str(k) for k in r if k != "__meta"}
+    except Exception:
+        return out
+    return out
+
+
+def assign_deck_outputs(decks: list) -> list:
+    """One UNIQUE `work/extract/*_vision.json` output path per deck, written onto each deck entry
+    in place and returned in order. (B2)
+
+    The output used to be DERIVED by the sub-agent as `<cluster_label>_vision.json`, while SKILL.md
+    tells the orchestrator to collapse ambiguous filename clusters onto a city label before
+    confirming project.yaml. Do both - the documented workflow - and four Corby brochures share one
+    path: four concurrently dispatched agents write the same file and three decks vanish with no
+    error, no gate and no gap line.
+
+    The path is now EXPLICIT (the pattern the tracker `jobs` already use) and, when a label is
+    shared, disambiguated by a stable hash of the SOURCE FILE - so it is deterministic and
+    order-independent, and a collision cannot be expressed. A label used by exactly one deck keeps
+    its clean readable filename, so the common case is unchanged.
+    """
+    import hashlib
+    counts: dict = {}
+    for d in decks:
+        k = _vkey(_deck_label(d))
+        counts[k] = counts.get(k, 0) + 1
+    outs = []
+    for d in decks:
+        label = _deck_label(d) or "region"
+        safe = re.sub(r"[^\w\-. ]+", "_", label).strip(" .") or "region"
+        if counts.get(_vkey(_deck_label(d)), 0) > 1 or not _vkey(_deck_label(d)):
+            h = hashlib.sha256(str(d.get("source_file", "")).encode("utf-8")).hexdigest()[:8]
+            name = f"{safe}__{h}_vision.json"
+        else:
+            name = f"{safe}_vision.json"
+        d["output"] = f"work/extract/{name}"
+        outs.append(d["output"])
+    return outs
+
+
+def _deck_output_path(work: Path, deck: dict):
+    """The deck's OWN interpretation output file, or None when the manifest predates B2 and carries
+    no `output` (the caller then falls back to the legacy `<region>_vision.json` name match)."""
+    o = str((deck or {}).get("output") or "").strip()
+    if not o:
+        return None
+    p = Path(o)
+    if p.is_absolute():
+        return p
+    parts = p.parts
+    if parts and parts[0] == "work":
+        parts = parts[1:]          # the manifest writes work-dir-relative paths
+    return work.joinpath(*parts) if parts else None
+
+
+def _deck_interpreted(work: Path, deck: dict) -> bool:
+    """Has THIS deck been interpreted? Keyed to its own output file, so a sibling deck sharing the
+    cluster label can never be mistaken for it (B2)."""
+    p = _deck_output_path(work, deck)
+    return bool(p and p.exists())
+
+
+def _manifest_has_outputs(work: Path) -> bool:
+    """Does the work dir's manifest carry per-deck `output` paths? (B2)
+
+    When it does, interpretation completion is decided PER FILE and the old REGION-level guard is
+    switched off - that guard is the other half of the same bug: with four decks sharing one cluster
+    label, a single interpreted deck marked the whole region done and its three siblings were
+    skipped, so their records never arrived. When it does not (a warm work dir written before this
+    change, or no manifest at all on a first pass), the region-level fallback runs verbatim."""
+    mf = work / "vision" / "manifest.json"
+    if not mf.exists():
+        return False
+    try:
+        decks = json.loads(mf.read_text(encoding="utf-8")).get("decks", [])
+    except Exception:
+        return False
+    return any((d or {}).get("output") for d in decks)
 
 
 def _vision_supersedes(work: Path, region: str, src_name: str) -> bool:
@@ -414,12 +712,12 @@ def _vision_supersedes(work: Path, region: str, src_name: str) -> bool:
     a poor/0-record parse, so a garbled-but-filled twin shipped NEXT TO its own
     vision transcription and the longlist doubled (a real run: 71 cards from ~35
     properties). A twin that was never rasterised keeps its records, so a clean
-    PDF in a mixed region stays safe."""
-    rk = _vkey(region)
-    extract = work / "extract"
-    if not any(_vkey(f.name[:-len("_vision.json")]) == rk
-               for f in extract.glob("*_vision.json")):
-        return False
+    PDF in a mixed region stays safe.
+
+    B2: keyed to the SOURCE FILE via the deck's own `output`, which is what supersession has always
+    MEANT ("this very file was rasterised"). The old filename match asked whether SOME file named
+    after this region existed, so two decks sharing a cluster label were indistinguishable. The
+    legacy `_vkey` name match is retained for a warm work dir whose manifest carries no `output`."""
     mf = work / "vision" / "manifest.json"
     if not mf.exists():
         return False
@@ -427,9 +725,19 @@ def _vision_supersedes(work: Path, region: str, src_name: str) -> bool:
         decks = json.loads(mf.read_text(encoding="utf-8")).get("decks", [])
     except Exception:
         return False
-    return any(_vkey(str(d.get("region", ""))) == rk
-               and _vkey(str(d.get("source_file", ""))) == _vkey(src_name)
-               for d in decks)
+    mine = [d for d in decks if _vkey(str(d.get("source_file", ""))) == _vkey(src_name)]
+    if not mine:
+        return False
+    # PREFERRED: this file's own interpretation output exists.
+    if any(d.get("output") for d in mine):
+        return any(_deck_interpreted(work, d) for d in mine if d.get("output"))
+    # LEGACY manifest (no `output`): fall back to the region-name match, verbatim.
+    rk = _vkey(region)
+    extract = work / "extract"
+    if not any(_vkey(f.name[:-len("_vision.json")]) == rk
+               for f in extract.glob("*_vision.json")):
+        return False
+    return any(_vkey(_deck_label(d)) == rk for d in mine)
 
 
 def _classify_unreadable(src: Path):
@@ -448,7 +756,15 @@ def _classify_unreadable(src: Path):
             try:
                 import fitz
             except Exception:
-                import fitz_shim as fitz
+                try:
+                    import fitz_shim as fitz
+                except Exception:
+                    # NO PDF BACKEND AT ALL. Returning a reason here would blame the FILE:
+                    # every brochure was reported "corrupt / unreadable - re-save or unlock it",
+                    # sending the broker to chase re-sends of perfectly good decks. "I cannot
+                    # read PDFs here" is an ENVIRONMENT fact; None routes the deck to the
+                    # interpretation/vision path instead of condemning it.
+                    return None
             d = fitz.open(str(src))
             enc = getattr(d, "needs_pass", False) or getattr(d, "is_encrypted", False)
             pc = d.page_count
@@ -457,13 +773,234 @@ def _classify_unreadable(src: Path):
                 return "encrypted / password-protected"
             return None if pc > 0 else "corrupt PDF (no pages)"
         if ext in (".xlsx", ".xlsm"):
-            from openpyxl import load_workbook
+            try:
+                from openpyxl import load_workbook
+            except Exception:
+                return None  # no reader here - an ENVIRONMENT fact, not a broken file
             load_workbook(src, read_only=True).close()
             return None
+    except ImportError:
+        # a missing DEPENDENCY must never be reported as a corrupt FILE (it sends the broker to
+        # chase a re-send of a file that is perfectly fine); the reader-failure warning above
+        # already tells them this environment cannot read that type
+        return None
     except Exception as e:
         m = str(e).lower()
-        return "encrypted / password-protected" if ("password" in m or "encrypt" in m) else "corrupt / unreadable"
+        if "password" in m or "encrypt" in m:
+            return "encrypted / password-protected"
+        # DO NOT CONDEMN A FILE THIS CODE MERELY COULD NOT OPEN. "corrupt / unreadable" is a
+        # claim about the FILE, and it sends the broker to chase a re-send. But this branch
+        # also catches every environment failure that is not an ImportError: a pdfminer /
+        # pdfium decode failure under the fitz_shim tier, a Windows file lock, an unhydrated
+        # OneDrive placeholder. Only say "corrupt" where the evidence supports it - a real
+        # structural complaint from the reader - and otherwise report honestly that we could
+        # not open it here, which routes the deck to interpretation instead of the bin. (B15)
+        # Precise phrases only. A loose token is worse than none here: "not a" matches inside
+        # "canNOT Access the file", so a Windows lock was condemned as a corrupt document.
+        _structural = ("cannot open", "no objects found", "damaged", "broken xref",
+                       "xref", "startxref", "eof marker", "not a pdf", "not a zip",
+                       "file is not a", "syntax error", "corrupt")
+        if any(t in m for t in _structural):
+            return "corrupt / unreadable"
+        return f"could not be opened in this environment ({str(e).splitlines()[0][:70]})"
     return None
+
+
+ATTEMPT_WARN = 4  # consecutive re-emissions of the SAME exit code before we say it is stuck
+
+
+def _bump_attempts(work: Path) -> dict:
+    """Read (and increment) the per-work-dir invocation counter used by the round-trip backstop.
+    Returns the prior state: {"n": total invocations, "last": last non-zero exit, "streak": how
+    many consecutive times that same code was emitted}. Best-effort - a cache failure must never
+    break a run, so every error degrades to an empty state."""
+    f = work / "attempts.json"
+    try:
+        st = json.loads(f.read_text(encoding="utf-8"))
+        if not isinstance(st, dict):
+            st = {}
+    except Exception:
+        st = {}
+    st["n"] = int(st.get("n") or 0) + 1
+    _write_attempts(work, st)
+    return st
+
+
+def _write_attempts(work: Path, st: dict) -> None:
+    # _common is imported INSIDE functions throughout run.py (so the module imports cleanly on a
+    # host missing an optional dep) - do the same here, or this silently no-ops on a NameError.
+    try:
+        import _common as _C
+        _C.atomic_write_text(work / "attempts.json", json.dumps(st, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def _clear_attempts(work: Path) -> None:
+    """A run that reached the end clears the streak, so a LATER round-trip (a gate sign-off, a
+    re-run after a data fix) starts from zero instead of inheriting a stale count."""
+    _write_attempts(work, {"n": 0})
+
+
+def _record_exit(work: Path, code: int, prior: dict) -> int:
+    """Record a non-zero exit and return the consecutive streak for that code."""
+    streak = (int(prior.get("streak") or 0) + 1) if prior.get("last") == code else 1
+    _write_attempts(work, {"n": int(prior.get("n") or 1), "last": code, "streak": streak})
+    return streak
+
+
+def _exit_round_trip(work: Path, code: int, prior: dict, what: str) -> None:
+    """The ONE exit path for every orchestrator round-trip. Records the streak and, once the same
+    request has been re-emitted ATTEMPT_WARN times in a row, prints a plain diagnosis before
+    exiting - the run is not making progress and something upstream is not converging. This does
+    NOT block or change the exit code: the orchestrator may legitimately need several rounds, and
+    a wrong bound would be worse than none. It converts a silent livelock into a visible one."""
+    streak = _record_exit(work, code, prior)
+    if streak >= ATTEMPT_WARN:
+        msg = (f"This step has now been asked for {streak} times in a row without the run moving "
+               f"on ({what}). Something in that answer is not being recognised - stop re-running "
+               f"and check it rather than trying again.")
+        print(msg if QUIET else f"\nNOT CONVERGING: {msg}")
+        # The livelock diagnosis is a HANDOFF instruction, not an aside: it is the one
+        # line telling the orchestrator to stop looping. It must survive the default
+        # (quiet) mode and reach stdout, or the guard warns nobody. (B27)
+        _say_orchestrator(
+            f"(orchestrator: exit {code} re-emitted {streak}x consecutively. The last answer did "
+            f"not satisfy the guard - inspect what was written vs what is read (a key/filename "
+            f"normalisation mismatch, an id not echoed, a declined answer the guard cannot see, "
+            f"or a sentinel written to the wrong path). Do NOT loop again; diagnose. "
+            f"work/attempts.json holds the streak.)")
+    sys.exit(code)
+
+
+def _pair_answered(md, g) -> bool:
+    """Is this grey pair covered by a RECOGNISED verdict? Both accepted shapes, and junk
+    never counts - an unrecognised answer must re-ask, not silently pass."""
+    if not isinstance(md, dict):
+        return False
+    v = md.get(g.get("pair_id"))
+    return (v in ("same", "different")
+            or (isinstance(v, dict) and v.get("verdict") in ("same", "different")))
+
+
+def _settled_clusters(clusters: list, grey: list, md, all_recs: list) -> list:
+    """The clusters whose membership NO outstanding pair answer can change. (B20)
+
+    Exit 10 used to suppress EVERY value conflict while any grey pair was open, which
+    guaranteed a second round-trip whenever a run had both kinds of ambiguity. It cannot
+    simply stop doing that: a grey verdict changes cluster membership, which changes both
+    which conflicts exist and their `conflict_id` (derived from `cluster_key`), so a
+    conflict adjudicated against unfinished clustering is orphaned and re-asked. A live
+    12-property run saw the set grow 44 -> 78 across two rounds for exactly that reason.
+
+    But a cluster is PROVABLY final when none of its own members appears in an unanswered
+    pair. Dedupe only ever ADDS links, so such a cluster cannot shrink; and for an outside
+    record to join it there would have to be a pair between that record and one of these
+    members - which would be auto (already applied), forbidden (never applies) or an
+    unanswered grey (excluded by the test). Checking every member, not just the pair
+    endpoints, is what makes it transitive: a clustermate of an open pair taints the whole
+    cluster.
+
+    Conflicts from these clusters carry exactly the ids the settled clustering will
+    produce, so the answers stay valid and the second round shrinks - often to nothing."""
+    if not grey:
+        return list(clusters)
+    open_ids: set = set()
+    for g in grey:
+        if _pair_answered(md, g):
+            continue
+        for k in ("a_idx", "b_idx"):
+            i = g.get(k)
+            if isinstance(i, int) and 0 <= i < len(all_recs):
+                open_ids.add(id(all_recs[i]))
+        for k in ("a", "b"):  # tolerate a pair carrying only the records
+            if isinstance(g.get(k), dict):
+                open_ids.add(id(g[k]))
+    if not open_ids:
+        return list(clusters)
+    return [cl for cl in clusters if not any(id(r) in open_ids for r in cl)]
+
+
+def _load_match_decisions(work: Path):
+    """Read work/match_decisions.json MERGED over a durable settled copy. (B20)
+
+    Round 2 no longer re-lists the pairs it already settled, and its instructions say not
+    to touch this file - but an instruction is not a guard. A literal-minded sub-agent that
+    writes `{}` here would erase round 1's verdicts and re-open the matching round, which
+    is precisely the third round the change exists to prevent. So every recognised verdict
+    is mirrored into work/match_settled.json, and a later read is layered on top of it: a
+    genuine NEW answer still wins, an empty file loses nothing."""
+    cur = None
+    f = Path(work) / "match_decisions.json"
+    if f.exists():
+        try:
+            cur = _index_decisions(json.loads(f.read_text(encoding="utf-8")),
+                                   ("pair_id", "id"))
+        except Exception:
+            cur = None  # malformed/half-written -> treat as absent (re-emit + exit 10)
+    keep = Path(work) / "match_settled.json"
+    prev = {}
+    try:
+        prev = json.loads(keep.read_text(encoding="utf-8"))
+        if not isinstance(prev, dict):
+            prev = {}
+    except Exception:
+        prev = {}
+    if cur is None and not prev:
+        return None
+    merged = {**prev, **(cur or {})}
+    good = {k: v for k, v in merged.items()
+            if _pair_answered(merged, {"pair_id": k})}
+    if good and good != prev:
+        # _common is imported INSIDE functions throughout run.py (so the module imports
+        # cleanly on a host missing an optional dep) - do the same here.
+        try:
+            import _common as _C
+            _C.atomic_write_text(keep, json.dumps(good, ensure_ascii=False, indent=2))
+        except Exception:
+            pass
+    return merged or None
+
+
+def _index_decisions(parsed, id_keys: tuple) -> dict | None:
+    """TOLERANT read of a sub-agent decisions file: accept the documented flat
+    `{"<id>": {...}}` map OR a LIST of entries carrying their own id
+    (`{"decisions": [{"pair_id": ..., "verdict": ...}, ...]}`), and return the flat map either
+    way. None when nothing usable is present.
+
+    Why this is tolerant rather than strict: the coverage guards below test `md.get(pair_id)`, so
+    a list-shaped answer yielded None for EVERY id, the same request was re-emitted, and exit 10
+    looped forever - and exits 8/9/10 have no `.SKIP` escape, so there was no way out. The
+    list shape is not a malformed answer; it is the shape a model naturally reaches for (the
+    skill's own `evals/cowork_sim.py` emits it, which is how this was caught), and it carries
+    exactly the same information. The pipeline is LLM-driven by design: a guard must be WIDER
+    than the set of legitimate answers, never narrower. Nothing here interprets a VERDICT - the
+    callers still validate every value - this only finds where the answers live.
+
+    `id_keys` are tried in order for each entry, so one helper serves both files
+    (`pair_id` for match decisions, `conflict_id`/`field` for field decisions)."""
+    if not isinstance(parsed, (dict, list)):
+        return None
+    if isinstance(parsed, dict):
+        # a flat map already? (any value that is not itself a list of entries)
+        lists = [v for v in parsed.values() if isinstance(v, list)]
+        if not lists:
+            return parsed
+        # a wrapper such as {"decisions": [...]} / {"resolutions": [...]} / {"picks": [...]}
+        entries: list = []
+        for v in lists:
+            entries.extend(v)
+        flat = {k: v for k, v in parsed.items() if not isinstance(v, list)}
+    else:
+        entries, flat = list(parsed), {}
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        for k in id_keys:
+            if isinstance(e.get(k), (str, int)) and not isinstance(e.get(k), bool):
+                flat.setdefault(str(e[k]), e)
+                break
+    return flat or None
 
 
 def _gaps_to_chase(canonical_path, failed_preps, photo_doubts, unreadable_inputs, yield_notes) -> bool:
@@ -522,7 +1059,35 @@ def _report_pdf_engine() -> None:
                   + "; use the native engine before resorting to the vision pass.)", file=sys.stderr)
 
 
-def main() -> None:
+def _say_orchestrator(msg: str) -> None:
+    """Print a HANDOFF instruction - the machine-readable product of a terminal exit.
+
+    ALWAYS stdout, in both verbosity modes. These lines used to go to stderr, which
+    this project's own environment rule says `mcp__shell` does not surface - and
+    SKILL.md makes mcp__shell the spine command, so the one line telling the
+    orchestrator what to do next was invisible on the documented path. Diagnostic
+    asides ("optional reader X unavailable", "image pre-warm skipped") stay on
+    stderr; only the next-action instruction comes through here. (B27)"""
+    print(msg)
+
+
+def _yield_stdout_lines(notes, link_ix, report_path) -> list[str]:
+    """The `[yield]` block's stdout.
+
+    Judgement-bearing notes (thin parse of a rich sheet, rent_unit_assumed,
+    area_unit_suspect, area_out_of_band, semantic_disagreements) print VERBATIM - a
+    thin parse of a 75-column tracker must be LOUD. Linked-source notes collapse to a
+    count: in a real run they are 24+ full URLs printed immediately above the report
+    that already lists every one of them in full. (B23)"""
+    out = [f"  [yield] {n[:200]}" for i, n in enumerate(notes) if i not in link_ix]
+    if link_ix:
+        out.append(f"  [yield] {len(link_ix)} linked source(s) in cells "
+                   f"(not embedded; fetch separately)")
+    out.append(f"  (full list -> {report_path})")
+    return out
+
+
+def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--folder", required=True)
     ap.add_argument("--work", required=True)
@@ -535,17 +1100,35 @@ def main() -> None:
     ap.add_argument("--language", default="",
                     help="dashboard chrome language (Stage-0 Q3). Overrides project.yaml "
                          "output.language; blank = use project.yaml (default English).")
+    ap.add_argument("--verbose", action="store_true",
+                    help="developer mode: print every step's sub-output. Quiet is the "
+                         "DEFAULT; this opts out of it.")
     ap.add_argument("--quiet", action="store_true",
-                    help="Cowork/broker mode: print only short plain-English step markers, swallow sub-output")
+                    help="(NO-OP, kept for compatibility) quiet is the default - pass "
+                         "--verbose to opt out.")
     ap.add_argument("--resume", dest="resume", action="store_true", default=True,
                     help="(DEFAULT) skip stages whose output is already current "
                          "(intake/extract/merge/enrich/build); gates and the freeze always re-run. "
                          "Built for short-shell-cap sandboxes (Cowork) and the vision re-run.")
     ap.add_argument("--no-resume", dest="resume", action="store_false",
                     help="recompute every stage from scratch")
+    return ap
+
+
+def _resolve_quiet(args) -> bool:
+    """Quiet is the DEFAULT; `--verbose` opts out and WINS over an explicit `--quiet`.
+
+    `--quiet` survives as an accepted no-op rather than being removed: SKILL.md and
+    ~35 `_run_spine` calls in extract_test.py still pass it, and deleting the option
+    would turn argparse's SystemExit(2) into a wall of reds for the wrong reason. (B27)"""
+    return not bool(getattr(args, "verbose", False))
+
+
+def main() -> None:
+    ap = _build_parser()
     args = ap.parse_args()
     global QUIET, RESUME
-    QUIET = args.quiet
+    QUIET = _resolve_quiet(args)
     RESUME = args.resume
     try:  # never let a non-UTF-8 console crash a broker-facing run
         sys.stdout.reconfigure(encoding="utf-8")
@@ -598,18 +1181,79 @@ def main() -> None:
                   file=sys.stderr)
     _report_pdf_engine()  # native PyMuPDF (system or bundled wheel) first; shim/vision last
     extant = {}
+    reader_failures: list = []
     for name in ("extract_pdf", "extract_pptx", "extract_xlsx", "vision_prep", "interpret_prep"):
         try:
             extant[name] = __import__(name)
         except Exception as e:  # optional reader / missing dep -> degrade, do not crash
             extant[name] = None
-            if not QUIET:
-                print(f"(optional reader {name} unavailable: {e})")
+            reader_failures.append((name, f"{type(e).__name__}: {e}"))
+    if reader_failures:
+        # PRINT UNCONDITIONALLY. This was `if not QUIET`, and SKILL.md tells the orchestrator to
+        # run the spine with --quiet - so with openpyxl missing, the Excel availability tracker
+        # (typically the RICHEST source: specs, rents and areas for every property) was skipped
+        # with NOT ONE WORD anywhere: no records, no unreadable.json entry, no note. Losing a
+        # whole source is a data-loss event, not verbose chatter.
+        _kinds = {"extract_xlsx": "Excel/CSV trackers", "extract_pdf": "PDF brochures",
+                  "extract_pptx": "PowerPoint brochures", "vision_prep": "image-only decks",
+                  "interpret_prep": "brochure interpretation"}
+        _lost = ", ".join(_kinds.get(n, n) for n, _ in reader_failures)
+        print(f"WARNING: I cannot read {_lost} in this environment - any such file in your folder "
+              f"will be SKIPPED, not merely unparsed. The rest of the run continues.")
+        for _n, _err in reader_failures:
+            print(f"(optional reader {_n} unavailable: {_err})", file=sys.stderr)
 
     folder = Path(args.folder).resolve()
     work = Path(args.work).resolve()
     extract = work / "extract"
     extract.mkdir(parents=True, exist_ok=True)
+    # ROUND-TRIP BACKSTOP. Every non-zero exit is a request to the orchestrator, and NOTHING in
+    # the skill bounded how many times the same request could be re-emitted - so any guard that
+    # is narrower than the set of legitimate answers degrades into a SILENT infinite loop rather
+    # than a visible failure. Five such guards were found and fixed; this exists so the sixth is
+    # DIAGNOSED instead of burning a broker's afternoon. It counts consecutive re-emissions of
+    # the SAME exit code and, past the threshold, says plainly what is stuck and what to do -
+    # it never blocks a run that is making progress (any different exit code, or exit 0,
+    # clears the counter).
+    _attempts = _bump_attempts(work)
+    # POINT enrich's module-level cache dir at the WORK dir for the WHOLE process. It defaults
+    # to the READ-ONLY skill dir (enrich.CACHE_DIR = SEED_DIR = <skill>/reference) and was only
+    # ever re-pointed INSIDE enrich.main() via --cache-dir. Any code path that reads an enrich
+    # cache WITHOUT enrich having run in this process therefore read <skill>/reference/... -
+    # a path that never exists. That silently broke the exit-3 region-label convergence guard
+    # on the RESUME path: with enrichment resume-skipped, `_region_labels_answered_keys()`
+    # returned an empty set, so an already-answered (esp. DECLINED) label was re-asked and the
+    # run oscillated forever - the very loop the answered-keys view was added to close. Setting
+    # it here is a no-op for the enrich-ran path (enrich.main() assigns the same value).
+    enrich.CACHE_DIR = work
+
+    # DURABLE MANUAL CORRECTIONS (P1-4): list them at STARTUP so a stale one cannot rot unnoticed.
+    # PRINTED UNCONDITIONALLY, like the reader-failure lines above: SKILL.md tells the orchestrator
+    # to run the spine with --quiet, so `if not QUIET` would hide this exactly when it matters. A
+    # correction that has silently stopped applying is a DATA-LOSS event, not verbose chatter.
+    # --quiet governs only the explanatory footnote. This is the earliest point at which `work` is
+    # resolved and before any stage can exit, so it is announced even on a run that dies at intake.
+    _ov_path = work / "overrides.json"
+    if _ov_path.exists():
+        _ovs, _ov_errs = merge.load_overrides(_ov_path,
+                                              extra_fields=_record_field_names(work))
+        print(f"Manual corrections active ({len(_ovs)} in {_ov_path.name}) - re-applied to the "
+              f"freshly extracted data every run:")
+        for _o in _ovs:
+            _w = _o["where"]
+            _at = (f"{_w.get('sheet') or ''}!r{_w['row']}" if _w.get("row") is not None
+                   else (f"page_no {_w['page_no']}" if _w.get("page_no") is not None
+                         else "the whole file"))
+            print(f"  - {_o['id']}: {_w['source_file']} {_at} -> "
+                  + ", ".join(f"{k} = {v!r}" for k, v in _o["set"].items())
+                  + (" [expect ok]" if _o.get("expect") else " [no `expect` guard]")
+                  + f"  ({_o.get('why', '')})")
+        for _e in _ov_errs:
+            print(f"  [INVALID OVERRIDE] {_e} - this entry does NOTHING until it is fixed.")
+        if not QUIET:
+            print("(an override matching no record is reported as STALE right after the merge "
+                  "step and in the Gaps Report. work/extract is DERIVED - never hand-edit it; "
+                  "a hand-edit is discarded the next time extraction re-runs.)", file=sys.stderr)
 
     # Stage 0 - intake
     proj = work / "project.yaml"
@@ -640,11 +1284,11 @@ def main() -> None:
 
     # --- Phase 2: non-bundled-language FALLBACK (exit 11; mirrors exit 3/9/10) -------
     # Runs on EVERY invocation, BEFORE the expensive merge/enrich, so it fails fast. A
-    # language OUTSIDE the bundled 12 but still SUPPORTED (any European Latin-script
+    # language OUTSIDE the bundled 13 but still SUPPORTED (any European Latin-script
     # language) is translated ONCE in Cowork, cached in the work dir, then baked into
     # canonical.meta.ui_overrides by merge (--ui-overrides) so render()/validate-html
-    # reproduce it byte-for-byte from canonical. Graceful: an UNSUPPORTED language (non-
-    # Latin / nonsense) -> EN (no request, a printed note); a .SKIP decline -> EN; a
+    # reproduce it byte-for-byte from canonical. Graceful: an UNSUPPORTED language (an
+    # unsupported script / nonsense) -> EN (no request, a printed note); a .SKIP decline -> EN; a
     # missing/corrupt cache -> re-request (or EN once declined) - never a crash.
     ui_overrides_cache = None  # set to the cache Path when a valid fallback cache exists
     code = I18N.normalize_lang(lang)
@@ -682,7 +1326,9 @@ def main() -> None:
                 "en_sha": want_sha,
                 "instructions": (
                     f"Translate EVERY value in `strings` to {lang}. Keep the JSON KEYS exactly; "
-                    "keep the {area}/{unit} placeholders, the &amp;/&lt;/&gt; HTML entities, any "
+                    "keep the {area}/{unit}/{count} placeholders (hero_lede_fmt carries "
+                    "{count}), the ONE <em>...</em> pair in hero_title_html, the "
+                    "&amp;/&lt;/&gt; HTML entities, any "
                     "leading glyph (e.g. the '●' bullet), and the invariants CBRE / OSRM / "
                     "BREEAM / HGV / PPS / EU27 / REIT / km verbatim. Do NOT translate DATA or the "
                     "'tbd'/'—' sentinel. Add a top-level \"_en_sha\":\"" + want_sha + "\" key, "
@@ -710,7 +1356,7 @@ def main() -> None:
                       f"\"_en_sha\":\"{want_sha}\") to {cache}, then re-run the SAME command. "
                       f"(Or `type nul > {skip}` to fall back to English.) Blind-verify it as "
                       f"G-i18n before shipping.")
-            sys.exit(11)
+            _exit_round_trip(work, 11, _attempts, "a dashboard-language translation")
 
     # PREFLIGHT ROADMAP: a deterministic plan from what intake ACTUALLY found, so the
     # orchestrator starts knowing what is there and which handoffs to expect (which exit
@@ -801,6 +1447,10 @@ def main() -> None:
     # 'Catalunya_vision.json') must still supersede its region, or the region is
     # re-routed to vision forever
     vision_done = {_vkey(f.name[:-len("_vision.json")]) for f in extract.glob("*_vision.json")}
+    # B2: with a per-deck `output` manifest, completion is decided PER FILE by _vision_supersedes
+    # and the region-level guard below is disabled - it is the other half of the collapsed-label
+    # bug (one interpreted deck marking its three siblings done, so their records never arrived).
+    _per_deck_outputs = _manifest_has_outputs(work)
 
     def _slug(rel) -> str:
         """Distinct extract-output name per brochure (subfolder-aware), so a region
@@ -818,8 +1468,9 @@ def main() -> None:
 
     for region, cl in inv["clusters"].items():
         country = cl.get("country") or "??"
-        # this region's records are already in place (interpreted on a prior pass)
-        has_vision = _vkey(region) in vision_done
+        # this region's records are already in place (interpreted on a prior pass). LEGACY ONLY:
+        # with per-deck outputs this is False and each file is judged on its own (B2).
+        has_vision = (not _per_deck_outputs) and (_vkey(region) in vision_done)
         # cluster brochures are LISTS (every file kept); the singular keys are the
         # legacy one-slot layout, still honoured for an old work dir's inventory
         pdfs = cl.get("pdfs") or ([cl["pdf"]] if cl.get("pdf") else [])
@@ -854,6 +1505,9 @@ def main() -> None:
     # client's requirements (size/must-haves) -> canonical.meta.requirements
     requirements: dict = {}
     yield_notes: list[str] = []  # extraction-yield findings (thin parse of a rich sheet)
+    link_note_ix: set[int] = set()  # which yield_notes are linked-source lines (B23):
+    # they go into the report in full but collapse to a COUNT on stdout. Indices, not a
+    # string match, so the report's byte order and content are untouched.
     interpret_trackers: list = []  # tracker sheets OFFERED to the mapping sub-agent (exit 3)
 
     def _tracker_struct_hash(structs) -> str:
@@ -865,6 +1519,19 @@ def main() -> None:
         payload = json.dumps(structs, ensure_ascii=False, sort_keys=True)
         return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:8]
 
+    if not extant["extract_xlsx"]:
+        # A WHOLE SOURCE MUST NEVER VANISH WITHOUT A RECORD. With no spreadsheet reader the
+        # loop below is skipped entirely and nothing appended these files to
+        # unreadable_inputs - so unreadable.json, the Gaps Report and _gaps_to_chase all
+        # omitted them, while the Plan line still promised "N tracker(s) -> column mapping"
+        # and the exit-2 message told the broker to add trackers they had already supplied.
+        # The reader-failure warning above is printed, but a console line is not a durable
+        # record. (B15)
+        for _xl in inv.get("xlsx", []):
+            unreadable_inputs.append(
+                (Path(_xl).name,
+                 "no spreadsheet reader available in this environment (openpyxl missing) - "
+                 "the file is fine; the run could not open it here"))
     if extant["extract_xlsx"]:
         for xl in inv.get("xlsx", []):
             out = extract / f"{_slug(xl)}_xlsx.json"
@@ -890,7 +1557,14 @@ def main() -> None:
                 fh = _hl.sha1(str(xl).encode("utf-8")).hexdigest()[:8]
                 ihash = _tracker_struct_hash([{"region": "", "country": ""}, structs])
                 map_f = extract / f"{slug}_{fh}_map.json"
+                # BOTH .SKIP spellings count as a decline. The manifest instruction says "an
+                # empty file at the output path with a .SKIP suffix", and the output path ends
+                # in `_map.json` - so an orchestrator following the wording literally writes
+                # `_map.json.SKIP`, while only `_map.SKIP` was ever read. The decline was then
+                # invisible, the tracker job was re-emitted every round, and exit 3 never
+                # converged (reproduced: 25 rounds, zero state change). Accept either.
                 skip_f = extract / f"{slug}_{fh}_map.SKIP"
+                skip_alt = extract / f"{slug}_{fh}_map.json.SKIP"
                 # the SEMANTIC VERIFIER's second, blind map (reference/interpretation.md
                 # "Verification pass"): a SEPARATE fresh agent re-derives the SAME map from
                 # the SAME sheets and writes mapcheck_f. Keyed by the SAME input_hash as the
@@ -900,23 +1574,34 @@ def main() -> None:
                 # does not want the second pass) so it never forces a perpetual exit 3.
                 mapcheck_f = extract / f"{slug}_{fh}_mapcheck.json"
                 mapcheck_skip_f = extract / f"{slug}_{fh}_mapcheck.SKIP"
-                map_ok = False
-                if map_f.exists():
+                mapcheck_skip_alt = extract / f"{slug}_{fh}_mapcheck.json.SKIP"
+
+                def _hash_ok(f: Path) -> bool:
+                    """A usable map: reject only a PRESENT-but-MISMATCHED input_hash.
+                    Requiring the echo outright rejected a map the parser would happily use -
+                    `extract_xlsx._load_colmap` documents that it accepts "the cache wrapper OR
+                    a bare map" - so a sub-agent that omitted the 8-hex echo (or returned a
+                    bare `{"columns": [...]}`) had its job re-emitted forever, with the only
+                    escape being a hand-written .SKIP. The file is already invalidated BY PATH
+                    (`<slug>_<filehash>_map.json`) and mtime-tracked, so a missing echo is a
+                    formatting slip, not a staleness signal."""
                     try:
-                        cached = json.loads(map_f.read_text(encoding="utf-8"))
-                        map_ok = cached.get("input_hash") == ihash
+                        cached = json.loads(f.read_text(encoding="utf-8"))
                     except Exception:
-                        map_ok = False
-                mapcheck_ok = False
-                if mapcheck_f.exists():
-                    try:
-                        cachedv = json.loads(mapcheck_f.read_text(encoding="utf-8"))
-                        mapcheck_ok = cachedv.get("input_hash") == ihash
-                    except Exception:
-                        mapcheck_ok = False
+                        return False       # malformed/half-written -> re-ask
+                    if not isinstance(cached, dict):
+                        return False
+                    got = cached.get("input_hash")
+                    if got is None:
+                        return bool(cached.get("map") or cached.get("columns"))
+                    return got == ihash
+                map_ok = _hash_ok(map_f) if map_f.exists() else False
+                mapcheck_ok = _hash_ok(mapcheck_f) if mapcheck_f.exists() else False
+                declined = skip_f.exists() or skip_alt.exists()
+                declined_v = mapcheck_skip_f.exists() or mapcheck_skip_alt.exists()
                 if map_ok:
                     colmap_arg = map_f
-                elif not skip_f.exists():
+                elif not declined:
                     interpret_trackers.append({
                         "kind": "tracker", "source_file": Path(xl).name,
                         "source_type": Path(xl).suffix.lstrip(".").lower() or "xlsx",
@@ -933,9 +1618,9 @@ def main() -> None:
                 # i.e. NOT .SKIP-declined to the dictionary), the mapcheck is not yet present/
                 # valid, AND the verify pass is not itself .SKIP-declined. A dictionary-only
                 # (.SKIP) tracker has no author LLM map to diff, so no verify is offered.
-                primary_in_play = map_ok or not skip_f.exists()
+                primary_in_play = map_ok or not declined
                 if (primary_in_play and not mapcheck_ok and not mapcheck_f.exists()
-                        and not mapcheck_skip_f.exists()):
+                        and not declined_v):
                     interpret_trackers.append({
                         "kind": "tracker_verify", "source_file": Path(xl).name,
                         "source_type": Path(xl).suffix.lstrip(".").lower() or "xlsx",
@@ -968,6 +1653,7 @@ def main() -> None:
             recs = payload.get("records") if isinstance(payload, dict) else None
             if recs:
                 ra = extract / f"{_slug(xl)}_xlsx_records.json"
+                _stamp_source_relpath(recs, xl)
                 _write_if_changed(ra, json.dumps(recs, ensure_ascii=False))
                 record_files.append(ra)
             reqs = payload.get("requirements") if isinstance(payload, dict) else None
@@ -980,10 +1666,20 @@ def main() -> None:
             for hr in (payload.get("header_report") or []) if isinstance(payload, dict) else []:
                 if hr.get("suspected_tracker") or hr.get("mapped_columns", 0) < hr.get("populated_columns", 0):
                     tag = " (headers not recognised - looks like a tracker)" if hr.get("suspected_tracker") else ""
+                    # FLATTEN each header for the SAME reason as the semantic_disagreements
+                    # note below: a spreadsheet header legitimately contains a newline
+                    # ("Leaseable area\n(sq ft)" is real in this tracker), the note is emitted
+                    # as ONE markdown list item, and the raw newline ended the bullet - so the
+                    # broker read "unmapped: No., Postcode, Leaseable area" and the remaining
+                    # NINE names were silently dropped. That also made the line contradict
+                    # itself (it announced 11 unmapped, then named 3), which reads as a broken
+                    # report rather than a truncated one. (QA round 2, adjudication 1f3f63dc97.)
+                    _unmapped = [" ".join(str(h).split())
+                                 for h in (hr.get("unmapped_headers") or [])]
                     yield_notes.append(
                         f"{Path(xl).name} [{hr.get('sheet')}]{tag}: "
                         f"{hr.get('mapped_columns')}/{hr.get('populated_columns')} populated "
-                        f"columns mapped; unmapped: {', '.join(hr.get('unmapped_headers', []))}")
+                        f"columns mapped; unmapped: {', '.join(_unmapped)}")
                 # a rent column with NO currency/unit in the header or cells ships on the
                 # house default (EUR/sq m/yr) - surface it so the broker confirms the real
                 # convention (a bare UK GBP/sq ft figure must never pass as EUR/sq m silently)
@@ -1017,11 +1713,23 @@ def main() -> None:
                 # the disagreement so the broker confirms the correct basis/column with the
                 # landlord/agent before sending. NEVER auto-rejects the primary map.
                 if hr.get("semantic_disagreements"):
+                    # FLATTEN every interpolated value. A spreadsheet header legitimately
+                    # contains a newline ("Total Size\n(sq ft)" is normal in a tracker), and
+                    # this note is emitted as ONE markdown list item: the raw newline ended
+                    # the bullet mid-sentence, so the broker read "col 4 'Total Size " and
+                    # nothing else - losing both what the two passes actually read AND every
+                    # later disagreement in the same line (col 22 'Landlord' never reached
+                    # them at all). Collapsing whitespace keeps the note on one line and is
+                    # lossless for the reader. (QA round 1, G-honesty/G-trace blocking.)
+                    def _flat(v):
+                        return " ".join(str(v).split()) if v is not None else v
+
                     def _one(d):
                         col = (f"col {d.get('index')}"
-                               + (f" '{d.get('header')}'" if d.get("header") else ""))
-                        return (f"{col} [{d.get('key')}]: pass 1 read {d.get('pass1')!r}, "
-                                f"pass 2 read {d.get('pass2')!r}")
+                               + (f" '{_flat(d.get('header'))}'" if d.get("header") else ""))
+                        return (f"{col} [{_flat(d.get('key'))}]: "
+                                f"pass 1 read {_flat(d.get('pass1'))!r}, "
+                                f"pass 2 read {_flat(d.get('pass2'))!r}")
                     _dis = "; ".join(_one(d) for d in hr.get("semantic_disagreements", []))
                     yield_notes.append(
                         f"{Path(xl).name} [{hr.get('sheet')}]: two independent column-mapping "
@@ -1030,6 +1738,7 @@ def main() -> None:
             # P2-3: brochure URLs/hyperlinks in cells can't be fetched in-sandbox but
             # must be surfaced, not silently lost - list them for the orchestrator/broker
             for ls in (payload.get("linked_sources") or []) if isinstance(payload, dict) else []:
+                link_note_ix.add(len(yield_notes))  # tagged so stdout can count them (B23)
                 yield_notes.append(f"{Path(xl).name} linked source (not embedded; fetch "
                                    f"separately) at {ls.get('locator')}: {ls.get('target')}")
             # honesty: a spreadsheet that opened to NOTHING usable may be unreadable
@@ -1049,9 +1758,8 @@ def main() -> None:
                           "these should feed the dashboard, extend extract_xlsx.COLUMN_MAP.\n\n"
                           + "\n".join(f"- {n}" for n in yield_notes) + "\n")
         if not QUIET:
-            for n in yield_notes:
-                print(f"  [yield] {n[:200]}")
-            print(f"  (full list -> {yr})")
+            for _ln in _yield_stdout_lines(yield_notes, link_note_ix, yr):
+                print(_ln)
 
     # UNREADABLE INPUTS (P1-1): write the typed list (always - empty clears a stale
     # marker) and ALWAYS surface a plain summary. Extraction precedes EVERY terminal
@@ -1067,6 +1775,25 @@ def main() -> None:
             _prior_unreadable = []
     except Exception:
         _prior_unreadable = []
+    # UNSUPPORTED-TYPE inputs join the unreadable set, so they reach unreadable.json, the Gaps
+    # Report and the operator note by the SAME route as a corrupt file. They are a different
+    # failure (the file is fine; the pipeline has no reader for it), so they carry their own
+    # reason naming the supported types and the LLM route - a .txt/.json of property data is
+    # best pasted into an email/tracker, which the interpretation path already reads.
+    try:
+        _unclassified = (json.loads((work / "inventory.json").read_text(encoding="utf-8"))
+                         .get("unclassified") or [])
+    except Exception:
+        _unclassified = []
+    for _u in _unclassified:
+        _f = _u.get("file") if isinstance(_u, dict) else str(_u)
+        _e = (_u.get("ext") if isinstance(_u, dict) else "") or "(no extension)"
+        if _f and not any(_f == f for f, _ in unreadable_inputs):
+            unreadable_inputs.append((_f, f"unsupported file type {_e} - not read. This pipeline "
+                                          f"reads PDF/PPTX brochures, Excel/CSV trackers, "
+                                          f".msg/.eml emails and images. If it holds property "
+                                          f"data, paste it into an email or a tracker sheet and "
+                                          f"re-run"))
     try:
         # _write_if_changed: an unchanged unreadable-set keeps its mtime so Stage-7 deliver can
         # resume-skip; a genuinely new/cleared unreadable input bumps it -> Gaps re-delivers. (#25)
@@ -1107,8 +1834,8 @@ def main() -> None:
                   else "\nVISION TRANSCRIPTION INVALID - fix these records and re-run "
                        "(same exit-3 contract as the manifest):")
             for e in v_errors:
-                print(f"  [FAIL] {e}" if not QUIET else f"  {e}", file=sys.stderr if QUIET else sys.stdout)
-            sys.exit(3)
+                _say_orchestrator(f"  [FAIL] {e}" if not QUIET else f"  {e}")
+            _exit_round_trip(work, 3, _attempts, "brochure/tracker interpretation")
     for vf in vision_files:
         if vf not in record_files:
             record_files.append(vf)
@@ -1233,14 +1960,14 @@ def main() -> None:
             if QUIET:
                 print("Some brochures have no readable text but look like photos of properties "
                       "you already gave me. I need to match each one before I can carry on.")
-                print(f"(orchestrator: dispatch the photo-match sub-agent per "
-                      f"{work / 'photo_match_manifest.json'} -> work/photo_map.json, then re-run.)",
-                      file=sys.stderr)
+                _say_orchestrator(
+                    f"(orchestrator: dispatch the photo-match sub-agent per "
+                    f"{work / 'photo_match_manifest.json'} -> work/photo_map.json, then re-run.)")
             else:
                 print(f"\nPHOTO MATCH NEEDED: dispatch a sub-agent to match {n_b} brochure(s) to "
                       f"{n_p} known propert(y/ies) per {work / 'photo_match_manifest.json'} -> "
                       f"work/photo_map.json, then re-run.")
-            sys.exit(9)
+            _exit_round_trip(work, 9, _attempts, "matching brochure photos to properties")
         # consume the sub-agent's decisions
         try:
             pm = json.loads(photo_map_f.read_text(encoding="utf-8"))
@@ -1312,10 +2039,46 @@ def main() -> None:
 
     def _write_manifest(decks) -> None:
         (work / "vision").mkdir(parents=True, exist_ok=True)
+        # B2: give every deck its OWN unique output path before the manifest is written, and assert
+        # uniqueness. Two decks sharing a cluster label used to derive the same
+        # `<label>_vision.json`, so four concurrent agents wrote one file and three decks were lost
+        # silently. Fail loudly here rather than ever emit a colliding manifest.
+        assign_deck_outputs(decks)
+        _outs = [d.get("output") for d in decks]
+        if len(set(_outs)) != len(_outs):
+            raise SystemExit(f"internal error: deck output collision in the manifest: {_outs}")
         payload = {
             "decks": decks,
             "record_schema": "templates/record_schema.json",
-            "output_pattern": "work/extract/<region>_vision.json (a JSON array of records)",
+            # B58 per-property completeness: the reader is HANDED the field registry.
+            # Before this, the exit-3 handoff named no field set at all: the contract's list
+            # ends in an ellipsis, record_schema.json names 17 of 53 with
+            # additionalProperties:true, and "the same names the deterministic extractors
+            # emit" does not cover sprinklers/permitting/divisibleFrom/rentFree/expansion*.
+            # Three of three readers on one live run concluded "no canonical field exists"
+            # and DROPPED rows printed on the page; merge then recorded each omission as a
+            # positive "absent in all sources" ledger row, i.e. ~100 false claims telling the
+            # broker to chase an agent for data already in the deck. Generated from _common
+            # so it can never drift from the pipeline (evals/capture_contract_test.py).
+            "fields": _reader_field_list(),
+            "field_rules": _FIELD_RULES,
+            # B22: the two contract files are READ, not inlined. Inlining them would be a
+            # token wash - there is ONE manifest, not one per deck, so every sub-agent reads
+            # the same bytes either way - and it would create a THIRD copy of a contract that
+            # has already drifted. What was actually broken is that the pointer was a bare
+            # relative path with undefined cardinality, so these give an absolute path and
+            # state the count. `record_schema` above keeps its exact literal:
+            # it is part of the manifest contract (reference/interpretation.md).
+            "contract": str((HERE.parent / "reference" / "interpretation.md").resolve()),
+            "record_schema_path": str((HERE.parent / "templates" / "record_schema.json").resolve()),
+            "contract_reads": ("Read `contract` and `record_schema_path` ONCE for this whole "
+                               "round, before dispatching - not once per deck. They are the "
+                               "same bytes for every deck in this manifest."),
+            "output_pattern": ("EACH DECK CARRIES ITS OWN `output` PATH - write that path VERBATIM "
+                               "(a JSON array of records), exactly as the tracker `jobs` do. Do NOT "
+                               "derive a filename from the cluster label: two decks can share a "
+                               "label, and deriving the name made them overwrite each other. "
+                               "`work/extract/<region>_vision.json` is the legacy shape only."),
             "instructions": ("Dispatch an isolated INTERPRETATION sub-agent (reference/interpretation.md). Each "
                              "deck carries a `mode`: for mode='text', read the page `text` and structure the "
                              "property into a record per the record schema; for mode='raster', read each page "
@@ -1325,14 +2088,30 @@ def main() -> None:
                              "suffix is 1-based - off-by-one binds the hero photo to the NEIGHBOURING property), and "
                              "__meta.prov[field] = '<locator> (text interpretation)' for text decks / "
                              "'<locator> (vision transcription)' for raster decks. Each text page also lists "
-                             "`candidates`: its embedded images, each with an `index` and a thumbnail `image` path. "
+                             "`candidates`: its embedded images, each with an `index` and a thumbnail `image` path, "
+                             "AND `candidates_sheet`: the SAME candidates tiled into one image, each captioned with "
+                             "its `index`. **Read `candidates_sheet` ONCE per page instead of opening each "
+                             "`candidates[].image`** - the tiles are the identical thumbnails at their native size, "
+                             "so nothing is lost, and it is one tool call instead of N. Open an individual "
+                             "`candidates[].image` only when a tile is genuinely ambiguous. When a page has no sheet "
+                             "(one candidate, or none), use `candidates[].image`. If you do need several images on "
+                             "one page, request them in a SINGLE message. "
                              "LOOK at them. For each property record set __meta.heroRef = the `index` of the genuine "
                              "marketing HERO (a real photo, aerial or render), or null if NONE of the candidates is a "
                              "real photo - a road MAP, a location screenshot, a floor/site PLAN, an icon or a logo is "
                              "NEVER the hero. Set __meta.planRef = the `index` of the SITE PLAN if present, else null. "
                              "When unsure, prefer a photo/aerial/render as the hero and leave a map/plan as planRef. "
                              "Rents are ANNUAL (x12 a monthly "
-                             "quote). Unreadable/absent field -> 'tbd'/null, never invented; if a text deck is "
+                             "quote). **WHENEVER YOU RETURN A NUMERIC AREA, ALSO RETURN `areaUnit` "
+                             "('sq m' or 'sq ft') AS THE SOURCE STATES IT** - read it off the deck (the column "
+                             "header, the figure's own suffix, the spec table's unit row); do NOT infer it from the "
+                             "country and do NOT convert the number. Nothing downstream can recover a missing unit: "
+                             "an unlabelled metric area silently inherits the dataset's dominant unit, which is a "
+                             "10.76x error on the client's card. If the deck genuinely never states a unit, return "
+                             "the area and OMIT areaUnit - it is then recorded as an assumption in the Gaps Report "
+                             "rather than passed off as known. Same rule for `rentUnit` (e.g. 'GBP/sq ft/yr') "
+                             "whenever you return a rent. "
+                             "Unreadable/absent field -> 'tbd'/null, never invented; if a text deck is "
                              "garbled/unusable, set \"needs_raster\": true on it so it escalates to raster on re-run. "
                              "Save per region (region EXACTLY as in this manifest), then re-run run.py with the "
                              "same arguments - it resumes and folds them in."),
@@ -1347,8 +2126,15 @@ def main() -> None:
                 "Each `jobs` entry is a property TRACKER (xlsx/csv) whose column->field "
                 "mapping the dictionary could not fully resolve. Dispatch an isolated "
                 "tracker-interpretation sub-agent (reference/interpretation.md 'Tracker mode'). "
-                "Given ONLY the job's `sheets` (raw `headers` in column order + a few "
-                "`sample_rows`), return a MAP - NEVER records, NEVER a transcribed cell value. "
+                "Given ONLY the job's `sheets` (raw `headers` in column order + `sample_rows`), "
+                "return a MAP - NEVER records, NEVER a transcribed cell value. "
+                "`sample_rows` are CHOSEN, not the first N: they are selected so that every "
+                "populated column shows at least one real value (`sample_row_numbers` gives "
+                "their 1-based sheet rows). So a blank cell in the sample means that column is "
+                "blank in the chosen rows, NOT that the column is empty - and if a sheet lists "
+                "`unsampled_columns`, those are populated columns no sampled row could cover: "
+                "map them from the header alone or return null, but do not read their blankness "
+                "as evidence. "
                 "Write the job's `output` file: {\"input_hash\": <copied verbatim from the job>, "
                 "\"schema_version\": 1, \"map\": {\"columns\": [{\"index\": N, \"field\": "
                 "\"warehouseArea\"|...|null, \"basis\"?: GIA|GEA|GLA|warehouse, \"areaUnit\"?: "
@@ -1364,8 +2150,12 @@ def main() -> None:
                 "period so Python applies x12 / GIA-office faithfully; never convert. A column "
                 "whose header is a derived/penalty figure ('Rent free (months)', 'Size Unit') "
                 "is vetoed automatically. Then re-run run.py - it resumes and parses the "
-                "tracker through your map. To decline the LLM map and use the dictionary, "
-                "create an empty file at the output path with a .SKIP suffix instead.")
+                "tracker through your map. `input_hash` is preferred but OPTIONAL: a map "
+                "without it is still accepted (the file is keyed by path), so a missing echo "
+                "never re-asks. To DECLINE the LLM map and keep the dictionary, create an "
+                "empty file at the job's `output` path with `.json` REPLACED by `.SKIP` "
+                "(e.g. `..._map.SKIP`); appending `.SKIP` to the full filename "
+                "(`..._map.json.SKIP`) is accepted too.")
             # SEMANTIC VERIFIER: a `kind:"tracker_verify"` job is an INDEPENDENT, BLIND
             # re-derivation of the SAME map - dispatch a SEPARATE fresh agent (NOT the one
             # that did the matching `kind:"tracker"` job), give it ONLY this job's `sheets`,
@@ -1471,17 +2261,26 @@ def main() -> None:
             parts.append(f"{len(_author_trackers)} tracker(s) to map")
         msg = (f"{' and '.join(parts)} need INTERPRETATION. Manifest: {manifest}. Dispatch the "
                f"interpretation sub-agent (reference/interpretation.md) - structure brochure "
-               f"decks into work/extract/<region>_vision.json and write each tracker job's "
+               f"decks into EACH DECK'S OWN `output` path (copy it verbatim from the deck entry - "
+               f"never derive a filename from the cluster label, which two decks can share) and "
+               f"write each tracker job's "
                f"column->field MAP to its `output` (or a .SKIP sentinel to keep the dictionary), "
                f"then re-run the same command - extracted regions + cached maps are reused, "
-               f"nothing is redone.")
+               f"nothing is redone. The manifest's `cluster_label` is a FILENAME-derived routing "
+               f"name, NEVER evidence - do not copy it into `region` or any other field, and set "
+               f"`region` only from text you can point at on a page. A value read from an IMAGE "
+               f"rather than the text layer must carry `not in text layer` in its prov (the "
+               f"prov-containment gate checks page-cited values). Set `__meta.source_lang` to the "
+               f"ISO-639-1 code of the language each deck is written in. FIRST PASS? Present the "
+               f"Stage-0 setup form in the SAME message as this dispatch - no form answer feeds "
+               f"this round.")
         if QUIET:
             print("Some of your files still need reading into the dashboard - I'll structure "
                   "them before I build.")
-            print(msg, file=sys.stderr)
+            _say_orchestrator(msg)
         else:
             print("\n" + msg)
-        sys.exit(3)
+        _exit_round_trip(work, 3, _attempts, "brochure/tracker interpretation")
 
     if n_records == 0:
         if failed_preps:
@@ -1492,6 +2291,16 @@ def main() -> None:
             print("No usable inputs found to read - add PDF/PPTX brochures, Excel/CSV trackers, "
                   "emails (.msg/.eml) or images, then run again." if QUIET
                   else "\nNo property sources extracted. Stopping (Stage 0 gap).")
+        # NAME the files we could not use. Exiting with "no readable property sources" while the
+        # broker's actual data file sits unmentioned in the folder is the worst version of this
+        # failure: it reads as "your files were considered and were empty" when they were never
+        # opened. This is the live break a .json + photos handover hit.
+        if _unclassified:
+            _names = ", ".join(str(u.get("file", u)) for u in _unclassified[:8])
+            print(f"I could not read {len(_unclassified)} file(s) because this pipeline has no "
+                  f"reader for that type: {_names}. It reads PDF/PPTX brochures, Excel/CSV "
+                  f"trackers, .msg/.eml emails and images. If one of those holds the property "
+                  f"data, paste it into an email or a tracker sheet and run again.")
         sys.exit(2)
 
     # CROSS-SOURCE MATCH ADJUDICATION (exit 10) - mirrors photo-match (exit 9). The
@@ -1507,12 +2316,97 @@ def main() -> None:
     # independent pair_id, so a re-run resumes byte-deterministically. With no grey pairs
     # (the common case - a pure-brochure or single-source run) this never fires; offline
     # (no decisions file) merge falls back to the deterministic token-set matcher.
+    # ------------------------------------------------------------------ CLARIFY (exit 13)
+    # AMBIGUITY IS A QUESTION, ASKED NOW - not a caveat in a Gaps Report nobody reads. This
+    # runs BEFORE matching and merging, because that is the last moment an answer can still
+    # change the deliverable: a unit answer changes the size comparison, which changes
+    # clustering, which changes what ships.
+    #
+    # ASK ONCE, THEN SHIP HONESTLY. clarify.pending() excludes anything already ASKED (marked
+    # at emit time, not on reply), so a broker who answers nothing is never asked twice and
+    # the run always finishes. That bound is the entire reason this channel is safe to add to
+    # a skill whose dominant failure mode has been the unbounded ask loop. (B38)
+    import clarify as _clarify
+    _answers = _clarify.ingest_answers(work)
+    _recs_for_q = [r for f in record_files for r in _load_records(f) if isinstance(r, dict)]
+    _by_src: dict = {}
+    for _r in _recs_for_q:
+        _by_src.setdefault(str((_r.get("__meta") or {}).get("source_file") or ""), []).append(_r)
+    _deck_pages = {}
+    try:
+        for _d in json.loads((manifest).read_text(encoding="utf-8")).get("decks", []):
+            _deck_pages[str(_d.get("source_file") or "")] = len(_d.get("pages") or [])
+    except Exception:
+        _deck_pages = {}
+    # record_count_questions is deliberately NOT wired: page count is the wrong signal (a
+    # 6-page brochure for ONE property is normal), so it fired on most decks - and a question
+    # channel that cries wolf costs a round-trip each time and trains the orchestrator to skim
+    # the ones that are precise. See clarify.record_count_questions / B46.
+    #
+    # source_authority_questions is NOT asked here either, and that is deliberate (B47). It
+    # used to fire at this point on RAW RECORD COUNTS ("the brochures describe 13, the tracker
+    # lists 12"), which is a pre-clustering number: a brochure record that merges into a
+    # tracker row is not an extra at all. So the broker was asked to arbitrate a discrepancy
+    # that the very next stage often dissolves. It now fires AFTER clustering has settled,
+    # below, where an "extra" is well defined and the question can NAME the options at stake.
+    _questions = _clarify.unit_questions(_recs_for_q)
+    def _ask_and_exit(questions, quiet_intro, reason, extra=""):
+        """The ONE emit site - questions are BATCHED here, never dripped.
+
+        Two phases can reach it (unit ambiguities before matching; source authority once
+        clustering has settled, which is the earliest moment an 'extra' is even definable),
+        but every question still leaves through this single door: one emit, one questions.json,
+        one exit 13. Keeping it to one call site is what the batching invariant actually
+        protects, and evals/clarify_test.py asserts the count."""
+        qf = _clarify.emit(work, questions)
+        n_br = sum(1 for q in questions if q.get("asked_of") == "broker")
+        if QUIET:
+            print(quiet_intro)
+            _say_orchestrator(
+                f"(orchestrator: {len(questions)} clarification(s) needed ({n_br} for the "
+                f"user, {len(questions) - n_br} for an isolated sub-agent) per {qf} -> "
+                f"{extra}write work/answers.json as {{id: answer}} and re-run. Each question "
+                f"is asked ONCE: anything unanswered ships as the honest gap named in its "
+                f"`if_unanswered`, so answer only what you know and never invent one.)")
+        else:
+            print(f"\nCLARIFICATION NEEDED ({len(questions)}): see {qf}. Answer what you can "
+                  f"into work/answers.json ({{id: answer}}) and re-run. Asked once only - "
+                  f"anything unanswered ships as a disclosed gap.")
+        _exit_round_trip(work, 13, _attempts, reason)
+
+    _ask = _clarify.pending(work, _questions)
+    if _ask:
+        _ask_and_exit(_ask,
+                      "A few things in your files are ambiguous - I need to confirm them "
+                      "before I build, so nothing is guessed.",
+                      "clarifying ambiguous source data")
+
     match_decisions_f = work / "match_decisions.json"
     field_decisions_f = work / "field_decisions.json"
     if len(record_files) > 1:  # cross-source pairs need >= 2 record files
         import match as _mm
         import merge as _merge
         _all_recs = [r for f in record_files for r in _load_records(f) if isinstance(r, dict)]
+        # APPLY THE MANUAL CORRECTIONS FIRST (B48). merge.main applies work/overrides.json
+        # BEFORE its own match.dedupe (merge.py ~1607, "before compute_file_quality /
+        # dominant_units / match.dedupe - because all three consume it"). This enumeration path
+        # is a SECOND clustering call, and it used to read the raw extract records, so the two
+        # calls saw DIFFERENT data whenever an override touched a field the matcher keys on
+        # (city, park, developer, an area). The consequence was silent and severe: the override
+        # changed the merged output but NOT which pairs were asked about, so a correction whose
+        # whole purpose was to make two records cluster left them split, the same building
+        # shipped twice under two names, and the run exited 0 with every gate green. Observed
+        # live: 9 grey pairs with the correction applied vs the 8 this path emitted without it.
+        # The comment below about the two clustering calls agreeing is only TRUE with this.
+        try:
+            _ovs_e, _ = _merge.load_overrides(
+                work / "overrides.json",
+                extra_fields={k for r in _all_recs if isinstance(r, dict)
+                              for k in r if k != "__meta"})
+            if _ovs_e:
+                _merge.apply_overrides(_all_recs, _ovs_e)
+        except Exception as _e:      # best-effort, exactly like merge's own override load
+            print(f"  (overrides not applied to the pair enumeration: {_e})", file=sys.stderr)
         # Quarantine off-spec STRUCTURES pre-enumeration, exactly as merge.main does at load
         # (~line 1041): without this, a stray non-canonical object (a leaked provenance/meta map)
         # would surface as a spurious 'field conflict' to the field-decision sub-agent, and a
@@ -1523,22 +2417,15 @@ def main() -> None:
         # the settled match decisions (best-effort): clustering for the value-conflict
         # enumeration uses the SAME match.dedupe(_all_recs, md or None) merge uses, so the
         # two clustering calls AGREE and conflict_ids never drift (the key #4 risk).
-        md = None
-        if match_decisions_f.exists():
-            try:
-                parsed = json.loads(match_decisions_f.read_text(encoding="utf-8"))
-                if isinstance(parsed, dict):
-                    md = parsed
-            except Exception:
-                md = None  # malformed/half-written -> treat as absent (re-emit + exit 10)
+        # Merged over work/match_settled.json, so a round-2 agent that empties
+        # match_decisions.json cannot destroy a settled verdict and force a third round (B20).
+        md = _load_match_decisions(work)
         # GREY-PAIR coverage: the decisions file must COVER every current grey pair with a
         # recognised verdict; an uncovered pair (inputs changed) or a bad shape re-emits +
         # exits 10 - never a silent guess.
-        grey_uncovered = bool(grey) and not (md is not None and all(
-            (isinstance(md.get(g["pair_id"]), str) and md[g["pair_id"]] in ("same", "different"))
-            or (isinstance(md.get(g["pair_id"]), dict)
-                and md[g["pair_id"]].get("verdict") in ("same", "different"))
-            for g in grey))
+        # ONE predicate, shared with _settled_clusters - if the two ever disagreed, a pair
+        # could be "answered" for the conflict pull-forward and "uncovered" for the exit.
+        grey_uncovered = bool(grey) and not all(_pair_answered(md, g) for g in grey)
         # CROSS-SOURCE VALUE CONFLICTS (#4): build clusters with the settled match
         # decisions (the SAME call merge makes) and enumerate every genuine field conflict
         # (pure Python). Each carries an order-independent conflict_id; the field-decisions
@@ -1551,13 +2438,50 @@ def main() -> None:
         # so omitting it made the a/b/c labels map to different values than merge applies (S2-1).
         _merge.compute_file_quality(_all_recs)
         clusters = _mm.dedupe(_all_recs, md or None)
-        conflicts = _merge.conflict_candidates(clusters)
+        # ONLY enumerate value conflicts once CLUSTERING IS SETTLED. Each conflict_id is derived
+        # from its `cluster_key`, so a grey pair resolved later changes the key and ORPHANS every
+        # answer given against the old one - the adjudication is silently discarded and re-asked.
+        # A live 12-property run saw the set grow 44 -> 78 across two exit-10 rounds for exactly
+        # this reason: the first 44 were adjudicated against clustering that had not finished
+        # deciding which records were one property. That is wasted sub-agent time (and wasted
+        # broker minutes) by construction, not bad luck. With pairs outstanding we ask for the
+        # PAIRS ONLY; the conflict set is then enumerated once, against final clusters.
+        # ...but a cluster no OUTSTANDING pair can touch is already final, so its conflicts
+        # carry the ids the settled clustering will produce and can be adjudicated NOW. With
+        # every pair answered this is simply every cluster; in the common case where the open
+        # pairs touch only a corner of the dataset it collapses the run to ONE exit 10. (B20)
+        # SOURCE AUTHORITY (B47) - asked HERE, not before matching, because only now is an
+        # "extra" well defined: a cluster evidenced by exactly ONE source family after
+        # clustering has settled. Gated on `not grey_uncovered` so it is never asked while a
+        # pair is still outstanding - resolving that pair may dissolve the discrepancy
+        # entirely, and a question the next stage makes moot costs a round-trip and trains the
+        # broker to skim the ones that matter. Asked ONCE (clarify.pending), and unanswered
+        # still ships the union, so this can never wedge a run.
+        if not grey_uncovered:
+            _extras = _merge.authority_extras(clusters)
+            _auth_q = _clarify.pending(work, _clarify.source_authority_questions(_extras)) \
+                if _extras else []
+            if _auth_q:
+                _ask_and_exit(_auth_q,
+                              "Your sources disagree about which options belong on this "
+                              "longlist - I need you to pick before I build.",
+                              "confirming which source governs the longlist",
+                              extra="put it to the broker in plain language, NAMING the "
+                                    "options listed in `only_in_brochures` / "
+                                    "`only_in_tracker`, then ")
+            # Apply the settled answer to THIS path's clusters too, so the conflict ids
+            # enumerated here match the ones merge.main will produce from its own filtered
+            # clusters. Unanswered / 'union' is a no-op, so nothing changes for a run that
+            # never answered.
+            clusters, _ = _merge.apply_source_authority(
+                clusters, _clarify.settled_authority(_answers))
+        conflicts = _merge.conflict_candidates(
+            _settled_clusters(clusters, grey, md, _all_recs) if grey_uncovered else clusters)
         fd = None
         if field_decisions_f.exists():
             try:
                 parsed_f = json.loads(field_decisions_f.read_text(encoding="utf-8"))
-                if isinstance(parsed_f, dict):
-                    fd = parsed_f
+                fd = _index_decisions(parsed_f, ("conflict_id", "field", "property_id"))
             except Exception:
                 fd = None  # malformed/half-written -> treat as absent (re-emit + exit 10)
 
@@ -1570,7 +2494,7 @@ def main() -> None:
         field_uncovered = bool(conflicts) and not (fd is not None and all(
             _pick_ok(fd.get(c["conflict_id"])) for c in conflicts))
         if grey_uncovered or field_uncovered:
-            (work / "match_candidates.json").write_text(json.dumps({
+            _cand = {
                 "pairs": [{"pair_id": g["pair_id"], "a": g["a"], "b": g["b"]} for g in grey],
                 "output": "work/match_decisions.json",
                 # SEMANTIC VERIFIER: a SECOND, blind re-judgement of the SAME grey pairs. The
@@ -1617,16 +2541,47 @@ def main() -> None:
                     "EVERY conflict_id. Python re-verifies each pick against the field's plausibility "
                     "gate and falls back to precedence if it fails. See reference/matching.md. Then "
                     "re-run the same command - it resumes and merges."),
-            }, ensure_ascii=False, indent=2), encoding="utf-8")
+            }
+            if not grey_uncovered:
+                # ROUND 2, pairs already settled. Do NOT re-list them: re-emitting costs two
+                # sub-agent dispatches for nothing, and a re-dispatched author returning one
+                # different verdict would re-key the very conflicts being adjudicated in this
+                # same round. Omit the keys entirely rather than send `pairs: []`, which reads
+                # to a literal-minded agent as "write an empty decisions file". (B20)
+                for _k in ("pairs", "verify_pairs", "output", "verify_output",
+                           "verify_instructions"):
+                    _cand.pop(_k, None)
+                _cand["settled_pairs"] = len(grey)
+                _cand["instructions"] = (
+                    "`field_conflicts` ONLY this round. The ambiguous record matches were "
+                    "resolved in an earlier round and are deliberately NOT re-listed. **Do "
+                    "NOT create, empty, rewrite or delete work/match_decisions.json or "
+                    "work/match_verify.json** - the settled verdicts live there, and "
+                    "re-writing them re-opens the matching round. Dispatch ONE sub-agent for "
+                    "the value conflicts below. A `field_conflict` is a GENUINE VALUE "
+                    "DISAGREEMENT within a merged property: a field where two+ sources state "
+                    "DIFFERENT values. The fixed source precedence already chose a `default`; "
+                    "KEEP the default unless a candidate is clearly right and the default "
+                    "clearly wrong (a typo in a newer email, a mislabelled tracker column, an "
+                    "ask-price vs a negotiated rate). NEVER invent a value - pick only among "
+                    "the given candidate labels; when unsure, pick the default. Write "
+                    "work/field_decisions.json: {\"<conflict_id>\": {\"pick\": \"<label>\", "
+                    "\"reason\": \"...\"}, ...} covering EVERY conflict_id. Python re-verifies "
+                    "each pick against the field's plausibility gate and falls back to "
+                    "precedence if it fails. See reference/matching.md. Then re-run the same "
+                    "command - it resumes and merges.")
+            (work / "match_candidates.json").write_text(
+                json.dumps(_cand, ensure_ascii=False, indent=2), encoding="utf-8")
             n_g = len(grey) if grey_uncovered else 0
             n_c = len(conflicts) if field_uncovered else 0
             if QUIET:
                 print("Some options look like they might be the same property from different "
                       "sources, or sources disagree on a value; I need to confirm a few before "
                       "continuing.")
-                print(f"(orchestrator: dispatch the match sub-agent for {n_g} pair(s) + {n_c} value "
-                      f"conflict(s) per {work / 'match_candidates.json'} -> work/match_decisions.json "
-                      f"+ work/field_decisions.json, then re-run.)", file=sys.stderr)
+                _say_orchestrator(
+                    f"(orchestrator: dispatch the match sub-agent for {n_g} pair(s) + {n_c} value "
+                    f"conflict(s) per {work / 'match_candidates.json'} -> work/match_decisions.json "
+                    f"+ work/field_decisions.json, then re-run.)")
             else:
                 parts = []
                 if grey_uncovered:
@@ -1636,7 +2591,7 @@ def main() -> None:
                 print(f"\nMATCH ADJUDICATION NEEDED: dispatch a sub-agent for {' + '.join(parts)} per "
                       f"{work / 'match_candidates.json'} -> work/match_decisions.json + "
                       f"work/field_decisions.json, then re-run.")
-            sys.exit(10)
+            _exit_round_trip(work, 10, _attempts, "cross-source match/value adjudication")
 
         # SEMANTIC VERIFIER (grey-match): every current grey pair is COVERED by the author
         # decisions (we did not exit 10). If the second, blind verifier pass is present,
@@ -1734,6 +2689,72 @@ def main() -> None:
     if match_conflicts_arg.exists():
         merge_args += ["--match-conflicts", match_conflicts_arg]
         merge_inputs.append(match_conflicts_arg)
+    # VISUAL-QA ACK: `plan_rejected` names site plans the reviewer rejected. Passed so a
+    # rejection is DURABLE - merge binds no plan from that page in any tier and emits no
+    # plan ledger row for it. Added to merge_inputs so recording a rejection re-fires merge
+    # (the resume predicate), which is what makes the remedy terminate: previously the only
+    # remedy was clearing p.plan in canonical, which the next merge silently undid.
+    # DURABLE MANUAL CORRECTIONS (P1-4): work/overrides.json is re-applied by merge AFTER
+    # extraction on every run, so a correction survives re-extraction instead of being discarded
+    # with the derived work/extract records. In merge_inputs so EDITING one re-fires merge ->
+    # canonical changes -> the build re-runs (same predicate as --field-decisions/--plan-rejected).
+    overrides_f = work / "overrides.json"
+    if overrides_f.exists():
+        merge_args += ["--overrides", overrides_f]
+        merge_inputs.append(overrides_f)
+    # ...and a CONTENT sentinel so DELETING overrides.json also invalidates. _is_current is
+    # mtime-based over a list of EXISTING inputs (it `continue`s past a missing one), so a removed
+    # file simply drops out of the list and a resumed canonical would keep a correction the broker
+    # just RETRACTED. _write_if_changed only writes when the content differs, so a byte-identical
+    # rewrite does not churn the mtime and does not re-fire merge.
+    _ov_sha = _write_if_changed(
+        work / ".overrides_sha",
+        hashlib.sha256(overrides_f.read_bytes()).hexdigest() if overrides_f.exists() else "")
+    merge_inputs.append(_ov_sha)
+
+    # THE PRODUCING ENVIRONMENT IS AN INPUT. merge harvests decoded pixels, so a change of
+    # PDF engine changes what it can extract - and without this the native re-run after a
+    # degraded pass resume-skipped merge and served the shim's cached "no usable photo". (B17)
+    _eng_stamp = _engine_stamp(work)
+    merge_inputs.append(_eng_stamp)
+
+    # MERGE IS WARN-ONLY, DELIBERATELY NOT A RESUME INPUT. (B42)
+    #
+    # merge is the one expensive stage: with a cold .image_cache, attach_media is a 40-90 s
+    # photo harvest inside a ~45 s shell window - i.e. adding this to merge_inputs would
+    # manufacture the exact kill/resume spiral that cost 2.5 h on a live run. And it would buy
+    # almost nothing, because images.py's cache key carries no code component, so merge would
+    # re-run and re-derive BYTE-IDENTICAL images. (What actually invalidates a harvest change is
+    # bumping the `v3|` cache-key prefix in images.py - a human decision, recorded there.)
+    #
+    # So Python prepares the evidence and the human judges whether the re-harvest is worth it.
+    # The hole stops being SILENT, which was the actual defect, at zero re-fire cost.
+    _merge_code = _code_stamp(work, "merge", [
+        HERE / "merge.py", HERE / "match.py", HERE / "images.py", HERE / "normalize.py"])
+    try:
+        _prev_merge_code = (work / ".code_merge.prev").read_text(encoding="utf-8").strip()
+    except Exception:
+        _prev_merge_code = ""
+    _now_merge_code = _merge_code.read_text(encoding="utf-8").strip()
+    if _prev_merge_code and _prev_merge_code != _now_merge_code:
+        _say_orchestrator(
+            "(orchestrator: this work dir was organised by a DIFFERENT version of the skill's "
+            "merge/match/images code. Resume is deliberately NOT invalidated - a cold-cache "
+            "re-harvest is 40-90s and would risk a capped-shell loop. If the change affects "
+            "how records merge or photos are chosen, re-run once with --no-resume.)")
+    _write_if_changed(work / ".code_merge.prev", _now_merge_code)
+
+    # ANSWERED CLARIFICATIONS are a merge input, or a freshly-answered question would sit in
+    # the work dir while resume skipped the very stage that consumes it. (B38)
+    _cs = work / "clarify_state.json"
+    if _cs.exists():
+        merge_args += ["--answers", work]
+        merge_inputs.append(_cs)
+
+    plan_ack_f = work / "placeholder_audit_ack.json"
+    if plan_ack_f.exists():
+        merge_args += ["--plan-rejected", plan_ack_f]
+        merge_inputs.append(plan_ack_f)
     # P2-10: merge runs attach_media, which can sit silent for 40-90s harvesting brochure
     # photos, so a capped run looks hung. Fold ONE clause into the single step marker, but
     # ONLY when there is real harvest work (brochures or images present) - a tracker- or
@@ -1779,6 +2800,26 @@ def main() -> None:
                 if not QUIET:
                     print(f"(image pre-warm skipped: {e})", file=sys.stderr)
         call(merge, *merge_args)
+
+    # P1-4: re-surface the override OUTCOMES. merge printed them, but call() swallows child stdout
+    # under --quiet - and a correction that matched NOTHING is precisely what must not be silent.
+    # Read back from the report merge wrote, unconditionally.
+    _ov_rep = work / "overrides_report.json"
+    if _ov_rep.exists():
+        try:
+            _rep = json.loads(_ov_rep.read_text(encoding="utf-8")) or {}
+        except Exception:
+            _rep = {}
+        for _k, _tag in (("stale", "STALE OVERRIDE"), ("ambiguous", "AMBIGUOUS OVERRIDE"),
+                         ("superseded", "SUPERSEDED OVERRIDE")):
+            for _s in (_rep.get(_k) or []):
+                print(f"[{_tag}] {_s.get('id')} {_s.get('reason', '')}")
+        for _iv in (_rep.get("invalid") or []):
+            print(f"[INVALID OVERRIDE] {_iv} - this entry does NOTHING until it is fixed.")
+        _n_ok = len(_rep.get("applied") or [])
+        if _n_ok and not QUIET:
+            print(f"({_n_ok} manual correction(s) applied - each has an `override` row in the "
+                  f"Source Ledger and a line in the Gaps Report.)", file=sys.stderr)
 
     # Stage 3 - enrichment (flags override project.yaml; default to project.yaml)
     enr_args = []
@@ -1906,16 +2947,17 @@ def main() -> None:
                     # its own one-liner (org users never see the work folder; seeds come back the
                     # same way).
                     print("Adding maps and extras")
-                    print(f"(orchestrator: web enrichment needed ({n_req} request(s)). PROBE tools, "
-                          f"use the FIRST present: (1) mcp__shell - re-run this command THROUGH it "
-                          f"(direct live fetch, no page); (2) Playwright - data: URL fetcher per "
-                          f"request in {work}/web_requests.json (navigate request['data_url'], read "
-                          f"back with browser_evaluate filename=save_as); (3) Claude Preview MCP - "
-                          f"preview_start 'longlist-preview' -> click #go -> read the seeds object "
-                          f"from {page}. If none or the fetch is blocked, ATTACH {page} in the chat; "
-                          f"when the user drops web_seeds.json back, save it to {work}, run "
-                          f"web_enrich.py ingest --work {work}, re-run. WebFetch CANNOT reach these "
-                          f"API hosts - it is not a path.)", file=sys.stderr)
+                    _say_orchestrator(
+                        f"(orchestrator: web enrichment needed ({n_req} request(s)). PROBE tools, "
+                        f"use the FIRST present: (1) mcp__shell - re-run this command THROUGH it "
+                        f"(direct live fetch, no page); (2) Playwright - data: URL fetcher per "
+                        f"request in {work}/web_requests.json (navigate request['data_url'], read "
+                        f"back with browser_evaluate filename=save_as); (3) Claude Preview MCP - "
+                        f"preview_start 'longlist-preview' -> click #go -> read the seeds object "
+                        f"from {page}. If none or the fetch is blocked, ATTACH {page} in the chat; "
+                        f"when the user drops web_seeds.json back, save it to {work}, run "
+                        f"web_enrich.py ingest --work {work}, re-run. WebFetch CANNOT reach these "
+                        f"API hosts - it is not a path.)")
                 else:
                     print(f"\nWEB ENRICHMENT NEEDED ({n_req} request(s)). It is ALWAYS the Cowork "
                           f"sandbox; PROBE which tools are present and use the FIRST available: "
@@ -1932,7 +2974,7 @@ def main() -> None:
                           f"this command - it resumes and bakes the GENUINE nearest POIs + real "
                           f"drive times. (WebFetch cannot reach these API hosts; it is not a "
                           f"fallback.)")
-                sys.exit(8)
+                _exit_round_trip(work, 8, _attempts, "web enrichment (geocodes/POIs/drive times)")
 
     # REGION-LABEL RESOLUTION (exit 3, rides the SAME interpretation manifest - no new exit
     # code). After enrich has bound every region it can DETERMINISTICALLY (coords -> exact
@@ -1977,8 +3019,22 @@ def main() -> None:
                     "candidates": enrich.region_label_candidates(ds, ccs)})
             if region_jobs:
                 (work / "vision").mkdir(parents=True, exist_ok=True)
+                # PRESERVE THE DECKS. This rewrites the shared interpretation manifest, and
+                # writing `decks: []` did not merely blank a field: vision_validate builds its
+                # deck index from it, so from the first region-label exit-3 onward EVERY
+                # deck-gated check - page_no and image_pages and plan_page and exclude_refs
+                # range, the source_file cross-check, the twin-text reconciliation and the
+                # page-coverage warning - silently no-opped for the life of the work dir.
+                # No diagnostic fired either, because `{"decks": []}` is valid JSON so the
+                # "manifest unreadable" warning never triggered. (B14)
+                _prev_decks = []
+                try:
+                    _prev_decks = (json.loads(manifest.read_text(encoding="utf-8"))
+                                   .get("decks") or [])
+                except Exception:
+                    _prev_decks = []
                 payload = {
-                    "decks": [],
+                    "decks": _prev_decks,
                     "region_labels": region_jobs,
                     "output": "work/extract/region_labels.json",
                     "region_label_instructions": (
@@ -2009,16 +3065,17 @@ def main() -> None:
                 if QUIET:
                     print("A few region labels in your files need matching to the workforce "
                           "dataset before I add the maps and extras.")
-                    print(f"(orchestrator: dispatch the interpretation sub-agent for {n_rl} "
-                          f"region label(s) per {manifest} -> work/extract/region_labels.json "
-                          f"(reference/interpretation.md 'Region label resolution'), then "
-                          f"re-run.)", file=sys.stderr)
+                    _say_orchestrator(
+                        f"(orchestrator: dispatch the interpretation sub-agent for {n_rl} "
+                        f"region label(s) per {manifest} -> work/extract/region_labels.json "
+                        f"(reference/interpretation.md 'Region label resolution'), then "
+                        f"re-run.)")
                 else:
                     print(f"\nREGION LABEL RESOLUTION NEEDED ({n_rl} label(s)): dispatch the "
                           f"interpretation sub-agent per {manifest} -> "
                           f"work/extract/region_labels.json (reference/interpretation.md "
                           f"'Region label resolution'), then re-run.")
-                sys.exit(3)
+                _exit_round_trip(work, 3, _attempts, "region-label resolution")
 
     # --- Phase 2: free-text DATA translation to output.language (exit 12; mirrors exit 11) ----
     # Runs AFTER merge/enrich/web-enrich/region-label have all settled canonical.json (a
@@ -2029,9 +3086,30 @@ def main() -> None:
     # translate.py itself - run.py owns the exit code, exactly like every other stage here.
     _t_rc = translate.run_stage(work, canonical, ledger_csv, lang, quiet=QUIET)
     if _t_rc == 12:
-        req = work / "i18n" / "data_translate_request.json"
         import i18n as _i18n
-        cache_f = work / "i18n" / f"data_translations.{_i18n.normalize_lang(lang)}.json"
+        _tcode = _i18n.normalize_lang(lang)
+        # B54: the data is already in the dashboard's language, so there is nothing to translate.
+        # Drop the SKIP sentinel (the documented decline, which the translation gate reads as an
+        # acknowledged one) and carry on rather than spending an agent dispatch plus a shell
+        # round-trip mapping English onto English. The note records WHY, so the decline is
+        # disclosed rather than silent.
+        try:
+            _canon_obj = json.loads(Path(canonical).read_text(encoding="utf-8"))
+        except Exception:
+            _canon_obj = {}
+        if _lang_skip(_canon_obj, _tcode):
+            _skip_note = (f"Free-text translation skipped: every source deck declares "
+                          f"'{_tcode}', which matches the dashboard language. Records that "
+                          f"declare no language (tracker rows) are assumed to share it.")
+            _skip_f = work / "i18n" / "data_translate.SKIP"
+            _skip_f.parent.mkdir(parents=True, exist_ok=True)
+            _write_if_changed(_skip_f, _skip_note)
+            if not QUIET:
+                print(f"\nDATA TRANSLATION SKIPPED -> {lang}: {_skip_note}")
+            _t_rc = None
+    if _t_rc == 12:
+        req = work / "i18n" / "data_translate_request.json"
+        cache_f = work / "i18n" / f"data_translations.{_tcode}.json"
         if QUIET:
             print(f"Translating the descriptions to {lang}… (one-time)")
         else:
@@ -2041,7 +3119,7 @@ def main() -> None:
                   f"{cache_f}, then re-run the SAME command. "
                   f"Blind-verify as G-lang before shipping. (Or `type nul > "
                   f"{work / 'i18n' / 'data_translate.SKIP'}` to ship the data in its source language.)")
-        sys.exit(12)
+        _exit_round_trip(work, 12, _attempts, "free-text data translation")
 
     # Stage 4 - pre-build gates (mechanical halves; judgement gates run separately)
     step("Checking the data") if QUIET else print("\n=== PRE-BUILD GATES (mechanical) ===")
@@ -2055,7 +3133,24 @@ def main() -> None:
         cov_args += ["--fill-threshold", fill_thr]
     g1.append(run_gate(gate_runner, *cov_args))
     g1.append(run_gate(gate_runner, "trace-coverage", canonical, "--ledger", ledger_csv))
+    # B52: a value citing "page N" must actually occur on that page. Sits beside trace-coverage
+    # because it is the same question one level deeper - trace-coverage asks whether a field HAS
+    # a locator, this asks whether the locator is TRUE.
+    g1.append(run_gate(gate_runner, "prov-containment", canonical,
+                       "--work", work, "--ledger", ledger_csv))
     g1.append(run_gate(gate_runner, "images", canonical))
+    # P1-1: pre-build, so an over-derived GLA (and the rent computed from it) is caught before a
+    # dashboard is ever built. Inert on any dataset whose sources state no total of their own.
+    g1.append(run_gate(gate_runner, "arithmetic", canonical))
+    # B59: a field must be WRITTEN the same way on every property that carries it. Sits beside
+    # arithmetic because both police how a NUMBER reaches the client - arithmetic checks the
+    # magnitude, this checks that the magnitude is legible. Live defect: divisibleFrom shipped
+    # '10,000 sq. m' on twelve cards and a bare '5000' on the thirteenth.
+    g1.append(run_gate(gate_runner, "value-format", canonical))
+    # B60: a town-centre pin while the property's OWN page carries the author's coordinates or a
+    # maps link. Runs post-enrich because it judges the FINAL coordinate, not the extracted one.
+    g1.append(run_gate(gate_runner, "coord-provenance", canonical,
+                       "--work", work, "--ledger", ledger_csv))
     g1.append(run_gate(gate_runner, "enrichment", canonical,
                        *(["--requested", ",".join(requested_layers)] if requested_layers else [])))
     g1.append(run_gate(gate_runner, "translation", canonical, "--work", work, "--lang", lang))
@@ -2092,8 +3187,9 @@ def main() -> None:
         if QUIET:
             print("The information in your files has a problem I can't build over - I need to "
                   "check the inputs with you before going further.")
-            print(f"(orchestrator: validate-data BLOCKED (exit 5) - see {work / 'gate1_scorecard.md'}; "
-                  f"fix the inputs/data and re-run.)", file=sys.stderr)
+            _say_orchestrator(
+                f"(orchestrator: validate-data BLOCKED (exit 5) - see {work / 'gate1_scorecard.md'}; "
+                f"fix the inputs/data and re-run.)")
         else:
             print("\nBLOCKED: validate-data failed (schema/consistency defect). Not building - "
                   "fix the inputs/data and re-run (gate1_scorecard.md has the specifics).")
@@ -2102,9 +3198,9 @@ def main() -> None:
         if QUIET:
             print("A quality check on the data needs sorting before I can finish the dashboard - "
                   "I can't hand it over as it stands.")
-            print(f"(orchestrator: {sum(1 for rc in g1 if rc != 0)} pre-build gate(s) BLOCKED (exit 6) - "
-                  f"see {work / 'gate1_scorecard.md'}, fix, and re-run; resume skips clean stages.)",
-                  file=sys.stderr)
+            _say_orchestrator(
+                f"(orchestrator: {sum(1 for rc in g1 if rc != 0)} pre-build gate(s) BLOCKED (exit 6) - "
+                f"see {work / 'gate1_scorecard.md'}, fix, and re-run; resume skips clean stages.)")
         else:
             print(f"\nBLOCKED: {sum(1 for rc in g1 if rc != 0)} pre-build gate(s) red - not building. "
                   f"See {work / 'gate1_scorecard.md'}, fix, and re-run (resume skips clean stages).")
@@ -2114,7 +3210,14 @@ def main() -> None:
     step("Building the dashboard")
     filename = (cfg.get("output") or {}).get("filename") or f"CBRE_Property_Dashboard_{args.client}.html"
     built = work / "built.html"
-    if _is_current(built, [canonical]):
+    # AUTO-INVALIDATE on a code change, because build is CHEAP - a measured ~0.07-0.3 s, so a
+    # spurious rebuild costs nothing and a missed one used to be an exit-7 'chrome drift' dead
+    # end that no re-run could clear. This is the render closure, verified: anything else cannot
+    # change built.html for a fixed canonical. (B42)
+    _build_stamp = _code_stamp(work, "build", [
+        HERE / "build_dashboard.py", HERE / "i18n.py", HERE / "normalize.py",
+        HERE / "_common.py", HERE.parent / "assets" / "dashboard_template.html"])
+    if _is_current(built, [canonical, _build_stamp]):
         _resumed("build")  # built.html already reflects the current canonical
     else:
         call(build_dashboard, canonical, "--out", built)
@@ -2134,8 +3237,9 @@ def main() -> None:
         if QUIET:
             print("A final check on the built dashboard flagged a problem, so I'm not handing "
                   "this version over.")
-            print(f"(orchestrator: post-build gate BLOCKED (exit 7) - not delivering; "
-                  f"see {work / 'gate2_scorecard.md'}.)", file=sys.stderr)
+            _say_orchestrator(
+                f"(orchestrator: post-build gate BLOCKED (exit 7) - not delivering; "
+                f"see {work / 'gate2_scorecard.md'}.)")
         else:
             print(f"\nBLOCKED: post-build gate red - not delivering. See {work / 'gate2_scorecard.md'}.")
         sys.exit(7)
@@ -2147,10 +3251,28 @@ def main() -> None:
     # or a new output filename (a flag change), fails the check and re-delivers. --no-resume
     # => _is_current is always False => unchanged behaviour for the byte-identity battery. (#25)
     deliverables = work / "deliverables"
+    # qa_state.json is load-bearing, not decorative: final_gate BLOCKS when the delivered Gaps
+    # Report's "Known limitations" is not the LATEST recorded round's carried list. Without it
+    # here, a fresh `qa-round record` leaves Stage 7 looking current, --resume (the DEFAULT) skips
+    # the re-deliver, and that block can never be cleared through the spine. With it, the stage is
+    # stale exactly once: re-delivering bumps the dashboard past qa_state.json, so the next run
+    # resume-skips again. No oscillation.
     _deliver_inputs = [built, canonical, ledger_csv,
                        work / "photo_doubts.json", work / "unreadable.json",
-                       work / "yield_report.md"]
-    if _is_current(deliverables / filename, _deliver_inputs):
+                       work / "yield_report.md", work / "qa_state.json",
+                       # deliver is seconds, so auto-invalidating on a code change is free (B42)
+                       _code_stamp(work, "deliver", [
+                           HERE / "deliver.py", HERE / "ledger.py", HERE / "normalize.py",
+                           HERE / "_common.py"])]
+    # Two conditions, and BOTH are load-bearing (B01). `_is_current` answers "are the inputs
+    # unchanged?"; `delivery_complete` answers "did the last delivery actually FINISH?".
+    # Keying on the dashboard alone answered neither: it is written FIRST, so it went current
+    # the instant step 1 committed and a kill in steps 2-4 resume-skipped forever - shipping
+    # a v2 dashboard beside v1 sidecars, or leaving three artefacts that final_gate then
+    # failed with no way through the spine.
+    import deliver as _deliver_mod  # imported inside main(), as every helper here is
+    if _is_current(deliverables / filename, _deliver_inputs) \
+            and _deliver_mod.delivery_complete(deliverables):
         _resumed("deliver")
     else:
         call(deliver, "--canonical", canonical, "--html", built,
@@ -2165,14 +3287,15 @@ def main() -> None:
         print("\nPlaceholders (uncertain photo match - confirm to pull the picture in immediately):")
         for d in photo_doubts:
             print(f"  {d['park']}  -->  Is this {d['brochure']}? If yes, I'll extract its photo now.")
-        print("(orchestrator: on a 'yes', move that brochure from \"uncertain\" to \"confident\" in "
-              "work/photo_map.json and re-run; on a 'no', leave it as \"unrelated\".)",
-              file=sys.stderr if QUIET else sys.stdout)
+        _say_orchestrator(
+            "(orchestrator: on a 'yes', move that brochure from \"uncertain\" to \"confident\" in "
+            "work/photo_map.json and re-run; on a 'no', leave it as \"unrelated\".)")
     if QUIET:
         step("Done - dashboard ready")
         # P3-10: tell the broker WHERE the deliverable is, and flag the Gaps Report ONLY
         # when there are REAL gaps to chase (not merely because the file always exists).
         # Reuse deliver.py's own CORE + _is_tbd so this matches the Gaps Report exactly.
+        _clear_attempts(work)  # the spine got through: no request is outstanding
         print(f"Your dashboard and its files are ready in {deliverables}.")
         # flag the Gaps Report ONLY when it has real content to chase (not merely
         # because the file always exists); the helper mirrors every section
@@ -2182,11 +3305,21 @@ def main() -> None:
                   "for what to chase with the landlord or agent.")
         # P3-7: the 'Remaining agentic steps' reminder below is after this quiet return,
         # so it would be suppressed. Mirror the exit-8 stderr precedent: emit an
-        # orchestrator-phrased reminder (final_gate.py is the backstop) to STDERR.
-        print("(orchestrator: spine done - run the remaining AGENTIC steps per SKILL.md "
+        # orchestrator-phrased reminder (final_gate.py is the backstop). STDOUT: it is a
+        # handoff instruction, and stderr is invisible through mcp__shell. (B27)
+        _say_orchestrator(
+              "(orchestrator: spine done - run the remaining AGENTIC steps per SKILL.md "
               "(emails/region research as configured, then the isolated G-honesty / G-trace / "
-              "G-images / G-visual reviewers). final_gate.py is the ship backstop - do not "
-              "declare done to the broker until it passes.)", file=sys.stderr)
+              "G-images / G-visual reviewers). The QA window is ONE review pass: the reviewers "
+              "PROPOSE findings, you IMPLEMENT them, then deliver. Dispatch the gate batch "
+              f"concurrently -> `gate_runner.py qa-round record --work {work} --reviews "
+              f"{work}\\reviews` -> implement each `blocking:` finding and record it with "
+              "`qa-round resolve --id <id> --because \"<what you changed>\"` -> deliver -> "
+              f"`final_gate.py ... --qa-state {work}`. Advisory findings are CARRIED to the Gaps "
+              "Report's 'Known limitations', not fixed and not re-reviewed. There is no second "
+              "review pass and no adjudication round. final_gate.py is the ship backstop - it "
+              "blocks while any blocking finding has no recorded repair; do not declare done to "
+              "the broker until it passes.)")
         return
     print(f"\nDONE. Deliverables in {deliverables}")
     esrc = ((cfg.get("inputs") or {}).get("emails") or {}).get("source", "none")

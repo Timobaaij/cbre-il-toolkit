@@ -7,6 +7,54 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.1.0] — 2026-08-11
+
+A large property-longlist release: the dashboard template moves from v25 to **v35**, the
+eval suite grows from a handful to **83 tests behind one runner**, and the QA stage becomes
+a bounded, propose-then-implement window. It supersedes the withdrawn 1.0.16 (whose bounded-QA
+and numguard work is included here).
+
+### Added
+- **A clarification channel (`helpers/clarify.py`, exit 13).** When the source is genuinely
+  ambiguous, the skill now ASKS — during the run, while the answer can still change the
+  deliverable — instead of writing a caveat into a Gaps Report nobody reads. Previously only
+  three specific moments could ask (deck reading, photo match, conflict adjudication);
+  everything else silently degraded to a flag.
+- **A `G-arithmetic` gate.** The chrome's derived `GLA = warehouseArea + officeAreaVal` must
+  not exceed the source's own stated total (`meta.statedTotals`), so a derived figure can
+  never quietly overstate what the source said.
+- **A Chinese dashboard locale (`assets/i18n/zh.json`).** Twelve bundled language packs, all
+  sharing an identical 193-key set.
+- **One eval runner (`evals/run_all.py`) and ~70 new evals.** SKILL.md used to name four
+  evals; there are now 83. New coverage spans arithmetic, honesty, source authority and
+  self-conflict, capture contract/symmetry, coordinate provenance, per-card completeness,
+  unit disclosure and area basis, atomic delivery, freeze order, resume/livelock behaviour,
+  translation end-to-end, and documentation truth (`doctruth_test.py`).
+### Changed
+- **The QA window: the reviewers PROPOSE, you IMPLEMENT, then DELIVER.** The post-build review
+  is hard-bounded in code (`gate_runner.py qa-round`, with `resolve` per blocking finding)
+  rather than the old "re-review until zero HIGH/MED" loop that a deliberately memoryless
+  reviewer could never terminate. Reviewers judge exactly as before; advisory findings are
+  closed by being written into the Gaps Report, not by another round. `final_gate.py` takes
+  `--qa-state` and is checked against the delivered report.
+- **“tbd is never a number” guards.** The chrome's comparators and predicates can no longer
+  treat a `tbd`/`—` sentinel as a numeric value in sorting, filtering or KPIs.
+- **Dashboard template v26 → v35**, with a matching `chrome_sha256`, plus broad updates across
+  extraction, enrichment, matching, merge, delivery, the gates and every reference document.
+### Removed
+- **Archived four near-orphaned docs and two dead files**, each now asserted absent by
+  `doctruth_test.py`: `reference/memory.md`, `reference/vision-fallback.md` (superseded by
+  `interpretation.md` as the single interpretation contract), `templates/ledger_columns.md`,
+  `examples/`, `helpers/_ph_const.txt` (a byte-duplicate of `assets/placeholder.uri`) and the
+  preserved `assets/dashboard_template.v18.html`.
+### Known issue
+- `evals/plan_reject_test.py` fails on Linux (2 assertions): the plan-rejection ack normaliser
+  uses `Path(...).name`, which does not strip a Windows-style `c:\dir\file.pdf` prefix on
+  POSIX, so the test's path-insensitivity assertions do not hold there. Pre-existing and
+  unrelated to packaging — it fails identically on an untouched copy of the skill. It is the
+  suite's only logic failure: 74 of the 83 evals pass on a bare Linux box, and the remaining 8
+  fail only for want of Pillow/PyMuPDF/openpyxl, which Cowork provides.
+
 ## [1.0.15] — 2026-07-29
 ### Fixed
 - **Property longlist — two Cowork-resume convergence bugs.** (1) The placeholder-image
@@ -350,6 +398,7 @@ How to update to the latest version is in the [README](./README.md#updating).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.1.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.1.0
 [1.0.15]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.15
 [1.0.14]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.14
 [1.0.13]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.13

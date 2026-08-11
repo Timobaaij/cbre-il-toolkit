@@ -109,7 +109,15 @@ COLUMN_MAP = {
     "electricity": ["power", "power supply", "electricity", "kva"],
     "truckParking": ["trailer spaces", "truck parking", "hgv parking", "lorry parking"],
     "carParking": ["car parking", "car parking spaces", "parking spaces", "car spaces"],
-    "breeam": ["breeam", "breeam rating", "certification", "epc rating", "epc"],
+    # BREEAM and EPC are DIFFERENT certificates on different scales and must never share a
+    # column binding: BREEAM grades sustainability design (Pass/Good/Very Good/Excellent/
+    # Outstanding), an EPC grades energy efficiency on a letter band (A+/A/B). `epc rating`
+    # and `epc` used to sit in this alias list, so on a tracker carrying BOTH columns the EPC
+    # value filled `breeam` for every row whose real BREEAM cell was empty - shipping an
+    # impossible "BREEAM A+" to a client card, cited to the empty BREEAM cell, on exactly the
+    # rows where the true value was unknown. (B5)
+    "breeam": ["breeam", "breeam rating", "certification"],
+    "epc": ["epc", "epc rating", "epc band", "epc score", "energy performance certificate"],
     "motorway": ["motorway", "highway", "corridor", "road corridor", "m25 segment"],
     "latlng": ["latitude, longitude", "lat, long", "lat/long", "coordinates",
                "lat lng", "latlong"],
@@ -134,6 +142,10 @@ NEGATIVE = {
     "loadingDocks": re.compile(r"ratio|total", re.I),
     "overheadDoors": re.compile(r"ratio|total", re.I),
     "electricity": re.compile(r"charg|ev\b|solar", re.I),
+    # a HARD veto, so an EPC column can never bind to breeam by any route - including an LLM
+    # column map that names it. The mirror keeps a BREEAM column out of epc. (B5)
+    "breeam": re.compile(r"\bepc\b|energy\s+performance", re.I),
+    "epc": re.compile(r"breeam", re.I),
     "status": re.compile(r"verified", re.I),
     "developer": re.compile(r"verified", re.I),
     "landlord": re.compile(r"verified", re.I),
@@ -184,7 +196,7 @@ def _merge_ledger_aliases() -> None:
         "loadingDocks": "loadingDocks", "overheadDoors": "overheadDoors",
         "truckParking": "truckParking", "carParking": "carParking",
         "warehouseRent": "warehouseRentVal", "serviceCharge": "serviceCharge",
-        "landPrice": "landPrice", "breeam": "breeam",
+        "landPrice": "landPrice", "breeam": "breeam", "epc": "epc",
     }
     BLOCK = {"warehouseRentVal": {"warehouse"}}
     EXTRA = {"warehouseArea": ["surface"]}  # FR bare 'Surface'; the ledger only has compounds
@@ -642,8 +654,16 @@ def detect_and_extract(path: Path, region: str = "", country: str = "",
                         # state a unit (header or cell) is completely unaffected.
                         unit_assumed = cur_hdr is None and per is None and not cell_stated
                         rec["warehouseRentVal"] = num
-                        rec["rentUnit"] = unit
-                        rec["warehouseRent"] = N.rent_display(num, unit)
+                        # DO NOT STAMP A FABRICATED rentUnit. When the source states no
+                        # currency and no per-area, `unit` here is the house default - and
+                        # writing it made the fabrication indistinguishable from a sourced
+                        # one AND fed it into merge.dominant_units, where two silent tracker
+                        # rows were enough to flip a GBP/sq ft dataset to EUR/sq m for every
+                        # property. The number is real and still ships; the unit is unknown
+                        # and now says so. (B06)
+                        if not unit_assumed:
+                            rec["rentUnit"] = unit
+                        rec["warehouseRent"] = N.rent_display(num, None if unit_assumed else unit)
                         prov[field] = loc
                         prov["warehouseRent"] = loc
                         if unit_assumed:
@@ -673,6 +693,7 @@ def detect_and_extract(path: Path, region: str = "", country: str = "",
                 # office. Subtract only when an office figure is present; a plain size with
                 # no gross marker stays warehouse area (the default, applied only here).
                 wh = rec.get("warehouseArea")
+                stated_total = None   # P1-1: the schedule's OWN stated total, when it prints one
                 if isinstance(wh, (int, float)):
                     wh_hdr = next((hd for ci, hd, ho in best_map.get("warehouseArea", [])
                                    if ci < len(r) and r[ci] not in (None, "")), "")
@@ -682,6 +703,21 @@ def detect_and_extract(path: Path, region: str = "", country: str = "",
                         office_num = (N.extract_first_number(str(rec.get("officeArea")))
                                       if not N.looks_unknown(rec.get("officeArea")) else None)
                         base = prov.get("warehouseArea", f"{ws_title}!r{rownum}")
+                        # P1-1, THE FREE WIN. A GIA/GEA/GLA-qualified size IS the schedule's own
+                        # stated TOTAL area - a figure PRINTED IN THE SOURCE, independent of
+                        # anything the pipeline derives. It was already computed here purely to
+                        # subtract office from it, then discarded into prose. Emitting it lets the
+                        # arithmetic gate compare the chrome's derived GLA against the source's own
+                        # total, and it costs the LLM nothing.
+                        #
+                        # NOT circular. In the subtract branch below warehouseArea becomes
+                        # NET, so warehouse + office == this figure and the gate merely confirms
+                        # the subtraction happened. In the ELSE branch warehouseArea KEEPS the
+                        # gross total - and if officeArea then arrives from another source (a
+                        # brochure), the chrome adds it to a figure that already contains it. That
+                        # is exactly the live defect: 498,723 gross + 58,509 office = 557,232 GLA,
+                        # 11.7% over the source's own total, and rent overstated by GBP 702,108/yr.
+                        stated_total = float(wh)
                         if office_num and 0 < office_num < wh:
                             rec["warehouseArea"] = round(wh - office_num)
                             prov["warehouseArea"] = (f"{base} (warehouse = GIA {wh:g} - office "
@@ -699,6 +735,16 @@ def detect_and_extract(path: Path, region: str = "", country: str = "",
                     rec["__meta"] = {"source_file": path.name, "source_type": "xlsx",
                                      "locator_base": ws_title, "prov": prov,
                                      "tracker_rich": tracker_rich}
+                    # P1-1: OPTIONAL, and in __meta NOT at the record top level. `_normalise_offspec`
+                    # keeps brand-new top-level SCALARS where they are and the v21 modal renders
+                    # every non-denied key, so a top-level statedTotalArea would PRINT ON THE
+                    # CLIENT'S CARD and force a chrome bump. merge lifts it to
+                    # canonical.meta.statedTotals instead.
+                    if stated_total is not None:
+                        rec["__meta"]["statedTotalArea"] = stated_total
+                        rec["__meta"]["statedTotalUnit"] = rec.get("areaUnit") or ""
+                        rec["__meta"]["statedTotalLocator"] = (
+                            prov.get("warehouseArea") or f"{ws_title}!r{rownum}")
                     # First-party map-link pins: if the row did NOT already yield coordinates from a
                     # dedicated lat/lng column, stash any maps URL / bare 'lat,lng' found in the row's
                     # cells for the shared resolver (extract_pdf.backfill_link_coords) to parse. This
@@ -787,13 +833,18 @@ def _cellstr(c) -> str:
     return str(c).strip()
 
 
-def tracker_structure(path: Path, sample_rows: int = 5) -> list[dict]:
+def tracker_structure(path: Path, sample_rows: int = 12) -> list[dict]:
     """The per-tracker-sheet STRUCTURE an isolated mapping sub-agent needs, and the
     bytes the cache hash is computed over: [{sheet, headers (raw, in column order),
-    sample_rows (up to N data rows, each a list of cell strings), populated_columns,
-    unmapped_headers}]. Pure detection (the dictionary finds the header row + its own
-    miss list to focus the model); reads NO column_map. A non-tracker sheet
-    (questionnaire / ledger / too-thin) is omitted. Deterministic + offline."""
+    sample_rows (data rows chosen to COVER every populated column, each a list of cell
+    strings), sample_row_numbers, populated_columns, unmapped_headers, and
+    unsampled_columns when even the budget could not cover them}]. Pure detection (the
+    dictionary finds the header row + its own miss list to focus the model); reads NO
+    column_map. A non-tracker sheet (questionnaire / ledger / too-thin) is omitted.
+    Deterministic + offline.
+
+    The budget rose from 5 to 12 with the cover selection: 5 head rows could not cover a
+    wide tracker, and the point of the cover is that the guarantee holds. (B12)"""
     out: list[dict] = []
     for ws_title, rows in _sheets(Path(path)):
         if not rows:
@@ -811,18 +862,61 @@ def tracker_structure(path: Path, sample_rows: int = 5) -> list[dict]:
         header_row = rows[best_hdr]
         headers = [_cellstr(c) for c in header_row]
         data_rows = rows[best_hdr + 1:]
-        samples = [[_cellstr(c) for c in r] for r in data_rows[:sample_rows]]
         populated = [(ci, str(c)) for ci, c in enumerate(header_row)
                      if c not in (None, "") and any(
                          ci < len(dr) and dr[ci] not in (None, "") for dr in data_rows)]
+        # SET-COVER SAMPLING, not a head slice (B12).
+        #
+        # This was `data_rows[:sample_rows]`, so a column populated only from data row 6
+        # onward showed the mapping sub-agent five BLANK cells. The column was never
+        # invisible - its header always ships in `headers`, and when the dictionary missed it
+        # the header is named in `unmapped_headers`. That is worse than invisible: the agent
+        # is pointed straight at the column and handed an all-blank sample as its evidence,
+        # and the contract tells it to answer `field: null` when unsure. The BLIND VERIFY
+        # pass, whose entire job is a value-magnitude cross-check, is disarmed in exactly the
+        # same way - so the two passes agree and `diff_tracker_maps` reports nothing.
+        #
+        # Greedy cover: repeatedly take the row that fills the most still-uncovered populated
+        # columns. Pure Python, deterministic (lowest row index wins a tie) - it chooses which
+        # EVIDENCE to show, never what the column means. Any budget left over goes to the top
+        # of the sheet, which is what a human reading the manifest expects to see.
+        _pop_ix = [ci for ci, _h in populated]
+        _uncovered, _chosen = set(_pop_ix), []
+        _nonblank = [{ci for ci in _pop_ix if ci < len(dr) and dr[ci] not in (None, "")}
+                     for dr in data_rows]
+        while _uncovered and len(_chosen) < sample_rows:
+            _best, _gain = None, 0
+            for _ri in range(len(data_rows)):
+                if _ri in _chosen:
+                    continue
+                _g = len(_nonblank[_ri] & _uncovered)
+                if _g > _gain:
+                    _best, _gain = _ri, _g
+            if _best is None:
+                break
+            _chosen.append(_best)
+            _uncovered -= _nonblank[_best]
+        for _ri in range(len(data_rows)):        # spend any remaining budget on the head
+            if len(_chosen) >= sample_rows:
+                break
+            if _ri not in _chosen:
+                _chosen.append(_ri)
+        _chosen = sorted(_chosen)[:sample_rows]
+        samples = [[_cellstr(c) for c in data_rows[ri]] for ri in _chosen]
         mapped_cols = {ci for cols in best_map.values() for ci, _h, _o in cols}
-        out.append({
+        entry = {
             "sheet": ws_title,
             "headers": headers,
             "sample_rows": samples,
+            "sample_row_numbers": [best_hdr + 2 + ri for ri in _chosen],  # 1-based sheet rows
             "populated_columns": len(populated),
             "unmapped_headers": [h for ci, h in populated if ci not in mapped_cols],
-        })
+        }
+        if _uncovered:
+            # DECLARE the shortfall. A silent cap reads as "you have seen everything", which
+            # is the failure this item is about - so name the columns nobody sampled.
+            entry["unsampled_columns"] = [h for ci, h in populated if ci in _uncovered]
+        out.append(entry)
     return out
 
 

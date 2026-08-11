@@ -96,6 +96,174 @@ def main() -> int:
         ck(canon3 == canon2 and ledger_lines_2 == ledger_lines_1,
            "a third run_stage call makes no further canonical/ledger change (resume-safe)")
 
+    # --- P1-7: the ledger writer RECONCILES its own rows instead of appending -------------------
+    # The old writer opened the ledger in append mode, so a row shape fixed in CODE could not
+    # replace the malformed rows an older build had already written: `ledger validate` blocked at
+    # exit 6 and the only escape was hand-deleting canonical.json + source_ledger.csv. The subtle
+    # half is the CALL SITE: the stale rows only exist on a pass where merge is resume-SKIPPED and
+    # canonical is already baked, so `bake` returns [] - exactly when the old `if rows:` guard
+    # meant the writer never ran at all.
+    import csv as _csv
+    import io as _io
+    from contextlib import redirect_stdout as _rso
+
+    import ledger as LG
+
+    _HDR = ("property_id,record_type,field,value,source_file,source_locator,"
+            "source_type,extractor,confidence,conflict_note,verified\n")
+
+    def call_validate(p: Path) -> int:
+        """`ledger.py validate` through its real CLI; returns the exit code."""
+        saved = sys.argv
+        sys.argv = ["ledger", "validate", str(p)]
+        try:
+            with _rso(_io.StringIO()):
+                LG.main()
+            return 0
+        except SystemExit as e:
+            return e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        except Exception:
+            return 1
+        finally:
+            sys.argv = saved
+
+    def _seed(work: Path, desc: str, cache: dict, extra_rows: str = "") -> tuple[Path, Path]:
+        # `description` must be the ONLY translatable field: any other eligible value that is not
+        # in the cache (e.g. `status`) makes run_stage correctly return 12 instead of reconciling.
+        (work / "i18n").mkdir(parents=True, exist_ok=True)
+        canonical = work / "canonical.json"
+        ledger = work / "source_ledger.csv"
+        canonical.write_text(json.dumps({"meta": {}, "properties": [
+            {"id": 7, "developer": "D", "clearHeight": "12 m", "description": desc}]}),
+            encoding="utf-8")
+        (work / "i18n" / "data_translations.en.json").write_text(
+            json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+        ledger.write_text(
+            _HDR + '7,property,description,Una nave,deck.pdf,page 3,pdf,X-pdf,,,\n' + extra_rows,
+            encoding="utf-8")
+        return canonical, ledger
+
+    def _trows(p: Path) -> list[dict]:
+        with open(p, newline="", encoding="utf-8") as fh:
+            return [r for r in _csv.DictReader(fh) if r.get("extractor") == "T-translate"]
+
+    spanish, english = "Una nave logistica moderna", "A modern logistics warehouse"
+
+    # (a) THE OPERATOR'S CASE: canonical ALREADY baked, so bake returns [] - a malformed row from
+    #     an older build must still be healed.
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        canonical, ledger = _seed(
+            work, english, {spanish: english},
+            # an OLD-SHAPE T-translate row: source_type EMPTY (the shipped bug)
+            f'7,property,description,{english},(translation),translated -> English,'
+            f',T-translate,,,\n')
+        ck(call_validate(ledger) != 0,
+           "P1-7 (a): the seeded malformed row BLOCKS ledger validate (the state that shipped)")
+        ck(TR.run_stage(work, canonical, ledger, "English") is None,
+           "P1-7 (a): run_stage returns None on an already-baked canonical (bake returns [])")
+        t = _trows(ledger)
+        ck(len(t) == 1, f"P1-7 (a): exactly ONE T-translate row survives the heal (got {len(t)})")
+        ck(t and t[0]["source_type"] == "derived",
+           "P1-7 (a): the malformed row is REPLACED, source_type now 'derived'")
+        ck(t and spanish in t[0]["source_locator"],
+           "P1-7 (a): the locator names the verbatim original recovered from the cache")
+        ck(t and "reconstructed" in t[0]["source_locator"],
+           "P1-7 (a): a cache-recovered original is TAGGED reconstructed, not passed off as recorded")
+        with open(ledger, newline="", encoding="utf-8") as fh:
+            allr = [r for r in _csv.DictReader(fh)]
+        ck(any(r["extractor"] == "X-pdf" for r in allr),
+           "P1-7 (a): the merge row is untouched by the reconcile")
+        ck(call_validate(ledger) == 0,
+           "P1-7 (a): ledger validate ALL-PASS after the heal (was exit 6 forever)")
+
+    # (b) a bake over an UNBAKED canonical REPLACES a pre-existing row, never duplicates it
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        canonical, ledger = _seed(
+            work, spanish, {spanish: english},
+            f'7,property,description,STALE,(translation),translated -> English,'
+            f'derived,T-translate,,,\n')
+        ck(TR.run_stage(work, canonical, ledger, "English") is None, "P1-7 (b): run_stage bakes")
+        t = _trows(ledger)
+        ck(len(t) == 1, f"P1-7 (b): still exactly ONE T-translate row, not two (got {len(t)})")
+        ck(t and t[0]["value"] == english, "P1-7 (b): and it carries the NEW translation")
+
+    # (c) F4: the reviewer's own marks survive a reconcile. `verified` is G-trace's judgement;
+    #     rewriting it to "" would be Python erasing an LLM verdict inside the audit artefact.
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        canonical, ledger = _seed(
+            work, english, {spanish: english},
+            f'7,property,description,{english},(translation),translated -> English,'
+            f'derived,T-translate,,checked by hand,no\n')
+        ck(TR.run_stage(work, canonical, ledger, "English") is None, "P1-7 (c): run_stage reconciles")
+        t = _trows(ledger)
+        ck(t and t[0]["verified"] == "no",
+           "P1-7 (c): a hand-marked `verified: no` SURVIVES the reconcile (LLM judgement kept)")
+        ck(t and t[0]["conflict_note"] == "checked by hand",
+           "P1-7 (c): `conflict_note` survives too")
+
+    # (d) a ledger with NO T-translate rows is untouched in BYTES and MTIME. An mtime bump alone
+    #     would re-fire deliver on every invocation via run.py's _deliver_inputs.
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        (work / "i18n").mkdir(parents=True, exist_ok=True)
+        canonical = work / "canonical.json"
+        ledger = work / "source_ledger.csv"
+        canonical.write_text(json.dumps({"meta": {}, "properties": [
+            {"id": 1, "developer": "7R", "clearHeight": "12 m"}]}), encoding="utf-8")
+        (work / "i18n" / "data_translations.en.json").write_text("{}", encoding="utf-8")
+        # values embedding a comma and a double quote, so ANY re-quoting drift is visible
+        ledger.write_text(_HDR
+                          + '1,property,clearHeight,"12 m, clear",deck.pdf,page 3,pdf,X-pdf,,,\n'
+                          + '1,property,developer,"7R ""Group""",deck.pdf,page 3,pdf,X-pdf,,,\n',
+                          encoding="utf-8")
+        b0, m0 = ledger.read_bytes(), ledger.stat().st_mtime_ns
+        ck(TR.run_stage(work, canonical, ledger, "English") is None, "P1-7 (d): run_stage no-ops")
+        ck(ledger.read_bytes() == b0,
+           "P1-7 (d): a T-translate-free ledger is byte-identical (no re-quoting drift)")
+        ck(ledger.stat().st_mtime_ns == m0,
+           "P1-7 (d): and its MTIME is untouched, so `deliver` stays resume-skipped")
+
+    # (e) the writer must NOT read the ledger by splitting text. A raw vertical tab (python-pptx
+    #     renders a soft line break as one, and csv.writer does not quote it) would shatter the row.
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        canonical, ledger = _seed(
+            work, english, {spanish: english},
+            '1,property,description,"has a \x0b vertical tab",deck.pdf,page 3,pdf,X-pdf,,,\n'
+            f'7,property,description,{english},(translation),translated -> English,'
+            f',T-translate,,,\n')
+        ck(TR.run_stage(work, canonical, ledger, "English") is None, "P1-7 (e): run_stage reconciles")
+        with open(ledger, newline="", encoding="utf-8") as fh:
+            raw = [r for r in _csv.reader(fh) if r]
+        ragged = [(i, len(r)) for i, r in enumerate(raw) if len(r) != 11]
+        ck(not ragged, f"P1-7 (e): a VERTICAL TAB row survives the rewrite intact (ragged: {ragged})")
+        ck(b"\x0b" in ledger.read_bytes(),
+           "P1-7 (e): and the control character is still there - not silently scrubbed from a "
+           "row this writer does not own")
+        ck(call_validate(ledger) == 0, "P1-7 (e): ledger validate ALL-PASS afterwards")
+
+    # Source assertions over the AST, NOT raw text: `_write_ledger_rows`'s docstring DISCUSSES
+    # splitlines() and append mode at length, so a substring search matches the explanation rather
+    # than the code and passes/fails for the wrong reason.
+    import ast as _ast
+    _tree = _ast.parse((HELPERS / "translate.py").read_text(encoding="utf-8"))
+    _calls = [n for n in _ast.walk(_tree) if isinstance(n, _ast.Call)]
+    _splits = [n for n in _calls
+               if isinstance(n.func, _ast.Attribute) and n.func.attr == "splitlines"]
+    ck(not _splits,
+       f"P1-7: translate.py makes NO splitlines() CALL (the spec's own draft did - it would "
+       f"shatter a vertical-tab row); found {len(_splits)}")
+    _opens = [n for n in _calls
+              if isinstance(n.func, _ast.Name) and n.func.id == "open"
+              and len(n.args) > 1 and isinstance(n.args[1], _ast.Constant)
+              and "a" in str(n.args[1].value)]
+    ck(not _opens, f"P1-7: no append-mode open() remains; found {len(_opens)}")
+    ck(any(isinstance(n.func, _ast.Attribute) and n.func.attr == "reader" for n in _calls),
+       "P1-7: the ledger is parsed with csv.reader over the file object")
+
     # --- PER-LANGUAGE CACHE (backlog cleanup): the on-disk cache is language-TAGGED
     # (data_translations.<code>.json), so two languages built in ONE work dir keep separate caches
     # and never cross-contaminate (the old untagged data_translations.en.json reused a German

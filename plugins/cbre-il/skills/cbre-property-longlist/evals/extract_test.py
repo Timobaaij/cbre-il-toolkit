@@ -257,8 +257,13 @@ def interpret_cases() -> None:
         # the interpretation sub-agent's output: schema records WITH prov, page_no
         # copied verbatim from the manifest (0 and 1 - both pages carry text)
         def _rec(park, city, page_no, rent_val):
+            # areaUnit is REQUIRED alongside a numeric area (reference/interpretation.md), and
+            # since B38 an interpreted record that omits it is ASKED about via exit 13 rather
+            # than silently assumed - so a fixture modelling a compliant interpreter must state
+            # it, exactly as a real deck does.
             fields = {"park": park, "developer": "Goodman", "city": city, "country": "ES",
                       "region": "Valencia", "status": "Existing", "warehouseArea": 12500,
+                      "areaUnit": "sq m",
                       "warehouseRent": f"€{rent_val:g} / sq m / year",
                       "warehouseRentVal": rent_val}
             prov = {k: f"page {page_no + 1} (text interpretation)" for k in fields}
@@ -901,12 +906,25 @@ def match_cases() -> None:
     b_au = r2("Corby", "Prologis", "Raven Park", 50000, "b.xlsx")
     check(match.pair_class(a_au, b_au) == "auto",
           "MATCH-a: a cross-source identical-key pair is 'auto'")
-    # grey: same city, parks that are NOT subset/superset and NOT >= 88 fuzzy, no conflict
+    # grey: parks that are NOT subset/superset and NOT >= 88 fuzzy, no conflict. RE-PINNED
+    # for I9: a shared city is no longer a signal on its own, so what keeps THIS pair
+    # askable is the same KNOWN DEVELOPER in that city - its fuzzy key is below the 70
+    # recall floor and its park tokens are disjoint. Pinned on the carrying signal rather
+    # than on "same city", so a future change to the pre-filter cannot silently drop it.
     a_gr = r2("Corby", "Prologis", "Apollo Court", 50000, "a.pdf")
     b_gr = r2("Corby", "Prologis", "Mercury House", 52000, "b.xlsx")
     check(match.pair_class(a_gr, b_gr) == "grey"
           and match.fuzz.token_set_ratio(match.match_key(a_gr), match.match_key(b_gr)) < 88,
-          "MATCH-a: a same-city pair below token_set 88 is 'grey'")
+          "MATCH-a: a same-city, same-developer pair below token_set 88 is 'grey'")
+    check(match._tsr(match.match_key(a_gr), match.match_key(b_gr)) < match.GREY_LOW
+          and not (match._distinctive_tokens(a_gr["park"])
+                   & match._distinctive_tokens(b_gr["park"]))
+          and match._known_dev(a_gr) == match._known_dev(b_gr) != "",
+          "MATCH-a: ...and the SAME KNOWN DEVELOPER is the only signal carrying it (I9)")
+    a_city_only = r2("Corby", "Prologis", "Apollo Court", 50000, "a.pdf")
+    b_city_only = r2("Corby", "Panattoni", "Mercury House", 52000, "b.xlsx")
+    check(match.pair_class(a_city_only, b_city_only) == "no",
+          "MATCH-a: a pair sharing ONLY the city is 'no' - never shown to the LLM (I9)")
 
     # (b) the blocker BEATS the LLM ------------------------------------------------
     # re-pointed at a SIZE-conflict forbidden pair (a developer disagreement is no longer
@@ -5298,8 +5316,11 @@ def deliver_resume_cases() -> None:
         return rc
 
     def _rec(park, city, page_no, rent_val, src_name):
+        # areaUnit is REQUIRED with a numeric area; an interpreted record that omits it is now
+        # ASKED about via exit 13 (B38), so a compliant-interpreter fixture must state it.
         fields = {"park": park, "developer": "Goodman", "city": city, "country": "ES",
                   "region": "Valencia", "status": "Existing", "warehouseArea": 12500,
+                  "areaUnit": "sq m",
                   "warehouseRent": f"€{rent_val:g} / sq m / year", "warehouseRentVal": rent_val}
         prov = {k: f"page {page_no + 1} (text interpretation)" for k in fields}
         return {**fields, "__meta": {"source_file": src_name, "source_type": "pdf",
@@ -5367,13 +5388,16 @@ def interpret_resume_cases() -> None:
         # no-change resume: reuse the cached entry + thumbnails
         e2 = IP.prepare(pdf, "RegionA", "CZ", out, resume=True)
         reuse_ok = (m0 is None) or (rp and Path(rp).exists() and Path(rp).stat().st_mtime_ns == m0)
-        check(e2.get("region") == "RegionA" and reuse_ok,
+        # B51: the routing label is `cluster_label`, not `region` - a field named `region` in the
+        # manifest invited three of eleven agents to ship it as the property's sourced region.
+        check(e2.get("cluster_label") == "RegionA" and "region" not in e2 and reuse_ok,
               "#28+#37: a no-change resume reuses the cached text entry + thumbnails (skipped/resumed)")
-        # re-cluster: SAME bytes, corrected region/country -> the entry must re-reflect them
+        # re-cluster: SAME bytes, corrected label/country -> the entry must re-reflect them
         e3 = IP.prepare(pdf, "RegionB", "PL", out, resume=True)
-        check(e3.get("region") == "RegionB" and e3.get("country") == "PL",
-              "#28+#37: a re-clustered deck (same bytes, corrected region) re-reflects the NEW "
-              "region/country, not the stale cached one")
+        check(e3.get("cluster_label") == "RegionB" and e3.get("country") == "PL"
+              and "region" not in e3,
+              "#28+#37: a re-clustered deck (same bytes, corrected label) re-reflects the NEW "
+              "cluster_label/country, not the stale cached one")
         text_reused = (e3.get("pages") and e1.get("pages")
                        and e3["pages"][0].get("text") == e1["pages"][0].get("text"))
         render_reused = (m0 is None) or (rp and Path(rp).exists() and Path(rp).stat().st_mtime_ns == m0)

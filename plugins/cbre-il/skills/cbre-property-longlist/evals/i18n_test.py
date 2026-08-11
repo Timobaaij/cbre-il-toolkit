@@ -10,7 +10,7 @@ Asserts the i18n machinery + the complete English baseline:
   3. render(en) fills {{ui_json}} (valid JSON, round-trips, contains tab_grid) and
      {{locale}}="en-GB"; no leftover {{token}}; const UI / const LOCALE present.
   4. de is a real bundled translation (chrome translated, locale de-DE); an UNKNOWN
-     language falls back per-key to EN. The 11 bundled langs (assets/i18n/*.json) each
+     language falls back per-key to EN. The 12 bundled langs (assets/i18n/*.json) each
      match the EN key set and preserve the {area}/{unit} placeholders.
   5. Byte-stability: render twice on the same canonical+language is byte-identical.
 
@@ -90,7 +90,11 @@ def _canon(language=None):
 
 # EN keys consumed in Python only (compute_kpis .format()/phrase), not referenced
 # in the template by data-i18n*/T() - they must NOT be flagged as orphans.
-PY_ONLY_KEYS = {"kpi_wh_area_sub_fmt", "kpi_rent_sub_fmt", "kpi_regions_sub"}
+# Keys consumed in PYTHON, never by a data-i18n* attribute or a T('...') call in the
+# template. The hero_* three are CONFIG TOKENS ({{eyebrow}}/{{title_html}}/{{lede}}) filled
+# by build_dashboard._hero_copy, so the template legitimately never references them by key.
+PY_ONLY_KEYS = {"kpi_wh_area_sub_fmt", "kpi_rent_sub_fmt", "kpi_regions_sub",
+                "hero_eyebrow", "hero_title_html", "hero_lede_fmt"}
 
 
 def _template_keys(tpl: str):
@@ -117,10 +121,14 @@ def main() -> int:
     check(I18N.TABLE.get("en") is I18N.EN or I18N.TABLE.get("en") == I18N.EN,
           "TABLE['en'] is EN")
     check(I18N.ui_for("en") == I18N.EN, "ui_for('en') == EN")
-    # Phase 1b: EN + the 11 bundled languages, loaded from assets/i18n/*.json.
-    EXPECTED_LANGS = {"en", "de", "fr", "es", "it", "nl", "pl", "pt", "cs", "sk", "hu", "ro"}
+    # Phase 1b: EN + the 12 bundled languages, loaded from assets/i18n/*.json.
+    # `zh` (Simplified Chinese) is the one non-Latin bundled pack - see the SCRIPT SCOPE
+    # note in i18n.py. It is held to the SAME structural contract as every other pack by
+    # the per-language loop below (exact EN key set, {area}/{unit} preserved, no {{token}}).
+    EXPECTED_LANGS = {"en", "de", "fr", "es", "it", "nl", "pl", "pt", "cs", "sk", "hu", "ro",
+                      "zh"}
     check(set(I18N.TABLE.keys()) == EXPECTED_LANGS,
-          f"TABLE has EN + the 11 bundled languages (got {sorted(I18N.TABLE)})")
+          f"TABLE has EN + the 12 bundled languages (got {sorted(I18N.TABLE)})")
     en_keys = set(I18N.EN)
     for lang in sorted(k for k in I18N.TABLE if k != "en"):
         lk = set(I18N.TABLE[lang])
@@ -129,6 +137,15 @@ def main() -> int:
         check("{area}" in I18N.TABLE[lang].get("kpi_wh_area_sub_fmt", "")
               and "{unit}" in I18N.TABLE[lang].get("kpi_rent_sub_fmt", ""),
               f"{lang}: kpi-sub format strings preserve the {{area}}/{{unit}} placeholders")
+        # The hero lede's {count} is filled by .replace() in build_dashboard._hero_copy.
+        # Losing it ships a lede with no property count. render() self-heals to EN rather
+        # than blocking (cmd_i18n runs post-build, so a block there is an unclearable
+        # exit 7 for a bundled pack) - THIS is the dev-time tripwire that catches it.
+        check("{count}" in I18N.TABLE[lang].get("hero_lede_fmt", ""),
+              f"{lang}: hero_lede_fmt preserves the {{count}} placeholder")
+        check("<em>" in I18N.TABLE[lang].get("hero_title_html", "")
+              and "</em>" in I18N.TABLE[lang].get("hero_title_html", ""),
+              f"{lang}: hero_title_html keeps its <em>...</em> pair (the accent colour)")
     # FIX 4 (hardening for Phase 1b): NO EN value may contain a {{...}} token. ui_json is
     # injected verbatim into the template, so a smuggled {{...}} would survive render() and
     # be mistaken for an unfilled config token (or trip find_leftover_tokens). Lock it now
@@ -395,16 +412,108 @@ def main() -> int:
     check(not any("ui_overrides" in str(e) for e in sc_errs),
           f"canonical.schema.json accepts meta.ui_overrides (errs: {[e for e in sc_errs if 'ui_overrides' in str(e)][:2]})")
 
+    # --- 14. HERO COPY is table-driven, localised, and verbatim-respecting -------
+    # Before this, merge.load_hero hard-coded the eyebrow/headline/lede in ENGLISH, so the
+    # LARGEST text on the page was English in all 12 supported languages, and a non-blank
+    # eyebrow was force-prefixed with "Property Shortlist · " via an ASCII substring test
+    # (making a non-Latin eyebrow impossible). Tests 14b and 14d FAIL against that code.
+    def _blank_hero(language):
+        c = _canon(language)
+        c["meta"]["hero"] = {**c["meta"]["hero"], "eyebrow": "", "title_html": "", "lede": ""}
+        return c
+
+    # (a) a BLANK hero picks up the table default rather than rendering empty
+    bh_canon = _blank_hero("English")
+    bh_html, bh_tok = build_dashboard.render(bh_canon)
+    check(bh_tok["eyebrow"] == I18N.EN["hero_eyebrow"]
+          and bh_tok["title_html"] == I18N.EN["hero_title_html"],
+          f"blank hero falls back to the i18n default (got {bh_tok['eyebrow']!r})")
+    check("{count}" not in bh_tok["lede"] and "1" in bh_tok["lede"],
+          f"blank lede fills {{count}} from the property count (got {bh_tok['lede'][:60]!r})")
+    check(not C.find_leftover_tokens(bh_html),
+          "a blank-hero build leaves no unfilled {{token}}")
+
+    # (b) VERBATIM: a non-Latin eyebrow ships exactly, with NO English prefix composed on
+    zh_canon = _blank_hero("Chinese")
+    zh_canon["meta"]["hero"]["eyebrow"] = "物业初选名单"
+    _, zh_tok = build_dashboard.render(zh_canon)
+    # NB: ascii() not !r - a non-ASCII character in a check LABEL crashes the whole suite on
+    # a cp1252 console even when every assertion passes (house rule, learned the hard way).
+    check(zh_tok["eyebrow"] == "物业初选名单",
+          f"a non-Latin eyebrow ships VERBATIM, unprefixed (got {ascii(zh_tok['eyebrow'])})")
+    check("Property Shortlist" not in zh_tok["eyebrow"],
+          "the old ASCII 'Property Shortlist · ' prefix is gone")
+
+    # (c) a broker-authored value still wins over the localised default, in any language
+    auth = _blank_hero("de")
+    auth["meta"]["hero"]["title_html"] = "Mein <em>eigener</em> Titel."
+    _, auth_tok = build_dashboard.render(auth)
+    check(auth_tok["title_html"] == "Mein <em>eigener</em> Titel.",
+          "a broker-authored title_html ships verbatim, not the table default")
+
+    # (d) SELF-HEAL: a pack whose hero_lede_fmt lost {count} must still state the count,
+    # never ship a countless lede. cmd_i18n runs POST-build, so a block there would be an
+    # unclearable exit 7 for a bundled pack - the graceful path is the design.
+    heal = _blank_hero("Danish")
+    # a REALISTIC translated pack (every value differs from EN, so the separate
+    # silent-fallback clause is satisfied) whose hero_lede_fmt has lost its {count}
+    heal["meta"]["ui_overrides"] = {**{k: f"DA_{v}" for k, v in I18N.EN.items()},
+                                    "hero_lede_fmt": "Ingen antal her."}
+    heal_html, heal_tok = build_dashboard.render(heal)
+    check("1" in heal_tok["lede"] and heal_tok["lede"] != "Ingen antal her.",
+          f"a hero_lede_fmt missing {{count}} self-heals to the EN default "
+          f"(got {heal_tok['lede'][:50]!r})")
+    rc_heal, out_heal = _run_gate(gate_runner.cmd_i18n, heal_html, heal)
+    check(rc_heal == 0, "the {count} loss is ADVISORY - cmd_i18n still passes (no exit-7 deadlock)")
+    check("[note]" in out_heal and "hero_lede_fmt" in out_heal,
+          "cmd_i18n prints a [note] naming hero_lede_fmt")
+
+    # (e) the localised default is byte-stable across two renders (validate-html's premise)
+    check(build_dashboard.render(_blank_hero("de"))[0]
+          == build_dashboard.render(_blank_hero("de"))[0],
+          "a blank-hero localised build is byte-identical across two renders")
+
+    # (f) CJK FALLBACK (B29, template v27). The CBRE faces are Latin-only and embedded as
+    # base64 woff2, so before this a zh dashboard resolved every ideograph through the
+    # browser's per-glyph last-resort font. The added families must be SYSTEM names: the
+    # dashboard is a single portable file and may never fetch a font.
+    tpl = (Path(__file__).resolve().parent.parent / "assets"
+           / "dashboard_template.html").read_text(encoding="utf-8", errors="replace")
+    _css = tpl[tpl.find("--font-display"):tpl.find("--font-mono")]
+    for fam in ("PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC"):
+        check(fam in _css, f"the CJK stack names {fam}")
+    check("--font-display" in _css and "PingFang SC" in _css.split("--font-body")[0],
+          "the DISPLAY stack has a CJK fallback too (not just body)")
+    check(_css.split("--font-body")[0].rstrip().rstrip(";").endswith("serif")
+          and _css.rstrip().rstrip(";").endswith("sans-serif"),
+          "both stacks still END in a generic keyword")
+    for tc in ("PingFang TC", "Microsoft JhengHei", "Yu Gothic", "Malgun Gothic"):
+        check(tc in _css, f"{tc} is pre-named so the next non-Latin language costs no bump")
+    # self-contained: no font may be fetched. The only legitimate url() in the chrome is a
+    # data: URI, and @font-face must not have grown a remote src.
+    import re as _re
+    # data: is inline; a bare '#...' is a same-document fragment (e.g. the legacy IE
+    # behavior url(#default#VML) shim) and fetches nothing.
+    _urls = [u for u in _re.findall(r"url\(\s*['\"]?([^'\")]+)", tpl)
+             if not u.startswith(("data:", "#"))]
+    check(not _urls, f"no external font/asset URL in the template {ascii(_urls[:3])}")
+    check("@import" not in tpl, "no CSS @import (it would fetch at render time)")
+    # a Latin build must be unaffected in practice: the CJK names sit in the TAIL
+    _body = _css.split("--font-body", 1)[1] if "--font-body" in _css else ""
+    check(_body.find("Calibre") < _body.find("PingFang SC"),
+          "the CBRE face still wins for Latin (CJK names are tail placement)")
+
     if fails:
         print(f"\nI18N TEST: FAIL ({len(fails)})")
         for f in fails:
             print(f"  - {f}")
         return 1
-    print("\nI18N TEST: PASS (EN complete, template<->EN lockstep, 11 bundled langs "
+    print("\nI18N TEST: PASS (EN complete, template<->EN lockstep, 12 bundled langs "
           "key-complete + placeholders, tokens fill, unknown lang -> EN, byte-stable; "
           "Phase 2: SUPPORTED/fallback resolution, en_sha, ui_for(overrides=), "
           "load_fallback_cache, merge bake, validate-html byte-identity WITH ui_overrides, "
-          "G-i18n floor PASS/FAIL cases, schema accepts ui_overrides)")
+          "G-i18n floor PASS/FAIL cases, schema accepts ui_overrides; hero copy "
+          "table-driven + verbatim + {count} self-heal)")
     return 0
 
 

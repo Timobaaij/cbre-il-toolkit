@@ -342,6 +342,11 @@ def _chain_spec(canonical: dict, args) -> dict:
     Two round-trips used to be needed only because route origins depend on the
     fresh geocodes; the page resolves that dependency locally."""
     props = []
+    # the geocode cache is consulted HERE too, not just in `plan`'s static-request builder.
+    # Without it a city already answered - especially one answered NEGATIVELY ("no such place")
+    # - still got a geocode_url, so `chain_work` stayed true and exit 8 was re-emitted forever
+    # even though there was nothing left to learn. A cached key is settled, either way.
+    _gcache = E._load_cache(E.GEOCODE_CACHE)
     for p in canonical.get("properties", []):
         country = str(p.get("country", "")).strip()
         known = not E._is_unknown_cc(country)
@@ -354,6 +359,8 @@ def _chain_spec(canonical: dict, args) -> dict:
             city = str(p.get("city", "")).strip()
             if not city or E._is_unknown_cc(city):
                 continue  # nothing to geocode - stays an honest gap
+            if f"{city}|{country}".lower() in _gcache:
+                continue  # already asked and answered (a hit OR a 'not found') - never re-ask
             from urllib.parse import urlencode
             q = {"q": city, "format": "json", "limit": 1, "addressdetails": 1}
             if known:
@@ -630,7 +637,7 @@ def cmd_ingest(args) -> int:
     geo_cache = E._load_cache(E.GEOCODE_CACHE)
     poi_cache = E._load_cache(E.POI_OSM_CACHE)
     route_cache = E._load_cache(E.OSRM_CACHE)
-    n_geo = n_poi = n_osrm = n_missing = n_bad = 0
+    n_geo = n_poi = n_osrm = n_missing = n_bad = n_neg = 0
     used_v2_bundle = False  # the self-chaining page already fetched geocode + routes
 
     # v2 self-describing bundle (the chaining page): geocodes + routes carry their
@@ -659,6 +666,17 @@ def cmd_ingest(args) -> int:
                     geo_cache[g["key"]] = {"latlng": [float(arr[0]["lat"]), float(arr[0]["lon"])],
                                            "cc": cc}
                     n_geo += 1
+                elif isinstance(arr, list):
+                    # NEGATIVE MEMO. An empty array is a SUCCESSFUL, legitimate answer - HTTP 200,
+                    # "no such place" - typically a mis-parsed city cell ("Available Q3 2027") or a
+                    # real town searched under the wrong countrycode. Writing nothing meant the
+                    # request was re-emitted on every re-run, and since `geocode: true` is the
+                    # DEFAULT in every generated project.yaml, ONE bad cell livelocked the whole
+                    # run at exit 8. `latlng: None` is already tolerated by the readers
+                    # (`_cache_lookup` / `_coords_cc`), so the property keeps an honest missing
+                    # coordinate and the run proceeds.
+                    geo_cache[g["key"]] = {"latlng": None, "cc": ""}
+                    n_neg += 1
             except Exception as e:
                 print(f"  [skip] geocode {g.get('key')}: {e}")
                 n_bad += 1
@@ -697,12 +715,30 @@ def cmd_ingest(args) -> int:
             n_bad += 1
             continue
         if req["kind"] == "nominatim":
-            arr = data if isinstance(data, list) else []
-            if arr:
-                cc = str((arr[0].get("address", {}) or {}).get("country_code", "")).upper()
-                geo_cache[req["key"]] = {"latlng": [float(arr[0]["lat"]), float(arr[0]["lon"])],
+            if not isinstance(data, list):
+                # NOT an answer. An error envelope ({"error": ...}) is not "no such place",
+                # and memoising it would poison the cache with a permanent negative - the
+                # same reasoning the overpass branch below applies to an error remark.
+                print(f"  [skip] {req['save_as']}: nominatim body is not a JSON array "
+                      f"- re-fetch this request")
+                n_bad += 1
+                continue
+            if data:
+                cc = str((data[0].get("address", {}) or {}).get("country_code", "")).upper()
+                geo_cache[req["key"]] = {"latlng": [float(data[0]["lat"]), float(data[0]["lon"])],
                                          "cc": cc}
                 n_geo += 1
+            else:
+                # NEGATIVE MEMO - the same rule as the seeds-bundle path above, which had it
+                # and this one did not. An empty array is a SUCCESSFUL answer (HTTP 200, "no
+                # such place"): typically a mis-parsed city cell ("Available Q3 2027"). With
+                # nothing written, the request was re-emitted every round and, since
+                # `geocode: true` is the DEFAULT in every generated project.yaml, ONE bad cell
+                # livelocked the run at exit 8. This is the per-request/static path - tier 1-2
+                # of the orchestrator's probe order, i.e. the transports actually tried FIRST,
+                # so the livelock survived here even after the bundle path was fixed. (B02)
+                geo_cache[req["key"]] = {"latlng": None, "cc": ""}
+                n_neg += 1
             continue
         if req["kind"] == "overpass":
             remark = str(data.get("remark", "")) if isinstance(data, dict) else ""
@@ -725,7 +761,7 @@ def cmd_ingest(args) -> int:
                 print(f"  [skip] {req['save_as']}: {err} - 0 pair(s), re-fetch this request")
                 n_bad += 1
 
-    if n_geo:
+    if n_geo or n_neg:  # a NEGATIVE memo must persist too, or the request re-emits forever
         E._save_cache(E.GEOCODE_CACHE, geo_cache)
     if n_poi:
         E._save_cache(E.POI_OSM_CACHE, poi_cache)
@@ -733,6 +769,10 @@ def cmd_ingest(args) -> int:
         E._save_cache(E.OSRM_CACHE, route_cache)
     print(f"web-enrich ingest: {n_geo} geocode(s), {n_poi} POI location(s), {n_osrm} drive-time "
           f"pair(s) cached; {n_missing} response(s) not fetched yet, {n_bad} unreadable.")
+    if n_neg:
+        print(f"  {n_neg} place name(s) the geocoder does not recognise - memoised as "
+              f"'not found' so they are never re-asked; those properties keep an honest "
+              f"missing coordinate (check the city cell in the source if unexpected).")
     if n_missing:
         if used_v2_bundle:
             # the chain covered geocode + routes; only the Overpass (POI) static
@@ -742,7 +782,8 @@ def cmd_ingest(args) -> int:
         else:
             print("Fetch the remaining requests (re-open web_enrich.html or use web_requests.json), then ingest again.")
     print("Now re-run run.py with the same arguments - enrichment will use the warm caches offline.")
-    return 0 if (n_geo or n_poi or n_osrm) else 1
+    # a negative memo IS forward progress: it permanently removes a request from the loop
+    return 0 if (n_geo or n_poi or n_osrm or n_neg) else 1
 
 
 def main() -> None:

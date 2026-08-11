@@ -61,8 +61,12 @@ def main() -> int:
     # regionName is function-local to populateFilters() in the chrome, so the flyover MUST define
     # its own (else ReferenceError on first open). Guard that fatal-bug class explicitly.
     ck("var regionName" in h, "flyover defines regionName LOCALLY (own Intl.DisplayNames, not a missing global)")
-    # derived numbers stay LOCALE-formatted: plotArea via fmt(), never raw
-    ck("fmt(p.plotArea)" in h, "plotArea is locale-formatted via fmt() (+ AREA_UNIT), not raw")
+    # derived numbers stay LOCALE-formatted: plotArea via areaStr(), which wraps fmt() and
+    # appends AREA_UNIT only to a real number (v28 / B11). Never raw.
+    ck("areaStr(p.plotArea)" in h,
+       "plotArea is locale-formatted via areaStr() -> fmt() (+ AREA_UNIT), not raw")
+    ck("NUMOK(v) ? fmt(v)" in h or "NUMOK(p) ? fmt(p)" in h,
+       "areaStr formats through fmt() for a numeric area (locale-aware)")
     ck("fitBounds(" in h, "fits the map to the properties (no hardcoded centre)")
     ck('toLocaleString("en-US")' not in h and "toLocaleString('en-US')" not in h,
        "no hardcoded en-US number formatting")

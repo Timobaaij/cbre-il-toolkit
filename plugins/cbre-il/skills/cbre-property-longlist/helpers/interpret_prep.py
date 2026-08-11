@@ -48,6 +48,7 @@ except Exception:
     pass
 import vision_prep as VP
 import images as IMG
+import _common as C  # atomic_save_image: these thumbnails are handoff artefacts (B16)
 
 # max edge (px) of a candidate thumbnail written for the interpretation sub-agent to LOOK
 # at. ~384 is legible enough to tell a photo from a map/plan/logo (the only judgment the
@@ -138,6 +139,11 @@ def _thumbs_present(entry: dict) -> bool:
             rnd = pg.get("render")
             if rnd and not Path(rnd).exists():
                 return False
+            # the tiled sheet too, or a kill that lost it serves a manifest pointing at a
+            # file the agent cannot read (B19)
+            for sh in (pg.get("candidates_sheet") or []):
+                if sh and not Path(sh).exists():
+                    return False
         return True
     except Exception:
         return False
@@ -161,12 +167,39 @@ def _write_candidate_thumbs(path: Path, page_index: int, out_dir: Path) -> list[
         try:
             im = c["img"].convert("RGB")
             im.thumbnail((CANDIDATE_THUMB_EDGE, CANDIDATE_THUMB_EDGE))
-            im.save(str(thumb), "PNG")
+            C.atomic_save_image(im, thumb)
         except Exception:
             continue  # undecodable candidate - skip it, never abort the page
         out.append({"index": c["index"], "image": str(thumb.resolve()),
                     "w": c["w"], "h": c["h"]})
     return out
+
+
+def _write_candidate_montage(path: Path, page_index: int, out_dir: Path,
+                             cands: list[dict]) -> list | None:
+    """One contact sheet per page tiling that page's candidate thumbnails. (B19)
+
+    ADDITIVE: the per-candidate PNGs stay on disk. The sheet turns N image reads into one,
+    and each read replays the agent's whole context - that, not pixels, is the exit-3 cost.
+    An agent that ignores the sheet loses nothing, and one that finds a tile ambiguous can
+    still open the individual thumbnail.
+
+    None when there is nothing to gain: no candidates, or exactly one (its thumbnail already
+    IS a single image). Never raises - a sheet that cannot be written is an honest absence,
+    exactly like a thumbnail that cannot be decoded.
+
+    The page number stays in the MANIFEST key, never in a caption: only the candidate
+    `index` is captioned, so the one thing the agent must read off the sheet is a small
+    integer it also has in the JSON."""
+    if not cands or len(cands) < 2:
+        return None
+    try:
+        import contact_sheet as CSH
+        out = CSH.tile_native(cands, Path(out_dir) / f"{path.stem}_p{page_index}_sheet.png",
+                              tile_px=CANDIDATE_THUMB_EDGE)
+        return out or None
+    except Exception:
+        return None
 
 
 def _write_page_render(path: Path, page_index: int, out_dir: Path) -> str | None:
@@ -199,7 +232,7 @@ def _write_page_render(path: Path, page_index: int, out_dir: Path) -> str | None
             return None
         im = raster.convert("RGB")
         im.thumbnail((PAGE_RENDER_THUMB_EDGE, PAGE_RENDER_THUMB_EDGE))
-        im.save(str(thumb), "PNG")
+        C.atomic_save_image(im, thumb)
     except Exception:
         return None  # renderer-less / open failure -> the page is listed without a render
     return str(thumb.resolve())
@@ -229,8 +262,12 @@ def _text_deck_entry(path: Path, region: str, country: str, page_texts: list[str
     for pno, text in enumerate(page_texts):
         t = (text or "").strip()
         low_text = len(t) < TEXT_PAGE_MIN_CHARS
+        _cands = _write_candidate_thumbs(path, pno, out_dir)
         page = {"page_no": pno, "locator": f"{unit} {pno + 1}", "text": text,
-                "candidates": _write_candidate_thumbs(path, pno, out_dir),
+                "candidates": _cands,
+                # ONE tiled image of the same candidates, so the page costs one read
+                # instead of len(_cands). Additive - `candidates` above is unchanged. (B19)
+                "candidates_sheet": _write_candidate_montage(path, pno, out_dir, _cands),
                 "render": _write_page_render(path, pno, out_dir)}
         if low_text:
             # a cover/divider/photo plate / VECTOR PLAN page - nothing to interpret as a
@@ -245,7 +282,12 @@ def _text_deck_entry(path: Path, region: str, country: str, page_texts: list[str
         IMG.close_doc_cache()
     except Exception:
         pass
-    return {"source_file": path.name, "source_type": source_type, "region": region,
+    # `cluster_label`, NOT `region` (B51). This string is derived from the input FILENAME by
+    # intake's clustering; it exists so the sub-agent's output file lands in the right slot. It
+    # is not evidence, and `region` is also a real displayed field - handing an agent a
+    # pre-filled field of that name invited three of eleven to ship it as sourced data.
+    return {"source_file": path.name, "source_type": source_type,
+            "cluster_label": region, "cluster_label_is_routing_only": True,
             "country": country, "mode": "text", "pages": pages}
 
 
@@ -300,7 +342,9 @@ def prepare(path: Path, region: str, country: str, out_dir, dpi: int = 180,
                 # entry, or the sub-agent saves the record under the STALE <region>_vision.json
                 # slot (run.py's manifest says 'region EXACTLY as in this manifest'). vision_prep
                 # already rebuilds these fresh every call. (#28/#37)
-                entry["region"] = region
+                entry["cluster_label"] = region
+                entry["cluster_label_is_routing_only"] = True
+                entry.pop("region", None)   # a REUSED entry may still carry the legacy key (B51)
                 entry["country"] = country
                 return entry
     except Exception:

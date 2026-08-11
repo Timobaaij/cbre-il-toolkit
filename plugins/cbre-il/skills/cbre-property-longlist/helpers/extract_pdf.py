@@ -510,22 +510,18 @@ def _apply_link_coords(doc, pno: int, rec: dict) -> None:
 
 def _resolve_pdf(source_dir, name):
     """Locate a record's source PDF under source_dir (source_file is a bare name; inputs may
-    sit in subfolders). Returns a Path or None."""
-    from pathlib import Path
-    base = Path(str(name)).name
-    if not base:
-        return None
-    root = Path(source_dir)
-    direct = root / base
-    if direct.exists():
-        return direct
-    try:
-        matches = sorted(root.rglob(base))   # deterministic regardless of filesystem walk order
-        if matches:
-            return matches[0]
-    except Exception:
-        pass
-    return None
+    sit in subfolders). Returns a Path or None.
+
+    Delegates to _common.resolve_by_name, the ONE resolver merge and vision_validate also
+    use. The old local version sorted PATH OBJECTS (case-folded on Windows, case-sensitive
+    on POSIX - so "deterministic regardless of filesystem walk order" was only true on one
+    machine) and passed the basename to rglob as a GLOB PATTERN, so a client file named
+    `Unit [1].pdf` resolved to None. (B13)"""
+    import sys as _s
+    from pathlib import Path as _P
+    _s.path.insert(0, str(_P(__file__).resolve().parent))
+    import _common as _C
+    return _C.resolve_by_name(source_dir, name)
 
 
 def backfill_link_coords(records, source_dir):

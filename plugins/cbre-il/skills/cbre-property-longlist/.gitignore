@@ -2,10 +2,10 @@
 evals/_out/
 **/__pycache__/
 *.pyc
+.pytest_cache/
 reference/geocode_cache.json
 # keep (committed): SKILL.md, helpers/, reference/*.md, reference/ seed caches,
-# templates/, examples/, all three evals/*.py, and every file in assets/ - the
-# template + VERSION + the four *.json datasets/ledgers (poi_library, label_ledger,
-# poi_dataset, regions_dataset) + reference_screenshots/. assets/integrity.json is
-# the authoritative list of build-critical tracked files - do not let this comment
-# drift from it.
+# templates/, the evals/ suite, and every file in assets/ - the template + VERSION +
+# the i18n packs + the *.json / *.json.gz datasets and ledgers + placeholder.uri +
+# reference_screenshots/. assets/integrity.json is the authoritative list of
+# build-critical tracked files - do not let this comment drift from it.

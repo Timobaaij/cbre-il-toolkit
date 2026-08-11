@@ -8,6 +8,40 @@ The single governing rule of this skill: **nothing reaches a card that does not 
 - `null` - a sortable numeric (`warehouseRentVal`, `expansionParkVal`) or `reit` when unknown.
 - Never emit JS `undefined`, and **never drop a key the chrome reads** - emit the sentinel instead. The chrome calls string methods on some fields (e.g. `warehouseRent.replace(...)`), so a missing key crashes the whole render. `merge.canonicalize()` fills every chrome-read key.
 
+## Ambiguity is a QUESTION, asked during the run - not a caveat afterwards
+
+A disclosed assumption is better than an invented value, but it is not the best available
+answer. When the pipeline cannot know something, the honest move is to **ask, while the answer
+can still change the deliverable** - not to write a line into a Gaps Report that is read after
+the dashboard has already shipped.
+
+The skill has always done this for five things: a deck that needs reading (exit 3), an
+uncertain photo match (exit 9), an ambiguous property match or a value conflict (exit 10), a
+language it does not carry (exit 11), and free-text data that needs translating (exit 12).
+**Exit 13 is the general channel** for everything else:
+an area or rent whose source states no unit, a deck that looks like it holds more properties
+than it produced, two sources implying different property counts. See `helpers/clarify.py`.
+
+Three rules make it safe:
+
+1. **Ask once, then ship honestly.** Every question is asked exactly once per work dir. An
+   answer is recorded durably; a question left unanswered is *also* never re-asked - it falls
+   through to the disclosed gap. So the run always converges. This is not a preference: the QA
+   window is a SINGLE review pass because "keep asking until it is clean" never terminated, and a
+   new asking channel must not reintroduce that.
+2. **Batched.** All questions ride ONE hand-off, the way exit 10 carries pairs and value
+   conflicts together. N ambiguities cost one interruption, not N.
+3. **The right answerer.** `asked_of: "agent"` is a reading call an isolated sub-agent makes
+   from the source; `asked_of: "broker"` is a decision no amount of reading can settle. Python
+   only ever asks - it never answers, and it never guesses when no answer comes.
+
+An answered unit is a **source statement**, recorded with provenance naming it as confirmed,
+and it fills `areaUnit`/`rentUnit` the way a deck printing the unit would. That is why it is a
+separate channel from `work/overrides.json`, which may never set those fields: an override is a
+*blind* correction applied before the dataset unit vote, and correcting the one record that
+tips the vote would silently relabel every figure. Asked, answered, attributed is the opposite
+of silent.
+
 ## What is forbidden
 - Inventing a rent, area, clear height, date or coordinate that no source states.
 - "Rounding up" an unknown to a plausible number.

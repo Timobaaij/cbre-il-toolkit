@@ -84,7 +84,22 @@ def clean_value(s: str) -> str:
 
 
 def looks_unknown(s) -> bool:
-    """True if a value is an explicit/effective unknown (multilingual)."""
+    """True if a value is an explicit/effective unknown (multilingual).
+
+    FOUR "unknown" SETS EXIST IN THIS SKILL AND THEY DO NOT ALL AGREE. Recorded here deliberately,
+    once, so nobody patches a FIFTH copy:
+
+      1. this function (~30 forms, and it has `"?"` but NOT `"??"`)
+      2. `deliver._is_tbd` = `looks_unknown(v) or str(v).strip() == "??"` (the Gaps Report)
+      3. `_common.is_translatable_value`'s inline set - HAS `"??"`
+      4. the template's JS `isAbsent` - HAS `"??"`
+
+    Only 3 and 4 agree. **Do NOT widen THIS set to reconcile them.** It has ~24 call sites and feeds
+    `_common.core_fill` -> `record_is_poor` -> **run.py's vision-routing probe**, so adding a form
+    here changes WHICH INPUT FILES THE LLM IS ASKED TO READ - a judgement-surface change disguised
+    as a sentinel tidy-up. That is why P1-3 widened `deliver._is_tbd` LOCALLY instead. If a caller
+    needs a broader set, widen it at that caller, exactly as `deliver._is_tbd` does.
+    """
     if s is None:
         return True
     t = str(s).strip().lower().rstrip(".")
@@ -147,6 +162,29 @@ AREA_SQFT_SQM_SUSPECT = 4_000    # a 'sq ft' value below this is almost certainl
 SQFT_PER_SQM = 10.7639
 SQFT_PER_ACRE = 43560.0
 SQM_PER_HA = 10000.0
+
+# B58: every recognised area unit expressed in SQ FT, so any pair converts by one division.
+# Crossing systems reuses SQFT_PER_SQM, so a field converted from acres can never be scaled on a
+# different basis from one converted from sq m.
+_AREA_IN_SQFT = {
+    "sq ft": 1.0,
+    "sq m": SQFT_PER_SQM,
+    "acres": SQFT_PER_ACRE,
+    "ha": SQM_PER_HA * SQFT_PER_SQM,
+}
+
+
+def area_factor(src, dst):
+    """Multiply a figure in `src` units by this to get `dst`, or None if either is unrecognised.
+
+    None is load-bearing: the caller must then NOT convert and NOT keep the figure under a unit it
+    is not in. A guessed factor is precisely the 10.76x class of error this module exists to
+    prevent, and an unknown unit is the one case where guessing is tempting."""
+    a = _AREA_IN_SQFT.get(str(src or "").strip().lower())
+    b = _AREA_IN_SQFT.get(str(dst or "").strip().lower())
+    if not a or not b:
+        return None
+    return a / b
 
 _SQFT_RX = re.compile(r"sq\.?\s*ft|sqft|\bft2\b|ft²|square\s+f[eo]+t|\bpsf\b", re.I)
 _SQM_RX = re.compile(r"sq\.?\s*m\b|sqm|\bm2\b|m²|square\s+met", re.I)
@@ -227,12 +265,22 @@ def area_magnitude_mismatch(value, unit: str | None) -> str | None:
 
 def rent_display(val: float, unit: str | None = None) -> str:
     """Canonical display string for an annual headline rent IN ITS OWN convention:
-    rent_display(8.5, '£/sq ft/yr') -> '£8.5 / sq ft / year'; default €/sq m."""
+    rent_display(8.5, '£/sq ft/yr') -> '£8.5 / sq ft / year'.
+
+    With NO unit, it no longer invents one. It used to default to EUR/sq m, so a UK deck
+    quoting a bare `Rent: 7.25` shipped the card '€7.25 / sq m / year' - a specific claim
+    about currency AND basis that no source made, and one a broker cannot tell from a
+    sourced figure. Currency in particular is unrecoverable downstream: merge refuses to
+    convert it because FX would be invention, so a wrong currency is wrong for good.
+
+    The NUMBER is real and is kept - it is the unit that is unknown, so the honest render
+    states exactly that. `tbd` would discard a datum the source did give us. (B06)"""
+    if not unit:
+        return f"{val:g} (unit not stated)"
     cur, per = "€", "sq m"
-    if unit:
-        parts = str(unit).split("/")
-        if len(parts) >= 2:
-            cur, per = parts[0] or cur, parts[1] or per
+    parts = str(unit).split("/")
+    if len(parts) >= 2:
+        cur, per = parts[0] or cur, parts[1] or per
     return f"{cur}{val:g} / {per} / year"
 
 

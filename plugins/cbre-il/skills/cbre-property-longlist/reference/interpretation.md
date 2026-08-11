@@ -19,12 +19,15 @@ records land, wasting the build, the post-build gates and any dispatched reviews
 Records that came from another source (a tracker, emails, prior decks) are cached
 (resume is the default), so the re-run starts at merge.
 
-A `<region>_vision.json` you write **supersedes** the deterministic records of
-every file the manifest covered for that region - OUTRIGHT (the filename keeps the
-historical `_vision.json` slot so merge/gates need no change; it is the
-"LLM-produced records" slot, used for both modes). Files of the region never
-listed keep their records. The filename is matched case- and
-diacritic-insensitively, but prefer the manifest's exact region name.
+A deck's `output` file you write **supersedes** that deck's own deterministic
+records - OUTRIGHT (the filename keeps the historical `_vision.json` suffix so
+merge/gates need no change; it is the "LLM-produced records" slot, used for both
+modes). Supersession is keyed to the deck's **source file**, so a brochure the
+manifest never listed keeps its records, and a sibling deck sharing the same
+cluster label is judged on its own output rather than its neighbour's. (Before
+this, both completion and supersession were decided by matching the output
+FILENAME against the region name, which is why two decks on one label could not
+be told apart.)
 
 You can also run the prep stage by hand:
 `python helpers/interpret_prep.py <file.pdf|.pptx> --region R --country C --out-dir work/vision`.
@@ -79,7 +82,7 @@ the text), not something to paper over by transcribing images.
      ]}
   ],
   "record_schema": "templates/record_schema.json",
-  "output_pattern": "work/extract/<region>_vision.json (a JSON array of records)"
+  "output_pattern": "EACH DECK CARRIES ITS OWN `output` PATH - write it VERBATIM (a JSON array of records)"
 }
 ```
 The `decks` array is the brochure interpretation contract (unchanged); the `jobs`
@@ -108,6 +111,39 @@ For each deck dispatch an isolated sub-agent given ONLY the manifest entry (the
 page text or the page-image paths) + this contract - never the orchestrator's
 view. The author is never the reviewer; the honesty gates below run blind.
 
+### Three rules that apply to EVERY mode (read these first)
+
+**The manifest's `cluster_label` is NOT evidence.** It is a filing and routing name derived from
+the input FILENAME (the entry also carries `cluster_label_is_routing_only: true`). It exists so
+your output file lands in the right slot, nothing more. Never copy it into `region`, `park`,
+`city` or any other record field, and never cite it to a page. Set `region` ONLY from text you can
+point at on a page; if the deck names no region, OMIT the field. This is not hypothetical: a live
+run whose label read `MPC2 Magna Park Corby, 100 Kettering Road, Weldon` shipped exactly that
+string as the property's region, cited to "page 1", on a deck where the token "MPC2" appears on
+zero pages. Three of eleven agents made the same mistake in one round.
+
+**If you read a value from an IMAGE rather than the text layer** - a name on a cover logo, a
+figure in a rendered spec panel - append the marker `not in text layer` to that field's
+provenance, e.g. `page 1 (text interpretation; not in text layer: read from the cover logo)`.
+This is checked: the `prov-containment` gate verifies that a value citing a page actually occurs
+in that page's extracted text, and this marker is the sanctioned way to declare a value it cannot
+verify. Use it honestly and only when true - it is an admission, not a bypass.
+
+**Return the unit the source states for THAT figure.** Whenever you return an area, return its
+unit. If one figure uses a different unit from the rest of the deck - a site area in acres inside
+a sq ft brochure, which is the normal UK shape - set `<field>Unit` alongside it, e.g.
+`plotArea: 31.629` with `plotAreaUnit: "acres"`. **Never convert it yourself.** Python converts
+with exact factors and records the conversion in the ledger. Two agents on one run split on this:
+one dropped a stated "31.629 acres (12.8 ha)" site area as an "honest gap", the other converted
+"30 ACRES" to sq ft citing a convention - and the dropped one shipped a ledger row claiming the
+source was silent about a figure printed on its own page 2. Report the unit; let Python do the
+arithmetic.
+
+**Declare the deck's language.** Set `__meta.source_lang` to the ISO-639-1 code of the language the
+deck is WRITTEN in (`en`, `es`, `pl`, `de`). You are reading the text anyway, so this costs you
+nothing, and it lets the pipeline skip an entire translation round when the source already matches
+the dashboard language. Omit it only if the deck is genuinely unreadable.
+
 ### Text mode (preferred)
 Read each page's `text` and structure the property/properties into candidate
 records matching `templates/record_schema.json`:
@@ -117,16 +153,80 @@ records matching `templates/record_schema.json`:
   A `low_text` page is VISUAL reference only - **never emit a record for it** (it is
   a cover/divider/photo plate or a vector site-plan page, offered so you can name it
   as `plan_page` / an `image_pages` entry, not so it becomes its own property).
-- Fill the canonical field names you can read from the text: `park, developer,
-  city, country, region, status, warehouseArea (number, m²), warehouseRent /
-  warehouseRentVal, plotArea, landPrice, clearHeight, lat, lng, earlyAccess, …` -
-  the same names the deterministic extractors emit. `description` may carry the
-  brochure's own prose.
+- **Fill EVERY field the page states. The manifest's `fields` array is the canonical
+  registry and it is NOT a limit** - it is generated at run time from
+  `_common.canonical_property_fields()`, so it is always the live set the pipeline
+  carries (43 reader-fillable names: `areaUnit, breeam, carParking, city,
+  clearHeight, country, description, developer, district, divisibleFrom,
+  earlyAccess, electricity, epc, expansionBuilding, expansionPark, floorLoad,
+  incentives, landPrice, landlord, lat, leaseTerm, lng, loadingDocks, mapLink,
+  motorway, officeArea, officeRent, overheadDoors, park, permitting, plotArea,
+  postcode, region, reit, rentFree, rentUnit, serviceCharge, sprinklers, status,
+  truckParking, warehouseArea, warehouseRent, warehouseRentVal`). Read `fields` from
+  the manifest rather than trusting this copy. `description` may carry the brochure's
+  own prose.
+  Three rules govern capture, all three learned from a live failure:
+  - **A STATED NEGATIVE IS DATA, NEVER AN ABSENCE.** "Land price: Not charged",
+    "Sprinklers: No", "None", "N/A" are positive commercial statements - ship them as
+    the value. Only a blank row, or one the deck marks `tbd`/`TBC`/`BTS`/`TBS`, is
+    unknown. Shipping the unknown sentinel instead tells the broker to go and ask an
+    agent about a question the deck already answered.
+  - **THE SCHEMA IS OPEN.** `templates/record_schema.json` sets
+    `additionalProperties: true` and names only 17 of the fields for illustration; it
+    is NOT a closed set. If a stated row has no obvious home in `fields`, emit it under
+    a descriptive camelCase key of your own (`yardRent`, `railSiding`). The dashboard
+    auto-shows any real scalar attribute (v22) and `meta.newFields` discloses it, so
+    nothing invented can hide and nothing stated need be lost.
+  - **"There is no field for X" is NEVER a reason to omit X.** If you are about to
+    write that sentence in your report, emit the field instead.
+  - **WRITE THE VALUE THE WAY THE SOURCE PRINTS IT.** A dimensioned value carries its
+    unit inside the value: `"10,000 sq. m"`, not `"5000"`; `"10 m"`, not `"10"`. Most
+    fields render verbatim on the card and in the modal, so a bare magnitude sitting
+    beside a written sibling quotes a different quantity to the client. Copy the printed
+    form - do not normalise it, round it, strip the unit, or ADD a unit the page does not
+    print. A pure COUNT is correctly bare (`"72"` loading docks); the rule is about
+    dimensioned quantities, and a ratio (`"1 per 650 sq. m"`) is neither. If you can read
+    the magnitude but genuinely cannot read its unit, return the number and say so in that
+    field's `prov`: the deterministic `value-format` gate then catches the mismatch and the
+    broker settles it, which is honest, whereas a unit you inferred is invention.
+    This is not hypothetical: `divisibleFrom` shipped `"10,000 sq. m"` on twelve cards and
+    a bare `"5000"` on the thirteenth, and `clearHeight` shipped `"10 m"` on twenty-three
+    and a bare `"10"` on six, in one delivered client dashboard.
+  Why this is spelled out at this length: on one live run all three readers wrote
+  exactly that sentence and dropped office rent, sprinklers, permitting, rent-free,
+  divisible-from and expansion, every one of them printed on the page. Merge then
+  turned each omission into a ledger row asserting "absent in all sources" - roughly
+  100 false claims in a client deliverable, because a field the dataset carries for
+  one property but not another is recorded as a positive absence, not as silence.
+- **Orchestrator note (this is where it went wrong).** Do NOT paste an abbreviated
+  field list into a sub-agent prompt. A list in the prompt reads as the specification
+  and overrides this contract. Point the reader at the manifest's `fields` array, or
+  pass that array verbatim.
+- **BREEAM and EPC are DIFFERENT fields - never fold one into the other.** `breeam` takes a
+  BREEAM sustainability grade ONLY (Pass / Good / Very Good / Excellent / Outstanding, a
+  `Target ...` prefix kept as printed). An EPC rating - a letter band like `A+`, `A`, `B` -
+  goes in **`epc`**, which ships as Additional Details on the dashboard. A deck that prints
+  only an EPC leaves `breeam` ABSENT; do not put the band there to fill the field. This is not
+  hypothetical: a tracker whose EPC column was treated as a BREEAM alias shipped an impossible
+  "BREEAM A+" to a client card, cited to an empty BREEAM cell.
 - **Rents are ANNUAL.** Store `warehouseRentVal` as a number in EUR/m²/**year** and
   make `warehouseRent` show that same number (e.g. `"€54 / sq m / year"`). If the
   text quotes a **monthly** rent (`€/m²/mes`, `/month`, `/Monat`, …), multiply by
   12 and note the conversion in `prov` (the consistency gate checks the display
   number equals `warehouseRentVal`).
+- **A numeric area REQUIRES `areaUnit`; a rent REQUIRES `rentUnit`.** Return the unit **as the
+  source states it** (`"sq m"` / `"sq ft"`; `"£/sq ft/yr"`, `"€/sq m/yr"`) - read it off the deck
+  (the figure's own suffix, the column header, the spec table's unit row). **Do NOT infer the unit
+  from the country, and do NOT convert the number** - merge converts arithmetically once it knows
+  the true unit, and currency is never converted at all.
+  Why this is not optional: nothing downstream can recover a missing unit. An area with no
+  `areaUnit` is stamped with the dataset's DOMINANT unit and **not converted**, so one metric deck
+  in a UK-dominant corpus shipped 12,500 sq ft against a true 134,549 - a **10.76x** error on the
+  client's card, carried into the annual-rent total. The magnitude guard cannot catch it (it is
+  asymmetric and blind across the whole realistic 5,000-50,000 m² range).
+  If the deck genuinely never states a unit, return the area and **omit** `areaUnit`: merge then
+  records `areaUnitAssumed` and the Gaps Report says so under "Area units assumed", which is an
+  honest gap rather than a false precision. Never write a unit you did not read.
 - **`__meta` is required:** `source_type` = the brochure type (`"pdf"`/`"pptx"`),
   `source_file` = the manifest's `source_file`, `locator_base` = the page
   `locator`, **`page_no` = the manifest page's `page_no` COPIED VERBATIM** (it is
@@ -143,7 +243,14 @@ records matching `templates/record_schema.json`:
   and G-trace key on this; the `(text interpretation)` tag tells the reviewer the
   value came from interpreting the page text).
 - **Pick the hero image.** Each page lists `candidates` (its embedded images, each
-  with an `index` and a thumbnail `image` path). LOOK at them. For each property
+  with an `index` and a thumbnail `image` path) and `candidates_sheet` - the SAME
+  candidates tiled into one image, each captioned with its `index`.
+  **Read `candidates_sheet` once per page rather than opening each `candidates[].image`
+  in turn.** The tiles are those exact thumbnails at their native size, so you lose no
+  detail, and it costs one tool call instead of one per candidate. Open an individual
+  `candidates[].image` only when a tile is genuinely ambiguous, and when you need several
+  at once, request them in a single message. A page with fewer than two candidates has
+  no sheet (`null`) - use `candidates[].image` there. LOOK at them. For each property
   record set `__meta.heroRef` = the `index` of the genuine marketing HERO (a real
   photo, aerial or render), or `null` if NONE of the candidates is a real photo - a
   road MAP, a location screenshot, a floor/site PLAN, an icon or a logo is NEVER the
@@ -190,7 +297,14 @@ records matching `templates/record_schema.json`:
   page the hero binds to. When unsure, omit it or set `[]` (absence = today's
   `page_no`-only carousel). Python ENFORCES a deck page feeds at most one
   property's carousel, so an honest over-list of a neighbour's page is dropped,
-  never leaked.
+  never leaked. **How a contested page is settled, so you can avoid the lossy
+  case:** if one record's `page_no` IS that page, the record that anchors it keeps
+  it and the other claim is silently dropped - harmless. But if TWO records list a
+  page and NEITHER anchors it, it is not a sole claim for either, so it is dropped
+  from **every** carousel and both properties lose the photo. So list a shared page
+  in the `image_pages` of the ONE property it actually shows, not both. This is
+  never an error and never sends the deck back for re-reading - a validation note
+  tells the orchestrator which case occurred.
 - **Pick the property description.** Set `description` to the property's own
   descriptive PROSE, copied verbatim from the page text (the marketing paragraph
   that says what the scheme is and where it sits, e.g. "EVO Corby 169 is a prime
@@ -201,8 +315,55 @@ records matching `templates/record_schema.json`:
   `description` to `null`/omit it (absent stays absent) - the deterministic
   font-size heuristic is the fallback, so an honest `null` is always safe. This is
   the same "transcribe, never invent" rule as the rest of the record.
+- **OPTIONAL: if the schedule prints its own TOTAL, copy that number.** When a spec table shows a
+  total/overall/GIA/GEA/GLA figure for the whole building alongside the individual areas (e.g.
+  "Warehouse 440,000 / Office 12,500 / **Total GIA 452,500**"), set
+  `"__meta": {"statedTotalArea": 452500, "statedTotalUnit": "sq ft"}` on that record — the number
+  **exactly as printed**, never one you add up yourself. It is only ever compared against the
+  areas; a total you computed would make the comparison circular and worthless.
+  Purely optional: a deck that prints no total is unaffected, and omitting it costs nothing.
+  Why it is worth the two keys: the dashboard derives `Total GLA = warehouse + office` and
+  `rent = GLA × rate`, so a size figure that ALREADY included the office silently inflates both.
+  That shipped once — GLA 11.7% above the source's own total and rent overstated by £702,108/yr.
+  With the stated total recorded, `gate_runner arithmetic` catches it before anything is built.
+- **When the page says MORE than the shipped value can carry, say so in `__meta.source_conflicts`.**
+  A plain object mapping a field name to ONE COMPLETE SENTENCE, printed VERBATIM (only the source
+  filename is appended) into the ledger's `conflict_note`, `meta.conflicts` and the Gaps Report's
+  "Source conflicts" section. It NEVER changes the value you chose, and a note about a field the
+  record does not carry is dropped. Two shapes both belong here:
+  - **The page CONTRADICTS ITSELF** - brochures do this constantly. Pick the figure you judge
+    governing (an itemised schedule usually beats a rounded headline) and disclose the other:
+    `{"loadingDocks": "the source disagrees with itself: the SUPERFICIES schedule totals 180 docks
+    (60+60+60) while the CARACTERISTICAS block on the same page states 170"}`.
+  - **The source quotes a RANGE and the field can hold only a point value** - a rent of
+    "3.50 - 3.75 €/m²/mes", a height of "6 - 10,5 m". Store the governing number (the LOW end for
+    a rent, so it sorts honestly) and disclose the rest:
+    `{"warehouseRentVal": "the deck quotes an asking rent RANGE of 3.50 - 3.75 per sq m per month;
+    the card ships the annualised LOW end of 42, so the top of the range is not shown"}`. Do NOT
+    try to put the range in the display string - `merge.canonicalize` re-derives `warehouseRent`
+    from `warehouseRentVal`, and the pair-consistency gate rejects a display that does not match
+    its number.
+
+  Because the note is printed verbatim, write a full sentence that reads to a broker who has not
+  seen the deck. Why it exists: every other conflict path compares one record against ANOTHER, so
+  a self-contradicting or over-specified page was invisible - the loser could only be mentioned in
+  `prov` prose, `conflict_note` stayed empty and the Gaps Report told the broker there was nothing
+  to settle. Two independent reviewers raised that as a blocking honesty defect on a live run.
+  Omit the key when the page is consistent (the normal case).
 - **Transcribe, never invent.** A value you cannot read clearly → omit it or set
   `"tbd"`/`null`. Never guess a number, a rent, or coordinates.
+- **COORDINATES: transcribe whatever form the page prints, and never convert.** `lat`/`lng`
+  are numbers, so a DECIMAL pair goes straight in. If the page prints **DMS**
+  (`48°29'51.0"N 17°01'39.7"E`), do NOT convert it and do NOT drop it - copy the printed
+  string into `__meta.map_candidates` (a list of raw strings). Python converts it exactly
+  (`coords.dms_from_text`: deg + min/60 + sec/3600), the same way it converts acres and
+  annualises a monthly rent. Likewise copy any **maps link or 'click for location'
+  hyperlink** verbatim into `__meta.map_candidates` - the resolver follows a shortener to
+  the author's own pin. Never set `lat`/`lng`/`mapLink` from a link yourself.
+  This is why it matters: a run where two pages printed DMS and a third carried only a
+  Google Maps link shipped three town-centre pins, one of them a marker in the middle of a
+  village, because the reader honestly refused to convert and nothing else owned it. The
+  `coord-provenance` gate now blocks that, but the cheap fix is to hand the string over.
 - **If the text is unusable/garbled** (mojibake, column-shuffled spec tables you
   cannot trust, a text layer that is clearly an OCR mess), do NOT force a record.
   Set `"needs_raster": true` on that deck's output (e.g. one stub record `{"__meta":
@@ -211,8 +372,8 @@ records matching `templates/record_schema.json`:
 - `region`/`country` = the manifest's values for that deck.
 
 ### Raster mode (fallback - the historical vision contract)
-Read each page **image** and transcribe exactly as the vision contract describes
-(`reference/vision-fallback.md`): one record per property page, rents annual,
+Read each page **image** and transcribe - this section IS the raster contract:
+one record per property page, rents annual,
 `__meta.page_no` copied verbatim from the manifest, `prov[field] =
 "<locator> (vision transcription)"`, transcribe never invent. Everything in the
 text-mode `__meta` rules applies, only the source is the page image and the prov
@@ -260,7 +421,11 @@ Rules:
   `park, developer, city, country, region, warehouseArea, plotArea, officeArea,
   warehouseRentVal, serviceCharge, landPrice, leaseTerm, incentives, status,
   earlyAccess, clearHeight, floorLoad, loadingDocks, overheadDoors, electricity,
-  truckParking, carParking, breeam, motorway, lat, lng, latlng`.
+  truckParking, carParking, breeam, epc, motorway, lat, lng, latlng`.
+  **`breeam` is a BREEAM grade column ONLY** (Pass/Good/Very Good/Excellent/Outstanding); an
+  `EPC rating` column binds to **`epc`**, never to `breeam` - they are different certificates,
+  and a tracker carrying both columns must map both. (The negative table now hard-vetoes the
+  cross-binding either way, so naming it wrongly is corrected rather than honoured.)
 - `field: null` for a column that is not a property field, OR any column you are unsure
   of - Python then falls back to the dictionary for it (a thin-but-honest map is fine;
   the dictionary backfills every column you leave unbound).
@@ -399,8 +564,14 @@ Rules:
   `page N (brochure description)`.
 
 ## After interpretation
-Write the deck's records as a JSON array to **`work/extract/<region>_vision.json`**
-(region exactly as in the manifest), then re-run
+Write the deck's records as a JSON array to **the deck's own `output` path, copied VERBATIM from its
+manifest entry** - exactly as a tracker `job` does. Do NOT derive the filename from the cluster label:
+two decks can legitimately share a label (the documented cluster refinement collapses ambiguous
+filename clusters onto a city), and deriving the name made four concurrent agents write ONE file, so
+three decks were lost with no error and no gap line. Each deck's `output` is unique by construction.
+
+(`work/extract/<region>_vision.json` is the LEGACY shape. A manifest that carries no `output` key
+predates this change; derive that name only then.) Then re-run
 `python helpers/run.py --folder … --work …` (same args; resume is the default, so
 the cached records are reused and the run continues at merge). It folds any
 `*_vision.json` into the merge, validates them structurally

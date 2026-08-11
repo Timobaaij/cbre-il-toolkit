@@ -33,7 +33,13 @@ enrichment:                    # broker opt-in; ask in plain language before run
   geocode: true                # fill map coordinates (recommended)
   pois: true                   # ports/rail/airports/borders on the map
   osrm: false                  # drive-times to the POIs (network or the web_enrich handoff)
-  regions: false               # workforce profiles (research sub-agent + regions_cache.json)
+  regions: false               # workforce profiles (bundled Oxford Economics NUTS-3 dataset by default; a research sub-agent only as fallback via regions_cache.json).
+                               # ALSO harmonises the `region` LABEL: when the sources state
+                               # regions at more than one administrative level (a county from a
+                               # brochure, the wider region from a tracker), each property's label
+                               # becomes the NUTS-3 area its own coordinates fall inside, disclosed
+                               # in the Source Ledger and the Gaps Report. Without this extra the
+                               # labels ship exactly as stated, mixed levels and all. (I11)
   osrm_endpoint: "https://router.project-osrm.org"
   ors_api_key: ""              # openrouteservice key -> TRUCKING (driving-hgv) distances/times
                                # via the ORS matrix API (1 request per property, throttled to the
@@ -47,12 +53,12 @@ qa:
 (The template version is **not** a `project.yaml` setting - the chrome is pinned by `assets/VERSION` and enforced by `gate_runner.py validate-html`, which fails the build if the template's SHA-256 drifts from the recorded `chrome_sha256`. Nothing client-specific pins it.)
 
 ## Dashboard language (`output.language`, Stage 0 Q3)
-`output.language` chooses the language of the dashboard CHROME (the fixed UI vocabulary: tabs, filters, sort options, the KPI strip labels, section titles, row labels, the compare table, map controls, the footer disclaimer). It accepts an English name ("German"), an endonym ("Deutsch") or an ISO code ("de"); blank or "English" means English. **Any European Latin-script language works** - 12 are bundled (instant); any other SUPPORTED one is translated once in Cowork and cached (the exit-11 fallback). See `reference/localisation.md` for the full supported-vs-bundled list, the cache, exit 11 and the G-i18n gate.
+`output.language` chooses the language of the dashboard CHROME (the fixed UI vocabulary: tabs, filters, sort options, the KPI strip labels, section titles, row labels, the compare table, map controls, the footer disclaimer). It accepts an English name ("German"), an endonym ("Deutsch") or an ISO code ("de"); blank or "English" means English. **Any European Latin-script language works, plus Simplified Chinese** ("Chinese" / "Mandarin" / "zh" / "中文") - 13 are bundled (instant); any other SUPPORTED one is translated once in Cowork and cached (the exit-11 fallback). See `reference/localisation.md` for the full supported-vs-bundled list, the cache, exit 11 and the G-i18n gate.
 
 The flow is: `run.py` reads `output.language` (the `--language` flag overrides it) and passes it to `merge.py`, which stamps it on `canonical.json` as `meta.language` (and an optional explicit `meta.locale`, a BCP-47 tag such as `de-AT`). At build time `build_dashboard.render()` resolves `meta.language` to the bundled chrome table in `helpers/i18n.py` and injects it into the page as a compact, sorted JSON block (the `{{ui_json}}` token) plus a `{{locale}}` for number and country-name formatting. The page applies the table to the static chrome once on load and reads it for every dynamically built card, modal and compare row.
 
 Two safety properties hold by construction:
-- **Per-key English fall-back.** `i18n.py` carries a COMPLETE English baseline; every other language is layered on top key by key. A language not yet translated, or a single missing key, falls back to the English text - never a blank, never a raw key. (English + 11 European languages are bundled as `assets/i18n/*.json`; any other SUPPORTED European Latin-script language is translated on demand and cached - see `reference/localisation.md`.)
+- **Per-key English fall-back.** `i18n.py` carries a COMPLETE English baseline; every other language is layered on top key by key. A language not yet translated, or a single missing key, falls back to the English text - never a blank, never a raw key. (English + 11 European languages + Simplified Chinese are bundled as `assets/i18n/*.json`; any other SUPPORTED European Latin-script language is translated on demand and cached - see `reference/localisation.md`.)
 - **DATA is never translated.** Only chrome is localised. Property, developer, landlord, region, city and POI names, every figure, date, unit and source citation, and the canonical `tbd` / `—` sentinel all stay exactly as sourced. The build is deterministic: the same `canonical.json` and language always produce byte-identical HTML, so `validate-html` re-running the render still passes.
 
 Because `project.yaml` is a merge input, changing the language re-runs the cached merge (and rebuild) on the next pass.
@@ -66,7 +72,7 @@ Each cluster in `inventory.json` also carries a `confidence` (`high`/`low`) and 
 For low-confidence clusters the orchestrator judges the likely city/region from the filename stem(s) and writes an **input-hashed** cache the next intake pass applies deterministically:
 
 ```json
-{"input_hash": "<sha1[:8] over the sorted brochure relpaths, copied from inventory.json>",
+{"input_hash": "<copy inventory.json's `cluster_input_hash` - the BROCHURE-SET identity. Do NOT copy `input_hash`, which is the whole-corpus key (every classified input + its content) that the QA window uses; it will never match. Both key NAMES are accepted here, so `cluster_input_hash` may be used verbatim.>",
  "schema_version": 1,
  "labels": [{"stem": "Options-Oporto", "region": "Oporto", "country": "PT"}]}
 ```
@@ -75,8 +81,8 @@ For low-confidence clusters the orchestrator judges the likely city/region from 
 
 **Absence of the cache IS the regex opt-out** - no `.SKIP` sentinel is needed (unlike the tracker map, there is no exit/dispatch to decline). A no-LLM / non-interactive / offline run simply never writes `work/intake_clusters.json`, so the deterministic regex stands and the offline evals are byte-identical. The LLM sets ONLY `inputs.clusters` (a routing/scaffold label + the `market.countries` seed); the card's displayed region/city are read from the brochure body at extraction, so a wrong cluster label can never fabricate a displayed field - the existing coverage gate (a hallucinated region maps zero brochures -> an empty cluster -> blocked) and the broker confirmation are the backstops.
 
-## Stage-0 setup prompt (two questions)
-At intake the orchestrator asks the broker two plain-language questions (one `AskUserQuestion`, see SKILL.md): (1) which enrichment extras to add, and (2) whether to pull property details from emails - from **a named Outlook mail folder** (the `outlook_email_search` sub-agent with `folderName`, e.g. Inbox or a folder like "Normal CEE"), **across all of Outlook**, or **none**. (A Windows `.msg`/`.eml` folder is a no-MCP fallback only.) The answers are written to `enrichment:` and `inputs.emails:` so subsequent re-runs are non-interactive.
+## Stage-0 setup prompt (ONE consolidated widget form)
+At intake the orchestrator presents ONE consolidated `visualize` widget form with ALL FIVE setup questions at once (client name, enrichment extras, the optional openrouteservice key as an inline field, the email scope - **a named Outlook mail folder** via the `outlook_email_search` sub-agent with `folderName`, **across all of Outlook**, or **none** - and the dashboard language). The verbatim form and its submission parsing are in `reference/setup-form.md`; the mandate (single widget, all five together, one submit, plain-text fallback only when the widget tool is genuinely unavailable) is SKILL.md "The broker setup prompt". (A Windows `.msg`/`.eml` folder is a no-MCP fallback only.) The answers are written to `client:`, `enrichment:`, `inputs.emails:` and `output.language` so subsequent re-runs are non-interactive.
 
 ## Empty-string handling
 Blank `project.yaml` strings fall back to defaults (today's date, a generated lede, a generic eyebrow) - the build never emits empty hero text.

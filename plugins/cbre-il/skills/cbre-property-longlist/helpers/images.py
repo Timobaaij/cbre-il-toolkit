@@ -14,6 +14,7 @@ import base64
 import io
 import json
 import math
+import os
 import re
 import sys
 from pathlib import Path
@@ -71,6 +72,18 @@ MIN_PLAN_W, MIN_PLAN_H = 220, 160
 # Without this floor, a busy page could out-score its own photo and ship a
 # cluttered full-page tile as the hero.
 MODEST_PHOTO = 6.0
+
+
+def _atomic_save_png(im, path):
+    """tmp + os.replace for the audit/candidate dumps. These are the evidence the G-images
+    reviewer signs off, and a kill mid-encode otherwise freezes a PARTIAL set at the final
+    names - which every resume guard then accepts. _common is imported lazily so images.py
+    keeps importing on a host missing an optional dep. No direct-save fallback: that would
+    reinstate the non-atomic write this exists to remove, and both call sites already skip
+    the file on an exception. (B16)"""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _common as _C
+    return _C.atomic_save_image(im, path, "PNG")
 
 
 def to_data_uri(jpeg_bytes: bytes, mime: str = "image/jpeg") -> str:
@@ -160,27 +173,72 @@ def candidates_for_page(path: Path, page_index: int) -> list[dict]:
 
 
 def embedded_by_index(path: Path, page_index: int, index: int,
-                      budget_kb: int = DEFAULT_BUDGET_KB) -> str | None:
+                      budget_kb: int = DEFAULT_BUDGET_KB,
+                      cache_dir: Path | str | None = None) -> str | None:
     """The candidate at `index` of candidates_for_page(path, page_index), compressed to a
     hero data URI - the binding half of the LLM-hero contract (merge passes the sub-agent's
     chosen __meta.heroRef here). None when the index is out of range, Pillow is absent, or
-    anything fails (the caller then falls back to the deterministic ladder). Never raises."""
+    anything fails (the caller then falls back to the deterministic ladder). Never raises.
+
+    DISK-CACHED per (deck, page, budget, index). This was the ONLY image producer with no
+    cache at all, while every sibling (page_hero_and_plan, page_render_plan, _deck_page_photos,
+    slide_hero_and_plan) had one - and it is the tier that WINS over all others, i.e. the
+    intended happy path whenever the interpretation sub-agent supplies a heroRef. Measured at
+    81% of a warm 40-property merge (2.56s of 3.16s; 64 ms/property, 6 JPEG-ladder rungs each,
+    of which the LANCZOS resize is ~60 ms).
+    THE INDEX IS PART OF THE KEY, deliberately: two properties anchored on the SAME page with
+    DIFFERENT heroRef values must not collide, or they would silently swap heroes. planRef
+    rides this same function, and gets its own key for free the same way."""
     if Image is None:
         return None  # no Pillow: no decoder; merge falls back to the deterministic ladder
+    if not (isinstance(index, int) and not isinstance(index, bool) and index >= 0):
+        return None
+    cf = _cache_file(path, page_index, budget_kb, f"heroref{index}", cache_dir)
+    cached = _cache_read(cf)
+    if cached is not None:
+        return cached or None
     try:
         cands = candidates_for_page(path, page_index)
-        if not (isinstance(index, int) and 0 <= index < len(cands)):
+        if index >= len(cands):
             return None
-        return to_data_uri(compress(cands[index]["img"], HERO_MAX_EDGE, budget_kb))
+        uri = to_data_uri(compress(cands[index]["img"], HERO_MAX_EDGE, budget_kb))
     except Exception:
         return None
+    _cache_write(cf, uri)
+    return uri
+
+
+_PIX_MODE = {(1, False): "L", (1, True): "LA", (3, False): "RGB",
+             (3, True): "RGBA", (4, False): "CMYK"}
 
 
 def page_raster(doc: "fitz.Document", page_index: int, dpi: int = 150) -> Image.Image:
-    """Render a whole page to a raster (EMF/vector fallback)."""
+    """Render a whole page to a raster (EMF/vector fallback).
+
+    Wraps the pixmap's RAW SAMPLES directly instead of round-tripping them through a PNG
+    encode+decode. This is the hottest primitive in the skill - every render tier goes
+    through it (_page_crops, _rendered_plan_crop, the hero tier B/C ladder, vision/interpret
+    prep, contact_sheet) - and the PNG detour cost ~6x: measured 86.8 ms -> 14.6 ms per A4
+    page at 150 dpi, with `fz_write_pixmap_as_png` alone accounting for ~40% of a warm merge
+    profile. At 10 decks the cold interpretation prep was 48 s, i.e. OVER the ~40-45 s shell
+    cap, forcing an extra kill-and-resume round purely to pay for PNG encoding.
+
+    BYTE-IDENTICAL, verified before switching: the samples ARE the decoded PNG's pixels, so
+    pixels, the classifier verdict/photographic score AND the downstream `to_data_uri(compress(
+    ...))` all match byte for byte at 90/150/180 dpi. That last one is what protects the
+    skill's byte-identity contract and the cached `.uri` units. An unexpected colorspace
+    (CMYK+alpha, a separation space) or a shim Pixmap without `.samples` falls back to the
+    original PNG path rather than guessing a mode."""
     if Image is None:
         return None  # no Pillow: no raster; callers None-check or wrap in try/except
     pix = doc[page_index].get_pixmap(dpi=dpi)
+    try:
+        ncomp = pix.colorspace.n if pix.colorspace is not None else 1
+        mode = _PIX_MODE.get((ncomp, bool(pix.alpha)))
+        if mode is not None:
+            return Image.frombytes(mode, (pix.width, pix.height), pix.samples)
+    except Exception:
+        pass  # fall through to the universally-correct PNG path
     return Image.open(io.BytesIO(pix.tobytes("png")))
 
 
@@ -388,8 +446,37 @@ def close_doc_cache() -> None:
         pass
 
 
+def _engine_tag() -> str:
+    """The ACTIVE image tier, as part of every cache key. Without it the cache was
+    engine-blind and a DEGRADED pass poisoned every later pass permanently:
+
+    under the `fitz_shim` tier `get_pixmap` raises, so `page_hero_and_plan` cached the literal
+    negative "NONE" for a page whose only image is Flate-encoded (a PNG-sourced photo the shim's
+    DCT/JPX-only decoder cannot see). `run._is_current` keys purely on input MTIMES, so the tier
+    is not a resume input - a later NATIVE-PyMuPDF run resume-skipped merge and served the
+    poisoned negative. The run then printed "native PyMuPDF ... full-fidelity extraction" while
+    merge wrote the ledger line "no usable photo in any source (placeholder shown)" about a
+    source that demonstrably holds one, and neither placeholder gate could fire (the audit had
+    recorded `candidates: 0`, and the rate check needs >=50%). `soffice_pdf` avoided this by
+    never caching a negative.
+
+    Only the entries that are actually wrong are invalidated, because a tier change genuinely
+    changes what is extractable.
+
+    Three components, and the last two were missing (B17): the module NAME alone collapsed
+    fitz_shim's two backends - pdfplumber and pypdfium2 decode different things - into one
+    key, and with no VERSION a PyMuPDF upgrade that changes what is extractable looked
+    identical to the cache."""
+    name = getattr(fitz, "__name__", "fitz")
+    backend = getattr(fitz, "_BACKEND", "") or getattr(fitz, "_backend", "")
+    if backend:
+        name = f"{name}.{backend}"
+    ver = (getattr(fitz, "__version__", "") or getattr(fitz, "VersionBind", "") or "0")
+    return f"{name}|{'pil' if _HAS_PIL else 'nopil'}|{ver}"
+
+
 def _cache_file(pdf_path, page_index, budget_kb, kind, cache_dir, ext=".uri"):
-    """Cache path for a (deck, page, budget, kind) unit. ext is `.uri` for the visual
+    """Cache path for a (deck, page, budget, kind, ENGINE) unit. ext is `.uri` for the visual
     hero/plan/gallery data URIs and `.json` for intermediate per-page geometry/photo
     caches (so the two never collide in a `*.uri` count and stay self-describing)."""
     if not cache_dir:
@@ -397,8 +484,8 @@ def _cache_file(pdf_path, page_index, budget_kb, kind, cache_dir, ext=".uri"):
     try:
         import hashlib
         st = Path(pdf_path).stat()
-        key = hashlib.sha1(f"v2|{Path(pdf_path).name}|{st.st_size}|{st.st_mtime_ns}|"
-                           f"{page_index}|{budget_kb}|{kind}".encode()).hexdigest()
+        key = hashlib.sha1(f"v3|{Path(pdf_path).name}|{st.st_size}|{st.st_mtime_ns}|"
+                           f"{page_index}|{budget_kb}|{kind}|{_engine_tag()}".encode()).hexdigest()
         cdir = Path(cache_dir)
         cdir.mkdir(parents=True, exist_ok=True)
         return cdir / f"{key}{ext}"
@@ -749,6 +836,14 @@ def page_image_audit(pdf_path: Path, page_index: int, out_dir: Path, tag: str,
         return []  # no Pillow: no audit montage (placeholders are surfaced honestly elsewhere)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # RESUME SHORT-CIRCUIT: the thumbnail names are deterministic per (tag, page), so once this
+    # page's audit is on disk the whole pass - page_raster + every embedded-image decode + the
+    # PNG re-writes - is pure waste. Measured 1.2-1.7s per audited page, paid on EVERY resumed
+    # merge round; stacked across placeholder properties that alone can exhaust merge's ~10-15s
+    # window under the ~40s shell cap. (The cache_dir fix covered only the GEOMETRY layer.)
+    existing = sorted(str(p.resolve()) for p in out_dir.glob(f"{tag}_p{page_index + 1}_*.png"))
+    if existing:
+        return existing
     files: list[str] = []
 
     def _save(img, kind: str, idx: int):
@@ -757,7 +852,7 @@ def page_image_audit(pdf_path: Path, page_index: int, out_dir: Path, tag: str,
             w, h = im.size
             im.thumbnail((480, 480))
             name = f"{tag}_p{page_index + 1}_{kind}{idx}_{w}x{h}.png"
-            im.save(out_dir / name, "PNG")
+            _atomic_save_png(im, out_dir / name)
             files.append(str((out_dir / name).resolve()))
         except Exception:
             pass
@@ -801,14 +896,17 @@ def _link_near_box(hl: dict, x0, top, x1, bot) -> bool:
 
 
 def _placed_cache_file(pdf_path, cache_dir):
-    """Disk path for the per-document geometry cache, keyed on bytes+mtime (P0-5)."""
+    """Disk path for the per-document geometry cache, keyed on bytes+mtime+ENGINE (P0-5).
+    The engine belongs in the key because the pathological-page SKIP set is derived from
+    `fitz.get_images`, so a shim tier can produce a different geometry set for the same deck -
+    see `_engine_tag` for the poisoning this prevents."""
     if not cache_dir:
         return None
     try:
         import hashlib
         st = Path(pdf_path).stat()
-        h = hashlib.sha1(f"placed-v1|{Path(pdf_path).name}|{st.st_size}|{st.st_mtime_ns}"
-                         .encode()).hexdigest()
+        h = hashlib.sha1(f"placed-v2|{Path(pdf_path).name}|{st.st_size}|{st.st_mtime_ns}"
+                         f"|{_engine_tag()}".encode()).hexdigest()
         cdir = Path(cache_dir)
         cdir.mkdir(parents=True, exist_ok=True)
         return cdir / f"{h}.placed.json"
@@ -1287,9 +1385,35 @@ def best_plan_page_render(path: Path, page_nos, budget_kb: int = DEFAULT_BUDGET_
     if Image is None:
         return (None, None)
     import plan_signal as _PS
+    pages = sorted({p for p in (page_nos or [])
+                    if isinstance(p, int) and not isinstance(p, bool) and p >= 0})
+    # WHOLE-VERDICT CACHE. The per-page 'planpage' URI cache below was consulted only AFTER the
+    # expensive work, and the DECISION (which page won, or that none did) was never persisted at
+    # all - so every resumed round re-rendered, re-classified and re-text-scanned every candidate
+    # page and threw the answer away. Measured at 40 properties: 22.8s then 23.6s (warm SLOWER
+    # than cold) for 0 plans bound, i.e. 87% of a warm merge profile spent re-deriving 'no'. The
+    # verdict is a pure function of (deck bytes, sorted page set, budget) - _cache_file already
+    # keys on the deck's size+mtime_ns, so a deck edit invalidates it.
+    # The NEAR-MISS list is cached WITH the verdict on purpose: it feeds the Gaps Report's
+    # "possible site plans not captured" lines, and a resumed run that skipped the scan would
+    # otherwise drop them silently - trading a hang for a quiet loss of honesty.
+    import hashlib as _hl
+    _vk = _hl.sha1(",".join(map(str, pages)).encode()).hexdigest()[:12]
+    _vf = _cache_file(path, 0, budget_kb, f"planverdict{_vk}", cache_dir, ext=".json")
+    _v = _cache_read_json(_vf)
+    if isinstance(_v, dict) and "page" in _v:
+        if near_miss is not None:
+            near_miss.extend(_v.get("near_miss") or [])
+        _vp = _v.get("page")
+        if _vp is None:
+            return (None, None)
+        _vu = _cache_read(_cache_file(path, _vp, budget_kb, "planpage", cache_dir))
+        if _vu:
+            return (_vu, _vp)
+        # the winning page's URI cache is gone (pruned/corrupt) -> fall through and rebuild
+    _nm: list = []   # collected locally so it can be cached, then handed to the caller
     best = None  # ((titled, balance), page_no, uri)
-    for pno in sorted({p for p in (page_nos or [])
-                       if isinstance(p, int) and not isinstance(p, bool) and p >= 0}):
+    for pno in pages:
         crop, sig, kind = _rendered_plan_crop(path, pno, cache=cache_dir)
         if crop is None:
             continue
@@ -1305,22 +1429,21 @@ def best_plan_page_render(path: Path, page_nos, budget_kb: int = DEFAULT_BUDGET_
         if not ok:
             # NEAR-MISS: a page carrying a positive plan signal (classify 'plan', or a plan title)
             # that a precision guard rejected -> surface it so a real missed plan is visible.
-            if near_miss is not None:
-                if is_spec and titled:
-                    near_miss.append({"page": pno,
-                                      "why": "classified as a spec page but carries a plan title"})
-                elif is_spec and kind == "plan" and in_band:
-                    # a real plan DRAWING on a page that also carries >=2 own-line labels (a legend /
-                    # title-block) - the spec gate rejected it; surface it so it is not silently lost.
-                    near_miss.append({"page": pno,
-                                      "why": "classified as a spec page but has the site-plan visual signature"})
-                elif not is_spec and (kind == "plan" or titled):
-                    why = ("a real photo dominates the page" if has_photo
-                           else "classified '%s' outside the plan white-balance band" % kind if kind == "plan"
-                           else "classified '%s'; a plan title is present but not visually confirmed" % kind if titled
-                           else "")
-                    if why:
-                        near_miss.append({"page": pno, "why": why})
+            if is_spec and titled:
+                _nm.append({"page": pno,
+                            "why": "classified as a spec page but carries a plan title"})
+            elif is_spec and kind == "plan" and in_band:
+                # a real plan DRAWING on a page that also carries >=2 own-line labels (a legend /
+                # title-block) - the spec gate rejected it; surface it so it is not silently lost.
+                _nm.append({"page": pno,
+                            "why": "classified as a spec page but has the site-plan visual signature"})
+            elif not is_spec and (kind == "plan" or titled):
+                why = ("a real photo dominates the page" if has_photo
+                       else "classified '%s' outside the plan white-balance band" % kind if kind == "plan"
+                       else "classified '%s'; a plan title is present but not visually confirmed" % kind if titled
+                       else "")
+                if why:
+                    _nm.append({"page": pno, "why": why})
             continue
         cf = _cache_file(path, pno, budget_kb, "planpage", cache_dir)
         uri = _cache_read(cf)
@@ -1332,6 +1455,9 @@ def best_plan_page_render(path: Path, page_nos, budget_kb: int = DEFAULT_BUDGET_
         rank = (1 if kind == "plan" else 0, 1 if titled else 0, balance)
         if uri and (best is None or rank > best[0]):
             best = (rank, pno, uri)
+    _cache_write_json(_vf, {"page": (best[1] if best else None), "near_miss": _nm})
+    if near_miss is not None:
+        near_miss.extend(_nm)
     if best is None:
         return (None, None)
     return (best[2], best[1])
@@ -1472,11 +1598,21 @@ def soffice_pdf(src: Path, cache_dir: Path | str | None) -> Path | None:
             # parallel conversion) can never lock the conversion out
             profile = Path(td) / "profile"
             profile.mkdir()
+            # TIMEOUT must be SHORTER than the shell window, not longer than the whole run.
+            # At 180s a single conversion could outlive the ~40-45s cap, so the shell was killed
+            # mid-convert, the PDF only lands on success, and the next round started from zero -
+            # an unbounded, invisible loop. It is also the one prewarm unit that can hold the
+            # process at interpreter exit. Override with CBRE_SOFFICE_TIMEOUT when converting a
+            # genuinely huge deck outside a capped sandbox.
+            try:
+                _soffice_timeout = float(os.environ.get("CBRE_SOFFICE_TIMEOUT") or 0) or 25.0
+            except ValueError:
+                _soffice_timeout = 25.0
             subprocess.run(
                 [exe, "--headless", "--norestore",
                  f"-env:UserInstallation={profile.as_uri()}",
                  "--convert-to", "pdf", "--outdir", td, str(src)],
-                check=True, capture_output=True, timeout=180)
+                check=True, capture_output=True, timeout=_soffice_timeout)
             produced = Path(td) / (src.stem + ".pdf")
             if not produced.exists() or produced.stat().st_size == 0:
                 return None
@@ -1559,6 +1695,10 @@ def slide_image_audit(pptx_path: Path, slide_index: int, out_dir: Path, tag: str
         return []  # no Pillow: no audit montage
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # RESUME SHORT-CIRCUIT - see page_image_audit. Worth more here: a miss re-runs soffice_pdf.
+    existing = sorted(str(p.resolve()) for p in out_dir.glob(f"{tag}_s{slide_index + 1}_*.png"))
+    if existing:
+        return existing
     files: list[str] = []
 
     def _save(img, kind: str, idx: int):
@@ -1567,7 +1707,7 @@ def slide_image_audit(pptx_path: Path, slide_index: int, out_dir: Path, tag: str
             w, h = im.size
             im.thumbnail((480, 480))
             name = f"{tag}_s{slide_index + 1}_{kind}{idx}_{w}x{h}.png"
-            im.save(out_dir / name, "PNG")
+            _atomic_save_png(im, out_dir / name)
             files.append(str((out_dir / name).resolve()))
         except Exception:
             pass

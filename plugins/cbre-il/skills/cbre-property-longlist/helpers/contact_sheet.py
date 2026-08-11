@@ -48,6 +48,95 @@ CBRE_GREEN = (0, 63, 45)
 LINE = (210, 210, 200)
 
 
+def _atomic_save(im, path, **kw):
+    """tmp + os.replace, so a kill mid-encode never leaves a partial sheet at the final
+    name where a resume guard would accept it.
+
+    _common is imported INSIDE the call so the Pillow-absent degrade path above stays
+    dependency-free. There is deliberately NO direct-save fallback: that would put the
+    non-atomic write back, which is the whole defect. Every caller already wraps this in a
+    try/except that skips the sheet, so a failure degrades to a missing montage - visible -
+    rather than a partial one that looks complete. (B16)"""
+    import sys as _s
+    _s.path.insert(0, str(Path(__file__).resolve().parent))
+    import _common as _C
+    return _C.atomic_save_image(im, path, "PNG", **kw)
+
+
+MONTAGE_MAX_EDGE = 1400   # stay under the vision resize threshold (~1568px long edge):
+# above it the API downscales the whole canvas, which WOULD shrink the tiles and cost the
+# agent detail. Below it, a tile is byte-for-byte the thumbnail it would have opened alone.
+MONTAGE_CAPTION_H = 26
+
+
+def tile_native(cells: list, out_path, cols: int = 3, tile_px: int = 384) -> list:
+    """Tile already-written thumbnails into as few sheets as fit, at NATIVE size. (B19)
+
+    One tool call instead of one per image. This is a pure co-location: each tile is pasted
+    unscaled (PIL's thumbnail never upscales, so a `tile_px`-capped thumbnail arrives at its
+    own size) and the canvas is capped at MONTAGE_MAX_EDGE, so the agent sees exactly the
+    pixels it would have seen opening each file - merely side by side. Anything that shrank
+    a tile would be a perception regression dressed as a speed-up.
+
+    Every cell is tiled, in the order given, captioned with its `index`. Python must never
+    drop or reorder one: which candidate is the hero is the LLM's judgement, and a silently
+    missing tile would make it Python's. A cell whose image will not decode is the one
+    exception - it is skipped rather than aborting the page, exactly as the per-candidate
+    thumbnail writer already does - and it remains openable on its own.
+
+    Returns the list of written sheet paths ([] when there is nothing to tile), paginating
+    when one canvas would exceed the cap."""
+    if not _HAS_PIL or not cells:
+        return []
+    loaded = []
+    for c in cells:
+        try:
+            im = Image.open(str(c.get("image"))).convert("RGB")
+            im.load()
+        except Exception:
+            continue  # undecodable - skip it, never abort the page
+        loaded.append((c.get("index"), im))
+    if not loaded:
+        return []
+    cell_w = min(tile_px, max(im.width for _, im in loaded))
+    cell_h = min(tile_px, max(im.height for _, im in loaded))
+    cols = max(1, min(cols, len(loaded)))
+    step_w, step_h = cell_w + PAD, cell_h + MONTAGE_CAPTION_H + PAD
+    # how many rows fit under the cap; at least one, or a single tall tile would loop
+    max_rows = max(1, (MONTAGE_MAX_EDGE - PAD) // step_h)
+    while cols > 1 and PAD + cols * step_w > MONTAGE_MAX_EDGE:
+        cols -= 1
+    per_sheet = max(1, cols * max_rows)
+    out_path = Path(out_path)
+    written = []
+    for s in range(0, len(loaded), per_sheet):
+        chunk = loaded[s:s + per_sheet]
+        rows = (len(chunk) + cols - 1) // cols
+        W = PAD + min(cols, len(chunk)) * step_w
+        H = PAD + rows * step_h
+        sheet = Image.new("RGB", (W, H), BG)
+        draw = ImageDraw.Draw(sheet)
+        font = _font(15)
+        for k, (idx, im) in enumerate(chunk):
+            r, c = divmod(k, cols)
+            x, y = PAD + c * step_w, PAD + r * step_h
+            draw.rectangle([x, y, x + cell_w, y + cell_h + MONTAGE_CAPTION_H],
+                           fill=CELL_BG, outline=LINE)
+            # centre the NATIVE image in its cell; never resize it
+            ox = x + max(0, (cell_w - im.width) // 2)
+            oy = y + max(0, (cell_h - im.height) // 2)
+            sheet.paste(im, (ox, oy))
+            draw.text((x + 6, y + cell_h + 4), f"index {idx}", font=font, fill=CBRE_GREEN)
+        p = (out_path if len(loaded) <= per_sheet
+             else out_path.with_name(f"{out_path.stem}_{s // per_sheet + 1}{out_path.suffix}"))
+        try:
+            _atomic_save(sheet, p)
+        except Exception:
+            continue
+        written.append(str(Path(p).resolve()))
+    return written
+
+
 def _font(size=13):
     for name in ("arial.ttf", "DejaVuSans.ttf", "Calibri.ttf"):
         try:
@@ -113,7 +202,7 @@ def build_sheets(canonical: dict, out_dir: Path, cols: int, per_sheet: int, thum
             d.text((cx + PAD, ty), cap1, fill=CBRE_GREEN, font=font)
             d.text((cx + PAD, ty + 16), cap2, fill=(90, 100, 96), font=font_sm)
         out = out_dir / (f"contact_sheet_{pno}.png" if len(pages) > 1 else "contact_sheet.png")
-        sheet.save(out, format="PNG", optimize=True)
+        _atomic_save(sheet, out, optimize=True)
         paths.append(out)
     return paths
 
@@ -155,7 +244,7 @@ def build_placeholder_audit(canonical: dict, out_dir: Path, cols: int = 4) -> Pa
                f"{ent.get('source','?')} {ent.get('locator','')} - usable photo/plan?",
                fill=(150, 80, 20), font=font_sm)
     out = out_dir / "placeholder_audit.png"
-    sheet.save(out, format="PNG", optimize=True)
+    _atomic_save(sheet, out, optimize=True)
     return out
 
 
@@ -200,7 +289,7 @@ def build_gallery_sheet(canonical: dict, out_dir: Path, cols: int = 5, thumb: in
         d.text((cx + PAD, cy + PAD + int(th * 0.75) + 19),
                "real building photo? or decorative/abstract to exclude?", fill=(150, 80, 20), font=font_sm)
     out = out_dir / "carousel_secondaries.png"
-    sheet.save(out, format="PNG", optimize=True)
+    _atomic_save(sheet, out, optimize=True)
     return out
 
 

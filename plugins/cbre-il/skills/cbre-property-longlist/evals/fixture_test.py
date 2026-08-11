@@ -132,9 +132,13 @@ def fixture_records(work: Path) -> list[Path]:
         },
     ]
     tracker = [
-        {  # P1: NUMERIC-ONLY rent - canonicalize() derives the display string
+        {  # P1: NUMERIC-ONLY rent (display string derived) - the SOURCE states the unit.
+           # It has to: since B06 a unit-silent rent renders "55 (unit not stated)" rather
+           # than inventing EUR/sq m, so a fixture that omitted rentUnit would be asserting
+           # the invented default, not the derivation it is here to test.
             "park": "Beta Park", "developer": "Panattoni", "city": "Brno", "country": "CZ",
             "status": "Speculative", "warehouseArea": 25000, "warehouseRentVal": 55.0,
+            "rentUnit": "€/sq m/yr",
             "photo": _px((120, 60, 30)),
             "__meta": {"source_file": "Tracker.xlsx", "source_type": "xlsx",
                        "locator_base": "Sheet1!r4",
@@ -240,6 +244,7 @@ def main() -> int:
         broc = {
             "park": "Delta Park", "developer": "Prologis", "city": "Lodz", "country": "PL",
             "status": "Existing", "warehouseArea": 30000, "warehouseRentVal": broc_rent,
+            "rentUnit": "€/sq m/yr",   # the source states it (see the P1 note above)
             "warehouseRent": f"€{broc_rent:g} / sq m / year", "photo": _px((33, 99, 66)),
             "__meta": {"source_file": "Delta brochure.pdf", "source_type": "pdf",
                        "date": "2025-01-01", "locator_base": "page 2",
@@ -250,6 +255,7 @@ def main() -> int:
         trk = {
             "park": "Delta Park", "developer": "Prologis", "city": "Lodz", "country": "PL",
             "status": "Existing", "warehouseArea": 30000, "warehouseRentVal": trk_rent,
+            "rentUnit": "€/sq m/yr",
             "warehouseRent": f"€{trk_rent:g} / sq m / year",
             "__meta": {"source_file": "Tracker.xlsx", "source_type": "xlsx",
                        "date": "2025-02-01", "locator_base": "Sheet1!r9",
@@ -578,17 +584,47 @@ def main() -> int:
 
     check(call(gate_runner, "freeze", canonical) == 0, "freeze snapshot written")
 
+    # The QA restructure: final_gate keys on the reviewer's per-FINDING `blocking:`/`advisory:`
+    # label, not on a verdict word. A reviewer that found nothing says so with the explicit line
+    # `FINDINGS: none` - silence is indistinguishable from a crashed review and fails safe. A
+    # `VERDICT:` line is optional and ignored, so prose mentioning one still cannot block.
     good = work / "reviews"; good.mkdir()
-    (good / "G-honesty.md").write_text("All sampled values check out.\nVERDICT: green\n", encoding="utf-8")
+    (good / "G-honesty.md").write_text("All sampled values check out.\nFINDINGS: none\n",
+                                       encoding="utf-8")
     (good / "G-trace.md").write_text(  # prose mentioning a red verdict must NOT block
         "If a sampled field had not matched its locator, the verdict: red would apply.\n"
-        "- [LOW] property=2 field=clearHeight issue=not stated action=chase landlord\n"
+        "- advisory: property=2 field=clearHeight issue=not stated action=chase landlord\n"
         "VERDICT: amber\n", encoding="utf-8")
-    (good / "G-images.md").write_text("Montage reviewed, placeholders honest.\nVERDICT: green\n", encoding="utf-8")
-    (good / "G-visual.md").write_text("Grid/modal/map render cleanly.\nVERDICT: green\n", encoding="utf-8")
+    (good / "G-images.md").write_text("Montage reviewed, placeholders honest.\nFINDINGS: none\n",
+                                      encoding="utf-8")
+    (good / "G-visual.md").write_text("Grid/modal/map render cleanly.\nFINDINGS: none\n",
+                                      encoding="utf-8")
     rc = call(final_gate, "--canonical", canonical, "--html", built,
               "--deliverables", deliverables, "--reviews", good)
-    check(rc == 0, "V1/V3: final gate passes with an amber verdict + prose 'verdict: red' mention")
+    check(rc == 0, "V1/V3: final gate passes on advisory findings + an explicit FINDINGS: none, "
+                   "and prose mentioning 'verdict: red' still does not block")
+
+    # P1-5: the SAME call with --qa-state, on a work dir that has no qa_state.json, must behave
+    # exactly as before - the Known-limitations consistency check is INERT until a QA round is
+    # recorded. This is the end-to-end guarantee that no offline eval or existing flow changed.
+    _qbuf = io.StringIO()
+    _saved_argv = sys.argv
+    sys.argv = ["final_gate", "--canonical", str(canonical), "--html", str(built),
+                "--deliverables", str(deliverables), "--reviews", str(good),
+                "--qa-state", str(work)]
+    try:
+        with redirect_stdout(_qbuf):
+            final_gate.main()
+        _qrc = 0
+    except SystemExit as e:
+        _qrc = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+    except Exception as e:                                    # pragma: no cover - a crash is a fail
+        print(f"    (crash: {type(e).__name__}: {e})")
+        _qrc = 1
+    finally:
+        sys.argv = _saved_argv
+    check(_qrc == 0 and "Known limitations" not in _qbuf.getvalue(),
+          "P1-5: --qa-state with no recorded QA round is INERT (rc 0, no consistency line)")
 
     # S7-17: a stub/empty deliverables set must NOT pass 'present' (size + Longlist checks)
     stub = work / "deliverables_stub"; stub.mkdir()
@@ -597,13 +633,18 @@ def main() -> int:
                "--deliverables", stub, "--reviews", good) != 0,
           "S7-17: final gate BLOCKS a stub/empty deliverables set (size + Longlist checked)")
 
+    # SILENCE FAILS SAFE. A review file carrying neither a labelled finding nor the explicit
+    # `FINDINGS: none` sentinel is indistinguishable from a crashed, truncated or empty review, so
+    # it must BLOCK. Note the three sibling files here carry only a verdict word, which is now
+    # ignored - so this also pins that a bare `VERDICT: green` is NOT an assertion of cleanliness.
     bad = work / "reviews_bad"; bad.mkdir()
     for f in ("G-trace.md", "G-images.md", "G-visual.md"):
         (bad / f).write_text("VERDICT: green\n", encoding="utf-8")
-    (bad / "G-honesty.md").write_text("Looked fine overall, nothing to add.\n", encoding="utf-8")  # NO verdict line
+    (bad / "G-honesty.md").write_text("Looked fine overall, nothing to add.\n", encoding="utf-8")
     rc = call(final_gate, "--canonical", canonical, "--html", built,
               "--deliverables", deliverables, "--reviews", bad)
-    check(rc != 0, "V2: a review file with no VERDICT line fails the final gate")
+    check(rc != 0, "V2: a review file with neither a labelled finding nor 'FINDINGS: none' fails "
+                   "the final gate (silence is not a clean review)")
 
     check(final_gate.parse_verdict("VERDICT: RED\n") == "red"
           and final_gate.parse_verdict("notes only") is None

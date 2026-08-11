@@ -102,8 +102,12 @@ def _verified_cluster_overrides(cache, input_hash: str, stems: set) -> dict:
     non-empty region that is not a _NOISE token."""
     if not isinstance(cache, dict):
         return {}
-    if cache.get("input_hash") != input_hash:  # a changed brochure set -> stale -> drop
-        return {}
+    # Accept `cluster_input_hash` as an alias: inventory.json now publishes BOTH hashes (B41),
+    # and a sub-agent told to "copy input_hash from inventory.json" may reasonably copy the
+    # brochure-set key under its own name. Reading either beats silently discarding the cache -
+    # which is what happened while neither key was published at all.
+    if input_hash not in (cache.get("input_hash"), cache.get("cluster_input_hash")):
+        return {}  # a changed brochure set -> stale -> drop
     labels = cache.get("labels")
     if not isinstance(labels, list):
         return {}
@@ -159,13 +163,40 @@ def discover(folder: Path, cluster_cache=None) -> dict:
     cc = lib.get("city_country", {})
     inv = {"folder": str(folder), "clusters": {}, "xlsx": [], "images": [],
            "emails": [], "present_types": [], "subfolders": [], "skipped_outputs": [],
-           "skipped_duplicates": [], "skipped_hash_oversize": []}
+           "skipped_duplicates": [], "skipped_hash_oversize": [],
+           # A file whose extension matches NO branch below. It used to fall off the end of the
+           # classifier silently - not a brochure, not a tracker, not an image, not an email, and
+           # NOT recorded as unreadable either (that path only covers accepted-but-unparsed
+           # files). So a broker who handed over a .json or .txt of property data got "no
+           # readable property sources" while their file appeared NOWHERE: not the inventory,
+           # not the ledger, not the Gaps Report. Believing your data was considered when it was
+           # never opened is worse than a crash. Now every such file is named and surfaced.
+           "unclassified": []}
+    # `~$` = an Office LOCK/owner file, written by Word/Excel/PowerPoint while a document is OPEN
+    # and left behind after a crash. It is not a document: ingesting one gave the run a SECOND
+    # tracker/brochure that duplicated every property from the real file, which then had to be
+    # de-duplicated through cross-source match adjudication (a sub-agent round-trip) - or worse,
+    # shipped twice. A broker with the spreadsheet open in Excel hits this EVERY time.
     files = sorted((p for p in folder.rglob("*") if p.is_file()
+                    and not p.name.startswith("~$")
                     and not any(part.startswith((".", "_"))
                                 for part in p.relative_to(folder).parts)),
                    key=lambda p: p.relative_to(folder).as_posix())
+    # BASENAME COLLISIONS. Records reference their source by bare basename, so two inputs
+    # sharing one name are indistinguishable downstream: one property can wear another's
+    # photos, and because page ownership keys on the RESOLVED path, both can instead lose
+    # their gallery entirely. Resolution is now deterministic (_common.resolve_by_name), but
+    # deterministic is not correct - so say so, HERE, before the expensive stages, while the
+    # broker can still rename a file. A NOTE, never a refusal: two site folders each holding
+    # `photos.pdf` is a legitimate shape. (B13)
+    for _bn, _rels in sorted(C.basename_collisions(folder).items()):
+        print(f"NOTE {len(_rels)} input files share the basename {_bn!r} "
+              f"({', '.join(_rels[:4])}{' ...' if len(_rels) > 4 else ''}) - records name "
+              f"their source by basename only, so photos/pages may bind to the wrong one. "
+              f"Rename them to be safe.")
     subdirs: set[str] = set()
     seen_hashes: dict[str, str] = {}  # sha256 -> the rel path we kept (INTAKE-001)
+    corpus_sig: list = []             # (rel, sha256) per KEPT CLASSIFIED input -> input_hash (B41)
     # PASS 1: collect the kept brochure files (post own-output + INTAKE-001 dedup) so the
     # input_hash + the cache verifier key against the EXACT cluster input, then apply the
     # verified LLM overrides; non-brochure inputs are classified in the same loop.
@@ -203,6 +234,15 @@ def discover(folder: Path, cluster_cache=None) -> dict:
         if len(relparts) > 1:
             subdirs.add(relparts[0])
         ext = p.suffix.lower()
+        # CORPUS IDENTITY (B41). Keep (rel, digest) for every KEPT CLASSIFIED input - the
+        # sha256 is already computed just above for the INTAKE-001 duplicate check, so this is
+        # free. It becomes inv["input_hash"], the key gate_runner._qa_run_key and gates.md
+        # already CLAIM to read and which was never published: with it absent the QA window
+        # silently fell back to inv["folder"], a constant for a given work dir, so the window
+        # was blind to every in-place corpus change.
+        if ext in (".pdf", ".pptx", ".xlsx", ".xlsm", ".csv",
+                   ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".msg", ".eml"):
+            corpus_sig.append((rel, digest))
         if ext in (".pdf", ".pptx"):
             kept_brochures.append((rel, ext, p.stem))
         elif ext in (".xlsx", ".xlsm", ".csv"):
@@ -211,11 +251,29 @@ def discover(folder: Path, cluster_cache=None) -> dict:
             inv["images"].append(rel)
         elif ext in (".msg", ".eml"):
             inv["emails"].append(rel)
+        else:
+            inv["unclassified"].append({"file": rel, "ext": ext or "(none)"})
     # PASS 2: cluster the kept brochures. The cluster INPUT is the sorted brochure
     # relpaths; the verified LLM cache (if any) overrides infer_cluster per stem.
     brochure_rels = [rel for rel, _ext, _stem in kept_brochures]
     stems = {stem for _rel, _ext, stem in kept_brochures}
-    overrides = _verified_cluster_overrides(cluster_cache, _brochure_input_hash(brochure_rels), stems)
+    # PUBLISH BOTH HASHES (B41). Two different identities, deliberately separate:
+    #   input_hash         - the WHOLE corpus (every kept classified input + its content), what
+    #                        the QA window keys on. Content-derived, NOT mtime-derived: the
+    #                        resume guard rewrites inventory.json whenever the folder mtime
+    #                        moves, so an mtime key would reset the window on an untouched
+    #                        corpus - and a spurious reset is not cosmetic, because _qa_load
+    #                        wipes `rounds`, qa_carried() returns [] and the delivered Gaps
+    #                        Report silently loses every carried limitation.
+    #   cluster_input_hash - the BROCHURE SET only, which is what the Stage-0 cluster-label
+    #                        cache compares. It was computed here and thrown away, which left
+    #                        that cache permanently unreachable.
+    # Deliberately EXCLUDED: unclassified, skipped_* and the region labels - none of them
+    # changes what ships, so including them would reset the window for nothing.
+    inv["input_hash"] = hashlib.sha1(
+        "\n".join(f"{r}|{d}" for r, d in sorted(corpus_sig)).encode("utf-8")).hexdigest()[:12]
+    inv["cluster_input_hash"] = _brochure_input_hash(brochure_rels)
+    overrides = _verified_cluster_overrides(cluster_cache, inv["cluster_input_hash"], stems)
     for rel, ext, stem in kept_brochures:
         region, country, confidence = infer_cluster(Path(rel).name, cc)
         if stem in overrides:  # the broker-confirmed, input-hashed LLM label wins
@@ -262,11 +320,11 @@ client:
   name: {client}
   confidential: true
 market:
-  title_html: "logistics <em>options</em> for your next facility."
-  eyebrow: ""                    # market descriptor e.g. "Spain" or "Madrid & Catalonia"; blank renders "Property Shortlist"
+  title_html: ""                 # headline; blank renders the localised default. Keep ONE <em>..</em> pair for the accent colour
+  eyebrow: ""                    # e.g. "Property Shortlist · Spain"; blank renders the localised default. A value ships VERBATIM (write the full eyebrow)
   region_label: ""
   countries: {json.dumps(countries)}
-  lede: ""                       # optional; a default is generated if blank
+  lede: ""                       # optional; blank renders the localised default (in the dashboard's language)
 output:
   filename: "CBRE_Property_Dashboard_{client}.html"
   compiled_date: ""              # ISO date; defaults to today

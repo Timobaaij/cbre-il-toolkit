@@ -18,8 +18,10 @@ Offline. Run: python evals/audit_resume_test.py"""
 from __future__ import annotations
 import io
 import json
+import re
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 HELPERS = Path(__file__).resolve().parent.parent / "helpers"
@@ -97,6 +99,14 @@ def main() -> int:
                f"per-page geometry persisted to the cache ({len(jsons)} file(s)) - a resumed "
                f"run reads it back instead of re-parsing the deck")
             ck(isinstance(files, list), "audit still returns the written thumbnail paths")
+            # a SECOND call must be a pure disk read: the render + decode + PNG writes are
+            # deterministic per (tag, page), so a resumed merge must not redo them
+            t0 = time.perf_counter()
+            again = IMG.page_image_audit(pdf, 0, audit_out, "prop1", cache_dir=cache)
+            dt = time.perf_counter() - t0
+            ck(sorted(again) == sorted(files) and dt < 0.05,
+               f"a repeat audit of the same page short-circuits ({dt * 1000:.0f} ms) and "
+               f"returns the same files - not a full re-render every resumed round")
         except TypeError as e:
             ck(False, f"page_image_audit rejects cache_dir ({e}) - the placeholder audit "
                       f"re-parses every deck page uncached on each resumed run")
@@ -156,6 +166,67 @@ def main() -> int:
     run_src = (HELPERS / "run.py").read_text(encoding="utf-8")
     ck("_region_labels_answered_keys()" in run_src,
        "run.py builds cached_keys from _region_labels_answered_keys (declines skip too)")
+
+    # ---------------- Part C: the WIRING, not just the function ----------------
+    # The original Part B set enrich.CACHE_DIR itself, so it validated the FUNCTION while the
+    # live path still read <skill>/reference/extract/region_labels.json - a path that never
+    # exists - whenever enrichment was RESUME-SKIPPED (enrich.main() is what re-points
+    # CACHE_DIR, and on the resume path it never runs). The guard returned an empty set and the
+    # answered/declined label was re-asked forever: the loop the fix was meant to close, still
+    # open on the commonest path. A green function-level test hid it, so lock the wiring too.
+    print("Part C: run.py POINTS enrich.CACHE_DIR at the work dir (the resume path)")
+    fresh_default = Path(enrich.__file__).resolve().parent.parent / "reference"
+    ck(enrich.CACHE_DIR == fresh_default or "reference" in str(enrich.CACHE_DIR),
+       "enrich.CACHE_DIR defaults to the READ-ONLY skill dir - so any reader MUST be wired")
+    assign = re.search(r"^\s*enrich\.CACHE_DIR\s*=\s*work\s*$", run_src, re.M)
+    ck(bool(assign), "run.py assigns enrich.CACHE_DIR = work (process-wide, not via enrich.main)")
+    if assign:
+        # anchor on the real CALL SITE, not a prose mention of the name (comments discussing
+        # the guard appear earlier in the file and would give a false failure)
+        call = re.search(r"cached_keys\s*=\s*enrich\._region_labels_answered_keys\(\)", run_src)
+        call_at = call.start() if call else len(run_src)
+        ck(bool(call) and assign.start() < call_at,
+           "the assignment happens BEFORE the region-label guard reads the cache")
+        main_at = run_src.find("def main()")
+        ck(main_at < assign.start(),
+           "the assignment is inside main() (where `work` is resolved), not at import time")
+
+    # ---- P1-4: work/overrides.json must invalidate the merge resume guard, INCLUDING on delete --
+    # A correction that stops being applied is a data-loss event. Editing overrides.json has to
+    # re-fire merge, and so does DELETING it: _is_current() `continue`s past a non-existent input,
+    # so an mtime-only list literally cannot see a removal - a resumed canonical would keep a
+    # correction the broker just retracted. Hence the .overrides_sha CONTENT sentinel.
+    print("\nP1-4: overrides.json is a merge resume input, and deletion invalidates too")
+    run_src2 = (HELPERS / "run.py").read_text(encoding="utf-8")
+    ck('merge_args += ["--overrides", overrides_f]' in run_src2,
+       "run.py passes --overrides to merge when the file exists")
+    ck("merge_inputs.append(overrides_f)" in run_src2,
+       "and puts overrides.json in merge_inputs, so EDITING it re-fires merge")
+    _sent = run_src2.find(".overrides_sha")
+    ck(_sent > 0, "a .overrides_sha content sentinel exists")
+    ck(_sent > 0 and "_write_if_changed(" in run_src2[max(0, _sent - 400):_sent + 400],
+       "written via _write_if_changed, so a BYTE-IDENTICAL rewrite does not churn the mtime")
+    _seg = run_src2[max(0, _sent - 600):_sent + 600]
+    ck("if overrides_f.exists() else \"\"" in _seg,
+       "and it hashes to EMPTY when the file is absent, so a DELETE changes the sentinel -> "
+       "merge re-fires and the correction disappears")
+    ck(run_src2.find("merge_inputs.append(_ov_sha)") > 0,
+       "the sentinel itself is a merge input")
+    _guard = run_src2.find("if _is_current(canonical, merge_inputs)")
+    ck(_guard > 0 and _sent < _guard,
+       "all of it is wired BEFORE the resume predicate is evaluated")
+    # behavioural: the sentinel really does change on edit and on delete
+    with tempfile.TemporaryDirectory() as t:
+        import hashlib as _h
+        _p = Path(t) / "overrides.json"
+        _p.write_text('[{"id":"ov-1"}]', encoding="utf-8")
+        _a = _h.sha256(_p.read_bytes()).hexdigest()
+        _p.write_text('[{"id":"ov-2"}]', encoding="utf-8")
+        _b = _h.sha256(_p.read_bytes()).hexdigest()
+        _p.unlink()
+        _c = ""
+        ck(_a != _b and _b != _c and _a != "",
+       "the sentinel value differs across edit and delete (so both invalidate)")
 
     print(f"\n{'OK' if not fails else 'FAIL'} audit_resume_test: "
           f"{len(fails)} failure(s)")

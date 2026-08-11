@@ -52,6 +52,112 @@ def atomic_write_bytes(path, data: bytes):
     os.replace(tmp, p)
     return p
 
+
+def source_key(meta) -> str:
+    """The identity of a record's source: its intake RELPATH when known, else its basename.
+
+    Every producer writes `__meta.source_file` as a bare BASENAME, so two same-named inputs in
+    different subfolders are structurally indistinguishable - `resolve_by_name` below made the
+    choice between them deterministic (B13), which is not the same as correct. `source_relpath`
+    is the unambiguous identity; this accessor is how a decision site opts in to it.
+
+    ADDITIVE BY DESIGN (B43 phase 1). `source_file` is frozen forever as the documented ledger
+    contract - it is a client-visible column that legitimately holds an email subject - and
+    nothing existing changes value, so no durable artefact keyed on a basename breaks:
+    `overrides.json` matching, the `plan_rejected` acks and the PHOTO_MAP-derived ledger rows
+    all keep working. Callers migrate one at a time, and until they do this returns exactly
+    what they read before."""
+    m = meta or {}
+    return str(m.get("source_relpath") or m.get("source_file") or "")
+
+
+def resolve_candidates(source_dir, name) -> list:
+    """Every input file under `source_dir` whose BASENAME is `name`, deterministically
+    ordered: a root-level file first, then the rest by POSIX relpath.
+
+    One resolver, because there were three and all three were wrong differently (B13):
+    two took an UNSORTED first `rglob` hit, so which physical deck got rasterised depended
+    on filesystem walk order; the third sorted PATH OBJECTS (case-folded on Windows,
+    case-sensitive on POSIX, i.e. not portable) and passed the basename as a GLOB PATTERN,
+    so a client file literally named `Unit [1].pdf` resolved to None.
+
+    Matching is by NAME EQUALITY, never a glob, so metacharacters in a client filename are
+    just characters. Sorting is on the relpath STRING so two machines agree.
+
+    Deliberately NOT memoised here: callers keep their own caches (merge._SRC_RESOLVE, which
+    the evals clear between fixtures), and a hidden second memo would make those clears
+    silently ineffective."""
+    if not source_dir or not name:
+        return []
+    root = Path(source_dir)
+    base = Path(str(name)).name
+    if not base:
+        return []
+    direct = root / base
+    out = [direct] if direct.is_file() else []
+    try:
+        if root.exists():
+            rest = [p for p in root.rglob("*")
+                    if p.is_file() and p.name == base and p != direct]
+
+            def _rel(p):
+                try:
+                    return p.relative_to(root).as_posix()
+                except Exception:
+                    return p.as_posix()
+            out += sorted(rest, key=_rel)
+    except Exception:
+        pass
+    return out
+
+
+def resolve_by_name(source_dir, name):
+    """The single winning path for a basename, or None. See resolve_candidates. (B13)"""
+    c = resolve_candidates(source_dir, name)
+    return c[0] if c else None
+
+
+def basename_collisions(source_dir) -> dict:
+    """{basename: [relpaths]} for every basename carried by MORE THAN ONE input file.
+
+    Records reference their source by bare basename, so a collision means one property
+    wears another's photos - and because page ownership keys on the RESOLVED path, both
+    properties can silently lose their gallery instead. Choosing deterministically (above)
+    makes that reproducible, not correct, so the collision itself has to be surfaced. It is
+    a NOTE, never a refusal: `Site A/photos.pdf` + `Site B/photos.pdf` is a legitimate
+    folder shape and rejecting it would hard-code an assumption about the input. (B13)"""
+    root = Path(source_dir)
+    seen: dict = {}
+    try:
+        for p in sorted(root.rglob("*"), key=lambda q: q.as_posix()):
+            if not p.is_file() or p.name.startswith("~$"):
+                continue
+            rel = p.relative_to(root)
+            if any(part.startswith((".", "_")) for part in rel.parts):
+                continue
+            seen.setdefault(p.name, []).append(rel.as_posix())
+    except Exception:
+        return {}
+    return {k: v for k, v in seen.items() if len(v) > 1}
+
+
+def atomic_save_image(im, path, fmt: str = "PNG", **kw):
+    """Encode a PIL image to a sibling .tmp, then os.replace onto the target.
+
+    A page image is a HANDOFF artefact - the transcription/interpretation sub-agent reads
+    it - and a direct save is not atomic: a kill mid-encode leaves a partial file that is
+    non-empty, so every resume guard here (`exists() and st_size > 0`, or a bare
+    `exists()`) ACCEPTS it and the page is never re-rendered. The damage is therefore
+    permanent, which is the part that matters; whether a truncated PNG renders as a top
+    band or is rejected outright depends on the decoder and is not worth relying on either
+    way. Same tmp+replace contract as atomic_write_text/_bytes. (B16)"""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    im.save(str(tmp), fmt, **kw)
+    os.replace(tmp, p)
+    return p
+
 # --- Ownership / provenance mark (see NOTICE) --------------------------------
 # Authored by Timo Baaij. OWNER_NOTICE is the human copyright line (carries the ©
 # glyph - keep it OUT of any console print on cp1252 hosts). OWNER_MARK is the ASCII,
@@ -161,7 +267,7 @@ def load_canonical(path: Path) -> dict:
         return load_json(p)  # stat failure -> uncached passthrough (never worse than before)
 
 
-def emit_review_view(canonical_path) -> None:
+def emit_review_view(canonical_path, dest=None) -> bool:
     """Write a photo-stripped twin of canonical.json (canonical_review.json, beside
     it) for the JUDGEMENT reviewers (G-honesty / G-trace / G-enrich): the base64
     heroes are ~99% of the multi-MB file and burn the reviewer's context for no
@@ -171,13 +277,25 @@ def emit_review_view(canonical_path) -> None:
 
     It is regenerated by EVERY freeze - run.py's auto-freeze AND a standalone
     `gate_runner.py freeze` - so a re-review after an out-of-band data fix can never
-    read a stale twin (the duplicate-review-round bug). Never raises: the review aid
-    must never block a freeze."""
+    read a stale twin (the duplicate-review-round bug).
+
+    `dest` writes the twin somewhere ELSE instead of beside the canonical, which is how a
+    per-round SNAPSHOT is taken (B44). It matters that the snapshot reuses this function: the
+    stripper below is the only photo-stripping code in the skill, and a second copy would
+    drift. It also matters that the snapshot is STRIPPED - measured, a 12-property canonical is
+    9.3 MB of which 99.56% is `data:` URIs, and the stripped twin is 43 KB. Keeping one
+    unstripped copy per round would put tens of MB into every work dir.
+
+    Never RAISES, but it does REPORT: returns True on success, False when the twin could
+    not be refreshed. It used to swallow every failure and return None, which let
+    cmd_freeze certify a freeze over an un-refreshed twin - the DATA reviewers then judged
+    pre-fix data while the gate said they had seen the frozen bytes. A review aid that
+    fails silently is worse than a run that stops, so the caller now BLOCKS on False. (B18)"""
     try:
         p = Path(canonical_path)
         d = json.loads(p.read_text(encoding="utf-8"))
     except Exception:
-        return
+        return False
 
     def _strip(v):
         return (f"<image stripped: {len(v)} chars - see canonical.json>"
@@ -191,16 +309,50 @@ def emit_review_view(canonical_path) -> None:
             if isinstance(prop.get(k), list):
                 prop[k] = [_strip(x) for x in prop[k]]
     try:
-        atomic_write_text(p.parent / "canonical_review.json",
+        atomic_write_text(Path(dest) if dest else (p.parent / "canonical_review.json"),
                           json.dumps(d, ensure_ascii=False, indent=2))
     except Exception:
-        pass
+        return False
+    return True
+
+
+_SCHEMA_DEGRADED: list = []  # set when the full validator could not run (read by the gate)
+
+
+def schema_degraded(reason: str | None = None) -> str:
+    """Record / report that schema validation ran DEGRADED (structural-only).
+
+    The fallback must be VISIBLE. It was silent, so a gate printed
+    "[PASS] schema + pair-consistency clean" on a dataset a real validator would have rejected,
+    and nothing anywhere said the type floor had been lowered. Called with a reason to record;
+    called with none to read the current state ("" == the full validator ran)."""
+    if reason:
+        if reason not in _SCHEMA_DEGRADED:
+            _SCHEMA_DEGRADED.append(reason)
+        return reason
+    return _SCHEMA_DEGRADED[0] if _SCHEMA_DEGRADED else ""
+
+
+#: numeric fields whose TYPE the degraded checker still enforces. Presence alone was not enough:
+#: with jsonschema absent (an explicitly supported offline state) `validate-data` accepted
+#: `warehouseArea: "not a number"`, `lat: "52N"` and `status: 5` and printed
+#: "[PASS] schema + pair-consistency clean" - a crash-to-pass, and the only one in the audit.
+#: `final_gate` does not re-run validate-data on the reviewed path, so post-build there was no
+#: type floor at all. A sentinel string ('tbd'/'??') is NOT an error - it is the honest unknown.
+_NUMERIC_FIELDS = ("id", "lat", "lng", "warehouseArea", "plotArea", "officeAreaVal",
+                   "warehouseRentVal", "officeRentVal", "expansionParkVal")
+_STRING_FIELDS_STRUCT = ("country", "park", "developer", "city", "status", "photo")
 
 
 def _structural_errors(data: dict) -> list[str]:
     """Dependency-free structural check, used when jsonschema is missing or too
     old to build a validator. Mirrors the schema's required keys so the degraded
-    verdict matches the real one instead of the pipeline crashing."""
+    verdict matches the real one instead of the pipeline crashing.
+
+    Also TYPE-checks the numeric and string fields, because a presence-only check made the
+    degraded path a crash-to-pass: it is the ONLY floor on those types when jsonschema is
+    unavailable, and a string where a number belongs breaks sorting, filtering, the KPI strip
+    and the rent/area arithmetic downstream."""
     errors: list[str] = []
     for key in ("meta", "properties", "pois", "regions"):
         if key not in data:
@@ -208,9 +360,27 @@ def _structural_errors(data: dict) -> list[str]:
     props = data.get("properties")
     if isinstance(props, list):
         for p in props:
+            if not isinstance(p, dict):
+                errors.append(f"properties entry is {type(p).__name__}, not an object")
+                continue
+            pid = p.get("id", "?")
             for req in ("id", "country", "park", "developer", "city", "status", "photo"):
                 if req not in p:
-                    errors.append(f"property id={p.get('id', '?')} missing required field: {req}")
+                    errors.append(f"property id={pid} missing required field: {req}")
+            for f in _NUMERIC_FIELDS:
+                v = p.get(f)
+                if v is None or f not in p:
+                    continue
+                if _N.looks_unknown(v):
+                    continue  # 'tbd'/'??' is the honest unknown, not a type error
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    errors.append(f"property id={pid} field {f} must be a number, "
+                                  f"got {type(v).__name__} ({str(v)[:24]!r})")
+            for f in _STRING_FIELDS_STRUCT:
+                v = p.get(f)
+                if f in p and v is not None and not isinstance(v, str):
+                    errors.append(f"property id={pid} field {f} must be a string, "
+                                  f"got {type(v).__name__} ({str(v)[:24]!r})")
     return errors
 
 
@@ -243,6 +413,8 @@ def validate_canonical(data: dict) -> list[str]:
     hard-stopped real runs on jsonschema 3.2.0)."""
     Validator, js = _best_validator()
     if Validator is None:
+        schema_degraded(reason=("jsonschema is not available" if js is None
+                                else "no usable jsonschema validator class"))
         return _structural_errors(data)
     try:
         schema = load_json(SCHEMA_FILE)
@@ -265,7 +437,8 @@ def validate_canonical(data: dict) -> list[str]:
             loc = "/".join(str(x) for x in err.path) or "(root)"
             errors.append(f"{loc}: {err.message}")
         return errors
-    except Exception:
+    except Exception as e:
+        schema_degraded(reason=f"{type(e).__name__} while validating")
         return _structural_errors(data)
 
 
@@ -359,8 +532,16 @@ IDENTIFIER_FIELDS = frozenset({
     "warehouseRent", "officeRent", "serviceCharge", "landPrice", "plotArea", "warehouseArea",
     "officeArea", "divisibleFrom", "earlyAccess",
 })
-_TR_NUMUNIT_RE = re.compile(r"^[\s\d.,]+(?:\s?[a-zA-Z%²³/.\-]{0,8})?$")   # "12", "40,000", "12 m", "50%"
-_TR_CODE_RE = re.compile(r"^[A-Za-z]{0,4}[\-\s]?[\d][\w.\-/]*$")           # "MU-2", "A4", "D5", postcodes
+# B53: the unit class admits DIGITS, so "50 kN/m2" and "2.4 MVA" read as figure+unit rather than
+# prose. A space inside the tail still fails the match, so "2 storey office" stays translatable.
+_TR_NUMUNIT_RE = re.compile(r"^[\s\d.,]+(?:\s?[a-zA-Z0-9%²³/.\-]{0,8})?$")  # "12", "12 m", "50 kN/m2"
+# B53: one optional space-separated group, so a two-part alphanumeric code is caught - "DN11 8DB",
+# "MK16 0QE", "1234 AB". Without it the internal space made every UK postcode look like prose and
+# it was queued for translation.
+_TR_CODE_RE = re.compile(r"^[A-Za-z]{0,4}[\-\s]?[\d][\w.\-/]*(?:\s[\w.\-/]+)?$")
+# B53: a bare grade ("A", "A+", "B2"). UPPER-CASE only, and deliberately so - a lower-case one- or
+# two-letter value is a real word ("No", "Ja", "Si") that MUST stay translatable.
+_TR_GRADE_RE = re.compile(r"^[A-Z][+\-]?\d{0,2}$")
 _TR_DATE_RE = re.compile(r"^\d{4}([-/.]\d{1,2}){0,2}$|^Q[1-4]\s*\d{4}$", re.IGNORECASE)
 _TR_URL_RE = re.compile(r"^(https?://|www\.|mailto:)", re.IGNORECASE)
 _TR_CURRENCY_RE = re.compile(r"[€£$¥]|/\s*(yr|mo|year|month|sq\s?m|sq\s?ft|m²)", re.IGNORECASE)
@@ -386,6 +567,7 @@ def is_translatable_value(field: str, v) -> bool:
     # so a real description is never silently withheld from translation.
     if len(s.split()) <= 3:
         if (_TR_URL_RE.match(s) or _TR_DATE_RE.match(s) or _TR_CODE_RE.match(s)
+                or _TR_GRADE_RE.match(s)
                 or _TR_CURRENCY_RE.search(s) or _TR_NUMUNIT_RE.match(s)):
             return False
     return True

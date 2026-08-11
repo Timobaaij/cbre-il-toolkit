@@ -55,8 +55,13 @@ RENT_LOW_SUSPECT = 15.0  # plausible-but-low: smells like an un-annualised month
 
 
 def _vkey(s: str) -> str:
-    return "".join(c for c in unicodedata.normalize("NFKD", str(s))
-                   if not unicodedata.combining(c)).casefold().replace(" ", "")
+    # MUST stay identical to run.py's _vkey: folds every non-alphanumeric SEPARATOR (space, _,
+    # -, .) but KEEPS non-ASCII letters (ł/ø/ß carry meaning), so a sub-agent's
+    # `East_Midlands_vision.json` matches region `East Midlands`. Folding spaces alone left the
+    # commonest sanitisation unmatched and made exit 3 non-convergent.
+    folded = "".join(c for c in unicodedata.normalize("NFKD", str(s))
+                     if not unicodedata.combining(c)).casefold()
+    return "".join(c for c in folded if c.isalnum())
 
 
 _NUM_TOKEN = re.compile(r"\d(?:[\d ., ]*\d)?")
@@ -91,17 +96,15 @@ def _near(val: float, nums: set[float], rel: float = 0.005) -> bool:
 
 
 def _resolve_source(source_dir: Path | None, name: str) -> Path | None:
-    """Inputs may live in subfolders (intake scans recursively) - resolve by name."""
+    """Inputs may live in subfolders (intake scans recursively) - resolve by name.
+
+    Delegates to the SAME resolver merge uses, so the validator can never disagree with the
+    runtime about which physical file a basename means. It used to take an unsorted first
+    rglob hit, which was both machine-dependent and inconsistent with merge. (B13)"""
     if not source_dir or not name:
         return None
-    p = Path(source_dir) / name
-    if p.is_file():
-        return p
-    try:
-        return next((q for q in Path(source_dir).rglob("*")
-                     if q.is_file() and q.name == name), None)
-    except Exception:
-        return None
+    import _common as _C
+    return _C.resolve_by_name(source_dir, name)
 
 
 def _load_page_texts(src: Path) -> list[str]:
@@ -142,14 +145,30 @@ def validate(work: Path, source_dir: Path | None = None) -> tuple[list[str], lis
     if manifest_file.exists():
         try:
             for d in json.loads(manifest_file.read_text(encoding="utf-8")).get("decks", []):
-                decks[_vkey(d.get("region", ""))] = {
+                # `cluster_label` first, `region` as the LEGACY fallback (B51) - a warm work dir
+                # may hold a manifest written before the rename, and losing the deck index here
+                # silently disarms every page-range check.
+                decks[_vkey(str(d.get("cluster_label") or d.get("region") or ""))] = {
                     "source": d.get("source_file", ""),
                     "pages": {p.get("page_no") for p in d.get("pages", [])},
                 }
         except Exception as e:
             warnings.append(f"vision manifest unreadable ({e}) - page-binding checks skipped")
 
-    for vf in sorted((work / "extract").glob("*_vision.json")):
+    # TRIPWIRE: vision files present but NO decks to check them against. Every deck-gated
+    # check below degrades to a silent no-op when `decks` is empty - and that is reachable
+    # without anything looking wrong, because `{"decks": []}` is valid JSON so the "manifest
+    # unreadable" warning above never fires. Preserving the decks on rewrite (B14, run.py) is
+    # the fix; THIS is the half that cannot be silently bypassed the next time something
+    # rewrites the file, so it stays even though that path is now closed. (B14)
+    _vfs = sorted((work / "extract").glob("*_vision.json"))
+    if _vfs and not decks:
+        warnings.append(
+            f"{len(_vfs)} vision file(s) present but the manifest lists NO decks - every "
+            f"page-binding check (page_no / image_pages / plan_page / exclude_refs range, "
+            f"the source_file cross-check and the text reconciliation) is SKIPPED for this "
+            f"run. The transcriptions were not validated against their decks.")
+    for vf in _vfs:
         region = vf.name[:-len("_vision.json")]
         deck = decks.get(_vkey(region))
         # the twin text layer's numbers, per page (empty when the source is not
@@ -179,6 +198,9 @@ def validate(work: Path, source_dir: Path | None = None) -> tuple[list[str], lis
         # tag of the FIRST record that claimed it (a second, different record claiming
         # the same page is a leak across two properties of the same deck -> ERROR).
         image_page_owner: dict[int, str] = {}
+        # Same-deck duplicate claims, judged AFTER the loop: a record later in the file
+        # may anchor a page an earlier record over-claimed, and that changes the verdict. (B21)
+        contested: list = []
         n_real = 0
         for k, r in enumerate(records, start=1):
             if not isinstance(r, dict):
@@ -228,9 +250,7 @@ def validate(work: Path, source_dir: Path | None = None) -> tuple[list[str], lis
                         else:
                             prev = image_page_owner.get(p)
                             if prev is not None and prev != tag:
-                                errors.append(f"{tag}: __meta.image_pages page {p} is also "
-                                              f"claimed by {prev} - a deck page may feed only "
-                                              f"ONE property's carousel (cross-property leak)")
+                                contested.append((p, prev, tag))
                             else:
                                 image_page_owner.setdefault(p, tag)
             # __meta.plan_page (the rendered-site-plan page): an int >= 0 (a bool is
@@ -341,6 +361,38 @@ def validate(work: Path, source_dir: Path | None = None) -> tuple[list[str], lis
                         warnings.append(f"{tag}: {fld} {v} appears nowhere in the deck's "
                                         f"text layer - vision digit misread suspected; "
                                         f"re-read the page image")
+        # SAME-DECK image_pages over-claim: a WARNING, never a round-trip. (B21)
+        #
+        # This used to be a blocking ERROR, which cost an exit-3 re-dispatch on a shape the
+        # contract SANCTIONS: reference/interpretation.md promises the interpreter that "an
+        # honest over-list of a neighbour's page is dropped, never leaked", and merge's
+        # unique-claimant guard (build_foreign_pages / _page_allowed) enforces exactly that.
+        # It also fired on the blessed "two properties on ONE page" topology, where a fresh
+        # sub-agent reading the same contract returns the same answer - a non-convergent
+        # streak, not a fix. Two outcomes, and they differ in consequence, so they are worded
+        # differently rather than merged:
+        #   anchored   - one record's page_no IS this page: merge awards it to that record and
+        #                drops the other's claim. Provably a no-op; noted for visibility only.
+        #   unanchored - nobody anchors it, so it is not a sole claim for anyone and merge
+        #                drops it from EVERY carousel. Lossy for both properties - completeness,
+        #                never correctness.
+        # The genuinely protective branch is a DIFFERENT one (a page outside this deck's
+        # rasterised range, above) and stays an ERROR. Note that with B14 open - the region
+        # emitter overwriting the manifest with `decks: []` - `deck` is None, that range check
+        # is silently skipped, and this was the ONE image_pages check still firing.
+        anchored = {p for p in seen_pages if isinstance(p, int) and not isinstance(p, bool)}
+        for p, prev, tag in contested:
+            if p in anchored:
+                warnings.append(f"{tag}: __meta.image_pages page {p} is also claimed by "
+                                f"{prev}; merge awards it to the record that ANCHORS it "
+                                f"(page_no == {p}) and drops the other claim - no leak, "
+                                f"nothing to fix")
+            else:
+                warnings.append(f"{tag}: __meta.image_pages page {p} is also claimed by "
+                                f"{prev} and NO record anchors it, so merge drops it from "
+                                f"EVERY carousel - both properties lose the photo. Give the "
+                                f"page to whichever property it actually shows (or set that "
+                                f"record's page_no to it) if you want it kept")
         if deck and deck["pages"]:
             missing = sorted(deck["pages"] - seen_pages)
             if missing:

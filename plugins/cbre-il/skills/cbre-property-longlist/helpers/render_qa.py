@@ -44,12 +44,49 @@ Preview-MCP procedure (orchestrator runs these; an isolated Sonnet reviewer judg
 def _is_env_error(text: str) -> bool:
     """A console error from the OFFLINE environment (map tiles / routing host
     unreachable, favicon), not a code defect - it must not hard-BLOCK G-visual,
-    matching the tile/OSRM [ENV] allowance elsewhere (audit S6-16)."""
+    matching the tile/OSRM [ENV] allowance elsewhere (audit S6-16).
+
+    OVERPASS + CORS are in the list because this function has to agree with the policy
+    ASSERTIONS step 6 states three lines further down - "blocked network fetches to
+    tile/Overpass/OSRM hosts in a sandboxed preview (environment, not a defect)". It did
+    not: the v5 live nearest-POI discovery calls overpass-api.de, a screenshot run opens
+    the built file over `file://` so the request carries `Origin: null`, and Overpass
+    answers without an `Access-Control-Allow-Origin` header. The resulting message names
+    neither a host keyword above nor a `net::` code - it reads "Access to fetch at
+    'https://overpass-api.de/...' ... blocked by CORS policy" - so two purely
+    environmental errors counted as REAL and `ok` could never be true on any local run
+    with POIs enabled. G-visual was unreachable, not failing."""
     t = (text or "").lower()
     return any(k in t for k in (
-        "tile", "openstreetmap", "osm.org", "osrm", "unpkg", "favicon",
+        "tile", "openstreetmap", "osm.org", "osrm", "overpass", "unpkg", "favicon",
+        "cors policy", "access-control-allow-origin",
         "err_internet", "err_network", "err_name_not_resolved", "err_connection",
         "err_address", "failed to fetch", "net::", "load failed"))
+
+
+def capture_report(paths: dict) -> list:
+    """Notes for captures that came out IDENTICAL. (B59)
+
+    Two views producing byte-identical PNGs means a `switchView` did not take effect before the
+    screenshot. That happened live - map.png was pixel-identical to grid.png apart from the tab
+    highlight - and nothing reported it, so the isolated reviewer was handed the grid twice and
+    told one of them was the map. A missing file is skipped: a view that failed to render is
+    already covered by its own handler, and inventing a second complaint about it would be noise."""
+    import hashlib
+    seen: dict = {}
+    notes: list = []
+    for name, p in sorted((paths or {}).items()):
+        try:
+            h = hashlib.sha256(Path(p).read_bytes()).hexdigest()
+        except Exception:
+            continue
+        if h in seen:
+            notes.append(f"'{seen[h]}' and '{name}' are byte-identical - the view switch to "
+                         f"'{name}' did not take effect before the screenshot, so a reviewer "
+                         f"would be judging the same page twice")
+        else:
+            seen[h] = name
+    return notes
 
 
 def playwright_check(html: Path, out: Path) -> int:
@@ -72,18 +109,30 @@ def playwright_check(html: Path, out: Path) -> int:
             pg.wait_for_timeout(3000)
             cards = pg.eval_on_selector_all(".card", "els => els.length")
             props = pg.evaluate("typeof PROPS!=='undefined'?PROPS.length:-1")
-            pg.screenshot(path=str(out / "grid.png"), full_page=False)
+            # B59: FULL PAGE for the scrolling views. At 1440x1000 with full_page=False the
+            # capture stopped at the fold, so the reviewer could not see the card grid or the
+            # Leaflet markers its own rubric asks about - it could only ever report "fine above
+            # the fold". The modal and the map stay viewport-sized on purpose: the modal is an
+            # overlay (a full-page shot photographs the page behind it) and the map is a
+            # fixed-height canvas.
+            shots: dict = {}
+            pg.screenshot(path=str(out / "grid.png"), full_page=True)
+            shots["grid"] = out / "grid.png"
             try:
                 pg.evaluate("openModal(1)"); pg.wait_for_timeout(800)
-                pg.screenshot(path=str(out / "modal.png"))
-                pg.evaluate("closeModal && closeModal()")
+                pg.screenshot(path=str(out / "modal.png"), full_page=False)
+                shots["modal"] = out / "modal.png"
+                pg.evaluate("closeModal && closeModal()"); pg.wait_for_timeout(300)
             except Exception:
                 pass
-            try:
-                pg.evaluate("switchView('map')"); pg.wait_for_timeout(1500)
-                pg.screenshot(path=str(out / "map.png"))
-            except Exception:
-                pass
+            for _view, _full, _wait in (("map", False, 1800), ("compare", True, 1200),
+                                        ("flyover", False, 1200)):
+                try:
+                    pg.evaluate(f"switchView('{_view}')"); pg.wait_for_timeout(_wait)
+                    pg.screenshot(path=str(out / f"{_view}.png"), full_page=_full)
+                    shots[_view] = out / f"{_view}.png"
+                except Exception:
+                    pass
             b.close()
     except Exception as e:
         print(f"(Playwright present but unusable: {type(e).__name__}: {str(e).splitlines()[0][:160]})")
@@ -92,7 +141,14 @@ def playwright_check(html: Path, out: Path) -> int:
     env_errors = [e for e in errors if _is_env_error(e)]
     ok = (cards == props) and not real_errors
     print(f"[{'PASS' if ok else 'FAIL'}] cards={cards} props={props} "
-          f"consoleErrors={len(real_errors)} (env-allowed={len(env_errors)})")
+          f"consoleErrors={len(real_errors)} (env-allowed={len(env_errors)}) "
+          f"views={','.join(sorted(shots)) or 'none'}")
+    # B59: two views that came out byte-identical mean a switchView did not take effect before
+    # the shot. Live, map.png was pixel-identical to grid.png and nothing said so, so the reviewer
+    # judged the grid twice believing one was the map. A note, not a failure: the pack is fine,
+    # the EVIDENCE is not, and the reviewer needs to know which.
+    for _n in capture_report(shots):
+        print(f"  [note] {_n}")
     if real_errors:
         for e in real_errors[:5]:
             print("   console error:", e)

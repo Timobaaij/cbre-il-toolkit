@@ -7,16 +7,37 @@ exactly the discipline of the photo-match (exit 9) and brochure interpretation (
 handoffs: the LLM judges equivalence, Python keeps the deterministic blockers, and the
 gates verify.
 
-**Two kinds of ambiguity ride this ONE candidates file and ONE exit 10** (resolve both
-in one round-trip): the `pairs` array - AMBIGUOUS RECORD MATCHES (are two records the
-same property?) - and the `field_conflicts` array - GENUINE VALUE DISAGREEMENTS (two
-sources state different values for one field of a merged property). The match verdict
-goes to `work/match_decisions.json`; the value pick goes to `work/field_decisions.json`.
-A run can carry either, both, or (the common case) neither.
+**Two kinds of ambiguity ride this ONE candidates file**: the `pairs` array - AMBIGUOUS
+RECORD MATCHES (are two records the same property?) - and the `field_conflicts` array -
+GENUINE VALUE DISAGREEMENTS (two sources state different values for one field of a merged
+property). Resolve everything the file lists in ONE round-trip. The match verdict goes to
+`work/match_decisions.json`; the value pick goes to `work/field_decisions.json`. A run can
+carry either, both, or (the common case) neither.
+
+**A run may see exit 10 a SECOND time, and that is correct, not a fault.** A `pairs`
+verdict changes which records are one property, which changes which value conflicts exist
+and what their `conflict_id` is - so a conflict inside a cluster an open pair could still
+alter cannot be adjudicated yet. Conflicts in clusters that no outstanding pair can touch
+ARE listed immediately, so most runs settle in one round. When a second round does come:
+
+- it lists `field_conflicts` **only**, plus `settled_pairs` (a count, for information);
+- the `pairs` / `verify_pairs` keys are **absent**, deliberately - they are done;
+- **do not create, empty, rewrite or delete `work/match_decisions.json` or
+  `work/match_verify.json`.** Those hold the settled verdicts. (Python keeps a durable
+  copy and merges over it, so a clobber cannot lose an answer - but it still wastes a
+  round.)
 
 ## What the gates already decided (you only see the middle)
 
 The matcher classifies every record PAIR into four tiers BEFORE you are involved:
+
+**The size veto is FOOTING-AWARE.** A >15% area gap hard-blocks a pair as `forbidden`, and
+forbidden pairs are never shown to you - so the comparison has to be honest about units.
+Both sides stating the same unit compare directly; a stated `sq m` against a stated `sq ft`
+is converted first (they used to sit 90.7% apart and were vetoed as "different buildings",
+which is how one property shipped as two cards that nobody could merge); and if only one
+side states a unit, the footing is UNKNOWN and Python refuses to compare rather than block -
+the pair comes to you instead. Python converts or abstains; it never decides sameness.
 
 - **auto** - confidently the SAME property; already merged without asking you (a
   cross-source identical key + area agreement, a coordinate net <= 300 m with agreeing
@@ -32,12 +53,20 @@ The matcher classifies every record PAIR into four tiers BEFORE you are involved
   owner/asset-manager/landlord into the developer), a genuine developer-name difference
   (a naming variant, a JV, an asset sale) is a GREY signal you adjudicate, not a veto;
   the >15% size conflict remains the hard blocker.
-- **grey** - cross-source, NOT forbidden, NOT auto, but it cleared a RECALL pre-filter
-  (same normalised city, OR within ~2 km, OR sharing >= 1 distinctive park token, OR a
-  borderline fuzzy key in [70, 88)) - this INCLUDES a developer-disagreement pair that
-  clears the pre-filter. **These are the only pairs in `match_candidates.json`** - the
-  genuinely ambiguous middle. (The coord-net AUTO path still requires developer
-  agreement, so a disagreement is never auto-merged - it always comes to you as grey.)
+- **grey** - cross-source, NOT forbidden, NOT auto, but it cleared a RECALL pre-filter:
+  within ~2 km, OR sharing >= 1 distinctive park token, OR a borderline fuzzy key in
+  [70, 88), OR in the same city with the developer linking the two records (the same known
+  developer on both, or one side's developer name appearing in the other's park string).
+  This INCLUDES a developer-disagreement pair that clears the pre-filter. **These are the
+  only pairs in `match_candidates.json`** - the genuinely ambiguous middle. (The coord-net
+  AUTO path still requires developer agreement, so a disagreement is never auto-merged -
+  it always comes to you as grey.)
+  **A SHARED CITY ALONE DOES NOT CLEAR THE PRE-FILTER.** A longlist is usually one town or
+  one market, so the city is the one attribute every record shares and it distinguishes
+  nothing; treating it as a signal made the grey set quadratic and spent two LLM
+  judgements per pair on questions with no evidence behind them. So if you are wondering
+  why two obviously-unrelated buildings in the same town are not in your file: that is
+  deliberate, and a wrong split is caught downstream by the coverage dedupe gate.
 - **no** - definitely distinct; never shown to you.
 
 So your job is narrow and honest: for each grey pair, decide whether `a` and `b`
@@ -214,12 +243,31 @@ the reason lands in the audit trail.)
   SORTED set of disagreeing values). On the re-run `merge` reads it - no live per-field
   call - so the same inputs + the same picks yield a BYTE-IDENTICAL `canonical.json`.
 - **The pick is ADVISORY: Python verifies it against the field's plausibility gate before
-  honouring it.** A rent must sit in its own per-area band (€/m² 1.5-500, £/sq ft
-  0.5-60) and parse to a number; an area must be > 0; a coordinate must be in bounds. A
-  pick that FAILS its gate is DISCARDED and the precedence default stands (the discard is
-  noted in the Gaps Report). A field with no defined gate falls back to precedence on any
-  pick - the conflict is still annotated. So an LLM override can never push an
-  implausible value past the gate.
+  honouring it.** The gate answers one of THREE things, each with a different outcome:
+  - **`pass`** - the override is honoured.
+  - **`fail`** - the value is implausible. The precedence default is kept **only if the
+    default passes that same gate**; if NEITHER value passes, the field is struck to
+    **`tbd`** with a note naming both. (It used to reinstate the rejected default
+    unconditionally, so the gate could protect a default but never catch one - that is how
+    an impossible BREEAM `A+` reached a client card.)
+  - **`none`** - no gate is defined for this field. The selection **IS honoured**, labelled
+    `[unverified: no deterministic gate is defined for this field]` in the Gaps Report. You
+    only ever select among values that already exist in the sources, so an unverified
+    selection cannot invent data - whereas discarding it made your judgement decorative on
+    every non-numeric field.
+
+  **Which fields are gate-verified:** `warehouseRent` / `warehouseRentVal` / `officeRent`
+  (the per-area band: €/m² 1.5-500, £/sq ft 0.5-60); `warehouseArea` / `plotArea` /
+  `officeArea` / `officeAreaVal` (> 0 and inside the area band); `lat` / `lng` (bounds);
+  **`breeam`** (must CONTAIN a real BREEAM band - Pass / Good / Very Good / Excellent /
+  Outstanding - so an EPC letter band is rejected); **`epc`** (a letter band A-G with an
+  optional `+`, optionally prefixed `Target`); **`loadingDocks`** / **`overheadDoors`** /
+  **`truckParking`** / **`carParking`** (a non-negative integer <= 2000); **`clearHeight`**
+  (3-30 metres; a height stated in FEET is ungated rather than judged against a metre
+  band). Every other field is `none` - honoured and labelled unverified.
+- **The same gates also check the PRECEDENCE WINNER**, not only an override, so a bad value
+  is caught whichever source it came from and whether or not a conflict exists. A default
+  that fails its own gate is struck to `tbd` and named in the Gaps Report.
 - Every adjudicated conflict - an honoured override (with your reason) OR a vetoed pick -
   is recorded in `meta.conflicts` and surfaced in the **Gaps Report** (Source conflicts
   section), so it is auditable, never silent. `trace-coverage` still requires the chosen

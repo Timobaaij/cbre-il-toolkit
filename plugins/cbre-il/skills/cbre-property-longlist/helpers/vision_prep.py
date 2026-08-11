@@ -7,7 +7,8 @@ emits a manifest. It does NOT transcribe - transcription is an agentic step: the
 orchestrator dispatches an isolated VISION sub-agent that reads each PNG and
 writes candidate records (templates/record_schema.json) to
 work/extract/<region>_vision.json, which merge.py then folds in like any other
-extractor output. See reference/vision-fallback.md for the sub-agent contract.
+extractor output. See reference/interpretation.md ("Raster mode") for the
+sub-agent contract.
 
 A page is sent to vision only when text parsing cannot read it (own-line AND
 inline label parsing both find <2 labels) - so a normal text deck produces an
@@ -36,6 +37,7 @@ except Exception:
     pass
 import images as IMG
 import extract_pdf as P
+import _common as C  # atomic_save_image: a page raster is a handoff artefact (B16)
 
 
 def _needs_vision(text: str) -> bool:
@@ -146,7 +148,7 @@ def prepare(path: Path, region: str, country: str, out_dir, dpi: int = 180,
                 continue  # already rendered on a prior (killed) pass
             try:
                 img = IMG.page_raster(doc, pno, dpi=dpi)
-                img.convert("RGB").save(target, "PNG")
+                C.atomic_save_image(img.convert("RGB"), target)
                 pages.append({"page_no": pno, "locator": f"page {pno + 1}",
                               "image": str(target.resolve()), "reason": reason})
             except Exception as e:
@@ -187,7 +189,7 @@ def prepare(path: Path, region: str, country: str, out_dir, dpi: int = 180,
                     continue  # already rendered on a prior (killed) pass
                 try:
                     img = IMG.page_raster(doc, i, dpi=dpi)
-                    img.convert("RGB").save(target, "PNG")
+                    C.atomic_save_image(img.convert("RGB"), target)
                     pages.append({"page_no": i, "locator": f"slide {i + 1}",
                                   "image": str(target.resolve()), "reason": reason})
                 except Exception as e:
@@ -213,7 +215,7 @@ def prepare(path: Path, region: str, country: str, out_dir, dpi: int = 180,
                                         "(install LibreOffice for full slide rendering, or export it manually)"})
                 continue
             name = f"{path.stem}_s{i + 1}.png"
-            img.convert("RGB").save(out_dir / name, "PNG")
+            C.atomic_save_image(img.convert("RGB"), out_dir / name)
             pages.append({"page_no": i, "locator": f"slide {i + 1}",
                           "image": str((out_dir / name).resolve()),
                           "reason": "no extractable text/labels (image slide)"})

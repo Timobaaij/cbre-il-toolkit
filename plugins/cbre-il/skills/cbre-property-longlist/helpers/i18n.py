@@ -3,10 +3,10 @@
 """i18n.py - dashboard CHROME localisation table (Phase 1 + Phase 2 fallback).
 
 The dashboard renders its fixed UI vocabulary ("chrome") in a chosen European
-Latin-script language, driven by this deterministic bundled table with per-key
-English fallback. DATA (property/developer/region/POI names, figures, dates,
-units-in-data, source citations, the canonical 'tbd'/'—' sentinel) is NEVER
-translated - only chrome.
+Latin-script language OR Simplified Chinese, driven by this deterministic bundled
+table with per-key English fallback. DATA (property/developer/region/POI names,
+figures, dates, units-in-data, source citations, the canonical 'tbd'/'—' sentinel)
+is NEVER translated - only chrome.
 
 How it threads through the build:
   * build_dashboard.render() resolves meta.language -> ui_for(code) (a complete
@@ -18,11 +18,11 @@ How it threads through the build:
 
 EN is the AUTHORITATIVE baseline: every key referenced by a data-i18n* attribute
 or a T('...') call in the template MUST exist here (evals/i18n_test.py asserts the
-template<->EN agreement in both directions). The 11 non-EN bundled languages are
+template<->EN agreement in both directions). The 12 non-EN bundled languages are
 dropped into TABLE from assets/i18n/<code>.json; any missing language/key degrades
 gracefully to English (per-key fallback) and still builds + passes validate-html.
 
-Phase 2 adds the SUPPORTED registry: the bundled 12 PLUS the fallback-eligible
+Phase 2 adds the SUPPORTED registry: the bundled 13 PLUS the fallback-eligible
 European Latin-script languages (Nordic, Baltic, Balkan, Catalan, Galician,
 Luxembourgish, ...). A SUPPORTED-but-not-bundled language is translated ONCE in
 Cowork (run.py exits 11 with a request manifest), cached in the work dir, and baked
@@ -36,8 +36,10 @@ Rules honoured here:
     v21: the modal no longer shows a present-but-unknown placeholder - an absent
     field simply omits its row - so there is no 'val_tbc' chrome key any more.
   - Values are free of {{double-brace}} sequences (would trip find_leftover_tokens).
-    Single-brace {area}/{unit} placeholders appear ONLY in the two KPI-sub format
-    strings, consumed by .format() in Python and never emitted raw.
+    Single-brace placeholders appear ONLY in the two KPI-sub format strings ({area},
+    {unit}, consumed by .format()) and in hero_lede_fmt ({count}, consumed by
+    .replace() in build_dashboard._hero_copy - deliberately NOT .format(), so a
+    translator's stray brace degrades the lede instead of crashing the build).
 """
 from __future__ import annotations
 
@@ -67,6 +69,22 @@ EN = {
     "kpi_wh_area_sub_fmt": "{area} per building",
     "kpi_rent_sub_fmt": "per {unit} / year",
     "kpi_regions_sub": "Under consideration",
+
+    # --- Hero copy (Python-consumed CONFIG TOKENS, not data-i18n attributes) ---
+    # These three were hard-coded English literals in merge.load_hero, which meant the
+    # LARGEST text on the page rendered in English in ALL 12 supported languages. They
+    # are the localised DEFAULT only: a non-blank market.eyebrow / title_html / lede in
+    # project.yaml still ships VERBATIM (the broker's own words win, in any language).
+    # hero_title_html carries ONE <em>...</em> pair - the accent colour hangs off it.
+    # hero_lede_fmt's {count} is single-brace and is filled by .replace(), NOT .format(),
+    # so a translator's stray brace cannot crash the build; a pack that loses {count}
+    # self-heals to the EN string in build_dashboard._hero_copy.
+    "hero_eyebrow": "Property Shortlist",
+    "hero_title_html": "logistics <em>options</em> for your next facility.",
+    "hero_lede_fmt": ("{count} logistics development opportunities. Switch between the map "
+                      "and grid, filter by country, city, developer or scale, and compare "
+                      "properties side-by-side with drive-time estimates to the main ports, "
+                      "rail terminals, airports and border crossings."),
 
     # --- View tabs ----------------------------------------------------------
     "tab_grid": "Grid",
@@ -151,13 +169,20 @@ EN = {
     "a11y_next_photo": "Next photo",
 
     # --- Footer disclaimer --------------------------------------------------
+    # The drive-time sentence used to assert the METHOD: "calculated from great-circle distance
+    # with a 1.25x road winding factor at a 75 km/h motorway average". That is FALSE on any routed
+    # run - the shipped numbers are real OSRM/openrouteservice road routes, and a reviewer proved
+    # it arithmetically (implied speeds 59.6-85.4 km/h, and legs shorter AND longer than the
+    # formula predicts). The footer is static, so it made that claim regardless of DIST_MODE while
+    # the honest per-mode basis was already stated by DIST_BADGE and the legend tag beside the
+    # numbers themselves. The method claim is therefore dropped rather than restated; the
+    # orientation-only caveat, which is true in every mode, stays.
     "footer_disclaimer": ("All information provided by CBRE in this document is subject "
                           "to change without notice. Rent levels, availability, technical "
                           "specifications, coordinates and timing are indicative, based on "
-                          "landlord-provided data, and subject to negotiation. Drive-time "
-                          "estimates are calculated from great-circle distance with a "
-                          "1.25× road winding factor at a 75 km/h motorway average and "
-                          "are for orientation only. Not for public distribution."),
+                          "landlord-provided data, and subject to negotiation. Drive times "
+                          "are indicative and for orientation only. Not for public "
+                          "distribution."),
 
     # --- Distance mode labels (DIST_LABEL / DIST_BADGE) ---------------------
     "dist_label_est": "est.",
@@ -314,14 +339,23 @@ EN = {
 
 # --------------------------------------------------------------------------- #
 # Phase 2: the SUPPORTED map - the AUTHORITATIVE registry of every base language
-# this skill can present, BOTH the 12 bundled ones AND the fallback-eligible
+# this skill can present, BOTH the 13 bundled ones AND the fallback-eligible
 # European Latin-script languages translated on demand (translate-once-cache).
 #
 # Each entry: code -> {"locale": <default BCP-47>, "names": [endonyms + English names]}.
 # 'bundled' is NOT carried here; it is derived at load time from whether a real
-# assets/i18n/<code>.json was read (is_bundled). The first 12 are the bundled set
+# assets/i18n/<code>.json was read (is_bundled). The first 13 are the bundled set
 # (a real <code>.json exists); the rest are fallback-eligible (no bundled file ->
 # needs_fallback -> Phase-2 translate-once-cache; absent a cache they degrade to EN).
+#
+# SCRIPT SCOPE: the registry is European Latin-script PLUS Simplified Chinese (`zh`,
+# bundled). Chinese is the one non-Latin entry and it is deliberate: the chrome is a
+# closed table of ~190 strings, so a non-Latin script costs nothing structurally (the
+# template injects UI as JSON, `_vkey`/norm_key fold via str.isalnum() which is
+# CJK-safe, and the BCP-47 floor accepts zh-CN). CJK glyphs are not in the CBRE font
+# stack, so headings render through the browser's per-glyph system fallback - correct
+# and legible, not typographically identical to the Latin builds. Adding another
+# non-Latin script means checking those same four things, not just this table.
 #
 # BCP47 and _NAME2CODE are DERIVED from this single source of truth so the bundled-12
 # behaviour is byte-for-byte unchanged (same locales, same accepted names) while the
@@ -340,6 +374,13 @@ SUPPORTED = {
     "sk": {"locale": "sk-SK", "names": ["slovak", "slovencina", "slovenčina", "sk"]},
     "hu": {"locale": "hu-HU", "names": ["hungarian", "magyar", "hu"]},
     "ro": {"locale": "ro-RO", "names": ["romanian", "romana", "română", "ro"]},
+    # Simplified Chinese - bundled (assets/i18n/zh.json). The only non-Latin entry;
+    # see SCRIPT SCOPE above. 'mandarin' resolves here because that is what brokers
+    # ask for; the pack itself is Simplified (zh-Hans), which is what zh-CN implies.
+    "zh": {"locale": "zh-CN", "names": ["chinese", "mandarin", "mandarin chinese",
+                                        "simplified chinese", "chinese (simplified)",
+                                        "zh", "zh-hans", "zh-cn", "cmn",
+                                        "中文", "简体中文", "普通话", "汉语", "中文（简体）"]},
     # --- fallback-eligible European Latin-script languages (Phase 2; translate-on- ---
     # --- demand, cached). Nordic / Baltic / Balkan / Iberian-minority / misc. ---------
     "da": {"locale": "da-DK", "names": ["danish", "dansk", "da"]},
@@ -409,8 +450,8 @@ def normalize_lang(language) -> str:
     """'English'/'de-DE'/'Deutsch'/'Dansk' -> base code ('en'/'de'/'da'), lowercased.
 
     A SUPPORTED language (bundled OR fallback-eligible) resolves to ITS OWN code;
-    only a genuinely unknown/unsupported value (a non-Latin or nonsense language)
-    returns 'en'. Default (empty) -> 'en'."""
+    only a genuinely unknown/unsupported value (an unsupported script such as Greek,
+    or a nonsense value) returns 'en'. Default (empty) -> 'en'."""
     if not language:
         return "en"
     s = str(language).strip().lower()

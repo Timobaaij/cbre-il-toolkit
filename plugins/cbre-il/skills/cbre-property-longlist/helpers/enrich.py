@@ -366,6 +366,71 @@ def _gazetteer_lookup(city, country, dominant=""):
     return None, ""
 
 
+MAPLINK_CACHE = "maplink_cache.json"
+
+
+def resolve_map_links(canonical: dict, gaps: list, updates: list | None = None) -> int:
+    """Follow a FIRST-PARTY maps SHORT link to the author's own pin. (B60)
+
+    `backfill_link_coords` already harvests the 'click for location' hyperlink off every
+    brochure page, but a `maps.app.goo.gl/...` shortener carries no coordinates - it has to be
+    FOLLOWED. Nothing ever did, so on a live run all thirteen options shipped their link as a
+    bare href while three of them showed a town-centre geocode on the map (one had no pin at
+    all). The brochure author had pinned every site; the dashboard just never asked.
+
+    Runs BEFORE geocode() so a real pin always beats a city centroid, and only for a property
+    that has no numeric coordinate yet - it can never move a coordinate a source already gave.
+    Cached by URL, so a re-run costs nothing. Offline it is a NO-OP: the first failure
+    circuit-breaks, the coordinate stays an honest gap, and `coord-provenance` reports it.
+    """
+    import requests
+    import coords as CO
+    props = canonical.get("properties", [])
+    todo = [p for p in props
+            if str(p.get("mapLink") or "") and CO.SHORT_MAPS.match(str(p.get("mapLink")))
+            and not isinstance(p.get("lat"), (int, float))]
+    if not todo:
+        return 0
+    cache = _load_cache(MAPLINK_CACHE)
+    dirty, done, dead = False, 0, False
+    for p in todo:
+        uri = str(p["mapLink"])
+        hit = cache.get(uri)
+        if hit is None and not dead:
+            try:
+                r = requests.get(uri, allow_redirects=True, timeout=25,
+                                 headers={"User-Agent": "Mozilla/5.0", **UA})
+                got = CO.coords_from_resolved(r.url, r.text[:300000])
+                cache[uri] = list(got) if got else []
+                hit = cache[uri]
+                dirty = True
+            except Exception:
+                dead = True          # offline / blocked - do not pay N x timeout
+        if not hit:
+            continue
+        p["lat"], p["lng"] = float(hit[0]), float(hit[1])
+        p["coordsApprox"] = False    # this IS the pin, not a centroid
+        # provenance goes to the LEDGER only. This runs POST-merge, where `__meta` is
+        # quarantined out of PROPS - writing it here leaked a `__meta` object into the built
+        # dashboard and the reconcile gate blocked the build, which is exactly its job.
+        done += 1
+        if updates is not None:
+            updates.append(_trace(p.get("id"), "lat", hit[0], uri,
+                                  "first-party map link followed to its destination", "maplink"))
+            updates.append(_trace(p.get("id"), "lng", hit[1], uri,
+                                  "first-party map link followed to its destination", "maplink"))
+    if dirty:
+        _save_cache(MAPLINK_CACHE, cache)
+    unresolved = [p for p in todo if not isinstance(p.get("lat"), (int, float))]
+    if unresolved:
+        gaps.append(
+            f"{len(unresolved)} property(ies) carry a first-party maps SHORT link that could not "
+            f"be followed from here (offline or blocked), so their pin falls back to the town "
+            f"centre: " + ", ".join(f"id={p.get('id')}" for p in unresolved[:8]) +
+            ". Re-run this stage with network access to bake the author's own pin.")
+    return done
+
+
 def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
     """Fill missing lat/lng and reverse-geocode an unknown country. A bare city name
     is globally AMBIGUOUS (a Spanish town can also exist in Latin America/India), so
@@ -420,6 +485,17 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
                     cache[f"{city}|{country}".lower()] = {"latlng": latlng, "cc": cc}
                     dirty = True
                     _save_cache(GEOCODE_CACHE, cache)  # incremental - a kill keeps progress
+                else:
+                    # NEGATIVE MEMO on the LIVE path too (B02). "No such place" is a real,
+                    # successful answer - usually a mis-parsed city cell ("Available Q3
+                    # 2027"). Caching only successes meant the same name was re-queried
+                    # every round and kept the run emitting exit 8 forever; `geocode: true`
+                    # is the DEFAULT in every generated project.yaml, so one bad cell was
+                    # enough. `latlng: None` is already tolerated by _cache_lookup /
+                    # _coords_cc, so the property keeps an honest missing coordinate.
+                    cache[f"{city}|{country}".lower()] = {"latlng": None, "cc": ""}
+                    dirty = True
+                    _save_cache(GEOCODE_CACHE, cache)
             except Exception:
                 latlng, cc = None, ""
                 dead = True  # offline/blocked - stop trying, serve cache + fallbacks
@@ -1474,6 +1550,119 @@ def bind_region_codes(canonical: dict, ds: dict | None) -> None:
             p["regionCode"] = prof["nuts"]
 
 
+def _stated_region(p: dict) -> str:
+    """The property's OWN stated region label, or "" when absent or a sentinel. Delegates
+    to the same non-sentinel test the region-side city check uses, so 'tbd'/'??'/'n/a'
+    can never be mistaken for an administrative level."""
+    v = p.get("region")
+    return str(v).strip() if _ok_region_city(v) else ""
+
+
+def harmonise_regions(canonical: dict, ds: dict | None, gaps: list,
+                      updates: list | None = None) -> int:
+    """ONE administrative level for `region` across the longlist. (I11)
+
+    THE DEFECT. `region` is decided per property by source precedence, and nothing ever
+    asked whether the resulting SET was mutually consistent - only whether each value
+    traced to a source. On the Corby run, two properties took the county from their
+    brochure ('Northamptonshire') and two took the wider region from the tracker ('East
+    Midlands'), because their brochures named none. Every value was correct and correctly
+    sourced; the set was incoherent, because Northamptonshire is INSIDE the East Midlands.
+    Four units in one town, three miles apart, shipped the client Excel's Region column
+    reading a parent and its child as siblings.
+
+    THE RULE. When the stated labels sit at more than one level, each property's region
+    becomes the name of the NUTS-3 area ITS OWN COORDINATES FALL INSIDE - the bind
+    `bind_region_codes` has already made by exact point-in-polygon, and the same one the
+    workforce block displays. Corby reads 'North Northamptonshire' throughout.
+
+    WHY NOT A HIERARCHY LOOKUP OR A MAJORITY VOTE, which is what the finding proposed.
+    The bundled dataset is NUTS-3 ONLY (1543 codes, every one 5 characters); it carries
+    neither 'East Midlands' nor 'Northamptonshire'. `_NUTS_ALIASES` resolves the former to
+    the prefix UKF, but the latter resolves to nothing, so no parent/child test can decide
+    this pair - and a majority vote ties 2/2 and would still overwrite two properties'
+    sourced values with a label their own sources never stated. A proven location is the
+    only tiebreak here that is evidence rather than arithmetic.
+
+    THREE GUARDS, each load-bearing:
+
+      * FIRES ONLY ON DISAGREEMENT. Fewer than two distinct stated levels -> return 0 and
+        touch nothing. An already-coherent dataset is a provable no-op, so this can never
+        quietly restate a region every source agreed on. Note that more than one label is
+        a TRIGGER FOR INSPECTION, NOT A FINDING: a longlist spanning two real regions also
+        has two labels. The defect is only ever demonstrated per property, by its own label
+        disagreeing with its own proven region - so when nothing is rewritten, nothing is
+        reported either. Claiming an unreconciled level clash we never demonstrated would
+        put a false statement in the honesty document.
+      * THE SOURCE MUST BE A PROVEN LOCATION, not a resolvable string: the code must be a
+        KEY in `ds['regions']`, i.e. a real NUTS-3 province, which is exactly what
+        point-in-polygon produces. `_dataset_region` would also resolve the literal label
+        'East Midlands' to the UKF aggregate - but resolving a label is not proving a
+        location, and harmonising the dataset onto one source's broad label would be a
+        vote wearing a bind's clothes.
+      * ONLY A PROPERTY THAT STATED A LABEL is rewritten. A blank region stays an honest
+        gap for the coverage gate; filling gaps is not this function's job.
+
+    DISCLOSURE, because the shipped label becomes derived rather than source-stated:
+    `meta.regionHarmonised` records stated -> bound per property, a ledger row per change
+    carries the stated value in `conflict_note` (and REPLACES the merge-written row, so the
+    audit artefact cannot contradict the deliverable), and one Gaps Report line names the
+    levels found. Nothing is rewritten silently.
+
+    Returns the number of properties changed."""
+    if not ds:
+        return 0
+    props = canonical.get("properties", []) or []
+    levels = {_norm_region(v) for v in (_stated_region(p) for p in props) if v}
+    if len(levels) < 2:
+        return 0  # one level (or none) - already coherent, change nothing
+
+    regions = ds.get("regions", {}) or {}
+    changed: list[dict] = []
+    unbound: list[str] = []
+    for p in props:
+        cur = _stated_region(p)
+        if not cur:
+            continue  # a blank region is a gap, not a level
+        code = p.get("regionCode")
+        prof = regions.get(code) if isinstance(code, str) else None
+        name = str((prof or {}).get("name") or "").strip()
+        if not name:
+            unbound.append(cur)
+            continue
+        if _norm_region(name) == _norm_region(cur):
+            continue
+        p["region"] = name
+        changed.append({"id": p.get("id"), "stated": cur, "bound": name, "code": code})
+        if updates is not None:
+            lat, lng = p.get("lat"), p.get("lng")
+            where = (f"NUTS-3 area containing {lat}, {lng}"
+                     if isinstance(lat, (int, float)) and isinstance(lng, (int, float))
+                     else f"NUTS-3 area {code}")
+            row = _trace(p.get("id"), "region", name,
+                         f"assets/regions_dataset.json ({code})", where, "web")
+            row["conflict_note"] = (
+                f"harmonised to one administrative level: source stated '{cur}', "
+                f"which is a different level from other properties in this longlist")
+            updates.append(row)
+
+    if not changed:
+        return 0
+    canonical.setdefault("meta", {})["regionHarmonised"] = changed
+    stated_levels = "; ".join(sorted({c["stated"] for c in changed} | set(unbound)))
+    bound_names = "; ".join(sorted({c["bound"] for c in changed}))
+    msg = (f"Region labels were stated at more than one administrative level "
+           f"({stated_levels}). Each property's region is now the NUTS-3 area its own "
+           f"coordinates fall inside ({bound_names}), so the longlist reports one level; "
+           f"every value stated at source is preserved in the Source Ledger.")
+    if unbound:
+        msg += (f" {len(unbound)} propert{'y' if len(unbound) == 1 else 'ies'} could not be "
+                f"bound to a NUTS-3 area (no usable coordinates) and keep the label their "
+                f"source stated.")
+    gaps.append(msg)
+    return len(changed)
+
+
 def merge_regions(canonical: dict, gaps: list, updates: list | None = None) -> int:
     # ignore the cache's documentation keys (_comment, _EXAMPLE_CODE, ...) - they
     # are not region profiles and would fail schema validation if injected
@@ -1558,6 +1747,11 @@ def main() -> None:
 
     if args.geocode:
         g = by_layer["geocode"] = []
+        # B60: follow first-party map SHORT links FIRST - the author's own pin always beats a
+        # town centroid, and geocode() must not fill a coordinate this pass can supply exactly.
+        nl = resolve_map_links(canonical, g, updates)
+        if nl:
+            print(f"map links: resolved {nl} first-party pin(s)")
         n = geocode(canonical, g, updates); flags["geocode"] = True
         print(f"geocode: filled {n} coordinates")
     if args.pois:
@@ -1589,6 +1783,14 @@ def main() -> None:
         # label, then the city - BEFORE matching profiles - so a broad/wrong text region
         # label no longer breaks the workforce bind.
         bind_region_codes(canonical, _regions_dataset())
+        # I11: with each property bound to the area its coordinates PROVE it is in, a
+        # dataset whose `region` labels sit at different administrative levels (a county
+        # from one source, the wider region from another) is harmonised to that bind.
+        # Runs AFTER the bind (it has nothing to work from before) and BEFORE the profile
+        # match, so the printed narrative reads bind -> harmonise -> attach.
+        nh = harmonise_regions(canonical, _regions_dataset(), g, updates)
+        if nh:
+            print(f"regions: harmonised {nh} region label(s) to the NUTS-3 bind")
         n = merge_regions(canonical, g, updates); flags["regions"] = True
         print(f"regions: {n} profiles attached")
 
