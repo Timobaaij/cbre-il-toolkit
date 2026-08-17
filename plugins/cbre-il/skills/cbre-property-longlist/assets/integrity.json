@@ -276,8 +276,8 @@
     "sha256": "a5ea6deea02d2737734cd86603ada072cb240fc8e12e7f001fe5884ee3051983"
   },
   "prompts/outlook-ingest.md": {
-    "size": 2032,
-    "sha256": "8fb6f3c5a2c66480508e635c77c8cd5f2785363cc16f44c85436e797212b5e5b"
+    "size": 2048,
+    "sha256": "385d1c40b129538d1e8186fdf853a00b6e894f176188b6aa45a0357b4e5d668b"
   },
   "prompts/photo-match.md": {
     "size": 1976,

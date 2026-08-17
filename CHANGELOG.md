@@ -7,6 +7,22 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.2.1] — 2026-08-17
+### Fixed
+- **Property longlist — what ships with the skill is now stated correctly.** The flywheel
+  ledger directory `state/` is ignored (it is per user and grows every run), and
+  `reference/geocode_cache.json` is no longer ignored: `enrich.py` merges all three
+  `reference/*.json` caches into every run as **read-only seeds** (runs write to the work dir),
+  so ignoring one of them contradicted both the code and its sibling caches, which were already
+  committed. It ships seeded via `helpers/seed_geocode.py`. The keep-list comment now
+  enumerates the whole shipped skill, including why `vendor/` sits outside the integrity
+  manifest — a truncated wheel must degrade to `fitz_shim`, never hard-fail a run.
+### Changed
+- **Property longlist — the one dispatch prompt you fill by hand is now named as such.**
+  Email ingestion is dispatched at Stage 1 rather than from a spine exit, so `work/prompts/`
+  never renders it; SKILL.md now says to copy `prompts/outlook-ingest.md` and fill its slots
+  verbatim rather than author a paraphrase, which is the documented top error surface.
+
 ## [1.2.0] — 2026-08-17
 
 Dashboard template v35 → **v38**, three new helpers, and the eval suite grows to **107 tests**.
@@ -442,6 +458,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.2.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.2.1
 [1.2.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.2.0
 [1.1.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.1.0
 [1.0.15]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.15

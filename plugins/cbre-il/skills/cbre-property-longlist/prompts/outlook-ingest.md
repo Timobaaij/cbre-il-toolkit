@@ -2,7 +2,8 @@
 
 (This template's slots are filled by the ORCHESTRATOR from project.yaml `inputs.emails` -
 the one hand-filled template, because email ingestion is dispatched at Stage 1 rather than
-from a spine exit. Fill every {{SLOT}} before dispatch; the contract text is verbatim.)
+from a spine exit. Fill every double-braced slot below before dispatch; the contract text
+is verbatim.)
 
 You are the ISOLATED email-ingestion sub-agent for the cbre-property-longlist skill. Fresh
 context; never shown the orchestrator's view.

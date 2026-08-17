@@ -3,9 +3,30 @@ evals/_out/
 **/__pycache__/
 *.pyc
 .pytest_cache/
-reference/geocode_cache.json
-# keep (committed): SKILL.md, helpers/, reference/*.md, reference/ seed caches,
-# templates/, the evals/ suite, and every file in assets/ - the template + VERSION +
-# the i18n packs + the *.json / *.json.gz datasets and ledgers + placeholder.uri +
-# reference_screenshots/. assets/integrity.json is the authoritative list of
-# build-critical tracked files - do not let this comment drift from it.
+# the flywheel ledger is PER USER and grows every run (gate_runner creates the dir on
+# demand, so the folder itself is not committed either)
+state/
+# NOTE: reference/geocode_cache.json is NOT ignored, though it once was. enrich.py sets
+# SEED_DIR = <skill>/reference and MERGES all three reference/*.json caches into every
+# run as read-only seeds (work-dir copies win), so ignoring one of them contradicted the
+# code and the keep-list below. Runs write to the WORK dir - main() repoints CACHE_DIR -
+# so these files do not grow per run; they are seeded deliberately, via seed_geocode.py.
+# keep (committed), i.e. the whole shipped skill:
+#   SKILL.md, KNOWN-DEFECTS.md, NOTICE, .gitignore
+#   helpers/           the pipeline + the build-time dataset tools
+#   reference/*.md     the contracts SKILL.md links
+#   reference/*.json   the read-only seed caches enrich.py merges (geocode, poi_osm) plus
+#                      regions_cache.json, which is the documented EXAMPLE of the
+#                      region-research cache shape, not run data
+#   prompts/*.md       the canonical dispatch-prompt templates
+#   templates/         canonical.schema.json + record_schema.json
+#   evals/             the whole suite (run_all.py is the bar for a skill edit)
+#   assets/            the frozen template + VERSION + the i18n packs + the *.json /
+#                      *.json.gz datasets and ledgers + placeholder.uri +
+#                      reference_screenshots/ (a documented placeholder for the
+#                      G-visual baselines, see reference/visual-qa.md)
+#   vendor/            the native PyMuPDF wheel the Cowork sandbox lacks (~24 MB, and
+#                      deliberately NOT in the integrity manifest - a truncated wheel
+#                      must degrade to fitz_shim, never hard-fail a run)
+# assets/integrity.json is the authoritative list of build-critical tracked files
+# (helpers/, prompts/, templates/, assets/) - do not let this comment drift from it.
