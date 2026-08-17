@@ -172,8 +172,8 @@
       </ol>
       <p class="muted">Change it back afterwards if you prefer reading PDFs in the browser.</p>
       <div class="note">
-        <b>Test one brochure first, and read the result.</b> This opens a small download window and
-        sends one brochure to it. Your browser will ask to allow a popup — allow it.
+        <b>Test one brochure first, and read the result.</b> This opens one brochure in a small
+        window, which closes itself shortly after. Your browser may ask to allow a popup — allow it.
         <ul style="margin:8px 0 0; padding-left:20px">
           <li><b>The window stays blank and a PDF appears in your Downloads folder</b> — the setting
               is applied. Carry on to step 2.</li>
@@ -194,21 +194,51 @@
     <h2><span class="n">2</span> Download the brochures</h2>
     <div class="body">
       <p id="pull-intro"></p>
-      <div class="row">
-        <button id="btn-start" disabled>Start downloading</button>
-        <button id="btn-stop" class="ghost" disabled>Stop</button>
-        <span class="muted" id="pull-state"></span>
+      <div class="note">
+        <b>Each brochure opens in its own window, which then closes itself.</b>
+        A tab is allowed one download; anything after that in the same tab is blocked, or silently
+        opened in the viewer instead. A fresh window per file avoids that altogether.
+      </div>
+
+      <!-- Option 1: guaranteed, needs no permission -->
+      <div style="border:1px solid var(--line); border-radius:6px; padding:14px; margin-bottom:14px">
+        <p style="margin-bottom:10px"><b>Click through the list — always works, nothing to allow.</b>
+           Every click is a user gesture, which browsers permit unconditionally. Press the button
+           once per brochure; it advances on its own, so you can keep pressing the same button.</p>
+        <div class="row">
+          <button id="btn-next">Save next brochure</button>
+          <span class="muted" id="next-state"></span>
+        </div>
+      </div>
+
+      <!-- Option 2: automated, needs the popup permission -->
+      <div style="border:1px solid var(--line); border-radius:6px; padding:14px">
+        <p style="margin-bottom:10px"><b>Or run them all automatically.</b> One press for the lot,
+           but your browser has to let this page open popups, because only the first window comes
+           from your click. If popups are blocked the run stops at once and tells you — it cannot
+           fail silently, unlike a blocked download.</p>
+        <div class="row">
+          <button id="btn-start" class="ghost" disabled>Start automated run</button>
+          <button id="btn-stop" class="ghost" disabled>Stop</button>
+          <span class="muted" id="pull-state"></span>
+        </div>
+        <div class="note warn" id="popup-note" style="display:none">
+          <b>Your browser blocked the popups.</b> Click the blocked-popup icon at the right-hand end
+          of the address bar, choose to always allow popups from this page, then press
+          <b>Start automated run</b> again — files already saved are skipped. Or just use
+          <b>Save next brochure</b> above, which needs no permission at all.
+        </div>
       </div>
       <div class="bar"><i id="pull-bar"></i></div>
       <p class="muted" id="pull-caveat">
-        Each brochure is sent to the small download window in turn. Keep that window open — closing
-        it pauses the run. The page cannot tell whether a download finished, because the browser
-        reports nothing back for cross-origin downloads, so this says <em>sent</em> rather than
-        <em>done</em>. Step 3 is what actually verifies the files.
+        Windows open and close themselves as files are sent; you do not need to touch them, and
+        closing one early is harmless once its download has begun. The page cannot tell whether a
+        download finished, because the browser reports nothing back for cross-origin downloads, so
+        this says <em>sent</em> rather than <em>done</em>. Step 3 is what actually verifies the files.
       </p>
       <div class="tablewrap">
         <table id="pull-table">
-          <thead><tr><th>No.</th><th>Property</th><th>Saves as (roughly)</th><th>State</th><th></th></tr></thead>
+          <thead><tr><th>No.</th><th>Property</th><th>Saves as (roughly)</th><th>State</th><th>One at a time</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -448,30 +478,31 @@ function isPdf(bytes) {
  * A cross-origin navigation still needs no CORS, so this keeps the
  * property that made the approach viable.
  *
- * One popup is opened from the user's own click and then reused for
- * every file: the popup blocker is satisfied once, and the tool's tab is
- * never navigated away from. A navigation that becomes a download leaves
- * the popup sitting on about:blank, ready for the next one.
+ * ONE WINDOW PER FILE, never reused. A tab is allowed a single download;
+ * the second one in the same tab is gated, and for a PDF the browser
+ * quietly falls back to RENDERING it in the viewer instead - no download,
+ * and no prompt to explain why. Three mechanisms failed on this before the
+ * cause was understood: hidden iframe (viewer claimed the sub-frame),
+ * reused window fire-and-forget (files 2..n blocked behind the prompt),
+ * reused window with a pause (file 2 silently rendered). The allowance is
+ * per tab, so a fresh window gets a fresh allowance.
+ *
+ * The window is closed a while after the navigation. That is safe: once a
+ * download has started the browser owns it, and closing the initiating tab
+ * does not cancel it.
  * ------------------------------------------------------------------ */
-let worker = null;
+const CLOSE_AFTER_MS = 12000;
 
-function workerAlive() {
-  try { return !!worker && !worker.closed; } catch (err) { return false; }
-}
-
-/** Open the reusable download window. Must be called from a user gesture. */
-function openWorker() {
-  if (workerAlive()) return true;
-  try { worker = window.open("about:blank", "brochureWorker", "width=560,height=420"); }
-  catch (err) { worker = null; }
-  return workerAlive();
-}
-
-/** Send one URL to the worker window as a top-level navigation. */
-function driveTo(url) {
-  if (!workerAlive()) return false;
-  try { worker.location.href = url; return true; }
-  catch (err) { return false; }
+/** Open one URL in its own window as a top-level navigation.
+ *  Returns false when the popup was blocked - which, unlike a blocked
+ *  download, is something this page can actually detect. */
+function openFresh(url) {
+  let w = null;
+  try { w = window.open(url, "_blank", "width=560,height=420"); }
+  catch (err) { w = null; }
+  if (!w) return false;
+  setTimeout(() => { try { w.close(); } catch (err) { /* already gone */ } }, CLOSE_AFTER_MS);
+  return true;
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -501,11 +532,18 @@ function renderPull() {
   const tb = $("#pull-table tbody");
   tb.textContent = "";
   for (const it of AUTO) {
-    const retry = el("button", { className: "ghost small", textContent: "Retry" });
+    /* A click here is a real user gesture, so this one download is never subject to
+       the "allow multiple downloads" prompt. It is both the retry path and the
+       complete manual alternative for anyone who would rather not grant that
+       permission at all. */
+    const retry = el("button", { className: "ghost small", textContent: "Save" });
     retry.onclick = () => {
-      if (!openWorker()) { $("#pull-state").textContent = "popup blocked — allow popups, then retry"; return; }
-      driveTo(it.url);
+      if (!openFresh(it.url)) {
+        $("#next-state").textContent = "popup blocked — allow popups for this page, then try again";
+        return;
+      }
       mark(it.id, "triggered");
+      refreshNext();
     };
     tb.append(el("tr", {}, [
       el("td", { className: "num", textContent: it.numbers.join("+") }),
@@ -570,6 +608,7 @@ function refreshCounts() {
   $("#btn-zip").disabled = have === 0;
   $("#unmatched-wrap").style.display = unmatched.length ? "" : "none";
   renderUnmatched();
+  refreshNext();   // collecting a file removes it from the still-to-save list
 }
 
 function renderUnmatched() {
@@ -608,68 +647,119 @@ function fmtSize(n) {
 /* ------------------------------------------------------------------ *
  * Step 1: setup + test
  * ------------------------------------------------------------------ */
+/* The brochure used for the setup test is already on disk once the user confirms it
+   arrived, so the run skips it. Downloading it twice would leave a "… (1).pdf" duplicate
+   that step 3 then reports as unrecognised. */
+let testedId = null;
+let setupDone = false;
+
 $("#btn-test").onclick = () => {
   if (!AUTO.length) { $("#test-state").textContent = "nothing to download"; return; }
-  if (!openWorker()) {
+  if (!openFresh(AUTO[0].url)) {
     $("#test-state").textContent =
       "your browser blocked the popup — allow popups for this page, then test again";
     return;
   }
-  driveTo(AUTO[0].url);
   mark(AUTO[0].id, "triggered");
-  $("#test-state").textContent = `sent “${AUTO[0].predicted}” to the download window — now read it`;
+  $("#test-state").textContent = `sent “${AUTO[0].predicted}” — now read the window that opened`;
   $("#btn-confirm").disabled = false;
 };
 
 $("#btn-confirm").onclick = () => {
+  if (AUTO.length) testedId = AUTO[0].id;   // already downloaded; do not fetch it twice
+  setupDone = true;
   $("#step-setup").classList.add("done");
   $("#step-pull").classList.remove("locked");
   $("#step-collect").classList.remove("locked");
   $("#btn-start").disabled = false;
-  $("#btn-start").focus();
+  $("#btn-next").focus();
+  refreshNext();
 };
 
 /* ------------------------------------------------------------------ *
- * Step 2: sequential pull
+ * Step 2: pulling the files
  * ------------------------------------------------------------------ */
+/* Items not yet SENT. Deliberately keyed on "pending" rather than "not collected":
+   a file is only 'have' once it has been dragged back in step 3, so filtering on that
+   would hand back the same brochure every time and the queue would never advance.
+   A send that silently failed is caught in step 3 as missing, and retried from its row. */
+const unsent = () => AUTO.filter(i => state.get(i.id).state === "pending" && i.id !== testedId);
+
+function setProgress(doneCount, totalCount) {
+  $("#pull-bar").style.width = totalCount ? `${(doneCount / totalCount) * 100}%` : "0";
+}
+
+/* --- Option 1: one click per file. No permission is involved, because each
+       download is carried by its own user gesture. --- */
+function refreshNext() {
+  const todo = unsent();
+  const btn = $("#btn-next");
+  if (!todo.length) {
+    btn.disabled = true;
+    btn.textContent = "All brochures sent";
+    $("#next-state").textContent = "now do step 3";
+    return;
+  }
+  btn.disabled = !setupDone;
+  btn.textContent = `Save next brochure (${todo.length} left)`;
+  $("#next-state").textContent = setupDone
+    ? `next: ${todo[0].numbers.join("+")} · ${todo[0].label}`
+    : "finish step 1 first";
+}
+
+$("#btn-next").onclick = () => {
+  const todo = unsent();
+  if (!todo.length) { refreshNext(); return; }
+  const it = todo[0];
+  if (!openFresh(it.url)) {
+    $("#next-state").textContent = "popup blocked — allow popups for this page, then click again";
+    return;
+  }
+  mark(it.id, "triggered");
+  setProgress(AUTO.length - unsent().length, AUTO.length);
+  refreshNext();
+};
+
+/* --- Option 2: automated. Needs the popup permission, and detects not having it. --- */
 $("#btn-start").onclick = async () => {
   if (running) return;
 
-  // Opening the window here keeps it inside the click's user activation.
-  if (!openWorker()) {
-    $("#pull-state").textContent =
-      "popup blocked — allow popups for this page, then press Start again";
-    return;
-  }
+  const todo = unsent();
+  if (!todo.length) { $("#pull-state").textContent = "everything is already saved"; return; }
 
   running = true; stopped = false;
   $("#btn-start").disabled = true;
   $("#btn-stop").disabled = false;
+  $("#popup-note").style.display = "none";
 
-  const todo = AUTO.filter(i => state.get(i.id).state !== "have");
+  const total = todo.length;
   let done = 0;
-  let closed = false;
+  let blocked = false;
 
   for (const it of todo) {
     if (stopped) break;
-    if (!workerAlive()) { closed = true; break; }
-    $("#pull-state").textContent = `${done + 1} of ${todo.length} — ${it.label}`;
-    driveTo(it.url);
+    $("#pull-state").textContent = `${done + 1} of ${total} — ${it.label}`;
+    if (!openFresh(it.url)) { blocked = true; break; }
     mark(it.id, "triggered");
     done++;
-    $("#pull-bar").style.width = `${(done / todo.length) * 100}%`;
-    if (done < todo.length) await sleep(GAP_MS);
+    setProgress(AUTO.length - unsent().length, AUTO.length);
+    refreshNext();
+    if (done < total) await sleep(GAP_MS);
   }
 
-  $("#pull-state").textContent =
-    closed ? `paused after ${done} of ${todo.length} — the download window was closed. Press Start again to carry on.`
-    : stopped ? `stopped after ${done} of ${todo.length}`
-    : `all ${done} sent — now do step 3`;
+  if (blocked) {
+    $("#pull-state").textContent = `stopped after ${done} of ${total} — popups blocked`;
+    $("#popup-note").style.display = "";
+  } else {
+    $("#pull-state").textContent = stopped
+      ? `stopped after ${done} of ${total}`
+      : `all ${done} sent — now do step 3`;
+  }
 
   running = false;
   $("#btn-start").disabled = false;
   $("#btn-stop").disabled = true;
-  if (!stopped && !closed) $("#step-pull").classList.add("done");
+  if (!stopped && !blocked) $("#step-pull").classList.add("done");
 };
 
 $("#btn-stop").onclick = () => { stopped = true; };
@@ -709,18 +799,42 @@ const drop = $("#drop");
 ["dragleave", "drop"].forEach(ev =>
   drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
 
+/* The DataTransfer is only valid inside this handler, so everything is read
+   SYNCHRONOUSLY before the first await.
+
+   webkitGetAsEntry() is used ONLY to detect a dropped folder. It is not trusted for
+   plain files: the method always exists in Chromium but can return null, and an earlier
+   version keyed the whole branch on the method existing rather than on it returning
+   anything. Entries came back null, so nothing was collected and the drop failed in
+   silence while the file picker worked. dataTransfer.files is the authoritative list for
+   a file drop and is always read. */
 drop.addEventListener("drop", async e => {
+  const plainFiles = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+
+  const entries = [];
   const items = e.dataTransfer.items;
-  const files = [];
-  if (items && items.length && items[0].webkitGetAsEntry) {
-    const entries = [];
-    for (const it of items) {
-      const entry = it.webkitGetAsEntry();
+  if (items) {
+    for (let i = 0; i < items.length; i++) {
+      let entry = null;
+      try { entry = items[i].webkitGetAsEntry ? items[i].webkitGetAsEntry() : null; }
+      catch (err) { entry = null; }
       if (entry) entries.push(entry);
     }
+  }
+
+  let files;
+  if (entries.some(en => en.isDirectory)) {
+    files = [];
     for (const entry of entries) await walk(entry, files);
+    if (!files.length) files = plainFiles.filter(f => f.size > 0);
   } else {
-    files.push(...e.dataTransfer.files);
+    files = plainFiles;
+  }
+
+  if (!files.length) {
+    $("#zip-state").textContent =
+      "nothing readable in that drop — use the choose files button instead";
+    return;
   }
   await ingest(files);
 });
@@ -912,9 +1026,8 @@ $("#btn-zip").onclick = async () => {
     (c.flagged ? ` · ${c.flagged} need attention` : "");
 
   $("#pull-intro").textContent =
-    `${AUTO.length} brochures will download one after another, about ${GAP_MS / 1000}s apart, ` +
-    `through a single small window this page opens. Your browser will ask once whether to allow ` +
-    `multiple downloads — say yes.`;
+    `${AUTO.length} brochures to save. Two ways to do it — clicking through needs no permission at ` +
+    `all, the automated run needs your browser to allow popups. Both end at the same zip.`;
 
   if (DATA.warnings.length) {
     const w = el("div", { className: "note warn" });
@@ -932,7 +1045,7 @@ $("#btn-zip").onclick = async () => {
   // Expose internals so the build's browser tests can exercise them headlessly.
   window.__tool = {
     buildZip, crc32, matchFile, isPdf, stem, loose, state, ITEMS, ingest, manifest,
-    openWorker, driveTo, workerAlive,
+    openFresh, unsent, refreshNext,
   };
 })();
 </script>

@@ -82,16 +82,23 @@ class TestRender:
 
 
 class TestDownloadMechanism:
-    """Guards against reintroducing the iframe trigger.
+    """Guards the download trigger, which took three attempts to get right.
 
-    A hidden <iframe> pointed at a cross-origin PDF does not download it. The browser's
-    built-in PDF viewer claims any PDF loaded into a sub-frame, so the brochure renders
-    invisibly inside the hidden element and no file is ever saved — and the "Download
-    PDFs" setting cannot change that, because it governs top-level navigations only.
-    Confirmed by observing an iframe load pull in Chrome's PDF viewer extension.
+    A browser tab is allowed exactly one download. What fails afterwards varies and is
+    never obvious:
 
-    The download must therefore be a top-level navigation, driven through one reused
-    popup window.
+    1. Hidden <iframe> — the built-in PDF viewer claims any PDF loaded into a sub-frame,
+       so the brochure rendered invisibly and nothing was saved. The "Download PDFs"
+       setting cannot help, because it governs top-level navigations only. Confirmed by
+       observing an iframe load pull in Chrome's PDF viewer extension.
+    2. One reused window, fire-and-forget — the browser's multiple-downloads prompt
+       blocked files 2..n while the loop raced past them, so only the first arrived.
+    3. One reused window with a pause for that prompt — the second file silently
+       degraded to *rendering* in the viewer, with no prompt shown at all.
+
+    The working mechanism is a fresh top-level window per file, never reused, so each
+    download gets its own allowance. Its one failure mode — a blocked popup — is
+    detectable via a null return from window.open, unlike a gated download.
     """
 
     @pytest.fixture
@@ -103,31 +110,74 @@ class TestDownloadMechanism:
         assert "createElement('iframe')" not in template
         assert 'el("iframe")' not in template
 
-    def test_uses_a_reused_top_level_window(self, template):
-        assert "window.open(" in template
-        assert "worker.location.href" in template
-        assert "function openWorker" in template
-        assert "function driveTo" in template
+    def test_opens_a_fresh_window_per_file(self, template):
+        assert "function openFresh" in template
+        assert 'window.open(url, "_blank"' in template
 
-    def test_handles_a_blocked_popup(self, template):
+    def test_never_reuses_one_window_for_several_downloads(self, template):
+        """Reuse is the defect that broke attempts 2 and 3."""
+        assert "openWorker" not in template
+        assert "driveTo" not in template
+        assert "worker.location.href" not in template
+
+    def test_detects_a_blocked_popup(self, template):
         assert "popup blocked" in template.lower()
+        assert 'id="popup-note"' in template
+        assert "blocked = true" in template
 
-    def test_handles_the_window_being_closed_mid_run(self, template):
-        assert "workerAlive" in template
-        assert "was closed" in template
-
-    def test_records_why_the_iframe_approach_fails(self, template):
+    def test_records_why_the_earlier_mechanisms_failed(self, template):
         """The reasoning must stay next to the code, or it will be undone later."""
         assert "sub-frame" in template
         assert "Do not reintroduce an iframe here." in template
+        assert "ONE WINDOW PER FILE, never reused" in template
+
+    def test_closes_each_window_after_the_download_starts(self, template):
+        assert "CLOSE_AFTER_MS" in template
+        assert "w.close()" in template
 
     def test_test_button_explains_how_to_read_the_outcome(self, template):
-        """The original bug was a diagnostic that could not report; keep it explicit."""
+        """An early bug was a diagnostic that could not report; keep it explicit."""
         assert "stays blank" in template
         assert "appears on screen" in template
 
     def test_does_not_claim_downloads_are_confirmed(self, template):
         assert "sent</em> rather than" in template
+
+    def test_offers_a_click_through_path_needing_no_permission(self, template):
+        """The permission must be optional, because it is the only guaranteed path."""
+        assert 'id="btn-next"' in template
+        assert "Save next brochure" in template
+        assert "nothing to allow" in template
+        assert 'textContent: "Save"' in template
+
+    def test_click_through_advances_by_itself(self, template):
+        assert "function refreshNext" in template
+        assert "left)" in template
+
+    def test_automated_run_is_offered_separately(self, template):
+        assert "Start automated run" in template
+        assert "allow popups" in template
+        assert "address bar" in template
+
+    def test_drop_does_not_depend_on_webkit_get_as_entry(self, template):
+        """webkitGetAsEntry() always exists in Chromium but can return null.
+
+        Keying the whole drop branch on the method existing meant a plain file drop
+        collected nothing and failed silently, while the file picker worked. The plain
+        dataTransfer.files list must always be read, and used whenever no folder was
+        dropped.
+        """
+        assert "Array.from(e.dataTransfer.files)" in template
+        assert "entries.some(en => en.isDirectory)" in template
+        assert "files = plainFiles" in template
+
+    def test_drop_reports_when_it_collected_nothing(self, template):
+        assert "nothing readable in that drop" in template
+
+    def test_does_not_download_the_test_brochure_twice(self, template):
+        """A second copy lands as "… (1).pdf" and step 3 reports it as unrecognised."""
+        assert "testedId" in template
+        assert "i.id !== testedId" in template
 
 
 class TestInferClient:

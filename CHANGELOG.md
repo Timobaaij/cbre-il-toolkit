@@ -7,6 +7,25 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.3.1] — 2026-08-17
+### Fixed
+- **Brochure downloader — a fresh window per file, because a tab only gets one download.**
+  Reusing one window silently lost every brochure after the first, and the cause took three
+  failed mechanisms to pin down: a hidden iframe (the PDF viewer claims any sub-frame load, so
+  it rendered invisibly and saved nothing), one reused window fire-and-forget (the
+  multiple-downloads prompt blocked files 2..n while the loop raced past them), and one reused
+  window pausing for that prompt (the second file silently degraded to *rendering*, with no
+  prompt at all). The download allowance is per tab, so each file now gets its own fresh
+  top-level window. Its one failure mode — a blocked popup — is **detectable**
+  (`window.open` returns null), unlike a gated download that fails invisibly, so the run stops
+  and says so instead of quietly producing a short zip. `TestDownloadMechanism` guards it.
+### Changed
+- **Brochure downloader — two routes in step 2, so no one is stuck behind a popup prompt.**
+  *Save next brochure* is one click per file and needs no permission; *Start automated run* does
+  all of them in one press but requires popups to be allowed for the page. Troubleshooting and
+  `reference/browser-setup.md` updated to match, including the now-expected "popups blocked"
+  stop.
+
 ## [1.3.0] — 2026-08-17
 ### Added
 - **A seventh skill: `cbre-brochure-downloader`.** Turns the brochure links in a property
@@ -479,6 +498,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.3.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.3.1
 [1.3.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.3.0
 [1.2.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.2.1
 [1.2.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.2.0

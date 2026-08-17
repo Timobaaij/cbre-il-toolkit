@@ -25,12 +25,21 @@ So the bytes travel: **internet → browser navigation (no CORS) → Downloads f
 onto the page (no CORS) → renamed, validated, zipped.** A navigation gets bytes onto disk; a dropped
 local file is readable by JavaScript. Neither half alone works.
 
-**The navigation must be top-level.** The tool opens one small popup and drives it through each URL
-in turn. Do not "simplify" this to a hidden iframe: the built-in PDF viewer always claims a PDF
-loaded into a sub-frame, so it renders invisibly and saves nothing, and the "Download PDFs" setting
-cannot override it because that setting governs top-level navigations only. This was shipped once and
-failed completely and silently in both Chrome and Edge; there is a test suite guarding against its
-return.
+**One fresh top-level window per file, never reused.** A browser tab is allowed exactly one download;
+what happens to the second varies and is never obvious. Three mechanisms failed here before the cause
+was understood, each in a different way:
+
+1. **Hidden iframe** — the built-in PDF viewer claims any PDF loaded into a sub-frame, so the
+   brochure rendered invisibly and nothing was saved. The "Download PDFs" setting cannot help,
+   because it governs top-level navigations only.
+2. **One reused window, fire-and-forget** — the multiple-downloads prompt blocked files 2..n while
+   the loop raced past them. Only the first arrived.
+3. **One reused window, pausing for that prompt** — the second file silently degraded to *rendering*
+   in the viewer, with no prompt shown at all.
+
+The allowance is per tab, so a fresh window per file gets a fresh allowance. Its single failure mode,
+a blocked popup, is **detectable** (`window.open` returns null) — unlike a gated download, which
+fails invisibly. Do not consolidate these back into one window; `TestDownloadMechanism` guards it.
 
 ## The loop
 
@@ -55,10 +64,13 @@ return.
    - Set the browser to download PDFs rather than open them
      (`chrome://settings/content/pdfDocuments` → **Download PDFs**; Edge:
      `edge://settings/content/pdfDocuments` → **Always download PDF files**). The tool's step 1 has
-     a one-brochure test button, and tells them how to read the result: the popup staying blank means
+     a one-brochure test button, and tells them how to read the result: the window staying blank means
      the setting is applied; the brochure appearing on screen means it is not.
-   - **Allow the popup** when asked — the tool needs one window to drive the downloads through.
-   - Run step 2 in the tool, then drag the downloaded files back onto step 3.
+   - Step 2 offers two routes, and they should pick one:
+     **Save next brochure** — one click per file, needs no permission, always works; or
+     **Start automated run** — one press for all of them, but the browser must be allowed to open
+     popups for the page. If popups are blocked the run stops and says so.
+   - Then drag the downloaded files back onto step 3.
    - Download `brochures_<client>.zip` and upload it back here.
 
 4. **Report honestly** what the build found: how many properties, how many distinct files, and
@@ -111,8 +123,8 @@ availability sheet alongside the brochures.
 |---|---|
 | Test opens the brochure on screen instead of saving it | The PDF setting has not taken effect. Re-apply it, reload the tool, test again. This is the expected visible signal, not a bug. |
 | Nothing happens at all on test | The popup was blocked. Allow popups for the page (address-bar icon), then test again. |
-| Only the first file downloads | The multiple-downloads prompt was dismissed. Allow it in the address-bar icon and re-run; already-collected files are skipped. |
-| Run pauses partway | The download popup was closed. Press Start again to resume; collected files are skipped. |
+| Automated run stops early saying popups blocked | Expected and detected, not a silent failure. Allow popups for the page and press Start again, or use **Save next brochure** instead. |
+| Only the first file downloads | A symptom of reusing one tab, which this version no longer does. If it reappears, the download trigger has been changed back — check `TestDownloadMechanism`. |
 | A file is "not a PDF" | The server returned a page — often a login wall or an expired link. Open the link from the attention panel and save the brochure by hand. |
 | Files land as "unrecognised" | Filename tolerance did not reach; assign them with the dropdown in step 3. |
 | Zip button disabled | Nothing collected yet. Drag files onto step 3 first. |
