@@ -1,0 +1,940 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brochure Downloader — __CLIENT__</title>
+<style>
+  :root {
+    --green: #003F2D;
+    --green-mid: #01584a;
+    --mint: #C0D4CB;
+    --accent: #17E88F;
+    --ink: #1a1f1d;
+    --muted: #5d6b66;
+    --line: #d9e2de;
+    --bg: #f4f7f5;
+    --card: #ffffff;
+    --warn: #8a5a00;
+    --warn-bg: #fff6e0;
+    --bad: #9b1c1c;
+    --bad-bg: #fdeaea;
+    --good: #0f6b47;
+    --good-bg: #e6f6ee;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.55 "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  header {
+    background: var(--green);
+    color: #fff;
+    padding: 22px 28px;
+  }
+  header h1 { margin: 0 0 4px; font-size: 21px; font-weight: 600; letter-spacing: -0.01em; }
+  header .sub { color: var(--mint); font-size: 13px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 24px 28px 80px; }
+
+  .step {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    margin-bottom: 20px;
+    overflow: hidden;
+  }
+  .step > h2 {
+    margin: 0;
+    padding: 14px 20px;
+    font-size: 15px;
+    font-weight: 600;
+    background: #eef3f0;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .step > h2 .n {
+    display: inline-grid;
+    place-items: center;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--green);
+    color: #fff;
+    font-size: 12px;
+    flex: none;
+  }
+  .step .body { padding: 18px 20px; }
+  .step.done > h2 .n { background: var(--good); }
+  .step.locked { opacity: 0.55; }
+
+  p { margin: 0 0 12px; }
+  p:last-child { margin-bottom: 0; }
+  code { background: #eef3f0; padding: 1px 5px; border-radius: 3px; font-size: 13px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  ol.setup { margin: 0 0 14px; padding-left: 22px; }
+  ol.setup li { margin-bottom: 6px; }
+
+  button {
+    font: inherit;
+    font-weight: 600;
+    border: 1px solid var(--green);
+    background: var(--green);
+    color: #fff;
+    padding: 9px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: var(--green-mid); }
+  button.ghost { background: #fff; color: var(--green); }
+  button.ghost:hover:not(:disabled) { background: #eef3f0; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button.small { padding: 4px 10px; font-size: 12px; font-weight: 500; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+  .bar {
+    height: 6px; background: #e3ebe7; border-radius: 3px; overflow: hidden; margin: 14px 0 8px;
+  }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .25s; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+  tbody tr:hover { background: #fafcfb; }
+  td.num { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  td.file { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted); word-break: break-all; }
+  .tablewrap { overflow-x: auto; }
+
+  .tag {
+    display: inline-block; padding: 2px 8px; border-radius: 11px;
+    font-size: 11.5px; font-weight: 600; white-space: nowrap;
+  }
+  .tag.pending  { background: #eef3f0; color: var(--muted); }
+  .tag.triggered{ background: #e7eefb; color: #1d4ed8; }
+  .tag.have     { background: var(--good-bg); color: var(--good); }
+  .tag.missing  { background: var(--warn-bg); color: var(--warn); }
+  .tag.bad      { background: var(--bad-bg); color: var(--bad); }
+  .tag.flagged  { background: var(--warn-bg); color: var(--warn); }
+
+  .note {
+    border-left: 3px solid var(--accent);
+    background: #f0faf5;
+    padding: 12px 14px;
+    border-radius: 0 6px 6px 0;
+    margin: 0 0 14px;
+    font-size: 13.5px;
+  }
+  .note.warn { border-left-color: #e0a800; background: var(--warn-bg); }
+
+  #drop {
+    border: 2px dashed var(--line);
+    border-radius: 8px;
+    padding: 30px 20px;
+    text-align: center;
+    background: #fafcfb;
+    transition: .15s;
+  }
+  #drop.over { border-color: var(--accent); background: #f0faf5; }
+  #drop .big { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+
+  .counts { display: flex; gap: 22px; flex-wrap: wrap; margin-bottom: 4px; }
+  .counts div { font-size: 13px; }
+  .counts b { display: block; font-size: 20px; font-weight: 600; }
+
+  select { font: inherit; font-size: 12.5px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px; max-width: 260px; }
+  a { color: var(--green-mid); }
+  details summary { cursor: pointer; font-weight: 600; font-size: 13.5px; }
+  .stack { display: flex; flex-direction: column; gap: 3px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Brochure Downloader — __CLIENT__</h1>
+  <div class="sub" id="hdrsub"></div>
+</header>
+
+<main>
+  <div id="warnings"></div>
+
+  <!-- Step 1: setup -->
+  <section class="step" id="step-setup">
+    <h2><span class="n">1</span> Set your browser to download PDFs</h2>
+    <div class="body">
+      <p>By default Chrome and Edge <em>open</em> a PDF instead of saving it. None of these
+         servers force a download, so without this change the run produces no files at all.</p>
+      <ol class="setup">
+        <li><b>Chrome:</b> paste <code>chrome://settings/content/pdfDocuments</code> into the address
+            bar, then choose <b>Download PDFs</b>.</li>
+        <li><b>Edge:</b> paste <code>edge://settings/content/pdfDocuments</code> into the address bar,
+            then turn <b>Always download PDF files</b> on.</li>
+      </ol>
+      <p class="muted">Change it back afterwards if you prefer reading PDFs in the browser.</p>
+      <div class="note">
+        <b>Test one brochure first, and read the result.</b> This opens a small download window and
+        sends one brochure to it. Your browser will ask to allow a popup — allow it.
+        <ul style="margin:8px 0 0; padding-left:20px">
+          <li><b>The window stays blank and a PDF appears in your Downloads folder</b> — the setting
+              is applied. Carry on to step 2.</li>
+          <li><b>The brochure appears on screen in that window</b> — the setting has <em>not</em>
+              taken effect. Re-check it, reload this page, and test again.</li>
+        </ul>
+      </div>
+      <div class="row">
+        <button id="btn-test">Test with one brochure</button>
+        <button id="btn-confirm" class="ghost" disabled>A file arrived — continue</button>
+        <span class="muted" id="test-state"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Step 2: pull -->
+  <section class="step locked" id="step-pull">
+    <h2><span class="n">2</span> Download the brochures</h2>
+    <div class="body">
+      <p id="pull-intro"></p>
+      <div class="row">
+        <button id="btn-start" disabled>Start downloading</button>
+        <button id="btn-stop" class="ghost" disabled>Stop</button>
+        <span class="muted" id="pull-state"></span>
+      </div>
+      <div class="bar"><i id="pull-bar"></i></div>
+      <p class="muted" id="pull-caveat">
+        Each brochure is sent to the small download window in turn. Keep that window open — closing
+        it pauses the run. The page cannot tell whether a download finished, because the browser
+        reports nothing back for cross-origin downloads, so this says <em>sent</em> rather than
+        <em>done</em>. Step 3 is what actually verifies the files.
+      </p>
+      <div class="tablewrap">
+        <table id="pull-table">
+          <thead><tr><th>No.</th><th>Property</th><th>Saves as (roughly)</th><th>State</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Step 3: collect -->
+  <section class="step locked" id="step-collect">
+    <h2><span class="n">3</span> Collect the files and build the zip</h2>
+    <div class="body">
+      <p>Open your Downloads folder, select the brochures you just downloaded, and drag them here.
+         The page checks each one is a real PDF, renames it after its property, and packages the lot.</p>
+      <div id="drop">
+        <div class="big">Drag the downloaded PDFs here</div>
+        <div class="muted">or <button id="btn-pick" class="ghost small">choose files</button> —
+           you can drop them in several batches</div>
+        <input type="file" id="picker" multiple accept="application/pdf,.pdf" hidden>
+      </div>
+      <div class="counts" style="margin-top:18px">
+        <div><b id="c-have">0</b> matched</div>
+        <div><b id="c-missing">0</b> still missing</div>
+        <div><b id="c-bad">0</b> not a PDF</div>
+        <div><b id="c-unmatched">0</b> unrecognised</div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button id="btn-zip" disabled>Build zip</button>
+        <button id="btn-reset" class="ghost">Clear collected files</button>
+        <span class="muted" id="zip-state"></span>
+      </div>
+      <div id="unmatched-wrap" style="margin-top:18px; display:none">
+        <details open>
+          <summary>Unrecognised files — tell the page which property each belongs to</summary>
+          <div class="tablewrap">
+            <table id="unmatched-table">
+              <thead><tr><th>File</th><th>Size</th><th>Assign to</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- Attention -->
+  <section class="step" id="step-attention" style="display:none">
+    <h2><span class="n">!</span> Needs your attention</h2>
+    <div class="body">
+      <p>These are not straightforward PDF links, so the page will not download them blind.
+         Open each one, find the brochure yourself, save it into the same folder, and include it
+         when you drag files into step 3.</p>
+      <div class="tablewrap">
+        <table id="attention-table">
+          <thead><tr><th>No.</th><th>Property</th><th>Link</th><th>Why</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script id="payload" type="application/json">__PAYLOAD__</script>
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ *
+ * Payload
+ * ------------------------------------------------------------------ */
+const DATA = JSON.parse(document.getElementById("payload").textContent);
+const ITEMS = DATA.items;
+const AUTO = ITEMS.filter(i => i.kind !== "not-pdf");
+const FLAGGED = ITEMS.filter(i => i.kind === "not-pdf");
+
+/* Per-item collection state. `state` is one of:
+   pending | triggered | have | bad   ("missing" is derived: expected but not collected) */
+const state = new Map(ITEMS.map(i => [i.id, { state: "pending", file: null, bytes: null, size: 0 }]));
+let unmatched = [];      // {name, size, bytes}
+let stopped = false;
+let running = false;
+
+const $ = sel => document.querySelector(sel);
+const el = (tag, props = {}, kids = []) => {
+  const n = Object.assign(document.createElement(tag), props);
+  for (const k of [].concat(kids)) n.append(k);
+  return n;
+};
+
+/* ------------------------------------------------------------------ *
+ * CRC32 + store-only ZIP writer
+ *
+ * PDFs are already compressed, so storing rather than deflating costs
+ * almost nothing and avoids bundling a zip library into this file.
+ * ------------------------------------------------------------------ */
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(u8) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < u8.length; i++) c = CRC_TABLE[(c ^ u8[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+function dosStamp(d) {
+  return {
+    time: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1),
+    date: ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate(),
+  };
+}
+
+/* entries: [{name, data: Uint8Array}] -> Blob */
+function buildZip(entries) {
+  const enc = new TextEncoder();
+  const { time, date } = dosStamp(new Date());
+  const parts = [];
+  const central = [];
+  let offset = 0;
+
+  for (const e of entries) {
+    const name = enc.encode(e.name);
+    const size = e.data.length;
+    const crc = crc32(e.data);
+
+    const lfh = new DataView(new ArrayBuffer(30));
+    lfh.setUint32(0, 0x04034b50, true);
+    lfh.setUint16(4, 20, true);       // version needed
+    lfh.setUint16(6, 0x0800, true);   // UTF-8 filenames
+    lfh.setUint16(8, 0, true);        // method 0 = stored
+    lfh.setUint16(10, time, true);
+    lfh.setUint16(12, date, true);
+    lfh.setUint32(14, crc, true);
+    lfh.setUint32(18, size, true);
+    lfh.setUint32(22, size, true);
+    lfh.setUint16(26, name.length, true);
+    lfh.setUint16(28, 0, true);
+    parts.push(new Uint8Array(lfh.buffer), name, e.data);
+
+    const cdh = new DataView(new ArrayBuffer(46));
+    cdh.setUint32(0, 0x02014b50, true);
+    cdh.setUint16(4, 20, true);       // version made by
+    cdh.setUint16(6, 20, true);       // version needed
+    cdh.setUint16(8, 0x0800, true);
+    cdh.setUint16(10, 0, true);
+    cdh.setUint16(12, time, true);
+    cdh.setUint16(14, date, true);
+    cdh.setUint32(16, crc, true);
+    cdh.setUint32(20, size, true);
+    cdh.setUint32(24, size, true);
+    cdh.setUint16(28, name.length, true);
+    cdh.setUint16(30, 0, true);       // extra len
+    cdh.setUint16(32, 0, true);       // comment len
+    cdh.setUint16(34, 0, true);       // disk number
+    cdh.setUint16(36, 0, true);       // internal attrs
+    cdh.setUint32(38, 0, true);       // external attrs
+    cdh.setUint32(42, offset, true);
+    central.push(new Uint8Array(cdh.buffer), name);
+
+    offset += 30 + name.length + size;
+  }
+
+  const cdSize = central.reduce((n, c) => n + c.length, 0);
+  const eocd = new DataView(new ArrayBuffer(22));
+  eocd.setUint32(0, 0x06054b50, true);
+  eocd.setUint16(4, 0, true);
+  eocd.setUint16(6, 0, true);
+  eocd.setUint16(8, entries.length, true);
+  eocd.setUint16(10, entries.length, true);
+  eocd.setUint32(12, cdSize, true);
+  eocd.setUint32(16, offset, true);
+  eocd.setUint16(20, 0, true);
+
+  return new Blob([...parts, ...central, new Uint8Array(eocd.buffer)], { type: "application/zip" });
+}
+
+/* ------------------------------------------------------------------ *
+ * Filename matching
+ *
+ * Whether the browser appends .pdf to an extensionless URL is not
+ * knowable when this file is generated, so matching works through
+ * widening tiers rather than assuming one exact name.
+ * ------------------------------------------------------------------ */
+function stripExt(name) { return name.replace(/\.[A-Za-z0-9]{1,5}$/, ""); }
+function stripCopy(name) { return name.replace(/\s*\((\d+)\)\s*$/, ""); }
+function stem(name) { return stripCopy(stripExt(name)).trim(); }
+function loose(name) { return stem(name).toLowerCase().replace(/[^a-z0-9]/g, ""); }
+
+const byExact = new Map();
+const byStem = new Map();
+const byLoose = new Map();
+for (const it of ITEMS) {
+  if (!byExact.has(it.predicted)) byExact.set(it.predicted, it.id);
+  const s = stem(it.predicted);
+  if (s && !byStem.has(s)) byStem.set(s, it.id);
+  const l = loose(it.predicted);
+  if (l && !byLoose.has(l)) byLoose.set(l, it.id);
+}
+
+/** Tier order: exact -> stem -> loose. Returns an item id or null.
+ *  Never returns an id whose slot is already filled. */
+function matchFile(name) {
+  const free = id => id != null && state.get(id) && state.get(id).state !== "have";
+  const tiers = [byExact.get(name), byStem.get(stem(name)), byLoose.get(loose(name))];
+  for (const id of tiers) if (free(id)) return id;
+  // Last resort: the target name, in case the user renamed files by hand already.
+  for (const it of ITEMS) {
+    if (free(it.id) && loose(it.target) === loose(name)) return it.id;
+  }
+  return null;
+}
+
+const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46]; // %PDF
+function isPdf(bytes) {
+  if (bytes.length < 5) return false;
+  // Some producers emit a few junk bytes before the header, so scan a short window.
+  for (let off = 0; off <= Math.min(4, bytes.length - 4); off++) {
+    if (PDF_MAGIC.every((b, i) => bytes[off + i] === b)) return true;
+  }
+  return false;
+}
+
+/* ------------------------------------------------------------------ *
+ * Download triggering
+ *
+ * The navigation must be TOP-LEVEL. The browser's "Download PDFs"
+ * setting governs top-level navigations only: the built-in PDF viewer
+ * always claims a PDF loaded into a sub-frame, so an <iframe> renders
+ * the brochure invisibly and never saves it, whatever the setting says.
+ * That was measured, not assumed - an iframe load pulls in
+ * chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai (Chrome's PDF
+ * viewer) and no download is produced. Do not reintroduce an iframe here.
+ *
+ * A cross-origin navigation still needs no CORS, so this keeps the
+ * property that made the approach viable.
+ *
+ * One popup is opened from the user's own click and then reused for
+ * every file: the popup blocker is satisfied once, and the tool's tab is
+ * never navigated away from. A navigation that becomes a download leaves
+ * the popup sitting on about:blank, ready for the next one.
+ * ------------------------------------------------------------------ */
+let worker = null;
+
+function workerAlive() {
+  try { return !!worker && !worker.closed; } catch (err) { return false; }
+}
+
+/** Open the reusable download window. Must be called from a user gesture. */
+function openWorker() {
+  if (workerAlive()) return true;
+  try { worker = window.open("about:blank", "brochureWorker", "width=560,height=420"); }
+  catch (err) { worker = null; }
+  return workerAlive();
+}
+
+/** Send one URL to the worker window as a top-level navigation. */
+function driveTo(url) {
+  if (!workerAlive()) return false;
+  try { worker.location.href = url; return true; }
+  catch (err) { return false; }
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const GAP_MS = 1800;
+
+/* ------------------------------------------------------------------ *
+ * Rendering
+ * ------------------------------------------------------------------ */
+function stateOf(id) {
+  const s = state.get(id).state;
+  if (s === "pending" || s === "triggered") return s;
+  return s;
+}
+
+function tagFor(id) {
+  const s = state.get(id);
+  const labels = {
+    pending: "not started",
+    triggered: "triggered",
+    have: "collected",
+    bad: "not a PDF",
+  };
+  return el("span", { className: `tag ${s.state}`, textContent: labels[s.state] || s.state });
+}
+
+function renderPull() {
+  const tb = $("#pull-table tbody");
+  tb.textContent = "";
+  for (const it of AUTO) {
+    const retry = el("button", { className: "ghost small", textContent: "Retry" });
+    retry.onclick = () => {
+      if (!openWorker()) { $("#pull-state").textContent = "popup blocked — allow popups, then retry"; return; }
+      driveTo(it.url);
+      mark(it.id, "triggered");
+    };
+    tb.append(el("tr", {}, [
+      el("td", { className: "num", textContent: it.numbers.join("+") }),
+      el("td", {}, [
+        el("div", { textContent: it.label }),
+        el("div", { className: "muted", textContent: it.town + (it.shared ? " · shared brochure" : "") }),
+      ]),
+      el("td", { className: "file", textContent: it.predicted }),
+      el("td", { id: `pull-state-${it.id}` }, [tagFor(it.id)]),
+      el("td", {}, [retry]),
+    ]));
+  }
+}
+
+function renderAttention() {
+  if (!FLAGGED.length && !DATA.no_link.length) return;
+  $("#step-attention").style.display = "";
+  const tb = $("#attention-table tbody");
+  tb.textContent = "";
+  for (const it of FLAGGED) {
+    tb.append(el("tr", {}, [
+      el("td", { className: "num", textContent: it.numbers.join("+") }),
+      el("td", {}, [
+        el("div", { textContent: it.label }),
+        el("div", { className: "muted", textContent: it.town }),
+      ]),
+      el("td", {}, [el("a", { href: it.url, target: "_blank", rel: "noopener noreferrer", textContent: "open link", className: "" })]),
+      el("td", { className: "muted", textContent: "not a direct PDF link" }),
+    ]));
+  }
+  for (const p of DATA.no_link) {
+    tb.append(el("tr", {}, [
+      el("td", { className: "num", textContent: p.number }),
+      el("td", { textContent: p.label }),
+      el("td", { className: "muted", textContent: "—" }),
+      el("td", { className: "muted", textContent: "no brochure link in the spreadsheet" }),
+    ]));
+  }
+}
+
+function mark(id, s) {
+  const cur = state.get(id);
+  if (cur.state === "have" && s === "triggered") return;   // don't downgrade a collected file
+  cur.state = s;
+  const cell = document.getElementById(`pull-state-${id}`);
+  if (cell) { cell.textContent = ""; cell.append(tagFor(id)); }
+  refreshCounts();
+}
+
+function refreshCounts() {
+  let have = 0, bad = 0;
+  for (const it of ITEMS) {
+    const s = state.get(it.id).state;
+    if (s === "have") have++;
+    if (s === "bad") bad++;
+  }
+  const missing = AUTO.filter(i => state.get(i.id).state !== "have").length;
+  $("#c-have").textContent = have;
+  $("#c-missing").textContent = missing;
+  $("#c-bad").textContent = bad;
+  $("#c-unmatched").textContent = unmatched.length;
+  $("#btn-zip").disabled = have === 0;
+  $("#unmatched-wrap").style.display = unmatched.length ? "" : "none";
+  renderUnmatched();
+}
+
+function renderUnmatched() {
+  const tb = $("#unmatched-table tbody");
+  tb.textContent = "";
+  unmatched.forEach((u, idx) => {
+    const sel = el("select");
+    sel.append(el("option", { value: "", textContent: "— choose —" }));
+    for (const it of ITEMS) {
+      if (state.get(it.id).state === "have") continue;
+      sel.append(el("option", { value: String(it.id), textContent: `${it.numbers.join("+")} · ${it.label}` }));
+    }
+    sel.onchange = () => {
+      const id = Number(sel.value);
+      if (!id) return;
+      const rec = state.get(id);
+      rec.file = u.name; rec.bytes = u.bytes; rec.size = u.size;
+      rec.state = isPdf(u.bytes) ? "have" : "bad";
+      unmatched.splice(idx, 1);
+      refreshCounts();
+    };
+    tb.append(el("tr", {}, [
+      el("td", { className: "file", textContent: u.name }),
+      el("td", { className: "num", textContent: fmtSize(u.size) }),
+      el("td", {}, [sel]),
+    ]));
+  });
+}
+
+function fmtSize(n) {
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+  if (n >= 1024) return Math.round(n / 1024) + " KB";
+  return n + " B";
+}
+
+/* ------------------------------------------------------------------ *
+ * Step 1: setup + test
+ * ------------------------------------------------------------------ */
+$("#btn-test").onclick = () => {
+  if (!AUTO.length) { $("#test-state").textContent = "nothing to download"; return; }
+  if (!openWorker()) {
+    $("#test-state").textContent =
+      "your browser blocked the popup — allow popups for this page, then test again";
+    return;
+  }
+  driveTo(AUTO[0].url);
+  mark(AUTO[0].id, "triggered");
+  $("#test-state").textContent = `sent “${AUTO[0].predicted}” to the download window — now read it`;
+  $("#btn-confirm").disabled = false;
+};
+
+$("#btn-confirm").onclick = () => {
+  $("#step-setup").classList.add("done");
+  $("#step-pull").classList.remove("locked");
+  $("#step-collect").classList.remove("locked");
+  $("#btn-start").disabled = false;
+  $("#btn-start").focus();
+};
+
+/* ------------------------------------------------------------------ *
+ * Step 2: sequential pull
+ * ------------------------------------------------------------------ */
+$("#btn-start").onclick = async () => {
+  if (running) return;
+
+  // Opening the window here keeps it inside the click's user activation.
+  if (!openWorker()) {
+    $("#pull-state").textContent =
+      "popup blocked — allow popups for this page, then press Start again";
+    return;
+  }
+
+  running = true; stopped = false;
+  $("#btn-start").disabled = true;
+  $("#btn-stop").disabled = false;
+
+  const todo = AUTO.filter(i => state.get(i.id).state !== "have");
+  let done = 0;
+  let closed = false;
+
+  for (const it of todo) {
+    if (stopped) break;
+    if (!workerAlive()) { closed = true; break; }
+    $("#pull-state").textContent = `${done + 1} of ${todo.length} — ${it.label}`;
+    driveTo(it.url);
+    mark(it.id, "triggered");
+    done++;
+    $("#pull-bar").style.width = `${(done / todo.length) * 100}%`;
+    if (done < todo.length) await sleep(GAP_MS);
+  }
+
+  $("#pull-state").textContent =
+    closed ? `paused after ${done} of ${todo.length} — the download window was closed. Press Start again to carry on.`
+    : stopped ? `stopped after ${done} of ${todo.length}`
+    : `all ${done} sent — now do step 3`;
+
+  running = false;
+  $("#btn-start").disabled = false;
+  $("#btn-stop").disabled = true;
+  if (!stopped && !closed) $("#step-pull").classList.add("done");
+};
+
+$("#btn-stop").onclick = () => { stopped = true; };
+
+/* ------------------------------------------------------------------ *
+ * Step 3: collect
+ * ------------------------------------------------------------------ */
+async function ingest(files) {
+  for (const f of files) {
+    let bytes;
+    try {
+      bytes = new Uint8Array(await f.arrayBuffer());
+    } catch (err) {
+      unmatched.push({ name: f.name, size: f.size, bytes: new Uint8Array() });
+      continue;
+    }
+    const id = matchFile(f.name);
+    if (id == null) {
+      unmatched.push({ name: f.name, size: bytes.length, bytes });
+      continue;
+    }
+    const rec = state.get(id);
+    rec.file = f.name;
+    rec.bytes = bytes;
+    rec.size = bytes.length;
+    rec.state = isPdf(bytes) ? "have" : "bad";
+    const cell = document.getElementById(`pull-state-${id}`);
+    if (cell) { cell.textContent = ""; cell.append(tagFor(id)); }
+  }
+  refreshCounts();
+  $("#zip-state").textContent = "";
+}
+
+const drop = $("#drop");
+["dragenter", "dragover"].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+
+drop.addEventListener("drop", async e => {
+  const items = e.dataTransfer.items;
+  const files = [];
+  if (items && items.length && items[0].webkitGetAsEntry) {
+    const entries = [];
+    for (const it of items) {
+      const entry = it.webkitGetAsEntry();
+      if (entry) entries.push(entry);
+    }
+    for (const entry of entries) await walk(entry, files);
+  } else {
+    files.push(...e.dataTransfer.files);
+  }
+  await ingest(files);
+});
+
+/** Collect files from a dropped entry, descending one directory deep. */
+function walk(entry, out, depth = 0) {
+  return new Promise(resolve => {
+    if (entry.isFile) {
+      entry.file(f => { out.push(f); resolve(); }, () => resolve());
+    } else if (entry.isDirectory && depth < 3) {
+      const reader = entry.createReader();
+      const all = [];
+      const readBatch = () => reader.readEntries(async batch => {
+        if (!batch.length) {
+          for (const e of all) await walk(e, out, depth + 1);
+          resolve();
+          return;
+        }
+        all.push(...batch);
+        readBatch();
+      }, () => resolve());
+      readBatch();
+    } else resolve();
+  });
+}
+
+$("#btn-pick").onclick = () => $("#picker").click();
+$("#picker").onchange = async e => { await ingest(e.target.files); e.target.value = ""; };
+
+$("#btn-reset").onclick = () => {
+  for (const it of ITEMS) {
+    const rec = state.get(it.id);
+    if (rec.state === "have" || rec.state === "bad") rec.state = "pending";
+    rec.file = null; rec.bytes = null; rec.size = 0;
+  }
+  unmatched = [];
+  renderPull();
+  refreshCounts();
+  $("#zip-state").textContent = "collected files cleared";
+};
+
+/* ------------------------------------------------------------------ *
+ * Zip
+ * ------------------------------------------------------------------ */
+function manifest() {
+  const out = {
+    client: DATA.client,
+    source_spreadsheet: DATA.source,
+    sheet: DATA.sheet,
+    built: new Date().toISOString(),
+    properties_in_longlist: DATA.counts.properties,
+    files: [],
+    unresolved: [],
+  };
+  for (const it of ITEMS) {
+    const rec = state.get(it.id);
+    if (rec.state === "have") {
+      out.files.push({
+        file: it.target,
+        properties: it.properties,
+        source_url: it.url,
+        downloaded_as: rec.file,
+        bytes: rec.size,
+        shared_by_multiple_properties: it.shared,
+      });
+    } else {
+      out.unresolved.push({
+        properties: it.properties,
+        source_url: it.url,
+        reason: it.kind === "not-pdf" ? "link is not a direct PDF"
+              : rec.state === "bad" ? "downloaded file was not a PDF"
+              : "not collected",
+      });
+    }
+  }
+  for (const p of DATA.no_link) {
+    out.unresolved.push({ properties: [p], source_url: null, reason: "no brochure link in the spreadsheet" });
+  }
+  return out;
+}
+
+function gapsMarkdown(m) {
+  const lines = [
+    `# Gaps — ${DATA.client} brochures`,
+    "",
+    `Source: \`${DATA.source}\` (sheet \`${DATA.sheet}\`)`,
+    `Built: ${m.built}`,
+    "",
+    `Collected **${m.files.length}** of **${DATA.counts.downloads}** brochures covering ` +
+      `${DATA.counts.properties} properties.`,
+    "",
+  ];
+  if (!m.unresolved.length) {
+    lines.push("No gaps: every brochure link resolved to a PDF.", "");
+  } else {
+    lines.push(`## Unresolved (${m.unresolved.length})`, "");
+    lines.push("| No. | Property | Reason | Link |", "|---|---|---|---|");
+    for (const u of m.unresolved) {
+      const nums = u.properties.map(p => p.number).join("+");
+      const name = u.properties.map(p => p.address || p.label || "").join(" / ");
+      lines.push(`| ${nums} | ${name} | ${u.reason} | ${u.source_url ? u.source_url : "—"} |`);
+    }
+    lines.push("");
+  }
+  if (DATA.warnings.length) {
+    lines.push("## Notes from the spreadsheet", "");
+    for (const w of DATA.warnings) lines.push(`- ${w}`);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+function readme(m) {
+  return [
+    `# ${DATA.client} — brochures`,
+    "",
+    `${m.files.length} brochure PDFs extracted from \`${DATA.source}\`, named ` +
+      "`<No.>_<Property>_<Town>.pdf` so they sort in longlist order.",
+    "",
+    "## Handing these to cbre-property-longlist",
+    "",
+    "1. Unzip into the project's inputs folder.",
+    `2. Add the original spreadsheet (\`${DATA.source}\`) to the same folder — that skill wants the`,
+    "   availability sheet alongside the brochures.",
+    "3. Run the skill against that folder.",
+    "",
+    "`_manifest.json` maps every file back to its property and source URL, which is what makes the",
+    "Source Ledger traceable. `_gaps.md` lists whatever did not resolve.",
+    "",
+    "A file named `NN+NN_...` is one brochure that covers two properties — the spreadsheet pointed",
+    "both rows at the same URL.",
+    "",
+  ].join("\n");
+}
+
+$("#btn-zip").onclick = async () => {
+  const btn = $("#btn-zip");
+  btn.disabled = true;
+  $("#zip-state").textContent = "building…";
+  await sleep(30);   // let the label paint before the CRC pass blocks the thread
+
+  try {
+    const entries = [];
+    for (const it of ITEMS) {
+      const rec = state.get(it.id);
+      if (rec.state === "have" && rec.bytes) entries.push({ name: it.target, data: rec.bytes });
+    }
+    if (!entries.length) { $("#zip-state").textContent = "nothing collected yet"; btn.disabled = false; return; }
+
+    const total = entries.reduce((n, e) => n + e.data.length, 0);
+    if (total > 3.5 * 1024 * 1024 * 1024) {
+      $("#zip-state").textContent = "too large for a single zip (over 3.5 GB) — zip in two batches";
+      btn.disabled = false;
+      return;
+    }
+
+    const enc = new TextEncoder();
+    const m = manifest();
+    entries.push({ name: "_manifest.json", data: enc.encode(JSON.stringify(m, null, 2)) });
+    entries.push({ name: "_gaps.md", data: enc.encode(gapsMarkdown(m)) });
+    entries.push({ name: "_README.md", data: enc.encode(readme(m)) });
+
+    const blob = buildZip(entries);
+    const slug = (DATA.client || "brochures").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const url = URL.createObjectURL(blob);
+    const a = el("a", { href: url, download: `brochures_${slug}.zip` });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+
+    const missing = m.unresolved.length;
+    $("#zip-state").textContent =
+      `${m.files.length} PDFs, ${fmtSize(blob.size)}` + (missing ? ` — ${missing} still unresolved` : " — complete");
+    $("#step-collect").classList.add("done");
+  } catch (err) {
+    $("#zip-state").textContent = "zip failed: " + (err && err.message ? err.message : String(err));
+  }
+  btn.disabled = false;
+};
+
+/* ------------------------------------------------------------------ *
+ * Boot
+ * ------------------------------------------------------------------ */
+(function boot() {
+  const c = DATA.counts;
+  $("#hdrsub").textContent =
+    `${c.properties} properties · ${c.downloads} brochure files · ${c.automatable} downloadable automatically` +
+    (c.flagged ? ` · ${c.flagged} need attention` : "");
+
+  $("#pull-intro").textContent =
+    `${AUTO.length} brochures will download one after another, about ${GAP_MS / 1000}s apart, ` +
+    `through a single small window this page opens. Your browser will ask once whether to allow ` +
+    `multiple downloads — say yes.`;
+
+  if (DATA.warnings.length) {
+    const w = el("div", { className: "note warn" });
+    w.append(el("b", { textContent: "From the spreadsheet: " }));
+    const ul = el("ul", { style: "margin:6px 0 0; padding-left:20px" });
+    for (const line of DATA.warnings) ul.append(el("li", { textContent: line }));
+    w.append(ul);
+    $("#warnings").append(w);
+  }
+
+  renderPull();
+  renderAttention();
+  refreshCounts();
+
+  // Expose internals so the build's browser tests can exercise them headlessly.
+  window.__tool = {
+    buildZip, crc32, matchFile, isPdf, stem, loose, state, ITEMS, ingest, manifest,
+    openWorker, driveTo, workerAlive,
+  };
+})();
+</script>
+</body>
+</html>

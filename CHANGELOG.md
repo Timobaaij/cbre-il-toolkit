@@ -7,6 +7,27 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.3.0] — 2026-08-17
+### Added
+- **A seventh skill: `cbre-brochure-downloader`.** Turns the brochure links in a property
+  longlist spreadsheet into one zip of correctly named, validated PDFs — the input
+  `cbre-property-longlist` expects. It reads the longlist's *hidden* Excel hyperlinks (parsing
+  the workbook straight out of its zip container, so no third-party packages are needed), then
+  generates a self-contained HTML tool the user opens in Chrome or Edge.
+
+  The browser is doing the downloading for a deliberate reason: the Cowork sandbox has no
+  outbound network, and two measured browser facts rule out the obvious designs — most brochure
+  hosts send no `Access-Control-Allow-Origin`, so a page cannot `fetch()` these PDFs, and almost
+  none send `Content-Disposition: attachment`, so navigation opens the viewer instead of saving.
+  The bytes therefore travel internet → top-level browser navigation → Downloads → dragged back
+  onto the page → renamed, validated, zipped. The navigation must be top-level (a hidden iframe
+  renders invisibly and saves nothing), and there is a test suite guarding that from regressing.
+
+  Each PDF is renamed after its property, every file is checked to be a real PDF, shared links
+  are deduplicated, and anything that is not a direct PDF is flagged in a `gaps.md` rather than
+  guessed at. Ships with 100 tests (89 pass, 11 skipped) and the shared update notifier, and is
+  registered in the plugin and marketplace manifests and the README.
+
 ## [1.2.1] — 2026-08-17
 ### Fixed
 - **Property longlist — what ships with the skill is now stated correctly.** The flywheel
@@ -458,6 +479,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.3.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.3.0
 [1.2.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.2.1
 [1.2.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.2.0
 [1.1.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.1.0

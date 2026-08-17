@@ -1,8 +1,8 @@
 # CBRE I&L Toolkit
 
 CBRE Industrial & Logistics skills for [Claude](https://www.claude.com/) — branded
-decks, account briefings, outreach angles, property longlists, warehouse-network maps, and on-brand
-writing. Packaged as a Claude plugin so the whole team can install it in a couple of
+decks, account briefings, outreach angles, property longlists, brochure downloads, warehouse-network
+maps, and on-brand writing. Packaged as a Claude plugin so the whole team can install it in a couple of
 clicks.
 
 ## What's inside
@@ -13,6 +13,7 @@ clicks.
 | **Account briefings** | Industrial & Logistics account-briefing decks built from your research. |
 | **Outreach angles** | A ranked sheet of evidence-backed reasons to contact a company now — each with a trigger, a way in, and a ready-to-send email hook — as a shareable CBRE-branded HTML file. |
 | **Property longlist** | An interactive longlist dashboard from a folder of brochures, emails, and spreadsheets. |
+| **Brochure downloader** | Every brochure PDF linked from a longlist spreadsheet, downloaded through your own browser and packaged as one clean zip — named after each property and validated — ready for the property longlist. |
 | **Warehouse network mapper** | An auditable Excel of a company's warehouse and distribution network across Europe (or one country), with every facility geocoded from a real address. |
 | **CBRE voice** | Any copy rewritten or reviewed in the CBRE tone of voice. |
 
