@@ -11,6 +11,7 @@ to a page raster or the placeholder).
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import math
@@ -1518,7 +1519,17 @@ def _pptx_slides(path: Path) -> list:
 
 def slide_pictures(pptx_path: Path, slide_index: int) -> list[dict]:
     """All decodable raster pictures on one slide, largest first (undecodable
-    WMF/EMF vectors are skipped, never abort the harvest)."""
+    WMF/EMF vectors are skipped, never abort the harvest).
+
+    A picture is ANY shape that carries an image blob - not only shape_type PICTURE.
+    Filtering on PICTURE alone loses every photo dropped into a picture PLACEHOLDER
+    (shape_type 14, which is how a slide built from a corporate template holds its
+    imagery) and every picture nested inside a GROUP. That is not hypothetical: a
+    CBRE options deck put the aerial in a placeholder and the site plan as a loose
+    picture on each slide, so the harvest returned the PLAN for every option, and
+    the two slides that placed BOTH images in placeholders shipped a blank
+    placeholder card. `shape.image` reads a placeholder-held picture perfectly, so
+    the fix is to ask for the blob rather than to trust the shape type."""
     key = (str(Path(pptx_path).resolve()), slide_index)
     hit = _SLIDEPIC_CACHE.get(key)
     if hit is not None:
@@ -1529,16 +1540,33 @@ def slide_pictures(pptx_path: Path, slide_index: int) -> list[dict]:
         if not (0 <= slide_index < len(slides)):
             return []
         out = []
-        for shape in slides[slide_index].shapes:
-            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                img = None
+        seen: set = set()          # dedupe by image bytes: one picture, one candidate
+
+        def _collect(shapes, depth=0):
+            for shape in shapes:
+                if shape.shape_type == MSO_SHAPE_TYPE.GROUP and depth < 4:
+                    try:
+                        _collect(shape.shapes, depth + 1)
+                    except Exception:
+                        pass
+                    continue
                 try:
-                    img = _open(shape.image.blob)
+                    blob = shape.image.blob      # works for PICTURE *and* picture PLACEHOLDER
+                except Exception:
+                    continue                     # no image on this shape (table, text box, ...)
+                sig = hashlib.sha1(blob).hexdigest()
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                try:
+                    img = _open(blob)
                 except Exception:
                     img = None
                 if img is not None:
                     w, h = img.size
                     out.append({"img": img, "w": w, "h": h, "area": w * h})
+
+        _collect(slides[slide_index].shapes)
         out.sort(key=lambda d: -d["area"])
         _SLIDEPIC_CACHE[key] = out
         return out

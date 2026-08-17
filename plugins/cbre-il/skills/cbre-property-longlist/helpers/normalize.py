@@ -148,6 +148,16 @@ RENT_MIN, RENT_MAX = 1.5, 500.0
 # next to RENT_MIN/MAX for one-line calibration tuning.
 AREA_SQM_MIN, AREA_SQM_MAX = 300, 600_000
 AREA_SQFT_MIN, AREA_SQFT_MAX = 3_000, 6_500_000
+# PLOT (site) areas get their OWN ceiling (T1): a logistics PARK site of 60-180 ha
+# (600,000-1,800,000 sq m) is routine - Euro Valley prints a 180 ha site, VGP Chorvatsky Grob
+# a 950,000 sq m one - and the BUILDING ceiling above struck two correct printed plot areas
+# (630,000 and 772,000 sq m) to tbd on a live run, each with a ledger row calling the source
+# implausible. 10,000,000 sq m (1,000 ha) still catches the garble/unit-error class the band
+# exists for; the sq ft twin is rounded ABOVE 10M x 10.764 so a converted value never
+# straddles the boundary. The MIN stays the building MIN (a tiny plot is the same garble
+# signal either way).
+PLOT_SQM_MAX = 10_000_000
+PLOT_SQFT_MAX = 110_000_000
 # the unit-magnitude cross-check thresholds, set ABOVE/BELOW realistic warehouse mass
 # so a normal sq m sheet (5k-50k) and a normal sq ft sheet (10k-500k) never trip:
 AREA_SQM_SQFT_SUSPECT = 60_000   # a 'sq m' value above this is almost certainly sq ft
@@ -232,15 +242,19 @@ def rent_unit_band(unit: str | None) -> tuple[float, float]:
     return rent_band_for(str(unit or "").split("/")[1] if unit and "/" in str(unit) else None)
 
 
-def area_band_for(unit: str | None) -> tuple[float, float]:
+def area_band_for(unit: str | None, field: str | None = None) -> tuple[float, float]:
     """Plausibility band for a stored AREA magnitude in the given unit (the twin of
     rent_band_for). sq ft (and acres, which are stored as sq ft) -> (3,000, 6,500,000);
     sq m (and ha, stored as sq m) and any unknown/None unit -> (300, 600,000). A coarse,
     deliberately WIDE backstop: it catches only a gross unit error or a parse-garble, never
-    a legitimate big logistics campus or a small urban unit. NEVER auto-converts."""
+    a legitimate big logistics campus or a small urban unit. NEVER auto-converts.
+
+    `field` widens the CEILING for `plotArea` (T1): a SITE is not a building, and park
+    sites of 60-180 ha are routine, so plots use PLOT_SQM_MAX / PLOT_SQFT_MAX instead of
+    the building ceiling that struck two correct printed plot areas on a live run."""
     if unit and "ft" in str(unit):
-        return AREA_SQFT_MIN, AREA_SQFT_MAX
-    return AREA_SQM_MIN, AREA_SQM_MAX
+        return AREA_SQFT_MIN, (PLOT_SQFT_MAX if field == "plotArea" else AREA_SQFT_MAX)
+    return AREA_SQM_MIN, (PLOT_SQM_MAX if field == "plotArea" else AREA_SQM_MAX)
 
 
 def area_magnitude_mismatch(value, unit: str | None) -> str | None:
@@ -388,3 +402,120 @@ def country_iso(v) -> str:
     key = "".join(c for c in unicodedata.normalize("NFKD", s)
                   if not unicodedata.combining(c)).lower().strip(" .")
     return _COUNTRY_ISO.get(key, s)
+
+
+# ---------------------------------------------------------------------------
+# motorway: a card-sized locator, not a paragraph
+# ---------------------------------------------------------------------------
+MOTORWAY_MAX = 40
+
+_MW_ROAD = r"(?:M\d+(?:/M\d+)?|A\d+(?:\(M\))?)"
+_MW_JCT = r"(?:J|Jct|Junction)\s*(\d+[A-Za-z]?(?:\s*/\s*\d*[A-Za-z]?)?)"
+# "Junction 18/18A M5" | "junction 17 of the M4" | "J19 M5" | "M4, J17" | "M4 Junction 15"
+_MW_PAIRS = (
+    re.compile(_MW_JCT + r"\s*(?:of\s+the\s+)?(" + _MW_ROAD + r")", re.I),
+    re.compile(r"(" + _MW_ROAD + r")\s*[, ]\s*" + _MW_JCT, re.I),
+)
+_MW_DIST = re.compile(r"(\d+(?:\.\d+)?)\s*(miles?|mi|km)\b", re.I)
+_MW_ADJACENT = re.compile(r"\badjacent\b", re.I)
+
+
+def _nearest_match(pattern, text, anchor):
+    """Return the `pattern` match in `text` whose span sits closest to `anchor` (a
+    (start, end) char span), preferring the leftmost on a tie. `None` if `pattern` has
+    no match at all. `anchor=None` falls back to the first match (today's behaviour),
+    used when no road/junction span was found to anchor against.
+
+    Why this exists: a clause naming more than one road ("...11 miles to the A14, and
+    28 miles from Junction 19 of the M1") has more than one distance too, and the FIRST
+    one in the clause is not necessarily the one printed next to the road that was
+    actually matched. Anchoring to the matched span picks the distance the source
+    itself associates with that road, not merely whichever comes first."""
+    if anchor is None:
+        return pattern.search(text)
+    a_start, a_end = anchor
+    best, best_gap = None, None
+    for m in pattern.finditer(text):
+        if m.end() <= a_start:
+            gap = a_start - m.end()
+        elif m.start() >= a_end:
+            gap = m.start() - a_end
+        else:
+            gap = 0
+        if best_gap is None or gap < best_gap:
+            best_gap, best = gap, m
+    return best
+
+
+def short_motorway(text, limit: int = MOTORWAY_MAX):
+    """Condense a prose motorway description into a locator that fits a card.
+
+    Returns (value, shortened). A value already within `limit` is returned untouched, so
+    the common "M4, J17" case is a no-op and nothing is rewritten for the sake of it.
+
+    Longer values are prose an agent wrote for a brochure, e.g. "Junction 18/18A M5 2 miles
+    to the south; Junction 1 M49 4.5 miles to the north; M4/M5 interchange 10 miles to the
+    north". Those read as a paragraph on a card and push the meta line onto three rows. The
+    ROAD + JUNCTION + DISTANCE triples are what a broker actually scans, so they are pulled
+    out in the order the source states them, reformatted as "M5 J18/18A 2 miles", and joined
+    with "; " while they fit. Nothing is invented: every road, junction and distance in the
+    output appears verbatim in the input, and if no pair can be parsed the text is cut at a
+    word boundary instead, which is honest rather than clever.
+
+    Distance selection is PROXIMITY-AWARE: when a clause mentions more than one distance
+    figure, the one nearest the matched road/junction wins, not merely the first one in the
+    clause - see `_nearest_match`. A clause with only one distance is unaffected (nearest and
+    first are the same match), so every previously-pinned case is unchanged.
+
+    The full sentence is never lost - it stays in the Source Ledger against this field.
+    """
+    if not isinstance(text, str):
+        return text, False
+    s = " ".join(text.split())
+    if len(s) <= limit:
+        return s, False
+
+    seen, items = set(), []
+    for clause in re.split(r"\s*[;.]\s+", s):
+        if not clause.strip():
+            continue
+        road = jct = anchor = None
+        for rx in _MW_PAIRS:
+            m = rx.search(clause)
+            if not m:
+                continue
+            g = m.groups()
+            road, jct = (g[1], g[0]) if rx is _MW_PAIRS[0] else (g[0], g[1])
+            anchor = m.span()
+            break
+        if road is None:
+            m = re.search(_MW_ROAD, clause, re.I)
+            road = m.group(0) if m else None
+            anchor = m.span() if m else None
+        if not road:
+            continue
+        part = road.upper()
+        if jct:
+            part += " J" + re.sub(r"\s*", "", jct).upper()
+        md = _nearest_match(_MW_DIST, clause, anchor)
+        if md:
+            part += f" {md.group(1)} {md.group(2).lower()}"
+        elif _MW_ADJACENT.search(clause):
+            part += " adjacent"
+        key = part.split()[0] + (jct or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(part)
+
+    if items:
+        out = items[0]
+        for nxt in items[1:]:
+            if len(out) + 2 + len(nxt) > limit:
+                break
+            out += "; " + nxt
+        if len(out) <= limit:
+            return out, True
+
+    cut = s[:limit].rsplit(" ", 1)[0].rstrip(" ,;:-")
+    return (cut or s[:limit]).strip(), True

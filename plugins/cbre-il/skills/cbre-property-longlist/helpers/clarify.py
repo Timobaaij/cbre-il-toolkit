@@ -74,7 +74,7 @@ def load_state(work) -> dict:
     worst case is asking once more - never a wrong answer."""
     st = {}
     try:
-        st = json.loads(_state_path(work).read_text(encoding="utf-8"))
+        st = json.loads(_state_path(work).read_text(encoding="utf-8-sig"))
     except Exception:
         st = {}
     if not isinstance(st, dict):
@@ -98,7 +98,7 @@ def save_state(work, st: dict) -> Path:
     p = _state_path(work)
     body = json.dumps(st, ensure_ascii=False, indent=2)
     try:
-        if p.exists() and p.read_text(encoding="utf-8") == body:
+        if p.exists() and p.read_text(encoding="utf-8-sig") == body:
             return p
     except OSError:
         pass
@@ -117,7 +117,7 @@ def ingest_answers(work) -> dict:
     p = Path(work) / ANSWERS_FILE
     if p.exists():
         try:
-            raw = json.loads(p.read_text(encoding="utf-8"))
+            raw = json.loads(p.read_text(encoding="utf-8-sig"))
         except Exception:
             raw = None
     flat: dict = {}

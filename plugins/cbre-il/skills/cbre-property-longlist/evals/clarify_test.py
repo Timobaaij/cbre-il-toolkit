@@ -169,9 +169,9 @@ def main() -> int:
     Q.ingest_answers(d9)
     ck((d9 / Q.STATE_FILE).stat().st_mtime_ns == _m,
        "an unchanged clarify_state.json keeps its mtime (no resume churn)")
-    ck("read_text(encoding=\"utf-8\") == body" in (HELPERS / "clarify.py").read_text(
+    ck("read_text(encoding=\"utf-8-sig\") == body" in (HELPERS / "clarify.py").read_text(
         encoding="utf-8", errors="replace"),
-       "save_state is write-if-changed")
+       "save_state is write-if-changed")  # reads are BOM-tolerant since T1 (utf-8-sig)
 
     # THE ANSWERS MUST TAKE EFFECT. Ingesting them and never applying them is the exact
     # "correct function, dead wiring" failure this project has shipped three times.

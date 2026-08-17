@@ -69,10 +69,10 @@ const fails = [];
 const must = (ok, label) => { if (!ok) fails.push(label); };
 
 // Bug 1 - a field name that exists NOWHERE in the schema/template renders with an auto-label
-must(rich.includes('Soil Contamination Risk'), 'invented field auto-labelled ("Soil Contamination Risk")');
-must(rich.includes('Low (Phase I clear)'), 'invented field VALUE rendered');
-must(rich.includes('Commune') && rich.includes('Zoning Type'), 'other unknown scalars rendered (Commune / Zoning Type)');
-must(rich.includes('Additional Details'), 'catch-all section header present on the rich property');
+must(!rich.includes('Soil Contamination Risk'), 'an uncurated field renders nowhere');
+must(!rich.includes('Low (Phase I clear)'), 'an uncurated field VALUE renders nowhere');
+must(!rich.includes('Commune') && !rich.includes('Zoning Type'), 'other uncurated scalars render nowhere');
+must(!rich.includes('Additional Details'), 'no catch-all section on the rich property');
 // v22 Phase 1: nested objects are NEVER flattened (supersedes the v21 "flatten one level"
 // behaviour asserted here through v21) - a nested scalar like distances.publicTransport
 // must NOT surface via the catch-all any more.
@@ -81,11 +81,11 @@ must(!rich.includes('Public Transport') && !rich.includes('Bus 612, 400 m'),
 // v22 Phase 1: objects are never flattened; locator strings never shown; real scalars still show.
 must(!rich.includes('page 1 (text interpretation)') && !rich.includes('page 2 (verbatim)'),
   'no provenance-locator string shown on the card (prov object not flattened, someRef skipped)');
-must(rich.includes('Commune'), 'genuine new scalar attribute (Commune) still auto-shows');
+must(!rich.includes('Commune'), 'a scalar with no curated row renders nowhere, however real its value');
 
 // Bug 2 - the thin property shows NO row and NO placeholder for fields it lacks
 must(!thin.includes('Soil Contamination Risk'), 'thin property has NO row for the invented field');
-must(!thin.includes('Additional Details'), 'thin property has NO Additional Details section');
+must(!thin.includes('Additional Details'), 'thin property has no Additional Details section either');
 must(!rich.includes('>TBC<') && !thin.includes('>TBC<'), 'no "TBC" placeholder text anywhere');
 must(!rich.toLowerCase().includes('val_tbc') && !thin.toLowerCase().includes('val_tbc'), 'no val_tbc key leaked');
 

@@ -59,11 +59,9 @@ EN = {
     "kpi_properties_label": "Properties",
     "kpi_countries_label": "Countries",
     "kpi_regions_label": "Regions",
-    "kpi_developers_label": "Developers",
     "kpi_wh_area_label": "Warehouse area",
     "kpi_rent_label": "Headline rent",
     "kpi_properties_sub": "Longlist",
-    "kpi_developers_sub": "Major landlords",
     # KPI sub format strings (consumed by compute_kpis via .format(); the regions
     # sub is a plain phrase). The {area}/{unit} placeholders are single-brace.
     "kpi_wh_area_sub_fmt": "{area} per building",
@@ -80,7 +78,7 @@ EN = {
     # so a translator's stray brace cannot crash the build; a pack that loses {count}
     # self-heals to the EN string in build_dashboard._hero_copy.
     "hero_eyebrow": "Property Shortlist",
-    "hero_title_html": "logistics <em>options</em> for your next facility.",
+    "hero_title_html": "Logistics <em>options</em> for your next facility.",
     "hero_lede_fmt": ("{count} logistics development opportunities. Switch between the map "
                       "and grid, filter by country, city, developer or scale, and compare "
                       "properties side-by-side with drive-time estimates to the main ports, "
@@ -216,6 +214,7 @@ EN = {
     "img_toggle_plan": "Site Plan",
     "modal_early_access_prefix": "Early access",
     "modal_open_maps": "Open in Google Maps ↗",
+    "modal_open_brochure": "View brochure ↗",
     "modal_approx_note": ("Coordinates are approximate — exact site location to be "
                           "confirmed by developer."),
 
@@ -225,8 +224,6 @@ EN = {
     "sec_commercial": "Commercial Terms (Headline)",
     "sec_location": "Location &amp; Reach",
     "sec_workforce": "Workforce &amp; Region",
-    "sec_additional": "Additional Details",
-
     # --- Modal + compare row labels (shared row_* where identical) ----------
     "row_total_gla": "Total GLA",
     "row_warehouse_area": "Warehouse area",
@@ -432,7 +429,7 @@ def _load_bundled() -> dict:
             if code in ("en", "") or code not in SUPPORTED:
                 continue  # never override the authoritative EN; only known languages
             try:
-                data = json.loads(p.read_text(encoding="utf-8"))
+                data = json.loads(p.read_text(encoding="utf-8-sig"))
             except Exception:
                 continue  # graceful: this language falls back to EN per key
             if isinstance(data, dict) and data:
@@ -530,7 +527,7 @@ def load_fallback_cache(path) -> dict | None:
     error (missing/corrupt/not-a-dict/empty) so the caller degrades gracefully to EN
     rather than crashing the build."""
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     if not isinstance(data, dict) or not data:

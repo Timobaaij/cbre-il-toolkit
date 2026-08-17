@@ -112,7 +112,7 @@ def _load_cache(p: Path) -> dict:
     hygiene (non-string translations) is handled by the callers (collect_requests filters, bake
     checks isinstance)."""
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        data = json.loads(p.read_text(encoding="utf-8-sig"))
     except Exception:
         return {}
     return _unwrap_cache(data)
@@ -234,7 +234,7 @@ def _rows_path(tdir, target_code: str) -> Path:
 
 def _load_rows(tdir, target_code: str) -> list[dict]:
     try:
-        d = json.loads(_rows_path(tdir, target_code).read_text(encoding="utf-8"))
+        d = json.loads(_rows_path(tdir, target_code).read_text(encoding="utf-8-sig"))
     except Exception:
         return []
     return [r for r in d if isinstance(r, dict)] if isinstance(d, list) else []

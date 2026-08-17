@@ -1180,7 +1180,6 @@ footer .container{ color:var(--light-grey); }
       <div class="kpi"><div class="kpi-label" data-i18n="kpi_properties_label">Properties</div><div class="kpi-value">{{kpi_properties}}</div><div class="kpi-sub" data-i18n="kpi_properties_sub">Longlist</div></div>
       <div class="kpi"><div class="kpi-label" data-i18n="kpi_countries_label">Countries</div><div class="kpi-value">{{kpi_countries}}</div><div class="kpi-sub">{{kpi_countries_sub}}</div></div>
       <div class="kpi"><div class="kpi-label" data-i18n="kpi_regions_label">Regions</div><div class="kpi-value">{{kpi_regions}}</div><div class="kpi-sub">{{kpi_regions_sub}}</div></div>
-      <div class="kpi"><div class="kpi-label" data-i18n="kpi_developers_label">Developers</div><div class="kpi-value">{{kpi_developers}}</div><div class="kpi-sub" data-i18n="kpi_developers_sub">Major landlords</div></div>
       <div class="kpi"><div class="kpi-label" data-i18n="kpi_wh_area_label">Warehouse area</div><div class="kpi-value">{{kpi_wh_area}}</div><div class="kpi-sub">{{kpi_wh_area_sub}}</div></div>
       <div class="kpi"><div class="kpi-label" data-i18n="kpi_rent_label">Headline rent</div><div class="kpi-value">{{kpi_rent}}</div><div class="kpi-sub">{{kpi_rent_sub}}</div></div>
     </div>
@@ -1992,21 +1991,6 @@ const isAbsent = v => v === null || v === undefined
   || ["", "tbd", "tbc", "—", "-", "??"].includes(String(v).trim().toLowerCase());
 const FIELD_PRESENT = {};
 PROPS.forEach(p => Object.keys(p).forEach(k => { if(!isAbsent(p[k])) FIELD_PRESENT[k] = true; }));
-/* v21: data-driven modal fields. The detail modal renders EVERY real field a property has,
-   including field names that exist in no schema/template - not a hardcoded row list.
-   DENY_FIELDS = structural / derived-twin / header-or-hero-only fields (NOT a duplicate of
-   the curated display list, which is tracked dynamically via `consumed`).
-   LABEL_OVERRIDES = optional label fixes (works empty). */
-const DENY_FIELDS = new Set([
-  'id','lat','lng','coordsApprox','regionCode','region','rentUnit','areaUnit',
-  'warehouseRentVal','officeRentVal','officeAreaVal','expansionParkVal',
-  'photo','gallery','plan','mapLink','preBaked','district',
-  'park','developer','country','city','description','motorway','breeam']);
-const LABEL_OVERRIDES = {epc:'EPC'};
-const autoLabel = k => LABEL_OVERRIDES[k] ||
-  String(k).replace(/[_-]+/g,' ').replace(/([a-z0-9])([A-Z])/g,'$1 $2')
-           .replace(/\s+/g,' ').trim().replace(/\b\w/g, c => c.toUpperCase());
-const LOCATOR_RE = /^\s*(?:page|slide)\s+\d+\s*(?:\(.*\))?\s*$/i;   // v22: a pipeline page/source reference, never a value
 /* v10: dataset unit convention (source units are KEPT - a UK dataset ships sq ft
    and £/sq ft/yr); merge stamps areaUnit on every property, rentUnit per record */
 const AREA_UNIT = (PROPS.find(p => p.areaUnit) || {}).areaUnit || 'sq m';
@@ -2077,19 +2061,35 @@ function officeAreaStr(p){
   const s = p.officeArea == null ? "" : String(p.officeArea);
   return areaStr(NUMOK(p.officeAreaVal) && !/[a-z]/i.test(s) ? p.officeAreaVal : p.officeArea);
 }
+/* CERTIFICATION: BREEAM and EPC are DIFFERENT certificates and both are first-class
+   fields, shown together in one row. certName prefixes a value with its certificate name
+   unless the value already states it, keeping a leading Target/Targeting in front
+   ("Excellent" -> "BREEAM Excellent"; "Target A" -> "Target EPC A"; "Targeting BREEAM
+   'Outstanding'" -> unchanged). certStr joins whichever of the two the property carries
+   with ", ". A property with neither yields "" so the row is omitted - absent stays
+   absent, nothing invented. */
+function certName(v, name){
+  if(v === null || v === undefined) return "";
+  const t = String(v).trim();
+  if(!t) return "";
+  const low = t.toLowerCase();
+  if(low === "tbd" || low === "tbc" || low === "\u2014" || low === "-") return "";
+  if(new RegExp(name, "i").test(t)) return t;
+  const m = t.match(/^(target(?:ing|ed)?)\s+(.+)$/i);
+  return m ? m[1] + " " + name + " " + m[2] : name + " " + t;
+}
+function certStr(p){
+  return [certName(p.breeam, "BREEAM"), certName(p.epc, "EPC")].filter(Boolean).join(", ");
+}
 function detailHTML(p){
   const isTbd = v => {
     if(v === null || v === undefined) return true;
     const s = String(v).trim().toLowerCase();
     return s === "" || s === "tbd" || s === "tbc" || s === "—" || s === "-";
   };
-  const consumed = new Set();
-  const row = (label,v,key) => {
-    if(key) consumed.add(key);   // registered even when omitted, so the catch-all never
-                                 // re-renders a field a curated row owns
-    return isTbd(v) ? `` :        // v21: omit absent rows entirely (was a val_tbc placeholder)
+  const row = (label,v) =>
+    isTbd(v) ? `` :               // v21: omit absent rows entirely (was a val_tbc placeholder)
       `<div class="spec"><div class="spec-k">${label}</div><div class="spec-v">${v}</div></div>`;
-  };
   const d = groupedDistances(p);
   const catMeta = { city:T("poi_city"), border:T("poi_border"), air:T("poi_air"), rail:T("poi_rail"), port:T("poi_port") };
   const poiIdx = (name) => POIS.findIndex(x => x.name === name);
@@ -2110,7 +2110,7 @@ function detailHTML(p){
         : `<span style="color:var(--brand);font-weight:500">${T('dist_status_car_lead')}</span> ${T('dist_status_car_rest')}`)
     : T("dist_status_est");
   const reg = REGIONS[p.regionCode] || null;
-  const dist = p.district || null;
+  const dist = p.districtProfile || null;
   const rNum = v => (v == null || (typeof v === 'number' && isNaN(v))) ? 'tbd'
     : (typeof v === 'number' ? v.toLocaleString(LOCALE) : v);
   const rK = v => (typeof v === 'number' && isFinite(v)) ? Math.round(v/1000).toLocaleString(LOCALE) + 'k' : 'tbd';
@@ -2137,6 +2137,7 @@ function detailHTML(p){
           <span>${T("modal_early_access_prefix")} ${p.earlyAccess}</span>
           ${p.breeam ? `<span>${p.breeam}</span>` : ''}
           ${mapHref ? `<span><a class="map-link" href="${mapHref}" target="_blank" rel="noopener">${T("modal_open_maps")}</a></span>` : ''}
+          ${p.brochureLink ? `<span><a class="map-link" href="${p.brochureLink}" target="_blank" rel="noopener">${T("modal_open_brochure")}</a></span>` : ''}
         </div>
       </div>
 
@@ -2145,60 +2146,45 @@ function detailHTML(p){
       ${isTbd(p.description) ? '' : `<p class="desc">${p.description}</p>`}
 
       ${(rowsHtml => rowsHtml ? `<h3 class="section-title">${T("sec_availability")}</h3><div class="spec-grid">${rowsHtml}</div>` : '')([
-        row(T('row_total_gla'), glaStr(p), 'warehouseArea'),
-        row(T('row_warehouse_area'), areaStr(p.warehouseArea), 'warehouseArea'),
-        row(T('row_office_area'), officeAreaStr(p), 'officeArea'),
-        row(T('row_plot_area'), areaStr(p.plotArea), 'plotArea'),
-        row(T('row_divisible_from'), p.divisibleFrom, 'divisibleFrom'),
-        row(T('row_expansion_building'), p.expansionBuilding, 'expansionBuilding'),
-        row(T('row_expansion_park'), p.expansionPark, 'expansionPark'),
-        row(T('row_landlord'), p.landlord, 'landlord'),
-        row(T('row_property_status'), p.status, 'status'),
-        row(T('row_permitting'), p.permitting, 'permitting'),
-        row(T('row_early_access_date'), p.earlyAccess, 'earlyAccess'),
+        row(T('row_total_gla'), glaStr(p)),
+        row(T('row_warehouse_area'), areaStr(p.warehouseArea)),
+        row(T('row_office_area'), officeAreaStr(p)),
+        row(T('row_plot_area'), areaStr(p.plotArea)),
+        row(T('row_divisible_from'), p.divisibleFrom),
+        row(T('row_expansion_building'), p.expansionBuilding),
+        row(T('row_expansion_park'), p.expansionPark),
+        row(T('row_landlord'), p.landlord),
+        row(T('row_property_status'), p.status),
+        row(T('row_permitting'), p.permitting),
+        row(T('row_early_access_date'), p.earlyAccess),
       ].join(''))}
 
       ${(rowsHtml => rowsHtml ? `<h3 class="section-title">${T("sec_technical")}</h3><div class="spec-grid">${rowsHtml}</div>` : '')([
-        row(T('row_clear_height'), p.clearHeight, 'clearHeight'),
-        row(T('row_floor_load'), p.floorLoad, 'floorLoad'),
-        row(T('row_sprinklers'), p.sprinklers, 'sprinklers'),
-        row(T('row_loading_docks'), p.loadingDocks, 'loadingDocks'),
-        row(T('row_overhead_doors'), p.overheadDoors, 'overheadDoors'),
-        row(T('row_electricity'), p.electricity, 'electricity'),
-        row(T('row_truck_parking'), p.truckParking, 'truckParking'),
-        row(T('row_car_parking'), p.carParking, 'carParking'),
+        row(T('row_clear_height'), p.clearHeight),
+        row(T('row_floor_load'), p.floorLoad),
+        row(T('row_sprinklers'), p.sprinklers),
+        row(T('row_loading_docks'), p.loadingDocks),
+        row(T('row_overhead_doors'), p.overheadDoors),
+        row(T('row_electricity'), p.electricity),
+        row(T('row_truck_parking'), p.truckParking),
+        row(T('row_car_parking'), p.carParking),
+        row(T('cmp_certification'), certStr(p)),
       ].join(''))}
 
       ${(rowsHtml => rowsHtml ? `<h3 class="section-title">${T("sec_commercial")}</h3><div class="spec-grid">${rowsHtml}</div>` : '')([
-        row(T('row_warehouse_rent'), p.warehouseRent, 'warehouseRent'),
-        row(T('row_warehouse_rent_monthly'), rentMonthlyStr(p) || '—', 'warehouseRent'),
-        row(T('row_total_annual_rent'), totalRentStr(p,false) || '—', 'warehouseRent'),
-        row(T('row_total_monthly_rent'), totalRentStr(p,true) || '—', 'warehouseRent'),
-        row(T('row_office_rent'), p.officeRent, 'officeRent'),
-        row(T('row_service_charge'), p.serviceCharge, 'serviceCharge'),
-        row(T('row_land_price'), p.landPrice, 'landPrice'),
-        p.leaseTerm ? row(T('row_lease_term'), p.leaseTerm, 'leaseTerm') : '',
-        p.rentFree ? row(T('row_rent_free'), p.rentFree, 'rentFree') : '',
-        (consumed.add('incentives'), p.incentives && p.incentives !== 'Not mentioned in first offer' ? row(T('row_incentives'), p.incentives, 'incentives') : ''),
-        p.reit ? row(T('row_reit'), p.reit, 'reit') : '',
+        row(T('row_warehouse_rent'), p.warehouseRent),
+        row(T('row_warehouse_rent_monthly'), rentMonthlyStr(p) || '—'),
+        row(T('row_total_annual_rent'), totalRentStr(p,false) || '—'),
+        row(T('row_total_monthly_rent'), totalRentStr(p,true) || '—'),
+        row(T('row_office_rent'), p.officeRent),
+        row(T('row_service_charge'), p.serviceCharge),
+        row(T('row_land_price'), p.landPrice),
+        p.leaseTerm ? row(T('row_lease_term'), p.leaseTerm) : '',
+        p.rentFree ? row(T('row_rent_free'), p.rentFree) : '',
+        p.incentives && p.incentives !== 'Not mentioned in first offer' ? row(T('row_incentives'), p.incentives) : '',
+        p.reit ? row(T('row_reit'), p.reit) : '',
       ].join(''))}
 
-      ${(() => {
-        /* v22 Phase 1: auto-show any real SCALAR attribute (canonical or brand-new) that no
-           curated row already owns; NEVER an object (no flatten) and NEVER a locator string
-           (defence-in-depth - merge already quarantines these). */
-        const extra = [];
-        for(const k of Object.keys(p)){
-          if(consumed.has(k) || DENY_FIELDS.has(k)) continue;
-          const v = p[k];
-          if(typeof v === 'object') continue;   // objects/arrays (incl. null) are never extras
-          if(LOCATOR_RE.test(String(v))) continue;            // a page/source reference is not a value
-          if(!isTbd(v)) extra.push(row(autoLabel(k), v));
-        }
-        return extra.join('')
-          ? `<h3 class="section-title">${T('sec_additional')}</h3><div class="spec-grid">${extra.join('')}</div>`
-          : '';
-      })()}
 
       <h3 class="section-title">${T("sec_location")}</h3>
       <div class="loc-layout">
@@ -2415,29 +2401,13 @@ function compareHTML(items){
     [T('row_total_monthly_rent'), p=>totalRentStr(p,true) || '—', 'warehouseRent'],
     [T('row_office_rent'), p=>p.officeRent, 'officeRent'],
     [T('row_service_charge'), p=>p.serviceCharge, 'serviceCharge'],
+    [T('row_land_price'), p=>p.landPrice, 'landPrice'],
     [T('row_lease_term'), p=>p.leaseTerm || '—', 'leaseTerm'],
     [T('row_rent_free'), p=>p.rentFree || '—', 'rentFree'],
-    [T('cmp_certification'), p=>p.breeam || '—', 'breeam'],
+    [T('row_incentives'), p=>p.incentives, 'incentives'],
+    [T('row_reit'), p=>p.reit, 'reit'],
+    [T('cmp_certification'), p=>certStr(p) || '—', 'breeam'],
   ].filter(r => !r[2] || FIELD_PRESENT[r[2]]);
-  /* v33 per-property completeness: the curated list above is hand-written, so a field the
-     DATASET carries but nobody wrote a row for was absent from the comparison entirely -
-     landPrice, incentives, reit and epc all were, as is any brand-new scalar an
-     interpretation record introduces (meta.newFields). Derive the remainder from
-     FIELD_PRESENT so the comparison can never be thinner than the data. FIELD_PRESENT is
-     dataset-wide by design: a comparison is a matrix, so its ROWS are the union and a
-     property lacking the field shows the honest unknown in ITS cell only. Rows whose field
-     no property carries are still dropped by the v9 gate above. Sorted for determinism. */
-  const curatedKeys = new Set(rows.map(r => r[2]).filter(Boolean));
-  const autoRows = Object.keys(FIELD_PRESENT)
-    .filter(k => !curatedKeys.has(k) && !DENY_FIELDS.has(k))
-    .filter(k => !PROPS.some(p => p[k] !== null && typeof p[k] === 'object'))
-    .sort()
-    .map(k => [autoLabel(k), p => {
-      const v = p[k];
-      if(v === null || v === undefined || String(v).trim() === '') return 'tbd';
-      return LOCATOR_RE.test(String(v)) ? 'tbd' : v;
-    }, k]);
-  rows.push(...autoRows);
   const distRows = [
     [T('cmp_nearest_city'), p=>{ const d = groupedDistances(p).city[0]; if(!d) return 'tbd'; return `${d.name.replace(/\s*\([^)]*\)\s*$/,'')} · ${d.km} km (~${fmtMin(d.min)})`; }],
     [T('cmp_nearest_border'), p=>{ const d = groupedDistances(p).border[0]; if(!d) return 'tbd'; return `${d.name.replace(/\s*\([^)]*\)\s*$/,'')} · ${d.km} km (~${fmtMin(d.min)})`; }],
@@ -2606,30 +2576,7 @@ document.addEventListener("keydown", e => {
     if (!isTbd(p.clearHeight)) specs += specRow(T("row_clear_height"), p.clearHeight);
     if (!isTbd(p.electricity)) specs += specRow(T("row_electricity"), p.electricity);
     if (!isTbd(p.motorway)) specs += specRow(T("row_motorway"), p.motorway);
-    /* v33 per-property completeness: after the curated rows, show EVERY OTHER real scalar
-       THIS property carries - the same catch-all the modal has had since v22. Until now the
-       slide was a fixed 9-row list, so a field the modal displayed (sprinklers, permitting,
-       rent-free, divisible-from, expansion, office rent, incentives, a brand-new key an
-       interpretation record introduced) was invisible in Flyover for every property. The
-       rule is per-property: A with 10 filled fields shows 10 rows, B with 15 shows 15, and
-       an absent field renders nothing anywhere. Reuses the chrome's DENY_FIELDS/autoLabel/
-       LOCATOR_RE/isAbsent script globals (same lexical scope, like T/nfmt/AREA_UNIT above)
-       and no-ops if a future chrome drops them. Object.keys order = canonical key order, so
-       the output stays byte-deterministic. */
-    if (typeof DENY_FIELDS !== "undefined" && typeof autoLabel === "function") {
-      var foCurated = { warehouseArea:1, plotArea:1, landPrice:1, warehouseRent:1,
-                        developer:1, landlord:1, clearHeight:1, electricity:1, motorway:1,
-                        park:1, city:1, country:1 };
-      var foAbsent = (typeof isAbsent === "function") ? isAbsent : isTbd;
-      Object.keys(p).forEach(function (k) {
-        if (foCurated[k] || DENY_FIELDS.has(k)) { return; }
-        var v = p[k];
-        if (v === null || typeof v === "object") { return; }
-        if (typeof LOCATOR_RE !== "undefined" && LOCATOR_RE.test(String(v))) { return; }
-        if (foAbsent(v)) { return; }
-        specs += specRow(autoLabel(k), v);
-      });
-    }
+    /* v36 */ if (typeof certStr === "function" && certStr(p)) specs += specRow(T("cmp_certification"), certStr(p));
 
     var dts = driveHighlights(p);
     var dtHtml = "";

@@ -170,7 +170,11 @@ _FIELD_RULES = (
     "Three rules, in order of how often they are broken: "
     "(1) A STATED NEGATIVE IS DATA, NEVER AN ABSENCE. 'Not charged', 'No', 'None', 'N/A' are "
     "positive commercial statements - ship them as the value. Only a blank row, or one the "
-    "deck marks tbd/TBC/BTS/TBS, is unknown. Shipping the unknown sentinel instead tells the "
+    "deck marks tbd/TBC/TBA/TBS ('to be confirmed/specified'), is unknown. A printed 'BTS' is "
+    "NOT unknown - it means BUILT TO SUIT, a commercial statement (the spec follows the "
+    "tenant); ship it VERBATIM as the value. A live deck used 'BTS' and 'tbc' as distinct "
+    "values on the same slide, and collapsing BTS to tbd shipped 15 false 'absent in all "
+    "sources' claims. Shipping the unknown sentinel for stated data tells the "
     "broker to go and ask an agent a question the deck already answered. "
     "(2) THE SCHEMA IS OPEN (`additionalProperties: true`). If a stated row has no obvious "
     "home in `fields`, DO NOT DROP IT - emit it under a descriptive camelCase key of your own "
@@ -185,7 +189,13 @@ _FIELD_RULES = (
     "the unit, and do not ADD a unit the page does not print. A pure count ('72' loading docks) "
     "is correctly bare - the rule is about dimensioned quantities. If a page states a magnitude "
     "whose unit you genuinely cannot read, return the number, say so in that field's prov, and "
-    "the value-format gate will surface it for the broker to settle."
+    "the value-format gate will surface it for the broker to settle. "
+    "(5) EVERY VALUE IS A SCALAR - a string or a number, NEVER a list or a nested object. When "
+    "the page states several items for one field (several agents, several sustainability "
+    "badges), join them into ONE string yourself - e.g. semicolon-separated - rather than "
+    "emitting a JSON array or a list of objects. A list/object value on an open field now fails "
+    "validate-data immediately with a clear message, instead of surfacing later as a confusing "
+    "ledger gap."
 )
 
 
@@ -323,7 +333,7 @@ def load_yaml(p: Path) -> dict:
         return {}
     import yaml
     try:
-        return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        return yaml.safe_load(p.read_text(encoding="utf-8-sig")) or {}
     except Exception as e:
         # a hand-edited / malformed project.yaml must NEVER crash the run with a
         # traceback (the scaffold itself is now always valid via safe_dump); degrade
@@ -457,7 +467,7 @@ def _write_if_changed(path: Path, text: str) -> Path:
     being re-triggered by a byte-identical rewrite. A no-op when content matches."""
     path = Path(path)
     try:
-        if path.exists() and path.read_text(encoding="utf-8") == text:
+        if path.exists() and path.read_text(encoding="utf-8-sig") == text:
             return path
     except OSError:
         pass
@@ -523,7 +533,7 @@ def _load_records(f) -> list:
     key = str(f)
     if key not in _RECFILE_CACHE:
         try:
-            d = json.loads(Path(f).read_text(encoding="utf-8"))
+            d = json.loads(Path(f).read_text(encoding="utf-8-sig"))
             _RECFILE_CACHE[key] = d if isinstance(d, list) else []
         except Exception:
             _RECFILE_CACHE[key] = []
@@ -618,7 +628,7 @@ def _record_field_names(work: Path) -> set:
     try:
         for f in sorted((work / "extract").glob("*.json")):
             try:
-                recs = json.loads(f.read_text(encoding="utf-8"))
+                recs = json.loads(f.read_text(encoding="utf-8-sig"))
             except Exception:
                 continue
             if isinstance(recs, dict):
@@ -631,7 +641,107 @@ def _record_field_names(work: Path) -> set:
     return out
 
 
-def assign_deck_outputs(decks: list) -> list:
+def _force_raster_path(work: Path) -> Path:
+    return work / "vision" / "force_raster.json"
+
+
+def _load_force_raster(work: Path) -> set:
+    """Source files an interpretation sub-agent escalated to the raster path. (B65)
+
+    Durable because the escalation request (a `needs_raster` stub) is consumed - deleted - on
+    the pass that reads it, so a set derived only from the stubs on disk is empty by the time
+    anything downstream needs it."""
+    try:
+        raw = json.loads(_force_raster_path(work).read_text(encoding="utf-8-sig"))
+    except Exception:
+        return set()
+    got = raw.get("decks") if isinstance(raw, dict) else raw
+    return {str(x) for x in got} if isinstance(got, list) else set()
+
+
+def _save_force_raster(work: Path, decks: set) -> None:
+    p = _force_raster_path(work)
+    try:
+        # _common is imported INSIDE functions throughout run.py (so the module imports
+        # cleanly on a host missing an optional dep) - do the same here, or this silently
+        # no-ops on a NameError, which is exactly what the swallow below would hide.
+        import _common as _C
+        if not decks:
+            p.unlink(missing_ok=True)      # nothing outstanding: leave no stale file behind
+            return
+        p.parent.mkdir(parents=True, exist_ok=True)
+        _C.atomic_write_text(p, json.dumps({"schema_version": 1, "decks": sorted(decks)},
+                                           ensure_ascii=False, indent=1))
+    except Exception:
+        pass
+
+
+def photo_match_candidates(targets: list, force_raster: set) -> list:
+    """The vision targets photo-match may consider. (B65)
+
+    Photo-match asks "this brochure has no extractable text, and I already know these
+    properties from another source - which one is it a photo OF?". A deck an interpretation
+    sub-agent ESCALATED is not that: the reader read it and reported a property deck with a
+    garbled text layer, so the only honest verdict is `unrelated`, and asking spends the
+    escalation on the wrong branch. Its siblings are still matched normally."""
+    return [t for t in targets if Path(t[0]).name not in (force_raster or set())]
+
+
+def keep_vision_targets(targets: list, matched: dict, still_vision: set) -> list:
+    """Vision targets surviving photo-match, filtered IN PLACE over the original list.
+
+    Order is the point: rebuilding the list from the matcher's own iteration would reorder
+    decks that were never offered to it, and the build is required to be byte-deterministic.
+    A deck photo-match never saw (`not in matched`) passes through untouched."""
+    return [t for t in targets if t[0] not in matched or t[0] in still_vision]
+
+
+def _deck_outputs_path(work: Path) -> Path:
+    return work / "vision" / "deck_outputs.json"
+
+
+def load_deck_outputs(work: Path) -> dict:
+    """The DURABLE source_file -> output map. (B64)
+
+    The manifest carries only the decks pending THIS pass, yet it was also the sole memory of
+    where each deck's records live, so `_vision_supersedes` returned False for every completed
+    deck the moment the manifest shrank: they were re-prepped, re-listed as pending, and the
+    exit-3 diagnosis asserted their outputs did not exist while they sat on disk. SKILL.md
+    tells the orchestrator to satisfy those predicates and never guess, so followed literally
+    that is a redundant re-dispatch of every finished reader.
+
+    Keyed by _vkey(source_file) so it survives the same case/diacritic drift the rest of the
+    interpretation path already tolerates."""
+    try:
+        raw = json.loads(_deck_outputs_path(work).read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+    got = raw.get("outputs") if isinstance(raw, dict) else None
+    return {str(k): str(v) for k, v in got.items()} if isinstance(got, dict) else {}
+
+
+def save_deck_outputs(work: Path, decks: list) -> None:
+    """MERGE this pass's assignments into the durable map. Never drops a key: a deck absent
+    from today's manifest is precisely the one whose path must still be findable."""
+    known = load_deck_outputs(work)
+    merged = dict(known)
+    for d in decks or []:
+        sf, out = str((d or {}).get("source_file") or ""), str((d or {}).get("output") or "")
+        if sf and out:
+            merged[_vkey(sf)] = out
+    if merged == known:
+        return
+    try:
+        import _common as _C            # imported inside, per the run.py convention
+        p = _deck_outputs_path(work)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        _C.atomic_write_text(p, json.dumps({"schema_version": 1, "outputs": merged},
+                                           ensure_ascii=False, indent=1))
+    except Exception:
+        pass
+
+
+def assign_deck_outputs(decks: list, known: dict | None = None) -> list:
     """One UNIQUE `work/extract/*_vision.json` output path per deck, written onto each deck entry
     in place and returned in order. (B2)
 
@@ -645,14 +755,28 @@ def assign_deck_outputs(decks: list) -> list:
     shared, disambiguated by a stable hash of the SOURCE FILE - so it is deterministic and
     order-independent, and a collision cannot be expressed. A label used by exactly one deck keeps
     its clean readable filename, so the common case is unchanged.
+
+    `known` (B64) is the durable source_file -> output map. A deck that has been assigned a path
+    before KEEPS it, because the name derived below depends on which OTHER decks share this
+    manifest: the same deck alone in a one-deck manifest and beside a label-twin in a nine-deck
+    one derives two different filenames, which would strand the records already written under
+    the first. Passing nothing preserves the original pure-function behaviour.
     """
     import hashlib
+    known = known or {}
     counts: dict = {}
     for d in decks:
         k = _vkey(_deck_label(d))
         counts[k] = counts.get(k, 0) + 1
     outs = []
+    taken = set()
     for d in decks:
+        prior = known.get(_vkey(str(d.get("source_file") or "")))
+        if prior and prior not in taken:
+            d["output"] = prior
+            outs.append(prior)
+            taken.add(prior)
+            continue
         label = _deck_label(d) or "region"
         safe = re.sub(r"[^\w\-. ]+", "_", label).strip(" .") or "region"
         if counts.get(_vkey(_deck_label(d)), 0) > 1 or not _vkey(_deck_label(d)):
@@ -662,6 +786,7 @@ def assign_deck_outputs(decks: list) -> list:
             name = f"{safe}_vision.json"
         d["output"] = f"work/extract/{name}"
         outs.append(d["output"])
+        taken.add(d["output"])
     return outs
 
 
@@ -699,7 +824,7 @@ def _manifest_has_outputs(work: Path) -> bool:
     if not mf.exists():
         return False
     try:
-        decks = json.loads(mf.read_text(encoding="utf-8")).get("decks", [])
+        decks = json.loads(mf.read_text(encoding="utf-8-sig")).get("decks", [])
     except Exception:
         return False
     return any((d or {}).get("output") for d in decks)
@@ -722,12 +847,17 @@ def _vision_supersedes(work: Path, region: str, src_name: str) -> bool:
     if not mf.exists():
         return False
     try:
-        decks = json.loads(mf.read_text(encoding="utf-8")).get("decks", [])
+        decks = json.loads(mf.read_text(encoding="utf-8-sig")).get("decks", [])
     except Exception:
         return False
     mine = [d for d in decks if _vkey(str(d.get("source_file", ""))) == _vkey(src_name)]
     if not mine:
-        return False
+        # B64: the manifest holds only what is PENDING, so a deck finished on an earlier pass
+        # is simply not in it. Falling straight to False here re-prepped and re-listed every
+        # completed deck the moment the manifest shrank, and made the exit-3 diagnosis claim
+        # their outputs were missing while they sat on disk. The durable map is the memory.
+        prior = load_deck_outputs(work).get(_vkey(src_name))
+        return bool(prior and _deck_interpreted(work, {"output": prior}))
     # PREFERRED: this file's own interpretation output exists.
     if any(d.get("output") for d in mine):
         return any(_deck_interpreted(work, d) for d in mine if d.get("output"))
@@ -816,7 +946,7 @@ def _bump_attempts(work: Path) -> dict:
     break a run, so every error degrades to an empty state."""
     f = work / "attempts.json"
     try:
-        st = json.loads(f.read_text(encoding="utf-8"))
+        st = json.loads(f.read_text(encoding="utf-8-sig"))
         if not isinstance(st, dict):
             st = {}
     except Exception:
@@ -849,13 +979,41 @@ def _record_exit(work: Path, code: int, prior: dict) -> int:
     return streak
 
 
-def _exit_round_trip(work: Path, code: int, prior: dict, what: str) -> None:
+def _exit_round_trip(work: Path, code: int, prior: dict, what: str,
+                     diagnosis: list | None = None) -> None:
     """The ONE exit path for every orchestrator round-trip. Records the streak and, once the same
     request has been re-emitted ATTEMPT_WARN times in a row, prints a plain diagnosis before
     exiting - the run is not making progress and something upstream is not converging. This does
     NOT block or change the exit code: the orchestrator may legitimately need several rounds, and
-    a wrong bound would be worse than none. It converts a silent livelock into a visible one."""
+    a wrong bound would be worse than none. It converts a silent livelock into a visible one.
+
+    `diagnosis` (P3: guard self-diagnosis) is the caller's list of EXACT pending predicates -
+    one line per item the completion guard still considers unanswered, naming the file/key/id it
+    read and why it did not satisfy ("output not written yet: <path>", "pair 'x' has no
+    recognised verdict in match_decisions.json"). Always persisted to
+    work/pending_diagnosis.json; PRINTED once the same exit repeats (streak >= 2), because at
+    that point the orchestrator's answer was not recognised and guessing at the predicate is
+    exactly the code-archaeology this parameter exists to remove. A live run spent five exit-3
+    round-trips discovering that a stamp/manifest mismatch was the failing predicate - lines
+    like these would have named it on pass two."""
     streak = _record_exit(work, code, prior)
+    items = [str(d).strip() for d in (diagnosis or []) if str(d).strip()]
+    if items:
+        try:
+            import _common as _C
+            _C.atomic_write_text(work / "pending_diagnosis.json", json.dumps(
+                {"exit": code, "what": what, "streak": streak, "pending": items},
+                ensure_ascii=False, indent=2))
+        except Exception:
+            pass
+    if streak >= 2 and items:
+        _say_orchestrator("(orchestrator: the guard's EXACT pending predicates this pass - "
+                          "satisfy THESE; it reads nothing else:)")
+        for _line in items[:20]:
+            _say_orchestrator(f"  [pending] {_line}")
+        if len(items) > 20:
+            _say_orchestrator(f"  [pending] ... and {len(items) - 20} more - "
+                              f"work/pending_diagnosis.json holds the full list.")
     if streak >= ATTEMPT_WARN:
         msg = (f"This step has now been asked for {streak} times in a row without the run moving "
                f"on ({what}). Something in that answer is not being recognised - stop re-running "
@@ -934,14 +1092,14 @@ def _load_match_decisions(work: Path):
     f = Path(work) / "match_decisions.json"
     if f.exists():
         try:
-            cur = _index_decisions(json.loads(f.read_text(encoding="utf-8")),
+            cur = _index_decisions(json.loads(f.read_text(encoding="utf-8-sig")),
                                    ("pair_id", "id"))
         except Exception:
             cur = None  # malformed/half-written -> treat as absent (re-emit + exit 10)
     keep = Path(work) / "match_settled.json"
     prev = {}
     try:
-        prev = json.loads(keep.read_text(encoding="utf-8"))
+        prev = json.loads(keep.read_text(encoding="utf-8-sig"))
         if not isinstance(prev, dict):
             prev = {}
     except Exception:
@@ -1012,7 +1170,7 @@ def _gaps_to_chase(canonical_path, failed_preps, photo_doubts, unreadable_inputs
     if failed_preps or photo_doubts or unreadable_inputs or yield_notes:
         return True
     try:
-        cj = json.loads(Path(canonical_path).read_text(encoding="utf-8"))
+        cj = json.loads(Path(canonical_path).read_text(encoding="utf-8-sig"))
     except Exception:
         return False
     meta = cj.get("meta", {})
@@ -1069,6 +1227,29 @@ def _say_orchestrator(msg: str) -> None:
     asides ("optional reader X unavailable", "image pre-warm skipped") stay on
     stderr; only the next-action instruction comes through here. (B27)"""
     print(msg)
+
+
+def _render_dispatch_prompts(work: Path, jobs: list, wipe: bool = True) -> str:
+    """P1 (prompts-as-files): render the canonical dispatch prompt per pending job to
+    <work>/prompts/ and return the one-line handoff sentence naming them ('' when nothing
+    rendered). The prompt CONTENT lives in <skill>/prompts/*.md templates + the reference
+    contracts; this only bakes in the job parameters the spine already knows, so the
+    orchestrator dispatches file contents VERBATIM instead of paraphrasing the contract -
+    the paraphrase being the documented top error surface (the pasted-short field list, the
+    derived output filename). BEST-EFFORT BY DESIGN: any failure prints one note and returns
+    '', and the run behaves exactly as before this existed."""
+    try:
+        import prompts_render as _pr
+        files = _pr.write_prompts(work, jobs, wipe=wipe)
+    except Exception as e:
+        print(f"  (prompt rendering unavailable: {e})", file=sys.stderr)
+        return ""
+    if not files:
+        return ""
+    return (f" Rendered dispatch prompts: {work / 'prompts'} - ONE FILE PER PENDING JOB; "
+            f"dispatch each as an isolated sub-agent whose prompt is that file's contents "
+            f"VERBATIM (append run-specific facts only under its 'Run context' heading, "
+            f"never edit above it).")
 
 
 def _yield_stdout_lines(notes, link_ix, report_path) -> list[str]:
@@ -1266,7 +1447,7 @@ def main() -> None:
         _resumed("folder scan")
     else:
         call(intake, folder, "--out-dir", work, "--client", args.client)
-    inv = json.loads((work / "inventory.json").read_text(encoding="utf-8"))
+    inv = json.loads((work / "inventory.json").read_text(encoding="utf-8-sig"))
     # INTAKE-001: surface byte-identical duplicate inputs intake skipped (extracted once,
     # not twice) - honest + quiet-aware, never a silent drop. (.get for an old inventory.)
     _dups = inv.get("skipped_duplicates") or []
@@ -1302,7 +1483,7 @@ def main() -> None:
         have_sha = None
         if cache.exists():
             try:
-                have_sha = json.loads(cache.read_text(encoding="utf-8")).get("_en_sha")
+                have_sha = json.loads(cache.read_text(encoding="utf-8-sig")).get("_en_sha")
             except Exception:
                 have_sha = None
         if skip.exists():
@@ -1346,17 +1527,28 @@ def main() -> None:
             stale = cache.exists() and have_sha != want_sha
             _stale_quiet = "(The English baseline changed, so the old translation is stale.) " if stale else ""
             _stale_orch = " and the cache is STALE (EN changed)" if stale else ""
+            _pl = _render_dispatch_prompts(work, [
+                ("translate-chrome", None,
+                 {"LANGUAGE": lang, "REQUEST_PATH": str(request),
+                  "CACHE_PATH": str(cache), "SKIP_PATH": str(skip)})])
             if QUIET:
                 print(f"'{lang}' isn't one of the built-in dashboard languages, so I need it "
-                      f"translated once. {_stale_quiet}I've written what to translate to {request}.")
+                      f"translated once. {_stale_quiet}I've written what to translate to "
+                      f"{request}.{_pl}")
             else:
                 print(f"\nLANGUAGE FALLBACK NEEDED: '{lang}' ({code}) is supported but not "
                       f"bundled{_stale_orch}. Dispatch a translation sub-agent: translate the "
                       f"strings in {request} to {lang}, save the flat {{key:value}} (+ "
                       f"\"_en_sha\":\"{want_sha}\") to {cache}, then re-run the SAME command. "
                       f"(Or `type nul > {skip}` to fall back to English.) Blind-verify it as "
-                      f"G-i18n before shipping.")
-            _exit_round_trip(work, 11, _attempts, "a dashboard-language translation")
+                      f"G-i18n before shipping.{_pl}")
+            _exit_round_trip(work, 11, _attempts, "a dashboard-language translation",
+                             diagnosis=[
+                                 f"chrome translation to '{lang}' ({code}) pending: {cache} is "
+                                 + ("STALE (its _en_sha does not match the current English "
+                                    "baseline)" if stale else "missing")
+                                 + f"; write the flat map with \"_en_sha\":\"{want_sha}\" there, "
+                                   f"or drop {skip} to decline"])
 
     # PREFLIGHT ROADMAP: a deterministic plan from what intake ACTUALLY found, so the
     # orchestrator starts knowing what is there and which handoffs to expect (which exit
@@ -1418,9 +1610,18 @@ def main() -> None:
     # (reference/interpretation.md). That stub is NOT a record - it is a request to
     # re-prep the deck in RASTER mode. Strip it here (so it can never wedge
     # has_vision/_vision_supersedes/vision_validate at exit 3) and force its deck onto the
-    # raster path on THIS pass. Ephemeral - re-derived from the CURRENT stubs each run, so
-    # once the deck is rasterised + re-interpreted into real records nothing escalates.
-    force_raster: set = set()
+    # raster path.
+    #
+    # B65 - IT MUST BE PERSISTED. This set used to be derived from the stubs on disk and the
+    # stubs were deleted in the same loop, so the escalation survived exactly zero passes.
+    # Combined with photo-match (below) taking the escalated deck as a "textless photo of a
+    # known property" and correctly returning `unrelated`, the run livelocked: text reader ->
+    # stub -> photo-match -> unrelated -> text reader, and the only way out was hand-writing a
+    # stub back into work/extract/, a directory the docs correctly call derived and forbid
+    # editing. The file is still self-clearing: an entry is dropped the moment that deck's
+    # interpretation output exists, so it can never wedge in the other direction either.
+    force_raster: set = set(_load_force_raster(work))
+    _force_raster_before = set(force_raster)
     for vf in sorted(extract.glob("*_vision.json")):
         recs = _load_records(vf) or []
         flagged = [r for r in recs if isinstance(r, dict)
@@ -1485,8 +1686,13 @@ def main() -> None:
             src = folder / rel
             # a deck the sub-agent escalated to raster (needs_raster) must be re-prepped,
             # NOT treated as already-done by the region-level supersede/has_vision guard
+            _done = _vision_supersedes(work, region, src.name) or has_vision
+            if src.name in force_raster and _done:
+                # the raster pass has since written real records: the escalation is SATISFIED,
+                # so retire it. Without this the persisted set would force a re-read forever.
+                force_raster.discard(src.name)
             must_raster = src.name in force_raster
-            if not must_raster and (_vision_supersedes(work, region, src.name) or has_vision):
+            if not must_raster and _done:
                 if not QUIET:
                     print(f"  ({src.name}: this region's records are already interpreted - "
                           f"its brochure is superseded by the transcription)")
@@ -1500,6 +1706,9 @@ def main() -> None:
             vision_targets.append((src, region, country))
             if not QUIET:
                 print(f"  ({src.name}: sending it to the interpretation sub-agent)")
+
+    if force_raster != _force_raster_before:
+        _save_force_raster(work, force_raster)
 
     # xlsx: a property tracker contributes records; a questionnaire contributes the
     # client's requirements (size/must-haves) -> canonical.meta.requirements
@@ -1586,7 +1795,7 @@ def main() -> None:
                     (`<slug>_<filehash>_map.json`) and mtime-tracked, so a missing echo is a
                     formatting slip, not a staleness signal."""
                     try:
-                        cached = json.loads(f.read_text(encoding="utf-8"))
+                        cached = json.loads(f.read_text(encoding="utf-8-sig"))
                     except Exception:
                         return False       # malformed/half-written -> re-ask
                     if not isinstance(cached, dict):
@@ -1647,7 +1856,7 @@ def main() -> None:
                     _extra += ["--colmap-verify", colmap_verify_arg]
                 call(extant["extract_xlsx"], xl_src, *_extra, "--out", out, check=False)
             try:
-                payload = json.loads(out.read_text(encoding="utf-8"))
+                payload = json.loads(out.read_text(encoding="utf-8-sig"))
             except Exception:
                 payload = None
             recs = payload.get("records") if isinstance(payload, dict) else None
@@ -1770,7 +1979,7 @@ def main() -> None:
     # has_vision guard, so it is NOT re-derived this pass; the prep fold below carries it
     # forward so it never silently drops from the delivered Gaps Report.
     try:
-        _prior_unreadable = json.loads((work / "unreadable.json").read_text(encoding="utf-8"))
+        _prior_unreadable = json.loads((work / "unreadable.json").read_text(encoding="utf-8-sig"))
         if not isinstance(_prior_unreadable, list):
             _prior_unreadable = []
     except Exception:
@@ -1781,7 +1990,7 @@ def main() -> None:
     # reason naming the supported types and the LLM route - a .txt/.json of property data is
     # best pasted into an email/tracker, which the interpretation path already reads.
     try:
-        _unclassified = (json.loads((work / "inventory.json").read_text(encoding="utf-8"))
+        _unclassified = (json.loads((work / "inventory.json").read_text(encoding="utf-8-sig"))
                          .get("unclassified") or [])
     except Exception:
         _unclassified = []
@@ -1835,7 +2044,8 @@ def main() -> None:
                        "(same exit-3 contract as the manifest):")
             for e in v_errors:
                 _say_orchestrator(f"  [FAIL] {e}" if not QUIET else f"  {e}")
-            _exit_round_trip(work, 3, _attempts, "brochure/tracker interpretation")
+            _exit_round_trip(work, 3, _attempts, "brochure/tracker interpretation",
+                             diagnosis=[f"vision record invalid: {e}" for e in v_errors])
     for vf in vision_files:
         if vf not in record_files:
             record_files.append(vf)
@@ -1889,11 +2099,14 @@ def main() -> None:
     known_recs = [r for f in record_files for r in _load_records(f)
                   if isinstance(r, dict) and not r.get("unreadable")
                   and (r.get("park") or r.get("warehouseArea") or r.get("lat") is not None)]
-    if vision_targets and known_recs:
+    # B65: an escalated deck is not a photo-match candidate - see photo_match_candidates. That
+    # routing was one half of the livelock _load_force_raster documents.
+    photo_candidates = photo_match_candidates(vision_targets, force_raster)
+    if photo_candidates and known_recs:
         import match as _m
         rel_of = {src: src.resolve().relative_to(folder.resolve()).as_posix()
                   if folder.resolve() in src.resolve().parents else src.name
-                  for src, _r, _c in vision_targets}
+                  for src, _r, _c in photo_candidates}
         if not photo_map_f.exists():
             props, seen = [], set()
             for r in known_recs:
@@ -1957,20 +2170,30 @@ def main() -> None:
                     "Then re-run the same command."),
             }, ensure_ascii=False, indent=2), encoding="utf-8")
             n_b, n_p = len(rel_of), len(props)
+            _pl = _render_dispatch_prompts(work, [
+                ("photo-match", None,
+                 {"N_BROCHURES": n_b, "N_PROPERTIES": n_p,
+                  "MANIFEST_PATH": str(work / "photo_match_manifest.json"),
+                  "OUTPUT_PATH": str(work / "photo_map.json")})])
             if QUIET:
                 print("Some brochures have no readable text but look like photos of properties "
                       "you already gave me. I need to match each one before I can carry on.")
                 _say_orchestrator(
                     f"(orchestrator: dispatch the photo-match sub-agent per "
-                    f"{work / 'photo_match_manifest.json'} -> work/photo_map.json, then re-run.)")
+                    f"{work / 'photo_match_manifest.json'} -> work/photo_map.json, then "
+                    f"re-run.{_pl})")
             else:
                 print(f"\nPHOTO MATCH NEEDED: dispatch a sub-agent to match {n_b} brochure(s) to "
                       f"{n_p} known propert(y/ies) per {work / 'photo_match_manifest.json'} -> "
-                      f"work/photo_map.json, then re-run.")
-            _exit_round_trip(work, 9, _attempts, "matching brochure photos to properties")
+                      f"work/photo_map.json, then re-run.{_pl}")
+            _exit_round_trip(work, 9, _attempts, "matching brochure photos to properties",
+                             diagnosis=[
+                                 f"brochure '{_rel}' pending: no confident/uncertain/unrelated "
+                                 f"entry covers it in work/photo_map.json"
+                                 for _rel in sorted(rel_of.values())])
         # consume the sub-agent's decisions
         try:
-            pm = json.loads(photo_map_f.read_text(encoding="utf-8"))
+            pm = json.loads(photo_map_f.read_text(encoding="utf-8-sig"))
         except Exception:
             pm = {}
         key_by_park = {_m.norm(r.get("park")): _m.match_key(r) for r in known_recs}
@@ -1987,7 +2210,7 @@ def main() -> None:
         # each with the manifest's text_hash so a stale pick is rejected after a deck edit.
         # merge's deterministic quote-verify is the gate; this is just the cache.
         try:
-            _pmm = json.loads((work / "photo_match_manifest.json").read_text(encoding="utf-8"))
+            _pmm = json.loads((work / "photo_match_manifest.json").read_text(encoding="utf-8-sig"))
         except Exception:
             _pmm = {}
         _hash_by_name = {Path(b.get("brochure", "")).name: b.get("text_hash")
@@ -2008,8 +2231,8 @@ def main() -> None:
                 "quote": e.get("description_source_quote"),
                 "text_hash": _hash_by_name.get(nm),
             }
-        new_targets = []
-        for src, region, country in vision_targets:
+        still_vision = set()
+        for src, region, country in photo_candidates:
             rel = rel_of[src]
             if confident.get(rel):
                 photo_overrides[confident[rel]] = rel
@@ -2019,8 +2242,8 @@ def main() -> None:
                 photo_doubts.append({"park": park, "brochure": rel, "key": pk,
                                      "note": uncertain[rel].get("note", "")})
             else:
-                new_targets.append((src, region, country))  # unrelated / unmatched -> vision
-        vision_targets = new_targets
+                still_vision.add(src)                       # unrelated / unmatched -> vision
+        vision_targets = keep_vision_targets(vision_targets, rel_of, still_vision)
         if photo_overrides:
             (work / "photo_overrides.json").write_text(json.dumps(photo_overrides, ensure_ascii=False), encoding="utf-8")
         if brochure_descriptions:
@@ -2043,10 +2266,13 @@ def main() -> None:
         # uniqueness. Two decks sharing a cluster label used to derive the same
         # `<label>_vision.json`, so four concurrent agents wrote one file and three decks were lost
         # silently. Fail loudly here rather than ever emit a colliding manifest.
-        assign_deck_outputs(decks)
+        assign_deck_outputs(decks, load_deck_outputs(work))
         _outs = [d.get("output") for d in decks]
         if len(set(_outs)) != len(_outs):
             raise SystemExit(f"internal error: deck output collision in the manifest: {_outs}")
+        # B64: remember every assignment DURABLY. The manifest lists only what is pending, so
+        # it cannot also be the map of where a finished deck's records live.
+        save_deck_outputs(work, decks)
         payload = {
             "decks": decks,
             "record_schema": "templates/record_schema.json",
@@ -2259,6 +2485,29 @@ def main() -> None:
                          f"{n_pages} page(s))")
         if _author_trackers:
             parts.append(f"{len(_author_trackers)} tracker(s) to map")
+        # P1: render the canonical dispatch prompt per pending job (decks by mode, tracker
+        # author + blind-verify jobs) so the orchestrator dispatches file contents verbatim.
+        _prompt_jobs = []
+        for _d in interpret_decks:
+            _o = _deck_output_path(work, _d)
+            _prompt_jobs.append((
+                "reader-text" if _d.get("mode") == "text" else "reader-raster",
+                Path(str(_d.get("output") or _d.get("source_file") or "deck")).stem,
+                {"DECK_NAME": str(_d.get("source_file") or ""),
+                 "SOURCE_TYPE": str(_d.get("source_type") or ""),
+                 "PAGE_COUNT": len(_d.get("pages") or []),
+                 "COUNTRY": str(_d.get("country") or "??"),
+                 "MANIFEST_PATH": str(manifest),
+                 "OUTPUT_PATH": str(_o) if _o else str(_d.get("output") or "")}))
+        for _j in interpret_trackers:
+            _o = _deck_output_path(work, _j)
+            _prompt_jobs.append((
+                "tracker-verify" if _j.get("kind") == "tracker_verify" else "tracker-map",
+                Path(str(_j.get("output") or "tracker")).stem,
+                {"SOURCE_FILE": str(_j.get("source_file") or ""),
+                 "MANIFEST_PATH": str(manifest),
+                 "OUTPUT_PATH": str(_o) if _o else str(_j.get("output") or "")}))
+        _pl = _render_dispatch_prompts(work, _prompt_jobs)
         msg = (f"{' and '.join(parts)} need INTERPRETATION. Manifest: {manifest}. Dispatch the "
                f"interpretation sub-agent (reference/interpretation.md) - structure brochure "
                f"decks into EACH DECK'S OWN `output` path (copy it verbatim from the deck entry - "
@@ -2273,14 +2522,35 @@ def main() -> None:
                f"prov-containment gate checks page-cited values). Set `__meta.source_lang` to the "
                f"ISO-639-1 code of the language each deck is written in. FIRST PASS? Present the "
                f"Stage-0 setup form in the SAME message as this dispatch - no form answer feeds "
-               f"this round.")
+               f"this round.{_pl}")
         if QUIET:
             print("Some of your files still need reading into the dashboard - I'll structure "
                   "them before I build.")
             _say_orchestrator(msg)
         else:
             print("\n" + msg)
-        _exit_round_trip(work, 3, _attempts, "brochure/tracker interpretation")
+        # P3: the guard's exact pending predicates - a deck is pending while its own output
+        # file does not exist; a tracker while neither its map output nor a .SKIP does.
+        _diag = []
+        for _d in interpret_decks:
+            _o = _deck_output_path(work, _d)
+            # B64: state the predicate we ACTUALLY evaluated. This line used to assert the
+            # output did not exist without ever looking, so a manifest rebuild printed
+            # "does not exist yet" for eight files that were on disk - and SKILL.md tells the
+            # orchestrator to satisfy these predicates verbatim and never guess.
+            if _o is not None and _o.exists():
+                _n = len(_load_records(_o))
+                _diag.append(f"deck '{_d.get('source_file')}' ({_d.get('mode')}) pending: its "
+                             f"interpretation output exists but carries {_n} record(s): {_o}")
+            else:
+                _diag.append(f"deck '{_d.get('source_file')}' ({_d.get('mode')}) pending: its "
+                             f"interpretation output does not exist yet: {_o}")
+        for _j in _author_trackers:
+            _o = _deck_output_path(work, _j)
+            _diag.append(f"tracker '{_j.get('source_file')}' pending: neither its map output "
+                         f"nor a .SKIP sentinel exists at: {_o}")
+        _exit_round_trip(work, 3, _attempts, "brochure/tracker interpretation",
+                         diagnosis=_diag)
 
     if n_records == 0:
         if failed_preps:
@@ -2334,7 +2604,7 @@ def main() -> None:
         _by_src.setdefault(str((_r.get("__meta") or {}).get("source_file") or ""), []).append(_r)
     _deck_pages = {}
     try:
-        for _d in json.loads((manifest).read_text(encoding="utf-8")).get("decks", []):
+        for _d in json.loads((manifest).read_text(encoding="utf-8-sig")).get("decks", []):
             _deck_pages[str(_d.get("source_file") or "")] = len(_d.get("pages") or [])
     except Exception:
         _deck_pages = {}
@@ -2360,6 +2630,13 @@ def main() -> None:
         protects, and evals/clarify_test.py asserts the count."""
         qf = _clarify.emit(work, questions)
         n_br = sum(1 for q in questions if q.get("asked_of") == "broker")
+        _pl = ""
+        if len(questions) - n_br > 0:  # a prompt only for the agent-answerable questions
+            _pl = _render_dispatch_prompts(work, [
+                ("clarify", None,
+                 {"N_AGENT_QUESTIONS": len(questions) - n_br,
+                  "QUESTIONS_PATH": str(qf),
+                  "ANSWERS_PATH": str(work / "answers.json")})])
         if QUIET:
             print(quiet_intro)
             _say_orchestrator(
@@ -2367,12 +2644,16 @@ def main() -> None:
                 f"user, {len(questions) - n_br} for an isolated sub-agent) per {qf} -> "
                 f"{extra}write work/answers.json as {{id: answer}} and re-run. Each question "
                 f"is asked ONCE: anything unanswered ships as the honest gap named in its "
-                f"`if_unanswered`, so answer only what you know and never invent one.)")
+                f"`if_unanswered`, so answer only what you know and never invent one.{_pl})")
         else:
             print(f"\nCLARIFICATION NEEDED ({len(questions)}): see {qf}. Answer what you can "
                   f"into work/answers.json ({{id: answer}}) and re-run. Asked once only - "
-                  f"anything unanswered ships as a disclosed gap.")
-        _exit_round_trip(work, 13, _attempts, reason)
+                  f"anything unanswered ships as a disclosed gap.{_pl}")
+        _exit_round_trip(work, 13, _attempts, reason,
+                         diagnosis=[
+                             f"question '{q.get('id')}' (asked_of: {q.get('asked_of')}) "
+                             f"unanswered: no entry for that exact id in work/answers.json"
+                             for q in questions])
 
     _ask = _clarify.pending(work, _questions)
     if _ask:
@@ -2480,7 +2761,7 @@ def main() -> None:
         fd = None
         if field_decisions_f.exists():
             try:
-                parsed_f = json.loads(field_decisions_f.read_text(encoding="utf-8"))
+                parsed_f = json.loads(field_decisions_f.read_text(encoding="utf-8-sig"))
                 fd = _index_decisions(parsed_f, ("conflict_id", "field", "property_id"))
             except Exception:
                 fd = None  # malformed/half-written -> treat as absent (re-emit + exit 10)
@@ -2574,6 +2855,27 @@ def main() -> None:
                 json.dumps(_cand, ensure_ascii=False, indent=2), encoding="utf-8")
             n_g = len(grey) if grey_uncovered else 0
             n_c = len(conflicts) if field_uncovered else 0
+            # P1: one prompt per pending judgement job. With pairs open the author job covers
+            # pairs + the listed conflicts and a SEPARATE blind verify job re-judges the pairs
+            # (dispatched concurrently, never shown the author's verdict); with only conflicts
+            # left, the conflicts-only prompt forbids touching the settled pair files.
+            _pjobs = []
+            if grey_uncovered:
+                _pjobs.append(("match-adjudicate", None,
+                               {"N_PAIRS": n_g, "N_CONFLICTS": len(conflicts),
+                                "CANDIDATES_PATH": str(work / "match_candidates.json"),
+                                "DECISIONS_PATH": str(work / "match_decisions.json"),
+                                "FIELD_DECISIONS_PATH": str(work / "field_decisions.json")}))
+                _pjobs.append(("match-verify", None,
+                               {"N_PAIRS": n_g,
+                                "CANDIDATES_PATH": str(work / "match_candidates.json"),
+                                "VERIFY_OUTPUT_PATH": str(work / "match_verify.json")}))
+            elif field_uncovered:
+                _pjobs.append(("field-conflicts", None,
+                               {"N_CONFLICTS": n_c,
+                                "CANDIDATES_PATH": str(work / "match_candidates.json"),
+                                "FIELD_DECISIONS_PATH": str(work / "field_decisions.json")}))
+            _pl = _render_dispatch_prompts(work, _pjobs)
             if QUIET:
                 print("Some options look like they might be the same property from different "
                       "sources, or sources disagree on a value; I need to confirm a few before "
@@ -2581,7 +2883,7 @@ def main() -> None:
                 _say_orchestrator(
                     f"(orchestrator: dispatch the match sub-agent for {n_g} pair(s) + {n_c} value "
                     f"conflict(s) per {work / 'match_candidates.json'} -> work/match_decisions.json "
-                    f"+ work/field_decisions.json, then re-run.)")
+                    f"+ work/field_decisions.json, then re-run.{_pl})")
             else:
                 parts = []
                 if grey_uncovered:
@@ -2590,8 +2892,29 @@ def main() -> None:
                     parts.append(f"{n_c} cross-source value conflict(s)")
                 print(f"\nMATCH ADJUDICATION NEEDED: dispatch a sub-agent for {' + '.join(parts)} per "
                       f"{work / 'match_candidates.json'} -> work/match_decisions.json + "
-                      f"work/field_decisions.json, then re-run.")
-            _exit_round_trip(work, 10, _attempts, "cross-source match/value adjudication")
+                      f"work/field_decisions.json, then re-run.{_pl}")
+            # P3: the exact pending predicates. The unparseable-file lines matter most: a
+            # BOM'd or half-written decisions file reads as "absent" to the guard, which is
+            # invisible without these.
+            _diag = []
+            if grey_uncovered:
+                if (work / "match_decisions.json").exists() and not md:
+                    _diag.append("work/match_decisions.json exists but yielded no recognised "
+                                 "verdicts - check it is PLAIN UTF-8 JSON (no BOM) and every "
+                                 "pair_id is echoed verbatim")
+                _diag += [f"pair '{g.get('pair_id')}' pending: no recognised same/different "
+                          f"verdict for that exact id in work/match_decisions.json"
+                          for g in grey if not _pair_answered(md, g)]
+            if field_uncovered:
+                if fd is None and field_decisions_f.exists():
+                    _diag.append("work/field_decisions.json exists but is unparseable - check "
+                                 "it is PLAIN UTF-8 JSON (no BOM)")
+                _diag += [f"conflict '{c.get('conflict_id')}' pending: no recognised pick for "
+                          f"that exact id in work/field_decisions.json"
+                          for c in conflicts
+                          if fd is None or not _pick_ok(fd.get(c["conflict_id"]))]
+            _exit_round_trip(work, 10, _attempts, "cross-source match/value adjudication",
+                             diagnosis=_diag)
 
         # SEMANTIC VERIFIER (grey-match): every current grey pair is COVERED by the author
         # decisions (we did not exit 10). If the second, blind verifier pass is present,
@@ -2608,7 +2931,7 @@ def main() -> None:
         if grey and match_verify_f.exists():
             mv = None
             try:
-                parsed_v = json.loads(match_verify_f.read_text(encoding="utf-8"))
+                parsed_v = json.loads(match_verify_f.read_text(encoding="utf-8-sig"))
                 if isinstance(parsed_v, dict):
                     mv = parsed_v
             except Exception:
@@ -2732,10 +3055,10 @@ def main() -> None:
     _merge_code = _code_stamp(work, "merge", [
         HERE / "merge.py", HERE / "match.py", HERE / "images.py", HERE / "normalize.py"])
     try:
-        _prev_merge_code = (work / ".code_merge.prev").read_text(encoding="utf-8").strip()
+        _prev_merge_code = (work / ".code_merge.prev").read_text(encoding="utf-8-sig").strip()
     except Exception:
         _prev_merge_code = ""
-    _now_merge_code = _merge_code.read_text(encoding="utf-8").strip()
+    _now_merge_code = _merge_code.read_text(encoding="utf-8-sig").strip()
     if _prev_merge_code and _prev_merge_code != _now_merge_code:
         _say_orchestrator(
             "(orchestrator: this work dir was organised by a DIFFERENT version of the skill's "
@@ -2786,7 +3109,7 @@ def main() -> None:
                 recs = []
                 for rf in record_files:
                     try:
-                        recs += json.loads(Path(rf).read_text(encoding="utf-8"))
+                        recs += json.loads(Path(rf).read_text(encoding="utf-8-sig"))
                     except Exception:
                         pass
                 done, total = merge.prewarm_images(recs, folder, work / ".image_cache",
@@ -2807,7 +3130,7 @@ def main() -> None:
     _ov_rep = work / "overrides_report.json"
     if _ov_rep.exists():
         try:
-            _rep = json.loads(_ov_rep.read_text(encoding="utf-8")) or {}
+            _rep = json.loads(_ov_rep.read_text(encoding="utf-8-sig")) or {}
         except Exception:
             _rep = {}
         for _k, _tag in (("stale", "STALE OVERRIDE"), ("ambiguous", "AMBIGUOUS OVERRIDE"),
@@ -2847,7 +3170,7 @@ def main() -> None:
         skip_enrich = False
         if RESUME and stamp.exists():
             try:
-                prev = json.loads(stamp.read_text(encoding="utf-8"))
+                prev = json.loads(stamp.read_text(encoding="utf-8-sig"))
                 skip_enrich = (prev.get("args") == enr_key and prev.get("hash") == _sha(canonical))
                 # a cache seeded AFTER the last enrich (web_enrich ingest, seed_geocode,
                 # a fresh regions_cache, the interpretation sub-agent's region_labels.json)
@@ -2894,7 +3217,7 @@ def main() -> None:
     # the re-run attaches genuine data from the warm caches fully offline.
     if enr_args:
         try:
-            canon_data = json.loads(canonical.read_text(encoding="utf-8"))
+            canon_data = json.loads(canonical.read_text(encoding="utf-8-sig"))
             enr_state = canon_data.get("meta", {}).get("enrichment", {})
         except Exception:
             canon_data, enr_state = {}, {}
@@ -2915,7 +3238,7 @@ def main() -> None:
                 n_req = 0
                 try:
                     n_req = len(json.loads((work / "web_requests.json")
-                                           .read_text(encoding="utf-8")).get("requests", []))
+                                           .read_text(encoding="utf-8-sig")).get("requests", []))
                 except Exception:
                     pass
                 page = work / "web_enrich.html"
@@ -2991,7 +3314,7 @@ def main() -> None:
     # this never fires offline (no cache file -> pure deterministic fallback, byte-identical).
     if "regions" in requested_layers:
         try:
-            canon_data = json.loads(canonical.read_text(encoding="utf-8"))
+            canon_data = json.loads(canonical.read_text(encoding="utf-8-sig"))
         except Exception:
             canon_data = {}
         ds = enrich._regions_dataset()
@@ -3029,7 +3352,7 @@ def main() -> None:
                 # "manifest unreadable" warning never triggered. (B14)
                 _prev_decks = []
                 try:
-                    _prev_decks = (json.loads(manifest.read_text(encoding="utf-8"))
+                    _prev_decks = (json.loads(manifest.read_text(encoding="utf-8-sig"))
                                    .get("decks") or [])
                 except Exception:
                     _prev_decks = []
@@ -3062,6 +3385,10 @@ def main() -> None:
                 manifest.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
                                     encoding="utf-8")
                 n_rl = len(region_jobs)
+                _pl = _render_dispatch_prompts(work, [
+                    ("region-labels", None,
+                     {"N_LABELS": n_rl, "MANIFEST_PATH": str(manifest),
+                      "OUTPUT_PATH": str(work / "extract" / "region_labels.json")})])
                 if QUIET:
                     print("A few region labels in your files need matching to the workforce "
                           "dataset before I add the maps and extras.")
@@ -3069,18 +3396,74 @@ def main() -> None:
                         f"(orchestrator: dispatch the interpretation sub-agent for {n_rl} "
                         f"region label(s) per {manifest} -> work/extract/region_labels.json "
                         f"(reference/interpretation.md 'Region label resolution'), then "
-                        f"re-run.)")
+                        f"re-run.{_pl})")
                 else:
                     print(f"\nREGION LABEL RESOLUTION NEEDED ({n_rl} label(s)): dispatch the "
                           f"interpretation sub-agent per {manifest} -> "
                           f"work/extract/region_labels.json (reference/interpretation.md "
-                          f"'Region label resolution'), then re-run.")
-                _exit_round_trip(work, 3, _attempts, "region-label resolution")
+                          f"'Region label resolution'), then re-run.{_pl}")
+                _exit_round_trip(work, 3, _attempts, "region-label resolution",
+                                 diagnosis=[
+                                     f"region label '{_rj.get('raw_label')}' "
+                                     f"({_rj.get('country_cc')}, city {_rj.get('city')}) "
+                                     f"pending: no resolution echoing raw_label+country_cc+city "
+                                     f"in work/extract/region_labels.json"
+                                     for _rj in region_jobs])
+
+    # Stage 3.4 - property-keyed repairs. They run BEFORE the translation stage below, not
+    # after it: that stage exits 12 to fetch a translation round, so a repair that introduces
+    # prose used to be invisible until the pass AFTER the round, and every repair batch
+    # carrying prose cost a whole extra round-trip plus an isolated agent dispatch (three of
+    # them on one live run, for values that were already in the target language). The stage
+    # requires the FINAL prose by its own docstring, and repairs are part of it.
+    def _ledger_append(path, rows) -> None:
+        """REPLACE the repair rows in the Source Ledger with `rows`, keeping ledger.COLUMNS order.
+
+        Replace, not append: resume skips merge when nothing upstream changed, so the ledger
+        merge wrote survives the next run and a plain append would duplicate every repair row
+        on each pass - the ledger is the audit trail, and an audit trail that grows a copy of
+        itself per run is worse than none. Dropping the previous `repair` rows first makes this
+        idempotent, and a repair that has since been deleted or refused correctly disappears."""
+        import csv as _csv
+        import ledger as _ledger
+        p = Path(path)
+        kept = []
+        if p.exists():
+            with open(p, newline="", encoding="utf-8-sig") as _fh:
+                kept = [r for r in _csv.DictReader(_fh)
+                        if (r.get("record_type") or "").strip() != "repair"]
+        with open(p, "w", newline="", encoding="utf-8") as _fh:
+            w = _csv.DictWriter(_fh, fieldnames=_ledger.COLUMNS, extrasaction="ignore")
+            w.writeheader()
+            for r in kept + list(rows):
+                w.writerow(r)
+
+    # Repairs run HERE, after the dataset exists and BEFORE the gates, so validate-data,
+    # arithmetic, coverage and trace-coverage judge the repaired data exactly as they judge
+    # anything else, and the freeze happens over what actually ships. Each applied field
+    # writes its own Source Ledger row, so a correction is disclosed in the same breath as
+    # it is made. Outcomes are re-surfaced unconditionally: a repair that matched NOTHING is
+    # precisely what must never be silent (the override path learned this the hard way).
+    try:
+        import repairs as _repairs
+        _rrep = _repairs.run(work, write=True)
+        for _line in _repairs.format_report(_rrep):
+            print(_line)
+        _n_rep = len(_rrep.get("applied") or [])
+        if _n_rep:
+            _lrows = _repairs.ledger_rows(_rrep)
+            if _lrows:
+                _ledger_append(work / "source_ledger.csv", _lrows)
+            if not QUIET:
+                print(f"({_n_rep} property repair(s) applied - each has a `repair` row in the "
+                      f"Source Ledger and a line in the Gaps Report.)", file=sys.stderr)
+    except Exception as _e:
+        print(f"(repairs skipped: {type(_e).__name__}: {_e})", file=sys.stderr)
 
     # --- Phase 2: free-text DATA translation to output.language (exit 12; mirrors exit 11) ----
-    # Runs AFTER merge/enrich/web-enrich/region-label have all settled canonical.json (a
-    # translation must see the FINAL prose, not a value enrichment/region-label might still
-    # touch) and BEFORE the pre-build gates score it. Determinism (translate.collect_requests/
+    # Runs AFTER merge/enrich/web-enrich/region-label/REPAIRS have all settled canonical.json
+    # (a translation must see the FINAL prose, not a value enrichment, a region-label bind or
+    # a property repair might still touch) and BEFORE the pre-build gates score it. Determinism (translate.collect_requests/
     # bake) decides WHAT needs translating and applies a cached round; the LLM (an isolated
     # sub-agent, never this process) does the actual translation. Never sys.exit inside
     # translate.py itself - run.py owns the exit code, exactly like every other stage here.
@@ -3094,7 +3477,7 @@ def main() -> None:
         # round-trip mapping English onto English. The note records WHY, so the decline is
         # disclosed rather than silent.
         try:
-            _canon_obj = json.loads(Path(canonical).read_text(encoding="utf-8"))
+            _canon_obj = json.loads(Path(canonical).read_text(encoding="utf-8-sig"))
         except Exception:
             _canon_obj = {}
         if _lang_skip(_canon_obj, _tcode):
@@ -3110,16 +3493,38 @@ def main() -> None:
     if _t_rc == 12:
         req = work / "i18n" / "data_translate_request.json"
         cache_f = work / "i18n" / f"data_translations.{_tcode}.json"
+        _pl = _render_dispatch_prompts(work, [
+            ("translate-data", None,
+             {"LANGUAGE": lang, "REQUEST_PATH": str(req), "CACHE_PATH": str(cache_f),
+              "SKIP_PATH": str(work / "i18n" / "data_translate.SKIP")})])
         if QUIET:
             print(f"Translating the descriptions to {lang}… (one-time)")
+            if _pl:
+                _say_orchestrator(f"(orchestrator:{_pl})")
         else:
             print(f"\nDATA TRANSLATION NEEDED -> {lang}. Dispatch an ISOLATED translation sub-agent: "
                   f"translate the `items` in {req} (PROSE only; keep numbers/units/codes/names/dates "
                   f"verbatim), MERGE the returned {{text: translation}} map into "
                   f"{cache_f}, then re-run the SAME command. "
                   f"Blind-verify as G-lang before shipping. (Or `type nul > "
-                  f"{work / 'i18n' / 'data_translate.SKIP'}` to ship the data in its source language.)")
-        _exit_round_trip(work, 12, _attempts, "free-text data translation")
+                  f"{work / 'i18n' / 'data_translate.SKIP'}` to ship the data in its source "
+                  f"language.){_pl}")
+        _exit_round_trip(work, 12, _attempts, "free-text data translation",
+                         diagnosis=[
+                             f"data translation to '{lang}' pending: items in {req} have no "
+                             f"{{text: translation}} entry in {cache_f} (or drop "
+                             f"{work / 'i18n' / 'data_translate.SKIP'} to decline)"])
+
+    # Stage 3.5 - the read-only per-property projection. AFTER the translation stage, so the
+    # view a human opens shows the prose that actually ships rather than its source language.
+    try:
+        import project_properties as _proj
+        _pr = _proj.build(work)
+        if not QUIET:
+            print(f"(per-property view: {_pr['count']} folder(s) under work/properties/ - "
+                  f"read-only; corrections go in work/repairs.json)", file=sys.stderr)
+    except Exception as _e:
+        print(f"(per-property view skipped: {type(_e).__name__}: {_e})", file=sys.stderr)
 
     # Stage 4 - pre-build gates (mechanical halves; judgement gates run separately)
     step("Checking the data") if QUIET else print("\n=== PRE-BUILD GATES (mechanical) ===")
@@ -3132,6 +3537,15 @@ def main() -> None:
     if fill_thr is not None:
         cov_args += ["--fill-threshold", fill_thr]
     g1.append(run_gate(gate_runner, *cov_args))
+    # B-gate-automation: input-accounting and capture-symmetry are both fully mechanical
+    # and deterministic, so the spine runs them itself instead of asking the orchestrator
+    # to remember a manual step "alongside the batch". input-accounting can genuinely
+    # block (a whole source vanished with nothing recorded); capture-symmetry always
+    # returns 0 (it is an advisory cross-source asymmetry report for the G-honesty/G-trace
+    # reviewers) - appending its result to g1 is harmless and keeps its notes in the same
+    # scorecard file the reviewers already read.
+    g1.append(run_gate(gate_runner, "input-accounting", canonical, "--work", work))
+    g1.append(run_gate(gate_runner, "capture-symmetry", "--work", work))
     g1.append(run_gate(gate_runner, "trace-coverage", canonical, "--ledger", ledger_csv))
     # B52: a value citing "page N" must actually occur on that page. Sits beside trace-coverage
     # because it is the same question one level deeper - trace-coverage asks whether a field HAS
@@ -3290,6 +3704,21 @@ def main() -> None:
         _say_orchestrator(
             "(orchestrator: on a 'yes', move that brochure from \"uncertain\" to \"confident\" in "
             "work/photo_map.json and re-run; on a 'no', leave it as \"unrelated\".)")
+    # P1: render the QA-window reviewer prompts (one blind agent per gate; G-enrich only when
+    # regions were enriched). The round dir is the FIRST reviews/round<N> that holds no
+    # findings yet, matching gates.md's "a round-2 reviewer must write a NEW file".
+    _rn = 1
+    while any((work / "reviews" / f"round{_rn}").glob("*.md")):
+        _rn += 1
+    _rdir = work / "reviews" / f"round{_rn}"
+    _gate_slots = {"WORK": str(work), "REVIEWS_ROUND_DIR": str(_rdir)}
+    _gjobs = [("g-honesty", None, dict(_gate_slots)),
+              ("g-trace", None, dict(_gate_slots)),
+              ("g-images", None, dict(_gate_slots)),
+              ("g-visual", None, dict(_gate_slots, HTML_PATH=str(built)))]
+    if bool((cfg.get("enrichment") or {}).get("regions") or args.regions):
+        _gjobs.append(("g-enrich", None, dict(_gate_slots)))
+    _pl_qa = _render_dispatch_prompts(work, _gjobs)
     if QUIET:
         step("Done - dashboard ready")
         # P3-10: tell the broker WHERE the deliverable is, and flag the Gaps Report ONLY
@@ -3314,12 +3743,15 @@ def main() -> None:
               "PROPOSE findings, you IMPLEMENT them, then deliver. Dispatch the gate batch "
               f"concurrently -> `gate_runner.py qa-round record --work {work} --reviews "
               f"{work}\\reviews` -> implement each `blocking:` finding and record it with "
-              "`qa-round resolve --id <id> --because \"<what you changed>\"` -> deliver -> "
-              f"`final_gate.py ... --qa-state {work}`. Advisory findings are CARRIED to the Gaps "
+              "`qa-round resolve --id <id> --because \"<what you changed>\"` -> deliver: "
+              f"`deliver.py --canonical {canonical} --html {built} --ledger {ledger_csv} "
+              f"--out-dir {deliverables} --slug {args.client} --filename {filename}` -> "
+              f"`final_gate.py --canonical {canonical} --html {built} --deliverables "
+              f"{deliverables} --reviews {work}\\reviews --qa-state {work}`. Advisory findings "
               "Report's 'Known limitations', not fixed and not re-reviewed. There is no second "
               "review pass and no adjudication round. final_gate.py is the ship backstop - it "
               "blocks while any blocking finding has no recorded repair; do not declare done to "
-              "the broker until it passes.)")
+              f"the broker until it passes.{_pl_qa})")
         return
     print(f"\nDONE. Deliverables in {deliverables}")
     esrc = ((cfg.get("inputs") or {}).get("emails") or {}).get("source", "none")
@@ -3335,7 +3767,7 @@ def main() -> None:
                      + (" / G-enrich" if regions_on else "")
                      + " / G-visual reviewers")  # G-enrich is REQUIRED by final_gate when regions ran
     steps = [s for s in (email_step, "region research" if regions_on else None, reviewer_step) if s]
-    print("Remaining agentic steps (see SKILL.md): " + "; ".join(steps) + ".")
+    print("Remaining agentic steps (see SKILL.md): " + "; ".join(steps) + "." + _pl_qa)
 
 
 if __name__ == "__main__":

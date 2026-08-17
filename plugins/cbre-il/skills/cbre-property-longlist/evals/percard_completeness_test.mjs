@@ -1,6 +1,6 @@
 // evals/percard_completeness_test.mjs - execute the REAL detailHTML() and compareHTML() from a
-// BUILT dashboard and assert per-property completeness (v33). Offline; no npm deps.
-// Usage: node percard_completeness_test.mjs <built_html_path>
+// BUILT dashboard and assert the per-property rule over the CURATED row set.
+// Offline; no npm deps.  Usage: node percard_completeness_test.mjs <built_html_path>
 import fs from 'node:fs';
 import vm from 'node:vm';
 
@@ -51,19 +51,20 @@ if (!rich || !lean) { console.error('FAIL: fixture properties missing from PROPS
 const rHtml = detailHTML(rich);
 const lHtml = detailHTML(lean);
 
-// --- the rule: A with more filled variables shows more rows than B, and B shows none of A's ---
-const EXTRAS = [
-  ['Sprinklers', 'a canonical field with a curated row'],
-  ['Yard Rent', 'a BRAND-NEW key no schema carries (autoLabel-derived)'],
-  ['Rail Siding', 'a second brand-new key'],
+// --- the rule: a curated variable renders for the property that HAS it, and for no other ---
+const CURATED = [
+  ['Sprinklers', 'sprinklers'],
+  ['Permitting', 'permitting'],
+  ['Land price', 'landPrice'],
+  ['Incentives', 'incentives'],
 ];
-for (const [label, why] of EXTRAS) {
-  ck(rHtml.includes(label), `modal: the rich property shows "${label}" - ${why}`);
+for (const [label, key] of CURATED) {
+  ck(rHtml.includes(label), `modal: the rich property shows "${label}" (it carries ${key})`);
   ck(!lHtml.includes(label), `modal: the lean property does NOT show "${label}" - it has no value`);
 }
 
 const specCount = h => (h.match(/class="spec-k"/g) || []).length;
-ck(specCount(rHtml) > specCount(lean === rich ? '' : lHtml),
+ck(specCount(rHtml) > specCount(lHtml),
    `modal: per-property row counts differ (rich ${specCount(rHtml)} > lean ${specCount(lHtml)})`);
 
 // no empty rows anywhere: every rendered spec value must be a real value
@@ -71,17 +72,22 @@ const emptyRow = /<div class="spec-v">\s*(tbd|tbc|—|-|)\s*<\/div>/i;
 ck(!emptyRow.test(rHtml), 'modal: the rich property renders no tbd/empty spec row');
 ck(!emptyRow.test(lHtml), 'modal: the lean property renders no tbd/empty spec row');
 
-// --- Compare: a matrix, so rows are the union - but nothing the dataset carries may be missing ---
-const cHtml = compareHTML([rich, lean]);
-for (const [label] of EXTRAS) {
-  ck(cHtml.includes(label), `compare: carries a row for "${label}" (v33 auto-rows)`);
+// --- a variable no curated row owns renders NOWHERE, however real its value ---
+const UNCURATED = ['Yard Rent', 'yardRent', 'Rail Siding', 'railSiding'];
+for (const label of UNCURATED) {
+  ck(!rHtml.includes(label), `modal: "${label}" has no curated row, so it renders nowhere`);
 }
-ck(cHtml.includes('Land Price'),
-   'compare: carries Land Price - a CANONICAL field the hand-written row list omitted before v33');
-ck(cHtml.includes('Incentives'),
-   'compare: carries Incentives - likewise absent from the curated list before v33');
 
-// the v9 gate still holds: a field NO property carries appears nowhere
+// --- Compare: a matrix, so rows are the union of what the CURATED list covers ---
+const cHtml = compareHTML([rich, lean]);
+ck(cHtml.includes('Land price'), 'compare: carries the curated Land price row');
+ck(cHtml.includes('Sprinklers'), 'compare: carries the curated Sprinklers row');
+ck(cHtml.includes('Incentives'), 'compare: carries the curated Incentives row');
+for (const label of UNCURATED) {
+  ck(!cHtml.includes(label), `compare: "${label}" has no curated row, so it renders nowhere`);
+}
+
+// the v9 gate still holds: a curated row NO property carries appears nowhere
 ck(!cHtml.includes('Never Stated'), 'compare: a field no property carries is still dropped');
 ck(!rHtml.includes('Never Stated'), 'modal: likewise');
 

@@ -61,7 +61,7 @@ def _load_cache(name: str) -> dict:
         f = Path(d) / name
         if f.exists():
             try:
-                data = json.loads(f.read_text(encoding="utf-8"))
+                data = json.loads(f.read_text(encoding="utf-8-sig"))
                 if isinstance(data, dict):
                     out.update(data)
             except Exception:
@@ -117,7 +117,7 @@ def _poi_lib() -> dict:
     if _POI_LIB_CACHE is None:
         f = C.ASSETS / "poi_library.json"
         try:  # a corrupt/truncated library degrades the fallback, never crashes enrich
-            _POI_LIB_CACHE = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {"pois": [], "city_country": {}}
+            _POI_LIB_CACHE = json.loads(f.read_text(encoding="utf-8-sig")) if f.exists() else {"pois": [], "city_country": {}}
         except Exception:
             _POI_LIB_CACHE = {"pois": [], "city_country": {}}
     return _POI_LIB_CACHE
@@ -136,7 +136,7 @@ def _load_asset_json(stem: str):
     gz = C.ASSETS / f"{stem}.json.gz"
     try:
         if pj.exists():
-            return json.loads(pj.read_text(encoding="utf-8"))
+            return json.loads(pj.read_text(encoding="utf-8-sig"))
         if gz.exists():
             return json.loads(gzip.decompress(gz.read_bytes()))
     except Exception:
@@ -1373,7 +1373,7 @@ def _region_labels_cache() -> dict:
     malformed (the offline / no-LLM path, which then behaves exactly as before)."""
     f = CACHE_DIR / "extract" / "region_labels.json"
     try:
-        data = json.loads(f.read_text(encoding="utf-8"))
+        data = json.loads(f.read_text(encoding="utf-8-sig"))
     except Exception:
         return {}
     out: dict = {}
@@ -1400,7 +1400,7 @@ def _region_labels_answered_keys() -> set:
     self-documenting difflib gap."""
     f = CACHE_DIR / "extract" / "region_labels.json"
     try:
-        data = json.loads(f.read_text(encoding="utf-8"))
+        data = json.loads(f.read_text(encoding="utf-8-sig"))
     except Exception:
         return set()
     out: set = set()
@@ -1733,7 +1733,7 @@ def main() -> None:
     path = Path(args.canonical)
     global CACHE_DIR
     CACHE_DIR = Path(args.cache_dir) if args.cache_dir else path.resolve().parent
-    canonical = json.loads(path.read_text(encoding="utf-8"))
+    canonical = json.loads(path.read_text(encoding="utf-8-sig"))
     meta = canonical.setdefault("meta", {})
     flags = meta.setdefault("enrichment", {})
     meta.setdefault("enrichmentGaps", [])

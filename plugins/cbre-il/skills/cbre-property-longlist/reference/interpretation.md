@@ -168,15 +168,27 @@ records matching `templates/record_schema.json`:
   Three rules govern capture, all three learned from a live failure:
   - **A STATED NEGATIVE IS DATA, NEVER AN ABSENCE.** "Land price: Not charged",
     "Sprinklers: No", "None", "N/A" are positive commercial statements - ship them as
-    the value. Only a blank row, or one the deck marks `tbd`/`TBC`/`BTS`/`TBS`, is
-    unknown. Shipping the unknown sentinel instead tells the broker to go and ask an
-    agent about a question the deck already answered.
+    the value. Only a blank row, or one the deck marks `tbd`/`TBC`/`TBA`/`TBS`
+    ("to be confirmed/specified"), is unknown. **A printed `BTS` is NOT unknown** - it
+    means BUILT TO SUIT, a commercial statement (the spec follows the tenant): ship it
+    VERBATIM as the value. This is not theoretical: a live deck used `BTS` and `tbc` as
+    DISTINCT values on the same slide, and collapsing BTS to tbd shipped 15 false
+    "absent in all sources" claims. Shipping the unknown sentinel for stated data tells
+    the broker to go and ask an agent about a question the deck already answered.
   - **THE SCHEMA IS OPEN.** `templates/record_schema.json` sets
     `additionalProperties: true` and names only 17 of the fields for illustration; it
     is NOT a closed set. If a stated row has no obvious home in `fields`, emit it under
     a descriptive camelCase key of your own (`yardRent`, `railSiding`). The dashboard
     auto-shows any real scalar attribute (v22) and `meta.newFields` discloses it, so
     nothing invented can hide and nothing stated need be lost.
+  - **EVERY VALUE IS A SCALAR.** A field's value is a string or a number, never a list or a
+    nested object - even when the page states SEVERAL of something (several agents, several
+    sustainability badges, several occupiers). Join them into ONE string yourself (semicolon-
+    separated is the house style: `"Alice, a@x.com, 07700 900001; Bob, b@x.com, 07700 900002"`),
+    never a JSON array or a list of objects. This is not a style preference: the ledger records
+    ONE locator per field, so a list's individual items have nowhere to attach their own
+    provenance, and validate-data now rejects a list/object value on an open field outright
+    rather than letting it surface later as a confusing ledger failure.
   - **"There is no field for X" is NEVER a reason to omit X.** If you are about to
     write that sentence in your report, emit the field instead.
   - **WRITE THE VALUE THE WAY THE SOURCE PRINTS IT.** A dimensioned value carries its

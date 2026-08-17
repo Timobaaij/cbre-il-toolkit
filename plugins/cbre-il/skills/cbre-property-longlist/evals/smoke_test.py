@@ -270,8 +270,8 @@ def main() -> int:
     # landlord VALUE rides inside the PROPS data block - no new {{config}} token).
     # v19: the Landlord label is localised via T('row_landlord'); the FIELD_PRESENT
     # gating key ('landlord') is unchanged, so the row still hides on a no-landlord dataset
-    if "row(T('row_landlord'), p.landlord, 'landlord')" not in tpl:
-        fails.append("template missing the v18 modal Landlord row (FIELD_PRESENT-gated row(T('row_landlord'), p.landlord, 'landlord'))")
+    if "row(T('row_landlord'), p.landlord)" not in tpl:
+        fails.append("template missing the v18 modal Landlord row (row(T('row_landlord'), p.landlord))")
     if "[T('row_landlord'), p=>p.landlord, 'landlord']" not in tpl:
         fails.append("template missing the v18 compare Landlord row ([T('row_landlord'), p=>p.landlord, 'landlord'])")
     # the landlord must NOT leak onto the card hero line, the filters, the search index
@@ -333,36 +333,27 @@ def main() -> int:
     if not (m_es and "España" in m_es.group(1)):
         fails.append("v20: <title> does not adapt to the project (Spanish eyebrow did not reach the tab title)")
 
-    # v21 guards: data-driven modal fields (generic catch-all + per-property omit)
-    # NOTE: DENY_CONTAINERS was v21's flatten-denylist; v22 Phase 1 removes the flatten
-    # entirely (see v22 guards below), so DENY_CONTAINERS is intentionally gone and is no
-    # longer part of this guard - only DENY_FIELDS (still in use) is checked here.
-    if "const DENY_FIELDS" not in tpl:
-        fails.append("template missing the v21 DENY_FIELDS denylist")
-    if "const autoLabel" not in tpl:
-        fails.append("template missing the v21 autoLabel data-label helper")
-    if "const consumed = new Set()" not in tpl:
-        fails.append("template missing the v21 per-call consumed Set in detailHTML")
-    if "T('sec_additional')" not in tpl and 'T("sec_additional")' not in tpl:
-        fails.append("template missing the v21 Additional Details catch-all section header")
+    # the modal renders CURATED rows only, each omitted when the property lacks it.
+    # No key is auto-labelled and no row is derived from a property's own key set.
+    if "const DENY_FIELDS" in tpl or "const autoLabel" in tpl or "const LOCATOR_RE" in tpl:
+        fails.append("the auto-attribute machinery is back in the template")
+    if "const consumed = new Set()" in tpl:
+        fails.append("detailHTML re-registers rendered keys (only an auto-row builder needs that)")
+    if "sec_additional" in tpl:
+        fails.append("the template still carries an Additional Details section header")
     if 'T("val_tbc")' in tpl or "T('val_tbc')" in tpl:
         fails.append("v21 regression: modal row() still emits a val_tbc placeholder (must omit absent rows)")
     import i18n as _I18N_v21
     if "val_tbc" in _I18N_v21.EN:
-        fails.append("v21: val_tbc must be removed from i18n.EN (now an orphan key)")
-    if "sec_additional" not in _I18N_v21.EN:
-        fails.append("v21: sec_additional missing from i18n.EN")
+        fails.append("val_tbc must be removed from i18n.EN (an orphan key)")
+    if "sec_additional" in _I18N_v21.EN:
+        fails.append("sec_additional must be removed from i18n.EN (an orphan key)")
     # FIELD_PRESENT is RETAINED for the compare matrix (uniform rows), just dropped from the modal row()
     if ".filter(r => !r[2] || FIELD_PRESENT[r[2]])" not in tpl:
         fails.append("v21: compare table must retain its FIELD_PRESENT row gating")
 
-    # v22 guards: render-boundary (scalars only, no flatten, locator skip)
-    if "const LOCATOR_RE" not in tpl:
-        fails.append("template missing the v22 LOCATOR_RE guard")
     if "for(const sk of Object.keys(v))" in tpl:
-        fails.append("v22 regression: the v21 object-flatten loop is still present (must be removed)")
-    if "typeof v === 'object'" not in tpl:
-        fails.append("v22: catch-all must skip object-valued keys (scalars only)")
+        fails.append("the object-flatten loop is present (must never be)")
 
     # v23 guard: derived numbers use a locale formatter, not raw toFixed
     if "const nfmt" not in tpl:

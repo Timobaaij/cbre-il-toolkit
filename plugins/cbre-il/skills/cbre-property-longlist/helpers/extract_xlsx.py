@@ -119,6 +119,9 @@ COLUMN_MAP = {
     "breeam": ["breeam", "breeam rating", "certification"],
     "epc": ["epc", "epc rating", "epc band", "epc score", "energy performance certificate"],
     "motorway": ["motorway", "highway", "corridor", "road corridor", "m25 segment"],
+    "brochureLink": ["brochure", "online brochure", "online brochure link",
+                      "brochure link", "brochure url", "particulars",
+                      "marketing brochure", "listing link", "listing url"],
     "latlng": ["latitude, longitude", "lat, long", "lat/long", "coordinates",
                "lat lng", "latlong"],
     "lat": ["latitude", "lat"],
@@ -953,6 +956,29 @@ def _verify_norm(v):
     return s or None
 
 
+def _basis_display(map_: dict, raw) -> str | None:
+    """The value to SHOW for this column's basis in a semantic-disagreement report. `raw`
+    is the column's own `.get("basis")` - returned unchanged when present. When absent, this
+    does NOT invent an equivalence: a role:size_basis qualifier column's actual per-row
+    values are unknown at map-comparison time (the map only says WHICH column supplies the
+    basis, never what that column's cells contain), so an indirectly-resolved basis can
+    never be mechanically PROVEN equal to a directly-stated one - the pair is still reported
+    as a disagreement. This only replaces a bare, misleading `None` (which reads as "this
+    pass had no answer") with a value that names the actual mechanism, so the
+    downstream disclosure ("pass 1 read X, pass 2 read Y") is honest about what pass 1
+    actually did, instead of implying it left the basis completely unresolved."""
+    if raw:
+        return str(raw)
+    cols = (map_ or {}).get("columns", []) if isinstance(map_, dict) else []
+    qualifier_idx = next((c.get("index") for c in cols
+                          if isinstance(c, dict)
+                          and str(c.get("role") or "").strip().lower() == "size_basis"),
+                         None)
+    if qualifier_idx is not None:
+        return f"(resolved per-row via qualifier column {qualifier_idx}, not a fixed value)"
+    return None
+
+
 def diff_tracker_maps(map1: dict | None, map2: dict | None,
                       header_row=None) -> list[dict]:
     """Compare a PRIMARY tracker map (the author's) against a VERIFY map (a second,
@@ -987,7 +1013,19 @@ def diff_tracker_maps(map1: dict | None, map2: dict | None,
     for idx in set(a) | set(b):
         ca, cb = a.get(idx, {}), b.get(idx, {})
         for key in _VERIFY_KEYS:
-            va, vb = ca.get(key), cb.get(key)
+            if key == "basis":
+                # a role:size_basis column has no "basis" of its own to compare - it IS the
+                # mechanism another column resolves through, so comparing it against itself
+                # (or against the other map's absence of any column at this index) is noise,
+                # never a genuine disagreement. Skip the key entirely at this index.
+                a_role = str(ca.get("role") or "").strip().lower()
+                b_role = str(cb.get("role") or "").strip().lower()
+                if a_role == "size_basis" or b_role == "size_basis":
+                    continue
+                va = _basis_display(map1, ca.get("basis"))
+                vb = _basis_display(map2, cb.get("basis"))
+            else:
+                va, vb = ca.get(key), cb.get(key)
             if _verify_norm(va) != _verify_norm(vb):
                 header = ""
                 if 0 <= idx < len(hdr) and hdr[idx] not in (None, ""):

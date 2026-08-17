@@ -144,7 +144,7 @@ def validate(work: Path, source_dir: Path | None = None) -> tuple[list[str], lis
     decks: dict[str, dict] = {}
     if manifest_file.exists():
         try:
-            for d in json.loads(manifest_file.read_text(encoding="utf-8")).get("decks", []):
+            for d in json.loads(manifest_file.read_text(encoding="utf-8-sig")).get("decks", []):
                 # `cluster_label` first, `region` as the LEGACY fallback (B51) - a warm work dir
                 # may hold a manifest written before the rename, and losing the deck index here
                 # silently disarms every page-range check.
@@ -186,7 +186,7 @@ def validate(work: Path, source_dir: Path | None = None) -> tuple[list[str], lis
         # the deck carries no usable text layer (image-only), so it never invents noise.
         deck_nums: set = set().union(*page_nums.values()) if page_nums else set()
         try:
-            records = json.loads(vf.read_text(encoding="utf-8"))
+            records = json.loads(vf.read_text(encoding="utf-8-sig"))
         except Exception as e:
             errors.append(f"{vf.name}: not valid JSON ({e})")
             continue

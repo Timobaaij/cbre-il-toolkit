@@ -409,7 +409,7 @@ def cmd_plan(args) -> int:
     # --osrm block and _chain_spec read the same resolved key.
     args.ors_key = (getattr(args, "ors_key", "") or os.environ.get("ORS_API_KEY", "")).strip()
     work = Path(args.work)
-    canonical = json.loads(Path(args.canonical).read_text(encoding="utf-8"))
+    canonical = json.loads(Path(args.canonical).read_text(encoding="utf-8-sig"))
     E.CACHE_DIR = work  # caches live in the work dir
     located = [p for p in canonical.get("properties", [])
                if isinstance(p.get("lat"), (int, float)) and isinstance(p.get("lng"), (int, float))]
@@ -621,7 +621,7 @@ def cmd_ingest(args) -> int:
     if not plan_file.exists():
         print("no web_requests.json in the work dir - run `web_enrich.py plan` first")
         return 1
-    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    plan = json.loads(plan_file.read_text(encoding="utf-8-sig"))
     fetched = work / FETCH_DIR
     # the browser artifact's single-bundle output is the PREFERRED input; loose
     # per-request files in web_fetched/ (WebFetch fallback) still work
@@ -629,7 +629,7 @@ def cmd_ingest(args) -> int:
     for cand in ([Path(args.seeds)] if args.seeds else []) + [work / SEEDS_FILE, fetched / SEEDS_FILE]:
         if cand and cand.exists():
             try:
-                bundle = json.loads(cand.read_text(encoding="utf-8"))
+                bundle = json.loads(cand.read_text(encoding="utf-8-sig"))
                 print(f"  using seeds bundle {cand}")
                 break
             except Exception as e:

@@ -37,7 +37,7 @@ def delivery_complete(out_dir) -> bool:
     first, so keying on it meant an incomplete delivery satisfied the guard forever. (B01)"""
     out = Path(out_dir)
     try:
-        rec = json.loads((out / MARKER_NAME).read_text(encoding="utf-8"))
+        rec = json.loads((out / MARKER_NAME).read_text(encoding="utf-8-sig"))
     except Exception:
         return False
     names = rec.get("artefacts")
@@ -98,7 +98,7 @@ def _chaseable_fields(props: list[dict]) -> list[str]:
     schema, minus NOT_CHASEABLE - never from the schema alone, so a field this dataset's
     market does not use is not invented into an action list."""
     try:
-        schema = json.loads(Path(C.SCHEMA_FILE).read_text(encoding="utf-8"))
+        schema = json.loads(Path(C.SCHEMA_FILE).read_text(encoding="utf-8-sig"))
         allowed = set(((schema.get("$defs", {}).get("property", {})
                         or {}).get("properties", {}) or {}).keys())
     except Exception:
@@ -368,7 +368,7 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
     pd = (Path(work_dir) / "photo_doubts.json") if work_dir else None
     if pd and pd.exists():
         try:
-            doubts = json.loads(pd.read_text(encoding="utf-8"))
+            doubts = json.loads(pd.read_text(encoding="utf-8-sig"))
         except Exception:
             doubts = []
         if doubts:
@@ -383,7 +383,7 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
     ur = (Path(work_dir) / "unreadable.json") if work_dir else None
     if ur and ur.exists():
         try:
-            items = json.loads(ur.read_text(encoding="utf-8"))
+            items = json.loads(ur.read_text(encoding="utf-8-sig"))
         except Exception:
             items = []
         if items:
@@ -397,7 +397,7 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
     yr = (Path(work_dir) / "yield_report.md") if work_dir else None
     if yr and yr.exists():
         lines.append("## Extraction yield (unmapped tracker columns)")
-        body = [ln for ln in yr.read_text(encoding="utf-8").splitlines()
+        body = [ln for ln in yr.read_text(encoding="utf-8-sig").splitlines()
                 if ln.startswith("- ")]
         lines += body or ["- (see yield_report.md in the work folder)"]
         lines.append("")
@@ -566,7 +566,7 @@ def main() -> None:
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    canonical = json.loads(Path(args.canonical).read_text(encoding="utf-8"))
+    canonical = json.loads(Path(args.canonical).read_text(encoding="utf-8-sig"))
 
     # 1. html
     fname = args.filename or f"CBRE_Property_Dashboard_{args.slug}.html"

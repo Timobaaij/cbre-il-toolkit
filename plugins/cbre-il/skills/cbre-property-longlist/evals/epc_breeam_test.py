@@ -178,13 +178,12 @@ def main() -> int:
     build_dashboard.build(cp, hp)
     h = hp.read_text(encoding="utf-8")
 
-    ck(re.search(r"LABEL_OVERRIDES\s*=\s*\{[^}]*epc\s*:\s*'EPC'", h),
-       "the chrome labels the auto-shown attribute EPC, not the autoLabel-derived 'Epc'")
-    deny = re.search(r"const DENY_FIELDS = new Set\(\[(.*?)\]\)", h, re.S)
-    ck(bool(deny) and "'epc'" not in deny.group(1),
-       "epc is NOT denied, so it auto-shows in Additional Details")
-    ck(bool(deny) and "'breeam'" in deny.group(1),
-       "...while breeam stays denied because it has its own curated Certification row")
+    ck("row(T('cmp_certification'), certStr(p))" in h,
+       "the modal gives epc a curated Certification row")
+    ck("certName(p.breeam" in h or "certName(p.breeam, " in h,
+       "the Certification row renders BREEAM through certName")
+    ck("certName(p.epc" in h or "certName(p.epc, " in h,
+       "...and EPC alongside it, comma-separated")
     ck('"epc":"A+"' in h.replace(" ", ""), "the epc value reaches the built PROPS block")
 
     print("STATUS:", "ALL-PASS" if not fails else "BLOCKED")

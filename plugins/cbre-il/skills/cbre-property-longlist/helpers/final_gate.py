@@ -182,7 +182,7 @@ def main() -> None:
     except Exception:
         pass
 
-    enr = (json.loads(Path(args.canonical).read_text(encoding="utf-8")).get("meta", {}) or {}).get("enrichment", {}) or {}
+    enr = (json.loads(Path(args.canonical).read_text(encoding="utf-8-sig")).get("meta", {}) or {}).get("enrichment", {}) or {}
 
     print("Mechanical gates:")
     checks = [
@@ -274,7 +274,7 @@ def main() -> None:
     stale_note = ""
     if args.qa_state:
         try:
-            _st = json.loads((Path(args.qa_state) / "qa_state.json").read_text(encoding="utf-8"))
+            _st = json.loads((Path(args.qa_state) / "qa_state.json").read_text(encoding="utf-8-sig"))
             _rec = [r.get("enrichment") for r in (_st.get("rounds") or []) if r.get("recorded")]
             _now = gate_runner.enrich_signature(args.qa_state)
             if _rec and _rec[-1] is not None and _rec[-1] != _now:

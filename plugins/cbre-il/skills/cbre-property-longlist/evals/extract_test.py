@@ -5139,7 +5139,8 @@ def counts_once_cases() -> None:
     ]
     k = B.compute_kpis(props, {}, {"area": "sq m", "rent": "€/sq m/yr"}, {})
     check(k["kpi_countries"] == "2", "#55: kpi_countries de-dups GB/GB,IE/IE -> 2")
-    check(k["kpi_developers"] == "2", "#55: kpi_developers de-dups CTP x3 + Panattoni -> 2 (no redundant re-dedup)")
+    check("kpi_developers" not in k,
+          "#55: the Developers KPI is gone - no tile, no token, nothing computed for it")
     check(k["kpi_countries_sub"] == "GB · IE",
           "#55: kpi_countries_sub is the sorted distinct enumeration (byte-exact, single country_set)")
 

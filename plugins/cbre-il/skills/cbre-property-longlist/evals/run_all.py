@@ -15,8 +15,10 @@ so importing them would let one eval corrupt the next.
 """
 from __future__ import annotations
 import argparse
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 EVALS = Path(__file__).resolve().parent
@@ -44,11 +46,16 @@ def main() -> int:
 
     width = max(len(n) for n in names)
     failed = []
+    # isolate every eval from the REAL cross-run flywheel ledger (state/qa_findings.jsonl):
+    # qa-round fixtures would otherwise pollute the recurrence signal a maintainer reads.
+    # An eval that sets its own CBRE_FLYWHEEL_PATH (flywheel_test) simply overrides this.
+    _tmp = tempfile.TemporaryDirectory(prefix="cbre-evals-")
+    env = dict(os.environ, CBRE_FLYWHEEL_PATH=str(Path(_tmp.name) / "flywheel.jsonl"))
     for n in names:
         r = None
         try:
             r = subprocess.run([sys.executable, str(EVALS / f"{n}.py")],
-                               capture_output=True, text=True, timeout=a.timeout)
+                               capture_output=True, text=True, timeout=a.timeout, env=env)
             ok, tail = r.returncode == 0, ""
         except subprocess.TimeoutExpired:
             ok, tail = False, f"  (timed out after {a.timeout}s)"

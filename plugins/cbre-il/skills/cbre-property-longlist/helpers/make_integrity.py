@@ -20,6 +20,10 @@ TARGETS = (
     # bundled per-language chrome translations (Phase 1b); a truncated file would silently
     # degrade that language to the English fallback, so integrity-guard each one
     + sorted(str(p.relative_to(ROOT)).replace("\\", "/") for p in (ROOT / "assets" / "i18n").glob("*.json"))
+    # the canonical dispatch-prompt templates (P1: prompts-as-files) - load-bearing contract
+    # text baked into every sub-agent dispatch, so a truncated one must be caught like a
+    # truncated helper. (state/ is deliberately NOT guarded: the flywheel ledger grows per run.)
+    + sorted(str(p.relative_to(ROOT)).replace("\\", "/") for p in (ROOT / "prompts").glob("*.md"))
     + ["NOTICE",  # author's copyright/ownership mark (tamper-evidence; see NOTICE)
        "assets/dashboard_template.html", "assets/VERSION",
        # the load-bearing JSON assets: a truncated poi_library crashes intake, a

@@ -1,28 +1,22 @@
 #!/usr/bin/env python3
-"""percard_completeness_test.py - PER-PROPERTY completeness across every surface. (B58, v33)
+"""percard_completeness_test.py - PER-PROPERTY completeness over the CURATED row set.
 
-THE RULE the broker asked for, in one line: for each property individually, show every variable
-that has a value for THAT property, and render no row for a variable it lacks. If option A has 10
-filled variables and option B has 15, A shows 10 rows and B shows 15. Never a page of tbd.
+THE RULE, in one line: for each property individually, show every CURATED variable that has a
+value for THAT property, and render no row for one it lacks. If option A has 10 filled curated
+variables and option B has 15, A shows 10 rows and B shows 15. Never a page of tbd.
 
-WHERE IT WAS ALREADY TRUE. The detail modal has been per-property since v21 (curated rows omit
-when absent) + v22 (a catch-all that auto-shows any remaining real scalar, including field names
-in no schema at all).
-
-WHERE IT WAS FALSE, and this is what v33 fixes:
-  * FLYOVER rendered a HARDCODED 9-row spec list, so a field the modal displayed - sprinklers,
-    permitting, rent-free, divisible-from, expansion, office rent, or any brand-new key - was
-    invisible on every slide, for every property.
-  * COMPARE's row list is hand-written, so a field the DATASET carries but nobody wrote a row for
-    never appeared at all. `landPrice`, `incentives`, `reit` and `epc` were all in that position,
-    as is any new scalar an interpretation record introduces (meta.newFields).
+The row set itself is FIXED and hand-authored - the modal's three sections, Compare's row list
+and the Flyover's spec block. A variable no curated row owns renders nowhere, however real its
+value; it still reaches the broker through the Source Ledger and the Longlist workbook. That is
+the second half of what this pins, because it is the half that silently rots: a chrome that
+derives rows from a property's own key set will show whatever an interpretation record happened
+to invent, under a machine-made label, in an order nobody chose.
 
 WHAT THIS PINS. The modal and compare assertions EXECUTE the real chrome in node:vm (the .mjs
 sibling), so they test behaviour, not prose. The Flyover assertion is structural - `slideHtml`
-lives inside the view's IIFE and is not reachable from the sandbox - so it extracts the catch-all
-FROM the built template and pins its clauses, in the style of landoption_test: a revert to the
-fixed list fails, and so does dropping any of the DENY_FIELDS / LOCATOR_RE / absent guards that
-stop it leaking a locator string or a neighbour's photo key into the panel.
+lives inside the view's IIFE and is not reachable from the sandbox - so it extracts the spec
+block FROM the built template and pins both halves: each curated row is guarded so it omits when
+absent, and no row is derived from the property's own keys.
 Offline. Drives a real build.
 """
 from __future__ import annotations
@@ -82,18 +76,16 @@ def main() -> int:
         m = re.search(r'function slideHtml\(p, i\)\s*\{(.*?)\n  \}', built, re.S)
         ck(bool(m), "the built chrome still defines the Flyover slideHtml()")
         body = m.group(1) if m else ""
-        ck("DENY_FIELDS" in body,
-           "flyover: the catch-all is present and reuses the modal's DENY_FIELDS")
-        ck("autoLabel" in body,
-           "flyover: it labels unknown keys through the shared autoLabel, not a second convention")
-        ck("Object.keys(p)" in body,
-           "flyover: it iterates the PROPERTY's own keys - the per-property rule, not a fixed list")
-        ck("LOCATOR_RE" in body,
-           "flyover: a page/source locator string can never render as a value")
-        ck("foCurated" in body,
-           "flyover: the curated rows are registered, so no field renders twice")
-        ck(body.index("DENY_FIELDS") < body.index("driveHighlights"),
-           "flyover: the catch-all runs with the spec rows, before the drive-time block")
+        ck("Object.keys(p)" not in body,
+           "flyover: no row is derived from the property's own key set")
+        ck(not any(t in body for t in ("DENY_FIELDS", "autoLabel", "LOCATOR_RE", "foCurated")),
+           "flyover: none of the auto-attribute machinery is reachable from the slide")
+        ck(body.count("isTbd(p.") >= 6,
+           "flyover: every curated spec row is guarded, so it omits when the property lacks it")
+        ck("specRow(T(" in body,
+           "flyover: rows carry an i18n label, never a machine-derived one")
+        ck("certStr(p)" in body,
+           "flyover: the curated Certification row is present")
 
         # ---------- Modal + Compare: real execution ----------
         node = shutil.which("node") or r"C:\Users\TBaaij\nodejs\node.exe"

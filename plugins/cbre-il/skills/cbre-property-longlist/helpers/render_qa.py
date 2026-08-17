@@ -16,7 +16,11 @@ be heavy; the orchestrator may prefer DOM assertions (preview_eval) over a
 screenshot when the renderer is slow.
 
 CLI:
-  python render_qa.py <built.html> [--out render/]   (--out-dir is an alias of --out)
+  python render_qa.py <built.html> [--out DIR]   (--out-dir is an alias of --out)
+  Default DIR is a 'render' folder NEXT TO <built.html> - never the current working
+  directory, so running this from the skill's own install folder (the documented
+  invocation pattern) still writes screenshots beside the client's build, not into
+  the shared skill tree.
 """
 from __future__ import annotations
 
@@ -204,12 +208,16 @@ def static_dom_floor(html: str) -> list[tuple[bool, str]]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("html")
-    ap.add_argument("--out", "--out-dir", dest="out", default="render",
-                    help="output dir for screenshots (--out-dir is an alias, matching the sibling scripts)")
+    ap.add_argument("--out", "--out-dir", dest="out", default=None,
+                    help="output dir for screenshots (--out-dir is an alias, matching the "
+                         "sibling scripts). Defaults to a 'render' folder NEXT TO <html> - "
+                         "not the current working directory - so it is safe to run this "
+                         "from the skill's own folder, per the documented invocation.")
     args = ap.parse_args()
     html = Path(args.html)
+    out_dir = Path(args.out) if args.out else (html.resolve().parent / "render")
     sys.stdout.reconfigure(encoding="utf-8")
-    rc = playwright_check(html, Path(args.out))
+    rc = playwright_check(html, out_dir)
     if rc == -1:
         launch = {"version": "0.0.1", "configurations": [{
             "name": "longlist-preview", "runtimeExecutable": "python",

@@ -7,6 +7,50 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.2.0] — 2026-08-17
+
+Dashboard template v35 → **v38**, three new helpers, and the eval suite grows to **107 tests**.
+
+### Added
+- **Prompts as files (`prompts/`, `helpers/prompts_render.py`).** The 18 canonical sub-agent
+  dispatch prompts (the gates, clarify, the readers, tracker mapping, match adjudication,
+  translation, Outlook ingest, region labels) are now files rendered by code rather than text
+  the orchestrator hand-writes from its own summary of a reference doc — the class that caused
+  the skill's worst documented failures, where a pasted-short field list silently overrode the
+  contract. They are covered by the integrity manifest, so a truncated prompt is caught like a
+  truncated helper.
+- **A per-property view and a repair path (`helpers/project_properties.py`,
+  `helpers/repairs.py`, `reference/per-property.md`).** `canonical.json` is one ~11 MB file,
+  mostly base64 image data, so the thing a broker or reviewer actually wants — one option, its
+  values, its photos, the provenance of each figure — was not readable in it. A read-only
+  per-property view now makes it legible, and `repairs.py` adds **property-keyed** corrections
+  applied after the merge (distinct from `overrides.json`, which targets a source record such
+  as a spreadsheet row or brochure page).
+- **A finding-to-gate flywheel (`gate_runner.py flywheel`).** Reviewer findings accumulate in a
+  ledger under `state/`, deliberately outside the integrity manifest because it grows per run,
+  so a recurring finding can become a permanent gate instead of being re-litigated per client.
+- **`KNOWN-DEFECTS.md`** — the defect register from a live 37-property run, each entry now
+  shipping a fix and an eval, kept as the evidence those evals exist to protect.
+- **26 new evals**, including certification, handoff commands, pending diagnosis, raster
+  escalation, strike disclosure, workdir exclusion, BOM tolerance, repair ordering and
+  projection, and district/open-field validation.
+### Changed
+- **Dashboard template v36 → v38** with a matching `chrome_sha256`, and broad updates across
+  extraction, enrichment, matching, merge, delivery, the gates, `reference/{gates,interpretation,
+  template-contract}.md` and the canonical schema. All 12 language packs stay on an identical
+  191-key set. Integrity manifest regenerated: **93 files, 48 helpers** (now including `prompts/`).
+### Known issues
+Three evals fail for reasons that pre-date this packaging — each fails identically on an
+untouched copy of the skill — and none is a data-correctness fault:
+- `open_field_scalar_test` (3): `validate_canonical` does not yet reject a list or
+  array-of-objects value on an undeclared field, nor name the offending field.
+- `repairs_projection_test` (1): a media repair does not resolve its file relative to the work dir.
+- `plan_reject_test` (2, carried from 1.1.0): the ack normaliser uses `Path(...).name`, which does
+  not strip a Windows `c:\dir\` prefix on POSIX.
+
+94 of the 107 evals pass on a bare Linux box; the other 10 failures are only missing
+Pillow/PyMuPDF/openpyxl, which Cowork provides.
+
 ## [1.1.0] — 2026-08-11
 
 A large property-longlist release: the dashboard template moves from v25 to **v35**, the
@@ -398,6 +442,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.2.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.2.0
 [1.1.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.1.0
 [1.0.15]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.15
 [1.0.14]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.0.14

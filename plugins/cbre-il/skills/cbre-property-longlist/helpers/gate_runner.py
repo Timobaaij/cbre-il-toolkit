@@ -179,6 +179,18 @@ def _is_land_record(p: dict) -> bool:
 WAREHOUSE_CORE = ["warehouseArea", "warehouseRent", "status", "city", "developer", "lat", "lng"]
 LAND_CORE = ["plotArea", "landPrice", "city", "lat", "lng"]
 
+# capture-symmetry's materiality set: coverage's own core, minus the two fields enrichment
+# ASSIGNS rather than a reader capturing them (lat/lng), so it can never drift from what the
+# coverage gate already calls core.
+CAPTURE_CORE_FIELDS = frozenset(WAREHOUSE_CORE + LAND_CORE) - {"lat", "lng"}
+#: records affected before a non-core asymmetry can be promoted to SIGNAL
+SIGNAL_MIN_RECORDS = 5
+#: records elsewhere that must ALREADY carry the field before its absence means anything.
+#: Without this, "affected" alone promotes the rarest fields: one flyer mentioning
+#: `manoeuvringYard` would outrank a core field, because everything else lacks it. A field is
+#: only expected of a deck once the corpus has actually established it.
+SIGNAL_MIN_PRESENT = 3
+
 
 def _accounting_buckets(work: Path, canonical: Path) -> dict:
     """Classify EVERY discovered input into exactly one bucket. (B08)
@@ -198,7 +210,7 @@ def _accounting_buckets(work: Path, canonical: Path) -> dict:
     demonstrably reached the client."""
     inv, led_src, unread = {}, set(), {}
     try:
-        inv = json.loads((work / "inventory.json").read_text(encoding="utf-8"))
+        inv = json.loads((work / "inventory.json").read_text(encoding="utf-8-sig"))
     except Exception:
         inv = {}
     try:
@@ -212,7 +224,7 @@ def _accounting_buckets(work: Path, canonical: Path) -> dict:
     except Exception:
         pass
     try:
-        for e in json.loads((work / "unreadable.json").read_text(encoding="utf-8")) or []:
+        for e in json.loads((work / "unreadable.json").read_text(encoding="utf-8-sig")) or []:
             nm = e[0] if isinstance(e, (list, tuple)) and e else (
                 e.get("file") if isinstance(e, dict) else e)
             if nm:
@@ -223,7 +235,7 @@ def _accounting_buckets(work: Path, canonical: Path) -> dict:
     photo_bound = set()
     for f in ("photo_overrides.json", "photo_map.json"):
         try:
-            obj = json.loads((work / f).read_text(encoding="utf-8"))
+            obj = json.loads((work / f).read_text(encoding="utf-8-sig"))
             vals = obj.values() if isinstance(obj, dict) else []
             for v in list(vals) + (list(obj) if isinstance(obj, dict) else []):
                 if isinstance(v, str):
@@ -319,7 +331,7 @@ def _prov_page_text(work) -> dict:
     out: dict = {}
     try:
         decks = json.loads((Path(work) / "vision" / "manifest.json")
-                           .read_text(encoding="utf-8")).get("decks", [])
+                           .read_text(encoding="utf-8-sig")).get("decks", [])
     except Exception:
         return out
     for d in decks if isinstance(decks, list) else []:
@@ -480,7 +492,7 @@ def cmd_coord_provenance(args) -> int:
     man = Path(args.work) / "vision" / "manifest.json" if args.work else None
     if man and man.exists():
         try:
-            for deck in (json.loads(man.read_text(encoding="utf-8")).get("decks") or []):
+            for deck in (json.loads(man.read_text(encoding="utf-8-sig")).get("decks") or []):
                 for pg in deck.get("pages") or []:
                     page_text[(str(deck.get("source_file")), int(pg.get("page_no", -1)))] = \
                         str(pg.get("text") or "")
@@ -597,6 +609,67 @@ def cmd_value_format(args) -> int:
     return 0
 
 
+def cmd_ack(args) -> int:
+    """MERGE keys into placeholder_audit_ack.json instead of authoring it whole. (B63)
+
+    The images and arithmetic gates both point at this one file, and the QA window tells the
+    orchestrator to dispatch gate fixes CONCURRENTLY - so two agents routinely write it in the
+    same minute. Each wrote the whole document, so the second silently dropped the first's key
+    and a gate that had been answered re-blocked on the next pass. Nothing in the file's shape
+    caused that; the absence of a merge path did.
+
+    Read-modify-write, atomic, list-union, order-stable, de-duplicating. It NEVER removes a key
+    or a value: this file records what a reviewer has SEEN and signed off, so subtracting from
+    it by accident is the one edit that must be impossible. Removing an entry stays a
+    deliberate hand-edit.
+    """
+    path = Path(args.work) / "placeholder_audit_ack.json"
+    cur: dict = {}
+    if path.exists():
+        try:
+            cur = json.loads(path.read_text(encoding="utf-8-sig")) or {}
+        except Exception as e:
+            print(f"[FAIL] {path.name} is not valid JSON ({type(e).__name__}) - refusing to "
+                  f"overwrite it; fix or delete the file first")
+            print("STATUS: BLOCKED")
+            return 1
+    if not isinstance(cur, dict):
+        print(f"[FAIL] {path.name} must be a JSON object - refusing to overwrite it")
+        print("STATUS: BLOCKED")
+        return 1
+    added: list = []
+    for pair in (args.add or []):
+        if "=" not in pair:
+            print(f"[FAIL] --add expects key=value[,value...], got {pair!r}")
+            print("STATUS: BLOCKED")
+            return 1
+        key, _, raw = pair.partition("=")
+        key = key.strip()
+        vals = [v.strip() for v in raw.split(",") if v.strip()]
+        if not key or not vals:
+            print(f"[FAIL] --add expects a non-empty key and value, got {pair!r}")
+            print("STATUS: BLOCKED")
+            return 1
+        old = cur.get(key)
+        merged = list(old) if isinstance(old, list) else ([] if old is None else [old])
+        for v in vals:
+            if v not in merged:
+                merged.append(v)
+                added.append(f"{key}={v}")
+        cur[key] = merged
+    if args.note:
+        cur["note"] = (str(cur.get("note") or "") + (" " if cur.get("note") else "")
+                       + args.note).strip()
+    if args.verified_by:
+        cur["verified_by"] = args.verified_by
+    C.atomic_write_text(path, json.dumps(cur, ensure_ascii=False, indent=1) + "\n")
+    _ok(f"{path.name}: {len(added)} new value(s)"
+        + (f" ({', '.join(added)})" if added else " - everything was already recorded")
+        + f"; keys now {', '.join(sorted(k for k, v in cur.items() if isinstance(v, list)))}")
+    print("STATUS: ALL-PASS")
+    return 0
+
+
 def cmd_capture_symmetry(args) -> int:
     """Cross-source field asymmetry - the cheap signal for UNDER-CAPTURE. (B58)
 
@@ -610,12 +683,22 @@ def cmd_capture_symmetry(args) -> int:
     on ZERO records, either B's deck genuinely never states it or B's reader dropped it.
     ADVISORY on purpose - different agents really do use different templates, so an
     asymmetry is a question for the reviewers, never a verdict.
+
+    RANKING (B62). Being advisory is not a licence to be unreadable. A corpus of nine decks
+    produces ~160 asymmetries, and printed as one flat list ranked by how many sources carry
+    the field, the material ones are indistinguishable from the noise: on the run that
+    prompted this, `status` (31 records, a core field, and a genuine reader miss on every
+    page of a 23-property deck) printed as note 14 of 161 above `... and 136 more`, and it
+    took two Opus reviewers to find what this gate had already computed. So each finding now
+    carries how many RECORDS it affects, a core field is always a SIGNAL, SIGNAL findings
+    print first and uncapped, and the full list is written to work/capture_symmetry.json so
+    the capped tail survives.
     """
     work = Path(args.work)
     by_source: dict[str, dict] = {}
     for path in sorted((work / "extract").glob("*.json")):
         try:
-            recs = json.loads(path.read_text(encoding="utf-8"))
+            recs = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             continue
         if not isinstance(recs, list):
@@ -643,21 +726,60 @@ def cmd_capture_symmetry(args) -> int:
         have = sorted(s for s, d in sources.items() if field in d["fields"])
         miss = sorted(s for s, d in sources.items() if field not in d["fields"])
         if have and miss:
-            findings.append((len(have), field, have, miss))
+            # AFFECTED is the materiality this gate was missing. A field absent from a
+            # 23-record deck becomes 23 "absent in all sources" ledger rows; absent from a
+            # 1-record flyer it becomes one. Ranked only by len(have), those two printed
+            # identically - which is how the one real finding of a live run (status, 31
+            # records) sat at note 14 of 161 and was read as noise.
+            affected = sum(sources[s]["n"] for s in miss)
+            present = sum(sources[s]["n"] for s in have)
+            findings.append({"field": field, "have": have, "miss": miss,
+                             "affected_records": affected, "present_records": present,
+                             "core": field in CAPTURE_CORE_FIELDS})
     if not findings:
         _ok(f"every field is captured symmetrically across {len(sources)} source(s)")
         print("STATUS: ALL-PASS")
         return 0
-    findings.sort(key=lambda t: (-t[0], t[1]))
-    shown = findings[: args.max_notes]
-    for _, field, have, miss in shown:
-        print(f"  [note] `{field}` captured from {', '.join(have)} but from NONE of "
-              f"{', '.join(miss)} - confirm those deck(s) genuinely do not state it, "
-              f"rather than the reader having skipped the row")
-    if len(findings) > len(shown):
-        print(f"  [note] ... and {len(findings) - len(shown)} more asymmetric field(s)")
-    _ok(f"{len(findings)} cross-source field asymmetry note(s) across {len(sources)} "
-        f"source(s) - ADVISORY, for the G-honesty/G-trace reviewers to re-derive")
+    for f in findings:
+        f["signal"] = bool(f["core"] or (f["affected_records"] >= SIGNAL_MIN_RECORDS
+                                         and f["present_records"] >= SIGNAL_MIN_PRESENT))
+        # weight = min(affected, present): high only when the field is BOTH well established
+        # elsewhere and materially missing here, which is what "a reader skipped stated rows"
+        # actually looks like. Ranking on affected alone floats the rarest fields to the top.
+        f["weight"] = min(f["affected_records"], f["present_records"])
+    findings.sort(key=lambda f: (not f["signal"], not f["core"], -f["weight"],
+                                 -f["affected_records"], -f["present_records"], f["field"]))
+    # the FULL list always lands on disk, so the capped tail is never simply lost
+    try:
+        (work / "capture_symmetry.json").write_text(
+            json.dumps({"sources": {s: d["n"] for s, d in sorted(sources.items())},
+                        "signal_min_records": SIGNAL_MIN_RECORDS,
+                        "signal_min_present": SIGNAL_MIN_PRESENT,
+                        "findings": findings}, ensure_ascii=False, indent=2),
+            encoding="utf-8")
+    except Exception:
+        pass
+
+    def _line(f, tag):
+        return (f"  [{tag}] `{f['field']}` captured from {', '.join(f['have'])} but from NONE "
+                f"of {', '.join(f['miss'])} ({f['affected_records']} record(s) there would ship "
+                f"an 'absent in all sources' claim) - confirm those deck(s) genuinely do not "
+                f"state it, rather than the reader having skipped the row")
+
+    signals = [f for f in findings if f["signal"]]
+    rest = [f for f in findings if not f["signal"]]
+    for f in signals:                     # UNCAPPED: a signal must never fall off the tail
+        print(_line(f, "SIGNAL"))
+    shown = rest[: max(0, args.max_notes - len(signals))]
+    for f in shown:
+        print(_line(f, "note"))
+    if len(rest) > len(shown):
+        print(f"  [note] ... and {len(rest) - len(shown)} more asymmetric field(s) - the full "
+              f"list is in {work / 'capture_symmetry.json'}")
+    _ok(f"{len(findings)} cross-source field asymmetry note(s) across {len(sources)} source(s), "
+        f"{len(signals)} of them SIGNAL (a core field, or >= {SIGNAL_MIN_RECORDS} records "
+        f"affected with >= {SIGNAL_MIN_PRESENT} carrying it elsewhere) - ADVISORY, for the "
+        f"G-honesty/G-trace reviewers to re-derive")
     print("STATUS: ALL-PASS")
     return 0
 
@@ -727,7 +849,7 @@ def cmd_coverage(args) -> int:
 def cmd_validate_html(args) -> int:
     data = C.load_canonical(Path(args.canonical))
     expected, _ = build_dashboard.render(data)
-    actual = Path(args.html).read_text(encoding="utf-8")
+    actual = Path(args.html).read_text(encoding="utf-8-sig")
     issues = []
 
     if actual != expected:
@@ -782,7 +904,7 @@ def cmd_validate_html(args) -> int:
 # --------------------------------------------------------------------------- #
 def cmd_reconcile(args) -> int:
     data = C.load_canonical(Path(args.canonical))
-    html = Path(args.html).read_text(encoding="utf-8")
+    html = Path(args.html).read_text(encoding="utf-8-sig")
     issues = []
 
     m = re.search(r"const PROPS = (.*?);(?:\n|$)", html, re.DOTALL)
@@ -873,7 +995,7 @@ def cmd_i18n(args) -> int:
     and actually localised for the resolved language. Reads the built HTML + canonical."""
     import i18n as I18N
     issues = []
-    html = Path(args.html).read_text(encoding="utf-8")
+    html = Path(args.html).read_text(encoding="utf-8-sig")
     data = C.load_canonical(Path(args.canonical))
     meta = data.get("meta", {}) or {}
     language = meta.get("language") or "en"
@@ -1025,7 +1147,7 @@ def cmd_images(args) -> int:
     ack: dict = {}
     if ack_file.exists():
         try:
-            ack = json.loads(ack_file.read_text(encoding="utf-8")) or {}
+            ack = json.loads(ack_file.read_text(encoding="utf-8-sig")) or {}
         except Exception:
             pass
     acked = {str(x) for x in ack.get("confirmed", [])}
@@ -1167,7 +1289,7 @@ def cmd_freeze(args) -> int:
         if not side.exists():
             _bad(f"no freeze record for {p.name} - artefact was not frozen before review")
             print("STATUS: BLOCKED"); return 1
-        if side.read_text(encoding="utf-8").strip() != sha:
+        if side.read_text(encoding="utf-8-sig").strip() != sha:
             _bad(f"{p.name} CHANGED since freeze - parallel reviewers may have judged "
                  f"different bytes, or an edit slipped in during review. Re-freeze and re-review.")
             print("STATUS: BLOCKED"); return 1
@@ -1356,7 +1478,7 @@ def cmd_translation(args) -> int:
     reqp = tdir / "data_translate_request.json"
     if reqp.exists():
         try:
-            req = json.loads(reqp.read_text(encoding="utf-8"))
+            req = json.loads(reqp.read_text(encoding="utf-8-sig"))
         except Exception:
             req = {}
         for it in (req.get("items") or []):
@@ -1421,7 +1543,7 @@ def cmd_arithmetic(args) -> int:
     ack: dict = {}
     if ack_file.exists():
         try:
-            ack = json.loads(ack_file.read_text(encoding="utf-8")) or {}
+            ack = json.loads(ack_file.read_text(encoding="utf-8-sig")) or {}
         except Exception:
             pass
     acked = {str(x) for x in (ack.get("arithmetic_ok") or [])}
@@ -1599,6 +1721,136 @@ def finding_id(entry: str) -> str:
     return hashlib.sha256(" ".join(str(entry).split()).lower().encode("utf-8")).hexdigest()[:10]
 
 
+# --------------------------------------------------------------------------- #
+# The finding-to-gate FLYWHEEL (P5). The expensive part of every run is the review pass, and
+# its findings cluster into recurring CLASSES (the same gate flagging the same field shape on
+# project after project). SKILL.md already says a recurring cosmetic finding is a template bug
+# to fix once; this generalises that: every recorded finding is appended to a cross-run ledger
+# in the SKILL's own state/ dir (per-user, deliberately OUTSIDE the integrity manifest - it
+# grows per run), and a class seen in >= 2 distinct runs is surfaced as a CANDIDATE for
+# conversion into a mechanical pre-build gate + eval. Reviews then trend toward
+# `FINDINGS: none` - reviewers as the safety net, not the primary defect-removal mechanism.
+# Everything here is best-effort: the flywheel must never block or corrupt a QA round.
+# --------------------------------------------------------------------------- #
+_FLYWHEEL_ENV = "CBRE_FLYWHEEL_PATH"  # test override; default lives beside the skill
+_FLYWHEEL_FIELD_RE = re.compile(r"\bfield=([A-Za-z0-9_,\- ]+?)(?:\s+issue=|\s*$)")
+
+
+def _flywheel_path() -> Path:
+    import os
+    p = os.environ.get(_FLYWHEEL_ENV)
+    return Path(p) if p else (Path(__file__).resolve().parent.parent
+                              / "state" / "qa_findings.jsonl")
+
+
+def finding_class(entry: str) -> str:
+    """The recurrence key: the gate that raised it + the field it names (or '-'). Coarse on
+    purpose - a class is a SHAPE of defect ('G-honesty keeps flagging motorway'), not one
+    finding's exact wording, and the gate+field pair is the stable part of the entry format."""
+    gate = str(entry).split(":", 1)[0].strip() or "-"
+    m = _FLYWHEEL_FIELD_RE.search(str(entry))
+    fld = (m.group(1).strip() if m else "") or "-"
+    return f"{gate}|{fld}"
+
+
+def _flywheel_read() -> list[dict]:
+    led = _flywheel_path()
+    rows: list[dict] = []
+    try:
+        if led.exists():
+            for line in led.read_text(encoding="utf-8-sig").splitlines():
+                try:
+                    e = json.loads(line)
+                    if isinstance(e, dict):
+                        rows.append(e)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return rows
+
+
+def flywheel_append(work: Path, cur: dict) -> list[str]:
+    """Append this round's findings to the cross-run ledger; return nudge lines for classes
+    that have now been seen in >= 2 DISTINCT runs. Best-effort - never raises.
+
+    A work dir under the system temp dir is SKIPPED (unless the env override is set): those
+    are eval/sim rounds, and letting fixture findings into the ledger both pollutes the
+    recurrence signal and can fire a spurious nudge inside an eval's asserted stdout.
+    run_all.py additionally points every eval at an isolated ledger, so both the suite and
+    a hand-run eval stay out of the real state/."""
+    try:
+        import datetime
+        import hashlib
+        import os
+        import tempfile
+        if not os.environ.get(_FLYWHEEL_ENV):
+            try:
+                Path(work).resolve().relative_to(Path(tempfile.gettempdir()).resolve())
+                return []  # an eval/sim round - never ledger fixture findings
+            except ValueError:
+                pass  # a real project work dir
+        run_key = hashlib.sha1(str(Path(work).resolve()).encode("utf-8")).hexdigest()[:12]
+        prior: dict = {}
+        for e in _flywheel_read():
+            prior.setdefault(str(e.get("class")), set()).add(str(e.get("run")))
+        rows, nudges, nudged = [], [], set()
+        for bucket in ("blocking", "advisory"):
+            for entry in cur.get(bucket) or []:
+                cls = finding_class(entry)
+                rows.append(json.dumps(
+                    {"ts": datetime.date.today().isoformat(), "run": run_key,
+                     "bucket": bucket, "class": cls, "id": finding_id(entry),
+                     "text": " ".join(str(entry).split())[:200]}, ensure_ascii=False))
+                other_runs = prior.get(cls, set()) - {run_key}
+                if other_runs and cls not in nudged:
+                    nudged.add(cls)
+                    nudges.append(
+                        f"[flywheel] finding class '{cls}' has now recurred across "
+                        f"{len(other_runs) + 1} run(s) - a recurring class is a GATE "
+                        f"candidate: convert it into a mechanical pre-build check + eval "
+                        f"(see SKILL.md 'Maintenance'; `gate_runner.py flywheel` lists all).")
+        if rows:
+            led = _flywheel_path()
+            led.parent.mkdir(parents=True, exist_ok=True)
+            with led.open("a", encoding="utf-8") as fh:
+                fh.write("\n".join(rows) + "\n")
+        return nudges[:5]
+    except Exception:
+        return []
+
+
+def cmd_flywheel(args) -> int:
+    """Report the cross-run finding classes, most-recurrent first. A class seen in >= 2
+    distinct runs is flagged as a candidate for conversion into a mechanical gate + eval."""
+    rows = _flywheel_read()
+    if not rows:
+        print("flywheel ledger empty - no QA rounds recorded yet "
+              f"(ledger: {_flywheel_path()})")
+        return 0
+    agg: dict = {}
+    for e in rows:
+        cls = str(e.get("class"))
+        a = agg.setdefault(cls, {"runs": set(), "n": 0, "last": "", "sample": ""})
+        a["runs"].add(str(e.get("run")))
+        a["n"] += 1
+        if str(e.get("ts") or "") >= a["last"]:
+            a["last"] = str(e.get("ts") or "")
+            a["sample"] = str(e.get("text") or "")
+    order = sorted(agg.items(), key=lambda kv: (-len(kv[1]["runs"]), -kv[1]["n"], kv[0]))
+    n_cand = 0
+    for cls, a in order:
+        tag = "CANDIDATE GATE" if len(a["runs"]) >= 2 else "seen once"
+        n_cand += 1 if len(a["runs"]) >= 2 else 0
+        print(f"[{tag}] {cls}: {a['n']} finding(s) across {len(a['runs'])} run(s), "
+              f"last {a['last']}")
+        print(f"    e.g. {a['sample'][:160]}")
+    print(f"\n{n_cand} class(es) recur across runs. Each is review money spent twice: "
+          f"convert it into a mechanical pre-build gate + an eval, then the reviewers stop "
+          f"finding it (SKILL.md 'Maintenance').")
+    return 0
+
+
 _DIFF_MEDIA_KEYS = ("photo", "plan", "gallery", "images")
 _DIFF_SUMMARISE = ("preBaked", "distances", "enrichment", "pois", "regions")
 
@@ -1638,7 +1890,7 @@ def canonical_data_diff(before_path, after_path, max_lines: int = 200) -> list:
 
     def _load(p):
         try:
-            d = _json.loads(Path(p).read_text(encoding="utf-8"))
+            d = _json.loads(Path(p).read_text(encoding="utf-8-sig"))
             return d if isinstance(d, dict) else {}
         except Exception:
             return {}
@@ -1743,7 +1995,7 @@ def _qa_run_key(work: Path) -> str:
     import hashlib
     inv_h = ""
     try:
-        inv = json.loads((Path(work) / "inventory.json").read_text(encoding="utf-8"))
+        inv = json.loads((Path(work) / "inventory.json").read_text(encoding="utf-8-sig"))
         inv_h = str(inv.get("input_hash") or inv.get("folder") or "")
     except Exception:
         pass
@@ -1763,7 +2015,7 @@ def enrich_signature(work) -> str:
     honest move is to SAY the verdicts predate the change, not to destroy the evidence that they
     were made."""
     try:
-        args = json.loads((Path(work) / ".enrich.stamp").read_text(encoding="utf-8")).get("args")
+        args = json.loads((Path(work) / ".enrich.stamp").read_text(encoding="utf-8-sig")).get("args")
     except Exception:
         return ""
     toks = [t.strip() for t in str(args or "").split("|")]
@@ -1773,7 +2025,7 @@ def enrich_signature(work) -> str:
 def _qa_load(work: Path) -> dict:
     st = {}
     try:
-        st = json.loads(_qa_state_path(work).read_text(encoding="utf-8"))
+        st = json.loads(_qa_state_path(work).read_text(encoding="utf-8-sig"))
     except Exception:
         st = {}
     if not isinstance(st, dict):
@@ -2068,6 +2320,11 @@ def cmd_qa_round(args) -> int:
         print(f"  BLOCKING {finding_id(entry)}  {str(entry)[:110]}")
     for entry in cur["advisory"]:
         print(f"  ADVISORY {finding_id(entry)}  {str(entry)[:110]}")
+    # P5: feed the cross-run flywheel and surface any class that has recurred across runs -
+    # the signal that a review finding should become a mechanical gate. Best-effort; a ledger
+    # failure never blocks the round.
+    for _nudge in flywheel_append(work, cur):
+        print(_nudge)
     # B60: which enrichment layers were in force when these verdicts were written. final_gate
     # compares it later and says so if a layer was enabled afterwards.
     cur["enrichment"] = enrich_signature(work)
@@ -2132,6 +2389,17 @@ def main() -> None:
     p.add_argument("--work", required=True)
     p.add_argument("--max-notes", type=int, default=25)
     p.set_defaults(fn=cmd_capture_symmetry)
+    p = sub.add_parser("ack",
+                       help="MERGE a key into placeholder_audit_ack.json (the only concurrency-"
+                            "safe way to write it - authoring it whole loses a parallel agent's "
+                            "key)")
+    p.add_argument("--work", required=True)
+    p.add_argument("--add", action="append", metavar="KEY=V1[,V2]",
+                   help="union these values into KEY (repeatable), e.g. "
+                        "--add nonphoto_hero_ok=8,9 --add arithmetic_ok=25")
+    p.add_argument("--note", default="", help="append a sentence to the file's `note`")
+    p.add_argument("--verified-by", default="", help="set `verified_by`")
+    p.set_defaults(fn=cmd_ack)
     p = sub.add_parser("input-accounting",
                        help="every discovered input is accounted for (nothing vanishes)")
     p.add_argument("canonical"); p.add_argument("--work", required=True)
@@ -2169,6 +2437,10 @@ def main() -> None:
     p = sub.add_parser("freeze"); p.add_argument("file")
     p.add_argument("--check", action="store_true", help="verify the file is byte-identical to the freeze snapshot")
     p.set_defaults(fn=cmd_freeze)
+
+    p = sub.add_parser("flywheel", help="cross-run recurring finding classes -> gate candidates "
+                                        "(the finding-to-gate flywheel; P5)")
+    p.set_defaults(fn=cmd_flywheel)
 
     args = ap.parse_args()
     sys.exit(args.fn(args))

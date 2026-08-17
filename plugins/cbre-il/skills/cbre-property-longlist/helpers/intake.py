@@ -39,7 +39,7 @@ _NOISE = re.compile(r"^(?:final|draft|copy|copy\s*\(\d+\)|updated?|latest|new|cl
 def _poi_lib() -> dict:
     f = C.ASSETS / "poi_library.json"
     try:  # a corrupt/truncated library is a degraded convenience, never a crash
-        return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {"city_country": {}}
+        return json.loads(f.read_text(encoding="utf-8-sig")) if f.exists() else {"city_country": {}}
     except Exception:
         return {"city_country": {}}
 
@@ -146,7 +146,7 @@ def _is_own_output(rel: str) -> bool:
             or bool(_OWN_OUTPUT.search(p.name)))
 
 
-def discover(folder: Path, cluster_cache=None) -> dict:
+def discover(folder: Path, cluster_cache=None, exclude_dir=None) -> dict:
     """Recursive discovery (hidden/underscore dirs skipped). EVERY brochure is kept:
     a cluster's brochures are LISTS (`pdfs`/`pptxs`) - the old one-slot-per-type
     layout silently overwrote "Options - Madrid.pdf" with "New stock - Madrid.pdf"
@@ -177,11 +177,44 @@ def discover(folder: Path, cluster_cache=None) -> dict:
     # tracker/brochure that duplicated every property from the real file, which then had to be
     # de-duplicated through cross-source match adjudication (a sub-agent round-trip) - or worse,
     # shipped twice. A broker with the spreadsheet open in Excel hits this EVERY time.
-    files = sorted((p for p in folder.rglob("*") if p.is_file()
-                    and not p.name.startswith("~$")
-                    and not any(part.startswith((".", "_"))
-                                for part in p.relative_to(folder).parts)),
-                   key=lambda p: p.relative_to(folder).as_posix())
+    #
+    # T1: the WORK DIR is excluded from the walk (exclude_dir = intake's --out-dir). Putting
+    # `--work` INSIDE the inputs folder is the natural thing to do, and a live run that did it
+    # ingested its own per-property `sources.csv` views as 31 phantom trackers and its own JSON
+    # as unreadable inputs. The dot/underscore filter below only saved work dirs that happened
+    # to be named `_something`; the run's own output tree must never be its input regardless of
+    # its name. Disclosed (count in `excluded_workdir`), never silent.
+    _excl = None
+    if exclude_dir:
+        try:
+            _excl = Path(exclude_dir).resolve()
+        except OSError:
+            _excl = None
+
+    def _under_workdir(p: Path) -> bool:
+        if _excl is None:
+            return False
+        try:
+            p.resolve().relative_to(_excl)
+            return True
+        except (ValueError, OSError):
+            return False
+
+    _n_excluded = 0
+    _cands = []
+    for p in folder.rglob("*"):
+        if not p.is_file() or p.name.startswith("~$") \
+                or any(part.startswith((".", "_")) for part in p.relative_to(folder).parts):
+            continue
+        if _under_workdir(p):
+            _n_excluded += 1
+            continue
+        _cands.append(p)
+    files = sorted(_cands, key=lambda p: p.relative_to(folder).as_posix())
+    if _n_excluded:
+        inv["excluded_workdir"] = {"dir": str(_excl), "files": _n_excluded}
+        print(f"  (work dir sits inside the inputs folder - excluded its {_n_excluded} "
+              f"file(s) from intake: {_excl})")
     # BASENAME COLLISIONS. Records reference their source by bare basename, so two inputs
     # sharing one name are indistinguishable downstream: one property can wear another's
     # photos, and because page ownership keys on the RESOLVED path, both can instead lose
@@ -361,7 +394,7 @@ def _load_cluster_cache(outdir: Path):
     if not f.exists():
         return None
     try:
-        return json.loads(f.read_text(encoding="utf-8"))
+        return json.loads(f.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
 
@@ -373,7 +406,7 @@ def _merge_clusters_into_yaml(yml: Path, inv: dict) -> bool:
     the existing file untouched (the broker's confirmed config wins)."""
     try:
         import yaml
-        cfg = yaml.safe_load(yml.read_text(encoding="utf-8")) or {}
+        cfg = yaml.safe_load(yml.read_text(encoding="utf-8-sig")) or {}
         if not isinstance(cfg, dict):
             return False
         new_clusters = {r: (c.get("country") or "??") for r, c in inv["clusters"].items()}
@@ -415,7 +448,7 @@ def main() -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     # The orchestrator's LLM-refined labels (work/intake_clusters.json) override the
     # regex per stem when present + verified; absence forces the deterministic regex.
-    inv = discover(folder, cluster_cache=_load_cluster_cache(outdir))
+    inv = discover(folder, cluster_cache=_load_cluster_cache(outdir), exclude_dir=outdir)
     C.atomic_write_text(outdir / "inventory.json", json.dumps(inv, ensure_ascii=False, indent=2))
     yml = outdir / "project.yaml"
     if not yml.exists():

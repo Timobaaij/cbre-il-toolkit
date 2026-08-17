@@ -74,7 +74,7 @@ def _normalise_offspec(rec: dict) -> dict:
     clustering, so they can never become a displayed field: (a) a dict/list whose key is
     NOT a canonical field (a stray provenance/meta map), or (b) a scalar whose value is a
     pipeline locator string. Genuine scalar attributes (canonical AND brand-new) and
-    canonical container objects (gallery/preBaked/district) are KEPT so auto-show is
+    canonical container objects (gallery/preBaked/districtProfile) are KEPT so auto-show is
     preserved. Deterministic; a clean record is unchanged."""
     canon = C.canonical_property_fields()
     meta = rec.setdefault("__meta", {})
@@ -182,7 +182,7 @@ _OV_ROW_RX = re.compile(r"^\s*(?P<sheet>.+?)!r(?P<row>\d+)")
 
 # An override may never inject structure, media or an identity. These are NOT ordinary fields.
 _OV_FORBIDDEN = frozenset({"id", "__meta", "hero", "gallery", "plan", "preBaked", "photo",
-                           "district", "regionCode"})
+                           "districtProfile", "regionCode"})
 # areaUnit / rentUnit are DENIED outright (owner decision). A unit flip is the 10.76x error class:
 # it is applied BEFORE dominant_units, so correcting the one record that tips the vote silently
 # relabels EVERY figure in the dataset, and nothing downstream catches it - the area magnitude
@@ -217,7 +217,7 @@ def load_overrides(path, extra_fields=()) -> tuple[list[dict], list[str]]:
     if not f.exists():
         return [], []
     try:
-        raw = json.loads(f.read_text(encoding="utf-8"))
+        raw = json.loads(f.read_text(encoding="utf-8-sig"))
     except Exception as e:
         return [], [f"{f.name} is not valid JSON ({type(e).__name__}) - NO override was applied"]
     if not isinstance(raw, list):
@@ -299,6 +299,34 @@ def load_overrides(path, extra_fields=()) -> tuple[list[dict], list[str]]:
     return out, bad
 
 
+# The sentinel family for the override `expect` guard ONLY. Deliberately NARROWER than
+# normalize.looks_unknown (no market phrases such as "a consultar" - a broker may want the
+# guard to notice one), and widened HERE at the caller rather than in the shared set, exactly
+# as that function's docstring instructs and as deliver._is_tbd already does.
+_EXPECT_ABSENT = frozenset({"", "tbd", "tbc", "—", "-", "n/a", "none", "??"})
+
+
+def _ov_absent_like(v) -> bool:
+    return v is None or str(v).strip().lower() in _EXPECT_ABSENT
+
+
+def _ov_expect_same(cur, want) -> bool:
+    """`expect` equality where BOTH SIDES ABSENT is a match (the twin of repairs._expect_same).
+
+    A field an extractor left unset holds None, while the ledger, the Gaps Report and the card
+    all render it `tbd`. Comparing str(None) to 'tbd' made the documented `expect` form refuse
+    every such entry as SUPERSEDED, so the guard fired on its own correct premise.
+    """
+    if isinstance(cur, (int, float)) and not isinstance(cur, bool):
+        try:
+            return float(cur) == float(str(want).strip())
+        except (TypeError, ValueError):
+            pass
+    if str(cur) == str(want):
+        return True
+    return _ov_absent_like(cur) and _ov_absent_like(want)
+
+
 def _ov_record_matches(rec: dict, where: dict) -> bool:
     """Every key PRESENT in `where` must match (AND); absent keys are not constraints.
 
@@ -367,7 +395,7 @@ def apply_overrides(all_records: list[dict], overrides: list[dict]) -> dict:
             stale_field = False
             for fld, new in ov["set"].items():
                 cur = rec.get(fld)
-                if fld in ov["expect"] and str(cur) != str(ov["expect"][fld]):
+                if fld in ov["expect"] and not _ov_expect_same(cur, ov["expect"][fld]):
                     report["superseded"].append({
                         "id": ov["id"], "where": w, "set": {fld: new}, "why": ov["why"],
                         "reason": (f"`expect` said {fld} == {ov['expect'][fld]!r} but the record "
@@ -690,7 +718,16 @@ def _pick_gate_verdict(field: str, value, rent_unit: str | None = None,
     The enum/count/height gates below are deliberately conservative, because a gate that fires now
     strikes a field to "tbd": `breeam` passes on CONTAINING a band word (so "Target BREEAM
     Excellent" and "Excellent (targeted)" are fine and only a non-band fails), and an eaves height
-    stated in FEET returns "none" rather than being judged against a metre band."""
+    stated in FEET returns "none" rather than being judged against a metre band.
+
+    A RANGE is UNGATED (T1). extract_first_number deliberately returns None for "10-12 m" /
+    "EUR 114-126" (a range has no single value for arithmetic), and every numeric branch below
+    turns that None into "fail" - so a live run struck a printed clear height and two printed
+    office-rent ranges to tbd, each with a note calling the SOURCE implausible. A stated range
+    is stated data: it ships verbatim on display fields (the reader contract already routes the
+    governing END of a range into the *Val fields), so a range judges as "none", never "fail"."""
+    if isinstance(value, str) and field not in ("lat", "lng") and N.is_range(value):
+        return "none"   # a stated range is data the band cannot judge - never strike it
     if field in _RENT_GATE_FIELDS:
         num = value if isinstance(value, (int, float)) and not isinstance(value, bool) \
             else N.extract_first_number(str(value))
@@ -704,7 +741,7 @@ def _pick_gate_verdict(field: str, value, rent_unit: str | None = None,
             else N.extract_first_number(str(value))
         if num is None or num <= 0:
             return "fail"
-        lo, hi = N.area_band_for(area_unit)
+        lo, hi = N.area_band_for(area_unit, field=field)  # plotArea gets the SITE ceiling (T1)
         return "pass" if lo <= num <= hi else "fail"
     if field in ("lat", "lng"):
         if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -1050,6 +1087,25 @@ def conflict_candidates(clusters: list[list[dict]]) -> list[dict]:
     return out
 
 
+_QUALIFIER_RX = re.compile(r"\btarget(?:ing|ed)?\b", re.I)
+# certification-like fields where dropping a "Target"/"Targeting"/"Targeted" hedge is not
+# mere notation - it silently converts an ASPIRATION on a not-yet-certified building into a
+# claim of an ACHIEVED fact. Scoped narrowly (NOT all of _ENUM_EQ_FIELDS): `status` legitimately
+# drops "now"/"immediately" as pure notation with no achieved-vs-aspirational ambiguity.
+_QUALIFIER_PREFER_FIELDS = {"breeam", "epc"}
+
+
+def _more_qualified(field: str, a, b) -> bool:
+    """True if `b` states a Target/Targeting/Targeted hedge that `a` lacks, for a field where
+    dropping that hedge overclaims a not-yet-achieved fact. Callers only reach this once `a`
+    and `b` are ALREADY known equivalent (_values_equivalent) - same underlying grade,
+    different notation - so this never decides whether two values conflict, only which of two
+    equivalent spellings is safe to show."""
+    if field not in _QUALIFIER_PREFER_FIELDS:
+        return False
+    return bool(_QUALIFIER_RX.search(str(b))) and not _QUALIFIER_RX.search(str(a))
+
+
 def merge_cluster(cluster: list[dict], decisions: dict | None = None,
                   variants: dict | None = None) -> tuple[dict, dict, dict]:
     """`variants` is an OPTIONAL out-parameter (I10): pass a dict and it is filled with
@@ -1100,6 +1156,23 @@ def merge_cluster(cluster: list[dict], decisions: dict | None = None,
         # order (used both for the discard note and the override lookup)
         cand_recs: list[dict] = []
         seen_vals: list = []   # raw values (a list value is unhashable)
+        def _prov_of(rec, meta_):
+            return {
+                "source_file": meta_.get("source_file", ""),
+                "source_type": meta_.get("source_type", ""),
+                "locator": meta_.get("prov", {}).get(field, meta_.get("locator_base", "")),
+                # THE FOOTING OF THIS FIELD'S OWN SUPPLIER (B39). Every field resolves its
+                # own precedence contest, so an area can come from one record while
+                # `areaUnit` comes from another - and one dataset-wide label was then
+                # applied to all of them, scaling a figure by 10.7639 on a unit its own
+                # source never stated. `prov` is local to main() and never serialised into
+                # canonical, so recording it here cannot move a rendered byte.
+                # B58: a FIELD may state its own unit - a site area in acres inside a sq ft
+                # brochure is the normal UK shape. Prefer it; fall back to the record-level
+                # areaUnit. Without this the figure had nowhere to go, and two agents on one
+                # run split between dropping it and converting it themselves.
+                "areaUnitOfSource": (rec.get(f"{field}Unit") or rec.get("areaUnit") or None),
+            }
         for r in order:
             if field not in r:
                 continue
@@ -1110,22 +1183,7 @@ def merge_cluster(cluster: list[dict], decisions: dict | None = None,
             if chosen is None:
                 chosen = v
                 out[field] = v
-                prov[field] = {
-                    "source_file": meta.get("source_file", ""),
-                    "source_type": meta.get("source_type", ""),
-                    "locator": meta.get("prov", {}).get(field, meta.get("locator_base", "")),
-                    # THE FOOTING OF THIS FIELD'S OWN SUPPLIER (B39). Every field resolves its
-                    # own precedence contest, so an area can come from one record while
-                    # `areaUnit` comes from another - and one dataset-wide label was then
-                    # applied to all of them, scaling a figure by 10.7639 on a unit its own
-                    # source never stated. `prov` is local to main() and never serialised into
-                    # canonical, so recording it here cannot move a rendered byte.
-                    # B58: a FIELD may state its own unit - a site area in acres inside a sq ft
-                    # brochure is the normal UK shape. Prefer it; fall back to the record-level
-                    # areaUnit. Without this the figure had nowhere to go, and two agents on one
-                    # run split between dropping it and converting it themselves.
-                    "areaUnitOfSource": (r.get(f"{field}Unit") or r.get("areaUnit") or None),
-                }
+                prov[field] = _prov_of(r, meta)
             elif str(v) != str(chosen) and _values_equivalent(field, v, chosen):
                 # I10: the same fact in different notation. NOT a conflict - but recorded, because
                 # nothing may be silently dropped. It ships in its own Gaps Report section.
@@ -1135,6 +1193,18 @@ def merge_cluster(cluster: list[dict], decisions: dict | None = None,
                     variants[field] = (
                         f"'{v}' from {meta.get('source_file','?')} states the same value as "
                         f"'{chosen}' in different notation - no action needed")
+                # B-target-qualifier: for a certificate field (breeam/epc), a "Target"/
+                # "Targeting"/"Targeted" hedge is not mere notation once dropped - it is the
+                # difference between an aspiration and an achieved fact. When two equivalent
+                # notations disagree ONLY on that hedge, the MORE CAUTIOUS one always ships,
+                # regardless of source precedence - never the reverse (_more_qualified is
+                # directional: it only ever upgrades, never downgrades, an already-hedged
+                # `chosen`). This never fires for a genuine conflict - that goes through the
+                # `elif str(v) != str(chosen):` branch below instead, untouched.
+                if _more_qualified(field, chosen, v):
+                    chosen = v
+                    out[field] = v
+                    prov[field] = _prov_of(r, meta)
             elif str(v) != str(chosen):
                 # a different non-unknown value lost the precedence contest - record it
                 # B55: when the GROSS basis rule is what demoted it, say so. "discarded X (kept
@@ -1226,9 +1296,15 @@ def merge_cluster(cluster: list[dict], decisions: dict | None = None,
             _bad = out[field]
             out[field] = "tbd"
             _src = (prov.get(field) or {}).get("source_file") or "?"
+            # T1 wording: the note must never accuse the SOURCE of implausibility - on a live
+            # run this exact note shipped against values the source plainly printed (struck by
+            # a parse/band defect, since fixed). It names the PARSED value, the gate, and the
+            # two honest next steps; the extract still holds the original for the broker.
             conflicts[field] = (
-                f"'{_bad}' from {_src} fails the {field} plausibility gate, so the field is "
-                f"struck to tbd rather than shipping an implausible value. Confirm the real value "
+                f"the parsed value '{_bad}' (from {_src}) falls outside the {field} "
+                f"plausibility band, so the card ships tbd rather than a figure that may be a "
+                f"parse or unit error. Check the source page: if it genuinely prints this "
+                f"value, restore it via work/repairs.json; otherwise confirm the real value "
                 f"with the agent."
                 + (f" {conflicts[field]}" if conflicts.get(field) else ""))
     # SOURCE-INTERNAL disagreements. Everything above detects a conflict BETWEEN records, so a
@@ -1443,7 +1519,7 @@ def load_plan_rejected(path) -> set:
         p = Path(path)
         if not p.exists():
             return out
-        loaded = json.loads(p.read_text(encoding="utf-8"))
+        loaded = json.loads(p.read_text(encoding="utf-8-sig"))
     except Exception:
         return out
     if not isinstance(loaded, dict):
@@ -1874,6 +1950,13 @@ def canonicalize(p: dict) -> dict:
     # (37 validate-data blocks in one real run came from exactly this)
     if p.get("country") and not N.looks_unknown(p.get("country")):
         p["country"] = N.country_iso(p["country"])
+    # motorway: agents write a paragraph ("Junction 18/18A M5 2 miles to the south;
+    # Junction 1 M49 4.5 miles to the north; M4/M5 interchange 10 miles to the north").
+    # The card meta line and the compare cell have room for a locator, not a sentence, so
+    # it is condensed to its road/junction/distance triples. Every token in the result is
+    # verbatim from the source and the full sentence stays in the Source Ledger.
+    if isinstance(p.get("motorway"), str):
+        p["motorway"] = N.short_motorway(p["motorway"])[0]
     # rent: merge OWNS the display/numeric pair. When the numeric exists, the
     # display is ALWAYS regenerated from it (an agent-written "3,75 €/m²/mes"
     # string must not block the pair-consistency gate); when only a display
@@ -2111,7 +2194,7 @@ def main() -> None:
 
     all_records = []
     for f in args.records:
-        all_records.extend(json.loads(Path(f).read_text(encoding="utf-8")))
+        all_records.extend(json.loads(Path(f).read_text(encoding="utf-8-sig")))
 
     for _r in all_records:            # v22 Phase 1: quarantine off-spec structures pre-merge
         _normalise_offspec(_r)
@@ -2154,7 +2237,7 @@ def main() -> None:
     MATCH_DECISIONS = {}  # pair_id -> 'same'|'different'|{verdict,reason} (grey-zone sub-agent)
     if args.match_decisions and Path(args.match_decisions).exists():
         try:
-            loaded = json.loads(Path(args.match_decisions).read_text(encoding="utf-8"))
+            loaded = json.loads(Path(args.match_decisions).read_text(encoding="utf-8-sig"))
             MATCH_DECISIONS = loaded if isinstance(loaded, dict) else {}
         except Exception:
             MATCH_DECISIONS = {}  # best-effort, exactly like PHOTO_MAP - a bad file -> deterministic
@@ -2187,7 +2270,7 @@ def main() -> None:
     FIELD_DECISIONS = {}  # conflict_id -> {pick, reason} (cross-source value-conflict sub-agent)
     if args.field_decisions and Path(args.field_decisions).exists():
         try:
-            loaded = json.loads(Path(args.field_decisions).read_text(encoding="utf-8"))
+            loaded = json.loads(Path(args.field_decisions).read_text(encoding="utf-8-sig"))
             FIELD_DECISIONS = loaded if isinstance(loaded, dict) else {}
         except Exception:
             FIELD_DECISIONS = {}  # best-effort, exactly like MATCH_DECISIONS - a bad file -> precedence
@@ -2202,13 +2285,13 @@ def main() -> None:
     PHOTO_MAP = {}  # match_key -> brochure relpath (confident photo matches from the sub-agent)
     if args.photo_map and Path(args.photo_map).exists():
         try:
-            PHOTO_MAP = json.loads(Path(args.photo_map).read_text(encoding="utf-8")) or {}
+            PHOTO_MAP = json.loads(Path(args.photo_map).read_text(encoding="utf-8-sig")) or {}
         except Exception:
             PHOTO_MAP = {}
     PHOTO_DESCRIPTIONS = {}  # brochure name -> {description, page, quote, text_hash} (sub-agent pick)
     if args.photo_descriptions and Path(args.photo_descriptions).exists():
         try:
-            loaded = json.loads(Path(args.photo_descriptions).read_text(encoding="utf-8"))
+            loaded = json.loads(Path(args.photo_descriptions).read_text(encoding="utf-8-sig"))
             PHOTO_DESCRIPTIONS = loaded if isinstance(loaded, dict) else {}
         except Exception:
             PHOTO_DESCRIPTIONS = {}  # best-effort, exactly like PHOTO_MAP - a bad file -> heuristic
@@ -2562,7 +2645,7 @@ def main() -> None:
     # file is treated as absent (no advisory, never a crash), exactly like --match-decisions.
     if args.match_conflicts and Path(args.match_conflicts).exists():
         try:
-            mv_lines = json.loads(Path(args.match_conflicts).read_text(encoding="utf-8"))
+            mv_lines = json.loads(Path(args.match_conflicts).read_text(encoding="utf-8-sig"))
             if isinstance(mv_lines, list):
                 all_conflicts.extend(str(s) for s in mv_lines if str(s).strip())
         except Exception:
@@ -2580,7 +2663,7 @@ def main() -> None:
     pois = []
     poi_lib = C.ASSETS / "poi_library.json"
     if poi_lib.exists():
-        lib = json.loads(poi_lib.read_text(encoding="utf-8"))
+        lib = json.loads(poi_lib.read_text(encoding="utf-8-sig"))
         lib_pois = (lib.get("pois", lib) if isinstance(lib, dict) else lib) or []
         located = [p for p in properties
                    if isinstance(p.get("lat"), (int, float)) and isinstance(p.get("lng"), (int, float))]
@@ -2682,7 +2765,7 @@ def main() -> None:
     # into the HTML - meta is audit/orchestrator data, so this never affects the chrome.
     if args.requirements and Path(args.requirements).exists():
         try:
-            reqs = json.loads(Path(args.requirements).read_text(encoding="utf-8"))
+            reqs = json.loads(Path(args.requirements).read_text(encoding="utf-8-sig"))
             if reqs:
                 meta["requirements"] = reqs
         except Exception:
@@ -2735,7 +2818,7 @@ def _load_yaml(path):
     if not path or not Path(path).exists():
         return {}
     import yaml
-    return yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    return yaml.safe_load(Path(path).read_text(encoding="utf-8-sig")) or {}
 
 
 if __name__ == "__main__":

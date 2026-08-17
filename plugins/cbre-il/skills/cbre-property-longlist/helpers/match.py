@@ -469,12 +469,23 @@ def dedupe(records: list[dict], decisions: dict | None = None) -> list[list[dict
     `decisions` is supplied (work/match_decisions.json, {pair_id: 'same'|'different'|
     {verdict: ...}}) it resolves the GREY pairs; the auto/forbidden tiers are unchanged
     and a forbidden pair is never merged regardless of the verdict. `decisions=None`
-    (every offline path) is byte-identical to the historical behaviour."""
+    (every offline path) is byte-identical to the historical behaviour.
+
+    FORBIDDEN-AWARE (T1): a record may not join a cluster that already contains a member
+    it is `forbidden` against. Single-link closure used to ignore this: with a PDF and a
+    PPTX of one deck, pages 7/8 were correctly `forbidden` same-source pairs, but the
+    cross-format links (an identical printed map pin + <=15% area gap -> `auto`) chained
+    pdf7-pptx7 and pptx7-pdf8 into ONE cluster, fusing two distinct schemes and
+    manufacturing 11 phantom source disagreements in a delivered ledger. The veto uses
+    verdicts pair_class already computes, so a corpus with no forbidden edge is
+    byte-identical; the failure direction becomes an over-SPLIT at worst, which the
+    coverage dedupe gate catches, where the over-merge was silent."""
     clusters: list[list[dict]] = []
     for rec in records:
         placed = False
         for cl in clusters:
-            if any(same_property(rec, other, decisions) for other in cl):
+            if any(same_property(rec, other, decisions) for other in cl) \
+                    and not any(pair_class(rec, other) == "forbidden" for other in cl):
                 cl.append(rec)
                 placed = True
                 break

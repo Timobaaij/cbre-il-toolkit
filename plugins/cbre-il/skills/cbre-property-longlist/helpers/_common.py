@@ -184,14 +184,13 @@ DATA_MARKERS = {
 # `const LOCALE = "{{locale}}"`, then localises chrome at render via data-i18n*/T().
 CONFIG_TOKENS = [
     "topbar_meta", "eyebrow", "title_html", "lede", "footer_copyright", "doc_title",
-    "kpi_properties", "kpi_countries", "kpi_regions", "kpi_developers",
-    "kpi_wh_area", "kpi_rent", "kpi_countries_sub", "kpi_regions_sub",
+    "kpi_properties", "kpi_countries", "kpi_regions",     "kpi_wh_area", "kpi_rent", "kpi_countries_sub", "kpi_regions_sub",
     "kpi_wh_area_sub", "kpi_rent_sub", "dist_mode", "ui_json", "locale",
 ]
 
 
 def load_text(path: Path) -> str:
-    return Path(path).read_text(encoding="utf-8")
+    return Path(path).read_text(encoding="utf-8-sig")
 
 
 _TEMPLATE_CACHE: str | None = None
@@ -229,7 +228,7 @@ def load_version() -> dict:
 
 
 def load_json(path: Path):
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
 
 # In-process parse-cache for canonical.json. run.py drives merge -> enrich -> the pre-build
@@ -293,7 +292,7 @@ def emit_review_view(canonical_path, dest=None) -> bool:
     fails silently is worse than a run that stops, so the caller now BLOCKS on False. (B18)"""
     try:
         p = Path(canonical_path)
-        d = json.loads(p.read_text(encoding="utf-8"))
+        d = json.loads(p.read_text(encoding="utf-8-sig"))
     except Exception:
         return False
 
@@ -484,12 +483,12 @@ _CANON_PROPERTY_FIELDS = None
 def canonical_property_fields() -> frozenset:
     """Property field names the SCHEMA declares ($defs.property.properties) UNION every
     p.<field> the template reads. Used to protect canonical CONTAINER objects
-    (gallery/preBaked/district) at the merge boundary and by the render-boundary gate.
+    (gallery/preBaked/districtProfile) at the merge boundary and by the render-boundary gate.
     NOT a display allowlist for scalars: any real scalar attribute still auto-shows."""
     global _CANON_PROPERTY_FIELDS
     if _CANON_PROPERTY_FIELDS is None:
         try:
-            schema = json.loads(SCHEMA_FILE.read_text(encoding="utf-8"))
+            schema = json.loads(SCHEMA_FILE.read_text(encoding="utf-8-sig"))
             keys = set((((schema.get("$defs") or {}).get("property") or {})
                         .get("properties") or {}).keys())
         except Exception:
@@ -526,7 +525,7 @@ def looks_like_locator(v) -> bool:
 IDENTIFIER_FIELDS = frozenset({
     "id", "country", "developer", "park", "city", "landlord", "motorway", "region", "regionCode",
     "lat", "lng", "coordsApprox", "breeam", "rentUnit", "areaUnit", "mapLink", "photo", "gallery",
-    "plan", "preBaked", "district", "reit",
+    "plan", "preBaked", "district", "districtProfile", "reit",
     "warehouseRentVal", "officeRentVal", "officeAreaVal", "expansionParkVal",
     # rent/price/area strings are figure+unit+currency -> kept verbatim (source convention)
     "warehouseRent", "officeRent", "serviceCharge", "landPrice", "plotArea", "warehouseArea",

@@ -134,7 +134,6 @@ def compute_kpis(props: list[dict], regions: dict, units: dict | None = None,
         "kpi_properties": str(len(props)),
         "kpi_countries": str(len(country_set)),
         "kpi_regions": str(n_regions),
-        "kpi_developers": str(len(distinct("developer"))),
         "kpi_wh_area": _fmt_thousands_k(min(areas), max(areas)) if areas else "tbd",
         "kpi_rent": ((f"{cur}{min(rents):g}" if min(rents) == max(rents)
                       else f"{cur}{min(rents):g} - {max(rents):g}") if rents else "tbd"),

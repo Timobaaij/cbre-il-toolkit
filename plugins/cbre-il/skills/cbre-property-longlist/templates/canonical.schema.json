@@ -62,7 +62,7 @@
       "required": [
         "id", "country", "park", "developer", "city", "status", "photo"
       ],
-      "additionalProperties": true,
+      "additionalProperties": {"type": ["string", "number", "boolean", "null"]},
       "properties": {
         "id": {"type": "integer", "minimum": 1},
         "country": {"type": "string", "minLength": 2, "maxLength": 3},
@@ -109,15 +109,17 @@
         "breeam": {"type": "string", "description": "BREEAM sustainability grade ONLY - Pass / Good / Very Good / Excellent / Outstanding (optionally prefixed 'Target'). NEVER an EPC letter band; an EPC belongs in `epc`."},
         "epc": {"type": "string", "description": "EPC (energy performance) rating - a letter band such as A+ / A / B, optionally prefixed 'Target'. A separate certificate from BREEAM, shown in the dashboard's Additional Details section. Never folded into `breeam`."},
         "postcode": {"type": "string", "description": "The property's postcode, as the source states it (e.g. 'NN17 4XD'). Declared first-class rather than merely tolerated as an auto-shown extra: it ships, it materially improves geocoding, and two independent reviewers flagged it as droppable-but-dropped."},
+        "district": {"type": "string", "description": "The district / industrial estate / sub-area a park or building sits within, as the source states it (e.g. 'Earlstrees Industrial Estate', 'Oakley Hay Industrial Estate'). A plain, reader-fillable field like city/park - NOT to be confused with `districtProfile`, the separate orchestrator-filled labour-market research object below."},
         "motorway": {"type": "string"},
         "mapLink": {"type": "string"},
+        "brochureLink": {"type": "string", "description": "URL of the agent/landlord brochure or listing page for THIS property. Rendered as a View brochure link in the detail modal; never invented, only carried from a source that states it."},
         "description": {"type": "string"},
         "photo": {"type": "string", "description": "data:image/...;base64,... or a placeholder data URI. This is the HERO (gallery[0])."},
         "gallery": {"type": "array", "items": {"type": "string"}, "description": "Up to GALLERY_MAX photo data URIs for the carousel, best-first (photographic_score), hero first. PAGE-SCOPED so a multi-property deck contributes only this property's photos. Always contains at least [photo]; the carousel falls back to [photo] when absent."},
         "plan": {"type": "string", "description": "A site-plan image data URI. merge.py harvests it from the brochure page (page_plan: balanced white/ink signature; the hyperlinked location map and boilerplate are excluded); a standalone plan file bound by the orchestrator (extract_image.py kind=plan) takes precedence. On a plan-only page the plan also serves as the hero."},
-        "district": {
+        "districtProfile": {
           "type": "object",
-          "description": "ORCHESTRATOR-FILLED: optional local labour-market micro-profile from research. The deterministic spine does not populate it; region-level workforce data lives in top-level regions{} via enrich --regions.",
+          "description": "ORCHESTRATOR-FILLED: optional local labour-market micro-profile from research. The deterministic spine does not populate it; region-level workforce data lives in top-level regions{} via enrich --regions. Renamed from `district` (v38) because that key collided with the plain, reader-fillable district/estate-name STRING field every interpretation sub-agent is told is fillable - the two are unrelated concepts and must never share a key.",
           "additionalProperties": true,
           "properties": {
             "district": {"type": "string"},
