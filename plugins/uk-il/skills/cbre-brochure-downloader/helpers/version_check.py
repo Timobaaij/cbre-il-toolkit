@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """version_check.py - best-effort "is a newer CBRE I&L Toolkit available?" nudge.
 
-Compares THIS installed plugin's version (the cbre-il `plugin.json`) against the
+Compares THIS installed plugin's version (the uk-il `plugin.json`) against the
 latest version published on the marketplace's main branch, and - only if the
 installed copy is behind - prints a one-line update hint to STDERR.
 
@@ -28,7 +28,7 @@ from pathlib import Path
 # The authoritative published version lives in plugin.json on the default branch.
 RAW_PLUGIN_JSON = (
     "https://raw.githubusercontent.com/Timobaaij/cbre-il-toolkit/main/"
-    "plugins/cbre-il/.claude-plugin/plugin.json"
+    "plugins/uk-il/.claude-plugin/plugin.json"
 )
 UPDATE_DOC = "https://github.com/Timobaaij/cbre-il-toolkit#updating"
 TIMEOUT_S = 2.5
@@ -62,7 +62,7 @@ def _local_version() -> str | None:
 def _remote_version() -> str | None:
     try:
         req = urllib.request.Request(
-            RAW_PLUGIN_JSON, headers={"User-Agent": "cbre-il-version-check"}
+            RAW_PLUGIN_JSON, headers={"User-Agent": "uk-il-version-check"}
         )
         with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
             return json.loads(resp.read().decode("utf-8")).get("version")

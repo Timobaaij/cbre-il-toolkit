@@ -7,6 +7,29 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.4.0] — 2026-08-17
+
+The marketplace now carries **two plugins**, versioned and installed independently:
+**CBRE I&L Toolkit 1.4.0** (six skills) and the new **UK I&L Toolkit 1.0.0** (one skill).
+
+### Added
+- **A second plugin: `uk-il-toolkit` ("UK I&L Toolkit"), at `plugins/uk-il`.** Same repo,
+  same marketplace, same auto-sync — but its own manifest and version, so updating one
+  plugin never re-syncs the other. Installed separately from the marketplace listing.
+### Changed
+- **The brochure downloader moved out of the CBRE I&L Toolkit and into the UK I&L Toolkit.**
+  It is the same skill, unchanged, still invoked as `/cbre-brochure-downloader`. Its update
+  notifier was retargeted at the UK plugin's own `plugin.json`; left pointing at the CBRE
+  manifest it would have compared against the wrong plugin and reported phantom updates.
+- CBRE I&L Toolkit is now six skills; its description, the marketplace description and the
+  README's "What's inside" table were updated to match, and the README gained a section for
+  the second plugin.
+
+### Upgrade note
+**If you had the brochure downloader via the CBRE I&L Toolkit, install "UK I&L Toolkit" to
+keep it.** Syncing the CBRE plugin to 1.4.0 removes that skill, because it now lives in the
+other plugin. Nothing else changes, and no other skill is affected.
+
 ## [1.3.1] — 2026-08-17
 ### Fixed
 - **Brochure downloader — a fresh window per file, because a tab only gets one download.**
@@ -498,6 +521,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.4.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.4.0
 [1.3.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.3.1
 [1.3.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.3.0
 [1.2.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.2.1

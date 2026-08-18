@@ -1,8 +1,8 @@
 # CBRE I&L Toolkit
 
 CBRE Industrial & Logistics skills for [Claude](https://www.claude.com/) — branded
-decks, account briefings, outreach angles, property longlists, brochure downloads, warehouse-network
-maps, and on-brand writing. Packaged as a Claude plugin so the whole team can install it in a couple of
+decks, account briefings, outreach angles, property longlists, warehouse-network maps, and on-brand
+writing. Packaged as a Claude plugin so the whole team can install it in a couple of
 clicks.
 
 ## What's inside
@@ -13,22 +13,36 @@ clicks.
 | **Account briefings** | Industrial & Logistics account-briefing decks built from your research. |
 | **Outreach angles** | A ranked sheet of evidence-backed reasons to contact a company now — each with a trigger, a way in, and a ready-to-send email hook — as a shareable CBRE-branded HTML file. |
 | **Property longlist** | An interactive longlist dashboard from a folder of brochures, emails, and spreadsheets. |
-| **Brochure downloader** | Every brochure PDF linked from a longlist spreadsheet, downloaded through your own browser and packaged as one clean zip — named after each property and validated — ready for the property longlist. |
 | **Warehouse network mapper** | An auditable Excel of a company's warehouse and distribution network across Europe (or one country), with every facility geocoded from a real address. |
 | **CBRE voice** | Any copy rewritten or reviewed in the CBRE tone of voice. |
 
 Once it's installed, just describe what you need and Claude runs the right skill.
 
+### Also in this marketplace: UK I&L Toolkit
+
+The same marketplace carries a second, separately installed plugin for UK-specific work.
+Install it alongside the CBRE I&L Toolkit — the two are versioned independently, so
+updating one never re-syncs the other.
+
+| Skill | What it does |
+|-------|--------------|
+| **Brochure downloader** | Every brochure PDF linked from a longlist spreadsheet, downloaded through your own browser and packaged as one clean zip — named after each property and validated — ready for the property longlist. |
+
+> **Moved in v1.4.0:** the brochure downloader used to ship inside the CBRE I&L Toolkit.
+> If you had it from there, install **UK I&L Toolkit** to keep it.
+
 ## Install
 
 **In Claude Cowork:** open **Customize → Plugins → ＋ → Add marketplace → Add from a
-repository**, enter `Timobaaij/cbre-il-toolkit`, then install **CBRE I&L Toolkit**.
+repository**, enter `Timobaaij/cbre-il-toolkit`, then install **CBRE I&L Toolkit** — and
+**UK I&L Toolkit** if you want the brochure downloader too.
 
 **In Claude Code (CLI):**
 
 ```
 /plugin marketplace add Timobaaij/cbre-il-toolkit
 /plugin install cbre-il-toolkit@cbre-il-toolkit
+/plugin install uk-il-toolkit@cbre-il-toolkit    # optional: the brochure downloader
 ```
 
 ## Updating

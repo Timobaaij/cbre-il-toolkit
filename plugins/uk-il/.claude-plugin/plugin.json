@@ -1,0 +1,12 @@
+{
+  "name": "uk-il-toolkit",
+  "description": "The UK Industrial & Logistics toolkit for Claude. Download every brochure PDF linked from a property longlist spreadsheet and package them as one clean zip, named after each property and validated, ready for the CBRE I&L Toolkit's property longlist. Versioned and installed independently of the CBRE I&L Toolkit, so updating one never re-syncs the other.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Timo Baaij",
+    "email": "timo.baaij@cbre.com"
+  },
+  "homepage": "https://github.com/timobaaij/cbre-il-toolkit",
+  "repository": "https://github.com/timobaaij/cbre-il-toolkit",
+  "keywords": ["cbre", "uk", "industrial-logistics", "property"]
+}
