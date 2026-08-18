@@ -26,6 +26,7 @@ updating one never re-syncs the other.
 
 | Skill | What it does |
 |-------|--------------|
+| **Kato longlist** | A client-ready longlist built straight from a Kato requirement, enriched with rents and specs from the broker emails — a per-property dataset, a clean client Excel, and a CBRE-branded HTML dashboard. Asks for your CBRE email and Kato password at the start of a run; they are never stored in the repo. |
 | **Brochure downloader** | Every brochure PDF linked from a longlist spreadsheet, downloaded through your own browser and packaged as one clean zip — named after each property and validated — ready for the property longlist. |
 
 > **Moved in v1.4.0:** the brochure downloader used to ship inside the CBRE I&L Toolkit.

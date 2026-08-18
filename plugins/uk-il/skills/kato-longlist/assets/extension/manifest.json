@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Kato Longlist Capture (CBRE)",
+  "version": "1.0.0",
+  "description": "Captures a Kato requirement's longlist into one offline bundle for CBRE Claude workflows. Reads only what you can already see; sends nothing anywhere.",
+  "minimum_chrome_version": "116",
+  "permissions": [],
+  "host_permissions": [
+    "https://*.kato.app/*",
+    "https://as-images.imgix.net/*",
+    "https://s3-eu-west-1.amazonaws.com/agents-society-assets/*",
+    "https://s3-eu-west-1.amazonaws.com/agents-society-assets-files/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.kato.app/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "Capture Kato longlist",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": []
+}

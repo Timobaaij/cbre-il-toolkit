@@ -7,6 +7,29 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.5.0] — 2026-08-18
+
+Marketplace 1.5.0: **UK I&L Toolkit 1.1.0** gains a second skill. CBRE I&L Toolkit is
+unchanged at 1.4.0, so syncing this release does not re-download it.
+
+### Added
+- **`kato-longlist` in the UK I&L Toolkit.** Builds a client-ready I&L longlist straight from a
+  Kato (`agency.kato.app`) requirement, enriched with rents and specs from the broker email
+  export, and ends in three deliverables: a comprehensive per-property dataset, a clean client
+  Excel, and a CBRE-branded HTML dashboard. The division of labour is explicit — the model makes
+  every judgement (matching broker rents, curating specs, picking site plans, choosing client
+  columns) while the Python helpers only move bytes (login, API pulls, downloads, image resizing,
+  `.msg` parsing). Ships 16 helpers and a Chrome extension for the browser-side collection.
+### Security
+- **The Kato login is asked for, never shipped.** `email` and `password` arrive blank in
+  `run.example.yaml`; the skill asks for the CBRE email and Kato password at the start of a run
+  and writes them only into the working directory's `run.yaml`, which a new skill-level
+  `.gitignore` excludes — so a filled-in config cannot be committed from a public repository.
+  Real credentials present in the upload were removed before it was committed and never reached
+  git history.
+- The `ors_api_key` ships filled in, as the free organisation-wide openrouteservice key, and can
+  be swapped for a personal key from `openrouteservice.org/dev`.
+
 ## [1.4.0] — 2026-08-17
 
 The marketplace now carries **two plugins**, versioned and installed independently:
@@ -521,6 +544,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.5.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.5.0
 [1.4.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.4.0
 [1.3.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.3.1
 [1.3.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.3.0

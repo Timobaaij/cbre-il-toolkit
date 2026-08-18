@@ -1,7 +1,7 @@
 {
   "name": "uk-il-toolkit",
-  "description": "The UK Industrial & Logistics toolkit for Claude. Download every brochure PDF linked from a property longlist spreadsheet and package them as one clean zip, named after each property and validated, ready for the CBRE I&L Toolkit's property longlist. Versioned and installed independently of the CBRE I&L Toolkit, so updating one never re-syncs the other.",
-  "version": "1.0.0",
+  "description": "The UK Industrial & Logistics toolkit for Claude. Build a client-ready I&L longlist from a Kato requirement — enriched with rents and specs from the broker emails, ending in a per-property dataset, a clean client Excel and a CBRE-branded HTML dashboard — and download every brochure PDF linked from a longlist spreadsheet as one clean zip, named after each property and validated. Versioned and installed independently of the CBRE I&L Toolkit, so updating one never re-syncs the other.",
+  "version": "1.1.0",
   "author": {
     "name": "Timo Baaij",
     "email": "timo.baaij@cbre.com"

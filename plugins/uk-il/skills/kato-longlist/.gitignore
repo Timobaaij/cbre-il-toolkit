@@ -1,0 +1,13 @@
+# NEVER commit a filled-in run config: it holds a live Kato login and an API key, and this
+# skill ships from a public repository. Only run.example.yaml (placeholders) is tracked.
+run.yaml
+run.*.yaml
+!run.example.yaml
+
+# run outputs and transient artefacts
+properties/
+Emails.zip
+*.xlsx
+*.msg
+**/__pycache__/
+*.pyc

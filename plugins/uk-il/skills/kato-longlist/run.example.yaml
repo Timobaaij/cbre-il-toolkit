@@ -1,0 +1,33 @@
+# Kato-Longlist run configuration.
+# Copy this into the project working directory as `run.yaml` and edit.
+#
+# `email` and `password` are deliberately BLANK here and are never shipped: the skill ASKS
+# you for your CBRE email and Kato password at the start of a run and writes them into your
+# local `run.yaml`, which is git-ignored (see the .gitignore beside this file). Never commit
+# a filled-in run.yaml — this skill ships from a public repository.
+
+# The Kato requirement URL (any tab is fine — the requirement id is parsed from it).
+kato_url: "https://agency.kato.app/#/requirements/REQUIREMENT_ID/manage/shortlist?include_discounted=false&table_tab=longlist&view=list&order=group_position"
+
+# Kato login — left blank on purpose; the skill asks for these and fills them in.
+email: ""
+password: ""
+
+# Working directory where outputs are written (properties/, dataset, excel).
+# Defaults to the folder that contains this run.yaml if left blank.
+work_dir: ""
+
+# Broker email export (Outlook .msg files), zipped or a folder, relative to work_dir.
+emails_zip: "Emails.zip"
+
+# Image handling — resize at source via imgix; brochures/PDFs kept as-is.
+image_max_px: 1200
+image_quality: 70
+
+# Login browser: headless usually works; set false if reCAPTCHA blocks the login.
+headless: true
+
+# openrouteservice API key (HGV drive-times in the CBRE dashboard, step 7).
+# This is the free organisation-wide key and ships ready to use; replace it with your own
+# from https://openrouteservice.org/dev if you would rather not share the quota.
+ors_api_key: "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjkyNDA0NzY1NDFiYTQ0YjZiMTYwNzljOTA0YjE3MGQ2IiwiaCI6Im11cm11cjY0In0="
