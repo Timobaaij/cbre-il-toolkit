@@ -7,6 +7,32 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.6.0] — 2026-08-19
+
+Marketplace 1.6.0: **UK I&L Toolkit 1.2.0**. CBRE I&L Toolkit is unchanged at 1.4.0.
+
+### Fixed
+- **Kato longlist no longer writes into the installed CBRE property-longlist skill.** Kato
+  deliberately ships no dashboard template of its own — it reuses whatever the installed
+  toolkit provides, so every run inherits the newest CBRE chrome. But applying its card and
+  modal tweaks meant `patch_template.py` writing into that skill's
+  `assets/dashboard_template.html` and re-stamping its `assets/VERSION`, because the toolkit
+  resolves both from its own skill root with no path override. A Kato run therefore mutated
+  another plugin's installed files, leaving the install `-kato` tagged and its integrity
+  manifest out of step.
+
+  A new step 7a.5 (`helpers/toolkit_shadow.py`) now makes a per-run **shadow copy** of the
+  installed toolkit (~28 MB in about a second: `evals/` and `docs/` skipped, `vendor/`
+  hardlinked) and every later step uses the shadow. It is self-contained — the toolkit derives
+  its `SKILL_ROOT` from `__file__`, so template, VERSION, integrity manifest, i18n, datasets
+  and gates all resolve inside the shadow — and rebuilt fresh each run, so a toolkit update is
+  picked up automatically (`--keep` reuses it when resuming). Runtime caches are unaffected,
+  since the toolkit writes those into the work dir. `patch_template.py` now refuses any target
+  that is not a shadow, so this cannot regress silently, and warns when an install is already
+  `-kato` tagged by an older run.
+- Corrected the documented toolkit entry point: `<toolkit>\helpers\run.py`, not
+  `<toolkit>\run.py`.
+
 ## [1.5.0] — 2026-08-18
 
 Marketplace 1.5.0: **UK I&L Toolkit 1.1.0** gains a second skill. CBRE I&L Toolkit is
@@ -544,6 +570,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.6.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.6.0
 [1.5.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.5.0
 [1.4.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.4.0
 [1.3.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.3.1

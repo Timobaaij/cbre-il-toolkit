@@ -172,11 +172,32 @@ def main():
                     help="the live cbre-property-longlist toolkit skill dir (contains assets/dashboard_template.html)")
     ap.add_argument("--dry-run", action="store_true",
                     help="report what would change without writing the template or VERSION")
+    ap.add_argument("--allow-inplace", action="store_true",
+                    help="permit patching a toolkit that is NOT a per-run shadow (see the guard below)")
     args = ap.parse_args()
     tpl_path = os.path.join(args.toolkit, "assets", "dashboard_template.html")
     ver_path = os.path.join(args.toolkit, "assets", "VERSION")
     if not os.path.isfile(tpl_path):
         sys.exit(f"ERROR: template not found: {tpl_path}")
+
+    # --- Shadow guard -------------------------------------------------------------
+    # This helper WRITES the template and VERSION. That is safe on a per-run shadow
+    # (toolkit_shadow.py) and unsafe on a durable install: the tweaks and the '-kato'
+    # VERSION tag would persist and every later NON-Kato longlist run would silently
+    # inherit Kato's presentation decisions. So refuse unless the target is a shadow.
+    if not (args.dry_run or args.allow_inplace):
+        if not os.path.isfile(os.path.join(args.toolkit, ".kato-shadow.json")):
+            sys.exit(
+                f"ERROR: {args.toolkit} is not a per-run shadow, so patching it would modify the\n"
+                f"       INSTALLED cbre-property-longlist skill permanently - every later non-Kato\n"
+                f"       longlist would inherit Kato's card/modal tweaks and a 'v..-kato' VERSION.\n"
+                f"       Shadow it first (step 7a.5):\n"
+                f"         python \"{os.path.join(os.path.dirname(os.path.abspath(__file__)), 'toolkit_shadow.py')}\" "
+                f"--source \"{args.toolkit}\" --work <work>\n"
+                f"       then re-run this against <work>\\toolkit (and build from there too).\n"
+                f"       Use --dry-run to inspect a new toolkit version without touching it, or\n"
+                f"       --allow-inplace only when the toolkit copy is genuinely disposable."
+            )
 
     t = open(tpl_path, encoding="utf-8").read()
     ver = "unknown"
@@ -242,6 +263,27 @@ def main():
     if not saw_sha:
         out.append(f"chrome_sha256={sha}")
     open(ver_path, "w", encoding="utf-8").write('\n'.join(out) + '\n')
+
+    # Best-effort: keep the toolkit's own assets/integrity.json manifest in step with the two
+    # files we just rewrote. Purely cosmetic - preflight.py compares SIZE only and reports a
+    # mismatch as a non-blocking note - but without this every Kato run prints two "differs from
+    # the integrity manifest" notes that read like a defect. Never fails the run.
+    try:
+        import json
+        man_path = os.path.join(os.path.dirname(tpl_path), "integrity.json")
+        if os.path.isfile(man_path):
+            man = json.load(open(man_path, encoding="utf-8"))
+            changed = False
+            for rel, path in (("assets/dashboard_template.html", tpl_path),
+                              ("assets/VERSION", ver_path)):
+                if rel in man:
+                    blob = open(path, "rb").read()
+                    man[rel] = {"size": len(blob), "sha256": hashlib.sha256(blob).hexdigest()}
+                    changed = True
+            if changed:
+                json.dump(man, open(man_path, "w", encoding="utf-8"), indent=2)
+    except Exception:
+        pass
 
     print(f"patch_template: applied={applied or '-'} skipped={skipped or '-'} retired={retired_names}")
     print(f"  template {ver} SHA -> {sha[:16]}  (VERSION reconciled)")

@@ -116,10 +116,28 @@ Writes the client workbook (Longlist + For Sale sheets, merged header bands, lin
 **7. CBRE HTML dashboard** — via the toolkit skill `cbre-il-toolkit:cbre-property-longlist` (invoke it
 to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute paths). Set
 `ORS_API_KEY` in the running shell so drive-times are HGV.
+
+> **Two paths, don't mix them.** Both are the toolkit's **skill root** (the dir containing `helpers/`
+> and `assets/`), not its `helpers/` dir — so toolkit scripts are `<toolkit>\helpers\<name>.py`.
+> `<install>` is the resolved toolkit skill directory — whatever is installed right now, so Kato always
+> inherits the newest CBRE chrome; Kato ships **no** dashboard template of its own. `<toolkit>` is the
+> per-run **shadow** of it (step 7a.5) and is what every later step uses. Kato writes only to the
+> shadow, never to `<install>`.
+
 - **7a.** `python "%HELP%\toolkit_tracker.py" --config run.yaml` — writes `longlist_inputs/` (the
   availability tracker + `project.yaml`, all enrichment on, ORS key baked).
+- **7a.5. Shadow the toolkit** — `python "%HELP%\toolkit_shadow.py" --source "<install>" --work <work>`
+  → prints `<work>\toolkit`, which is `<toolkit>` for the rest of step 7. Copies the installed
+  toolkit (~28 MB, ~1 s; skips `evals/`, `docs/`, hardlinks `vendor/`) so step 7e.5 can patch the
+  template without touching the install. The toolkit derives its `SKILL_ROOT` from `__file__`, so
+  the shadow is self-contained — template, VERSION, integrity manifest, i18n, datasets and gates all
+  resolve inside it. Rebuilt fresh each run, so a toolkit update is picked up automatically; pass
+  `--keep` to reuse the existing shadow when resuming. Runtime caches are unaffected (the toolkit
+  writes `geocode_cache.json` / `poi_osm_cache.json` / `osrm_cache.json` / `regions_cache.json` into
+  the **work** dir, not the skill dir). It warns if `<install>` is already `-kato` tagged, which means
+  an older Kato run patched it in place — reinstall or update the toolkit to get pristine chrome back.
 - **7b.** Run the toolkit spine on that folder:
-  `python "<toolkit>\run.py" --folder <work>\longlist_inputs --work <work>\longlist_work --client "<client>" --geocode --pois --osrm --regions`.
+  `python "<toolkit>\helpers\run.py" --folder <work>\longlist_inputs --work <work>\longlist_work --client "<client>" --geocode --pois --osrm --regions`.
   When it asks for the tracker column map (exit 3), write the map + its blind-check file, then re-run;
   it builds `canonical.json` and passes its data gates. (Drive-times report `driving-hgv`.)
 - **7c.** `python "%HELP%\inject_photos.py" --config run.yaml` — put our photos into `canonical.json`.
@@ -137,7 +155,8 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
 - **7e. QA.** `python "%HELP%\qa_montages.py" --config run.yaml` → look at `plans_qa_*.png` (every bound
   plan is a real plan) and `heroes_qa_*.png` (right photo on the right property); fix any via 7d.
 - **7e.5. Patch the toolkit template (card/modal presentation)** — `python "%HELP%\patch_template.py" --toolkit "<toolkit>"`
-  (the SAME toolkit skill dir resolved in step 7, i.e. the one whose `build_dashboard.py` you run below).
+  (the SHADOW from step 7a.5 — the same dir whose `build_dashboard.py` you run below, never `<install>`;
+  the helper refuses any target that is not a shadow, so this cannot go wrong silently).
   Applies Kato's idempotent card/modal tweaks to `<toolkit>\assets\dashboard_template.html` and
   re-versions it (rewrites `assets\VERSION` chrome_sha256 so the toolkit's own template-SHA + byte-
   equality gates stay green). What it changes: card 4th cell `Early access`→`Electricity`; card eyebrow
@@ -149,11 +168,11 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
   row (v36+ renders a combined BREEAM/EPC row via `certStr(p)`). Retired patches are not deleted - each
   keeps a premise re-asserted every run, so a toolkit regression bringing the old condition back fails
   loudly instead of quietly shipping a dashboard missing the fix. Idempotent + version-agnostic: re-run
-  each session (the live toolkit copy is per-session and pristine); it reports EVERY moved anchor in one
-  run and writes nothing rather than shipping unpatched. Use `--dry-run` to check a new toolkit version
-  without touching it.
+  each session (the shadow is rebuilt pristine from the install every run); it reports EVERY moved anchor
+  in one run and writes nothing rather than shipping unpatched. Use `--dry-run` to check a new toolkit
+  version without touching it — that one is safe to point straight at `<install>`.
   **NEVER hand-edit `built.html`** (the byte-equality gate rejects it) — the patch goes in the template.
-- **7f. Build + deliver** — `python "<toolkit>\build_dashboard.py" <work>\longlist_work\canonical.json --out <work>\longlist_work\built.html`
+- **7f. Build + deliver** — `python "<toolkit>\helpers\build_dashboard.py" <work>\longlist_work\canonical.json --out <work>\longlist_work\built.html`
   then the toolkit `deliver.py` (dashboard, Source Ledger, Gaps Report, Longlist xlsx).
 - **7g. Reviewer gates** — run the toolkit's isolated reviewer gates (G-honesty, G-trace, G-images,
   G-visual, G-enrich) per its `reference/gates.md`, then its `final_gate.py`.
