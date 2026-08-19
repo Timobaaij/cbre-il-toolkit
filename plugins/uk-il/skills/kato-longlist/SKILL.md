@@ -54,9 +54,12 @@ present) and prints a **VERDICT**. Never guess which stage-1 path to use — bra
   for their bundle.** Do not attempt step 1 anyway: in Cowork it dies on a Playwright `ImportError` or a
   silent network timeout, which reads as a broken skill to a non-technical colleague.
 
-Honour the `degradations` it prints — e.g. no `extract_msg` → skip step 2 (step 3 does not need it); no
-`pymupdf` → no site plans (step 7d); no network → the toolkit's enrichment needs its `web_enrich.py`
-browser handoff rather than live `--geocode/--pois/--osrm/--regions`.
+Honour the `degradations` it prints — e.g. no `pymupdf` → no site plans (step 7d); no network → the
+toolkit's enrichment needs its `web_enrich.py` browser handoff rather than live
+`--geocode/--pois/--osrm/--regions`. **Step 2 is never a degradation:** .msg parsing is done by this
+skill's own `msg_reader.py` (standard library only), so it works in Cowork with no pip and no network.
+If a run ever reports emails as unavailable, that is a bug or a missing export — never "the sandbox
+cannot do it".
 
 **1. Fetch** — `python "%HELP%\kato_fetch.py" --config run.yaml`
 Logs into Kato, enumerates the Longlist, and per property saves `_raw.json` + `_derived.json` and
@@ -75,7 +78,17 @@ helpers with whatever code-execution tool is available rather than `mcp__shell__
 expect `--bundle` media to be all the media there is: there is no way to fetch a missing file later.
 
 **2. Parse emails** — `python "%HELP%\emails_parse.py" --config run.yaml`
-Turns the `.msg` files into clean text (`emails/emails.md`, `emails.json`) and saves attachments.
+Turns the `.msg` files into clean text (`emails/emails.md`, `emails.json`) and saves every attachment
+(`emails/attachments/NN/`, with the broker's inline signature logos kept apart in `NN/inline/` so the
+brochures are obvious). Parsing uses `msg_reader.py` from this skill — **standard library only, so it
+needs no install and works in Cowork**. It also reads emails attached to emails, because broker rents
+are regularly one reply deep.
+It finds the export even when it is not called `Emails.zip` (any zip in the working directory holding
+.msg files) and **says which file it used** — so check that line rather than assuming. Read the
+`parsed=X/Y failed=Z` line: anything less than all of them means text is missing and belongs in the Gaps
+Report. Zero parsed exits non-zero.
+To prove .msg reading works in an unfamiliar environment before running the pipeline:
+`python "%HELP%\msg_reader.py" --selftest <the export zip or folder>` (takes seconds, needs nothing).
 
 **3. Facts for the model** — `python "%HELP%\make_facts.py" --config run.yaml`
 Writes `emails/_property_facts.json` (each property's identifiers + key_points + summary + its
@@ -177,8 +190,35 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
 - **7g. Reviewer gates** — run the toolkit's isolated reviewer gates (G-honesty, G-trace, G-images,
   G-visual, G-enrich) per its `reference/gates.md`, then its `final_gate.py`.
 
+**8. Finalise — ALWAYS LAST, NEVER SKIP** — `python "%HELP%\finalize_run.py" --config run.yaml`
+Collects every client-facing file into `OUTPUT/`, writes a plain-English `START-HERE.md`, and deletes
+junk (`__pycache__`, `.pyc`, stray temp files) from a fixed allowlist. It touches nothing a re-run or an
+audit needs, and is idempotent. **Do not tell the user the run is finished until this has run and you
+have given them the one path to open.** Use `--dry-run` to preview.
+
 ## Outputs (working directory)
+- `OUTPUT/` — **the only folder the user needs**: dashboard, spreadsheet, Gaps Report, Source Ledger.
+- `START-HERE.md` — what to open, what to send, what to ignore. Written by step 8.
 - `properties/<NN - Name - Postcode>/` — `_raw.json`, `_derived.json`, `property.json`, `media/`.
 - `properties/_dataset.json`, `_index.json`, `_gaps.json`; `emails/`; `enrichment.json`.
-- `Kato Longlist (Client).xlsx` — client spreadsheet.
-- `longlist_work/deliverables/` — CBRE HTML dashboard + Source Ledger + Gaps Report + Longlist xlsx.
+- `longlist_work/` — toolkit working data (the deliverables are moved out of it by step 8).
+
+## Working directory discipline (NOT optional)
+
+A real run was handed over as twenty mixed folders with the dashboard buried three levels down beside QA
+montages and `__pycache__`, and the colleague who asked for it could not tell which file to send their
+client. Producing the bytes is not the job; producing something a non-technical person can use is.
+
+- **Everything goes in the working directory.** Never write to the user's home, Desktop, Downloads or a
+  system temp path, and never leave files outside the folder they gave you.
+- **One place for scratch.** If you need intermediates of your own, put them in `_scratch/` inside the
+  working directory and **delete it before you finish**. No `test2.json`, no `output_final_v3.xlsx`, no
+  half-written files left where a human will find them and wonder.
+- **Do not duplicate inputs.** Never leave a second copy of a 50 MB export lying around; unpack to a temp
+  location and clean up (step 2 already does this).
+- **Use the documented layout.** Do not invent folder or file names. If something has no documented home,
+  it belongs in `_scratch/` and then in the bin.
+- **Finish with step 8, then say one sentence naming one path** — the `OUTPUT/` folder. Do not hand back
+  a list of six paths and let the user work out which matters.
+- **Never present a gap as a success.** If emails failed to parse, a rent is unconfirmed, or a site plan
+  is missing, it goes in the Gaps Report and in what you tell the user.

@@ -1,7 +1,7 @@
 {
   "name": "cbre-il-toolkit",
   "description": "CBRE's Industrial & Logistics toolkit for Claude — branded decks, account briefings, outreach angles, property longlists, warehouse-network maps, and on-brand writing, plus a UK I&L toolkit.",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "owner": {
     "name": "Timo Baaij",
     "email": "timo.baaij@cbre.com"
@@ -24,7 +24,7 @@
       "displayName": "UK I&L Toolkit",
       "source": "./plugins/uk-il",
       "description": "The UK Industrial & Logistics toolkit for Claude. Build a client-ready I&L longlist from a Kato requirement — enriched with rents and specs from the broker emails, ending in a per-property dataset, a clean client Excel and a CBRE-branded HTML dashboard — and download every brochure PDF linked from a longlist spreadsheet as one clean zip, named after each property and validated. Versioned and installed independently of the CBRE I&L Toolkit, so updating one never re-syncs the other.",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "author": {
         "name": "Timo Baaij",
         "email": "timo.baaij@cbre.com"

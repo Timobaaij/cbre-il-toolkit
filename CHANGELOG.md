@@ -7,6 +7,35 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.7.0] — 2026-08-19
+
+Marketplace 1.7.0: **UK I&L Toolkit 1.3.0**. CBRE I&L Toolkit unchanged at 1.4.0.
+
+### Fixed
+- **Kato longlist — broker emails were silently dropped in Cowork.** Stage 2 did
+  `import extract_msg`, a package the Cowork sandbox does not have and cannot install (no pip,
+  no network). The failure was quiet rather than loud: the import sat inside a per-file
+  `try/except`, so every message was recorded as an error while the script still printed
+  `DONE. parsed=N` and exited 0 — so broker rents and every email attachment vanished from the
+  run without anyone being told. A new `helpers/msg_reader.py` reads `.msg` text and
+  attachments using **only the standard library** (verified: `email`, `struct`, `zipfile` and
+  friends, nothing external), so stage 2 now works anywhere and is explicitly **never** a
+  degradation. It also reads emails attached to emails, because broker rents are regularly one
+  reply deep, keeps signature logos apart from real brochures, finds the export even when it
+  is not named `Emails.zip` (naming the file it used), reports `parsed=X/Y failed=Z` so missing
+  text reaches the Gaps Report, and exits non-zero when nothing parsed.
+  `msg_reader.py --selftest <zip|folder>` proves it works in an unfamiliar environment in
+  seconds.
+### Added
+- **Kato longlist — a stage 8 that leaves the run openable by a colleague
+  (`helpers/finalize_run.py`).** A real handover was a directory of ~20 mixed folders with the
+  client dashboard buried three levels down beside QA montages, staging copies and
+  `__pycache__`, and the person who asked for the longlist could not tell which file to send.
+  Stage 8 now collects every client-facing file into `OUTPUT/`, writes a plain-English
+  `START-HERE.md`, and deletes junk from a fixed allowlist — touching nothing a re-run or an
+  audit needs, and idempotent, with `--dry-run` to preview. The run is not reported as finished
+  until it has run and the user has been given the one path to open.
+
 ## [1.6.0] — 2026-08-19
 
 Marketplace 1.6.0: **UK I&L Toolkit 1.2.0**. CBRE I&L Toolkit is unchanged at 1.4.0.
@@ -570,6 +599,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.7.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.7.0
 [1.6.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.6.0
 [1.5.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.5.0
 [1.4.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.4.0

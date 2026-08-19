@@ -57,8 +57,13 @@ def main():
 
     scan = args.dir or (os.path.dirname(os.path.abspath(args.config)) if args.config else os.getcwd())
 
+    # msg_reader is OUR module, in this same folder, so probing it catches a partial/broken skill
+    # install rather than a missing dependency. extract_msg is deliberately NOT probed any more:
+    # stage 2 no longer needs it (see msg_reader.py), and reporting it as missing used to send the
+    # model down a "skip the emails" path that silently dropped every broker rent and attachment.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     packages = {}
-    for mod in ("requests", "yaml", "PIL", "openpyxl", "extract_msg", "fitz", "playwright"):
+    for mod in ("requests", "yaml", "PIL", "openpyxl", "msg_reader", "fitz", "playwright"):
         packages[mod] = probe_import(mod)
 
     net_kato = probe_url(KATO_HOST)
@@ -90,10 +95,10 @@ def main():
         action = "DELIVER THE CAPTURE EXTENSION TO THE USER - no bundle present and Kato is unreachable"
 
     degradations = []
-    if not packages["extract_msg"][0]:
-        degradations.append("extract_msg missing -> SKIP stage 2 (.msg parsing). Stage 3 does not need "
-                            "it: make_facts.py reads only properties/*/_derived.json, and the Kato "
-                            "in-app threads that carry most rents are already in the bundle.")
+    if not packages["msg_reader"][0]:
+        degradations.append("msg_reader missing from this skill's helpers/ -> stage 2 cannot parse .msg "
+                            "files. This is a BROKEN INSTALL, not an environment limit: reinstall the "
+                            "skill. Do not skip the emails silently - say so in the Gaps Report.")
     if not packages["PIL"][0]:
         degradations.append("PIL missing -> kato_ingest skips the image size safety net. Normally a "
                             "no-op, since imgix already caps images at 1200px/<500KB.")
