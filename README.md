@@ -46,6 +46,28 @@ repository**, enter `Timobaaij/cbre-il-toolkit`, then install **CBRE I&L Toolkit
 /plugin install uk-il-toolkit@cbre-il-toolkit    # optional: the brochure downloader
 ```
 
+### Without the marketplace: install the skills locally
+
+If you'd rather have the skills in every project without the plugin layer, clone
+this repo and copy them straight into `~/.claude/skills`:
+
+```bash
+git clone https://github.com/Timobaaij/cbre-il-toolkit.git
+cd cbre-il-toolkit
+./scripts/install-skills.sh --dry-run    # see what would land where
+./scripts/install-skills.sh              # install all 8 skills
+```
+
+This installs every skill from **both** plugins. Re-run it any time to pick up
+changes — each skill is replaced atomically, so an interrupted run can't leave a
+half-written skill behind. `--dest DIR` installs somewhere else, e.g. a project's
+`.claude/skills`.
+
+Installed this way the skills work exactly as they do under the plugin, with one
+difference: the "a newer version is available" notice stays silent, because it
+reads the version from the plugin's `plugin.json`, which standalone skills don't
+carry. Pull the repo and re-run the script to update.
+
 ## Updating
 
 The toolkit tells you when you're behind: from v0.4.0 on, each skill prints a
