@@ -232,6 +232,25 @@ def validate(work: Path, source_dir: Path | None = None) -> tuple[list[str], lis
             # same deck (mirrors the hero mis-bind class - it would leak across
             # properties). The point-4 merge guard is the authoritative runtime enforcer;
             # this is the pre-merge advisory.
+            # REQUIRED-KEY NOTE (multi-page decks only). `image_pages` and `plan_page` are
+            # contractually REQUIRED on a deck of more than one page - an explicit `[]`/`null`
+            # is a legitimate answer, SILENCE is not, because the two used to be written
+            # identically and that is how a run whose readers were handed no visual aids at all
+            # produced fourteen decks that looked like fourteen honest "one page, no plan"
+            # verdicts. A WARNING, deliberately not an ERROR: an error sends the whole deck back
+            # for re-reading over a key whose honest answer may well be "none", which trains the
+            # re-dispatch reflex and converges on nothing. The note names the record, the
+            # media-harvest gate counts the consequence, and a reviewer decides.
+            if deck and len(deck["pages"] or ()) > 1:
+                _absent_keys = [k2 for k2 in ("image_pages", "plan_page") if k2 not in meta]
+                if _absent_keys:
+                    warnings.append(
+                        f"{tag}: __meta {' and '.join(_absent_keys)} "
+                        f"{'are' if len(_absent_keys) > 1 else 'is'} ABSENT on a "
+                        f"{len(deck['pages'])}-page deck - these keys are required there, and "
+                        f"an explicit `[]` / `null` is a fine answer. An omission cannot be "
+                        f"told apart from a reader that was handed no page renders and could "
+                        f"not look at all (see work/vision/visual_aids.json)")
             ip = meta.get("image_pages")
             if ip is not None:
                 if not isinstance(ip, list):

@@ -24,6 +24,11 @@ from pathlib import Path
 
 import _common as C
 
+# a genuinely long field (e.g. an accumulated conflict_note spanning many
+# contributing sources) can exceed Python's defensive default (131072) - this
+# is a legitimate long value, not a memory bomb, so the reader must accept it.
+csv.field_size_limit(2**31 - 1)
+
 COLUMNS = ["property_id", "record_type", "field", "value", "source_file",
            "source_locator", "source_type", "extractor", "confidence",
            "conflict_note", "verified"]

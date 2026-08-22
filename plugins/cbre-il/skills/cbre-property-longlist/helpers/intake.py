@@ -140,9 +140,16 @@ _OWN_OUTPUT = re.compile(r"_Source_Ledger\.(?:xlsx|csv)$|_Gaps_Report\.md$|_Long
 _DEDUP_MAX_BYTES = 512 * 1024 * 1024  # 512 MB
 
 
+# Folder names that ARE a run's own output tree. `deliverables` is the legacy location;
+# `3. output` is the three-folder project layout's client-facing folder. In that layout the
+# output folder is a SIBLING of `1. Input`, so this never fires on a correct run - it is the
+# net for someone pointing `--folder` at the project root instead.
+_OWN_OUTPUT_DIRS = frozenset({"deliverables", "3. output"})
+
+
 def _is_own_output(rel: str) -> bool:
     p = Path(rel)
-    return ("deliverables" in [s.lower() for s in p.parts[:-1]]
+    return (any(s.lower() in _OWN_OUTPUT_DIRS for s in p.parts[:-1])
             or bool(_OWN_OUTPUT.search(p.name)))
 
 

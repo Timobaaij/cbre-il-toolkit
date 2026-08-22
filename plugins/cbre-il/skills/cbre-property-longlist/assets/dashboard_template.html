@@ -926,6 +926,11 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;background:var(--bran
 .spec-grid .spec-k{margin-bottom:4px}
 .spec-grid .spec-v{white-space:normal;font-size:15px}
 .spec-grid .spec{padding-bottom:14px;border-bottom:1px dotted var(--line-soft)}
+/* v39: the officeArea component breakdown (a bold summary line + a real bulleted list).
+   Declared explicitly rather than leaning on the UA default, so the list reads the same in
+   every browser; the items sit at weight 400 under the 500-weight summary line. */
+.spec-v .oa-breakdown{list-style:disc;margin:5px 0 0;padding:0 0 0 16px;font-weight:400}
+.spec-v .oa-breakdown li{margin:2px 0;white-space:normal;line-height:1.45}
 
 .loc-layout{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:36px}
 #modal-map{height:340px;border-radius:10px;border:1px solid var(--line);z-index:1}
@@ -2061,6 +2066,89 @@ function officeAreaStr(p){
   const s = p.officeArea == null ? "" : String(p.officeArea);
   return areaStr(NUMOK(p.officeAreaVal) && !/[a-z]/i.test(s) ? p.officeAreaVal : p.officeArea);
 }
+/* v39: officeArea BREAKDOWN rendering - DISPLAY ONLY. Nothing below is consulted by any
+   arithmetic: officeAreaVal stays the numeric twin that glaVal()/totalAnnualRent() sum, and
+   Compare keeps the flattened officeAreaStr (a matrix cell cannot carry a five-item list
+   without setting the row height for every column - v37's short_motorway reasoning).
+
+   A property with several non-warehouse components ships ONE run-on string, e.g.
+     "45,649 sq ft total non-warehouse area (offices, 2 levels 28,804; 2nd floor meeting room
+      1,711; transport office 1 7,492; transport office 2 7,427; gatehouse 215)"
+   which rendered as a single unbroken paragraph. It now renders as a bold summary line over a
+   real <ul>/<li> list (row() interpolates its value RAW, so the markup is markup, not text).
+
+   THE GUARD THAT MAKES THIS A NO-OP EVERYWHERE ELSE: the breakdown path is entered only when
+   the string carries a LETTER - exactly the case where officeAreaStr already falls back to the
+   string (v32). A bare number, an absent value and the `tbd` sentinel therefore return
+   officeAreaStr(p) byte-for-byte, and the numeric twin can never be overridden.
+
+   Shapes handled (all seen in live datasets):
+     A  "<summary> (<item>; <item>; ...)"          leading clause + parenthesised list
+     B  "Main Office 15,213 sq ft; Hub Office ..."  bare `;` list, no summary
+     C  "14,486 sq ft (ground floor); 15,592 ..."   `;` list whose items own their qualifier
+     D  "24230" / "8,547 sq ft" / "tbd"             no breakdown -> untouched
+   A parenthesised group with no `;` is NOT treated as a breakdown, and a comma list is never
+   split ("offices, 2 levels" is one item). */
+function oaSplitTop(s, sep){
+  const out = []; let depth = 0, buf = "";
+  for(const ch of String(s)){
+    if(ch === "(") depth++;
+    else if(ch === ")"){ if(depth > 0) depth--; }
+    if(ch === sep && depth === 0){ out.push(buf); buf = ""; } else buf += ch;
+  }
+  out.push(buf);
+  return out.map(x => x.trim()).filter(Boolean);
+}
+/* an AREA-like magnitude: 3+ digits, or a thousands/decimal separator. "gatehouse 215" is a
+   component with an area; "transport office 2" is a NAME ending in an index, and calling that
+   an area of 2 sq ft would be an invented number. */
+const oaAreaLike = n => n.replace(/\D/g, "").length >= 3 || /[.,]/.test(n);
+/* label + a trailing magnitude anchored at the end. The magnitude may carry . , or a NBSP
+   thousands separator but NEVER a plain space - that is what stops "transport office 1 7,492"
+   splitting as "transport office" / "1 7,492". */
+const OA_ITEM = /^(.+?)[\s:,—–-]+(\d[\d.,  ]*\d|\d)$/;
+/* the ONE place a unit is appended: only to a fragment with NO letter of its own, so a value
+   that already states "sq ft"/"m2"/"%" can never collect a second unit (the v28 caution and
+   the documented 10.76x class). Source magnitudes are NOT re-formatted - "1.711" is a
+   thousands separator in one convention and a decimal point in another, and a re-format would
+   silently restate a source number. */
+const oaWithUnit = t => (!/[a-z]/i.test(t) && oaAreaLike(t)) ? t + " " + AREA_UNIT : t;
+const oaEsc = t => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const oaCap = t => t ? t.charAt(0).toUpperCase() + t.slice(1) : t;
+function oaParse(s){
+  const t = String(s).trim();
+  if(t.endsWith(")")){                     // shape A: find the ( matching the FINAL )
+    let depth = 0, open = -1;
+    for(let i = t.length - 1; i >= 0; i--){
+      const c = t[i];
+      if(c === ")") depth++;
+      else if(c === "("){ depth--; if(depth === 0){ open = i; break; } }
+    }
+    if(open >= 0){
+      const head = t.slice(0, open).trim().replace(/[:,;—–-]+$/, "").trim();
+      const items = oaSplitTop(t.slice(open + 1, -1), ";");
+      if(items.length >= 2) return { summary: head || null, items };
+    }
+  }
+  const items = oaSplitTop(t, ";");        // shapes B and C
+  if(items.length >= 2) return { summary: null, items };
+  return null;                             // shape D
+}
+function officeAreaHTML(p){
+  const plain = officeAreaStr(p);
+  const raw = p.officeArea == null ? "" : String(p.officeArea).trim();
+  if(!/[a-z]/i.test(raw)) return plain;    // the numeric twin owns this value (v32)
+  const b = oaParse(raw);
+  if(!b) return plain;
+  const li = b.items.map(it => {
+    const m = OA_ITEM.exec(it);
+    return (m && oaAreaLike(m[2]))
+      ? `<li>${oaEsc(oaCap(m[1].trim()))} — ${oaEsc(oaWithUnit(m[2]))}</li>`
+      : `<li>${oaEsc(oaCap(it))}</li>`;
+  }).join("");
+  return (b.summary ? `<strong>${oaEsc(oaWithUnit(b.summary))}</strong>` : "")
+    + `<ul class="oa-breakdown">${li}</ul>`;
+}
 /* CERTIFICATION: BREEAM and EPC are DIFFERENT certificates and both are first-class
    fields, shown together in one row. certName prefixes a value with its certificate name
    unless the value already states it, keeping a leading Target/Targeting in front
@@ -2148,7 +2236,7 @@ function detailHTML(p){
       ${(rowsHtml => rowsHtml ? `<h3 class="section-title">${T("sec_availability")}</h3><div class="spec-grid">${rowsHtml}</div>` : '')([
         row(T('row_total_gla'), glaStr(p)),
         row(T('row_warehouse_area'), areaStr(p.warehouseArea)),
-        row(T('row_office_area'), officeAreaStr(p)),
+        row(T('row_office_area'), officeAreaHTML(p)),
         row(T('row_plot_area'), areaStr(p.plotArea)),
         row(T('row_divisible_from'), p.divisibleFrom),
         row(T('row_expansion_building'), p.expansionBuilding),

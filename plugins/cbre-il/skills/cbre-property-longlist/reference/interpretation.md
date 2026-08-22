@@ -294,8 +294,10 @@ records matching `templates/record_schema.json`:
   though it is not pure white-paper line-art. Distinction: `plan_page` names a FULL
   PAGE whose RENDER is the plan; `planRef` is the `index` of an EMBEDDED-IMAGE plan on
   the property's own page. `plan_page` binds the PLAN SLOT only (never the card hero).
-  A `null`/absent `plan_page` is safe (an offline deterministic fallback + the reviewer
-  backstop it); never invent a plan page.
+  A `null` `plan_page` is safe (an offline deterministic fallback + the reviewer
+  backstop it); never invent a plan page. **On a deck with more than one page this key is
+  REQUIRED** - write `"plan_page": null` when there is no site plan. See "Required media keys"
+  below for why an explicit `null` and an omission are not the same answer.
 - **Set `__meta.image_pages` (the carousel scope).** List the 0-based pages
   whose photos belong to THIS property, in the SAME numbering as `page_no` (the
   manifest's). Set it for EVERY brochure topology: a single-page single-property
@@ -306,8 +308,10 @@ records matching `templates/record_schema.json`:
   each → only that property's OWN pages. `page_no` STILL anchors the hero (it
   stays the carousel's first image) and its neighbour-protection is unchanged -
   `image_pages` only WIDENS which pages the carousel may draw from, never which
-  page the hero binds to. When unsure, omit it or set `[]` (absence = today's
-  `page_no`-only carousel). Python ENFORCES a deck page feeds at most one
+  page the hero binds to. When unsure, set `[]` - it means "this property's photos
+  are only on its own `page_no`", today's carousel exactly. (Omitting the key does
+  the same thing to the carousel but says something different about YOU - see
+  "Required media keys" below.) Python ENFORCES a deck page feeds at most one
   property's carousel, so an honest over-list of a neighbour's page is dropped,
   never leaked. **How a contested page is settled, so you can avoid the lossy
   case:** if one record's `page_no` IS that page, the record that anchors it keeps
@@ -316,7 +320,9 @@ records matching `templates/record_schema.json`:
   from **every** carousel and both properties lose the photo. So list a shared page
   in the `image_pages` of the ONE property it actually shows, not both. This is
   never an error and never sends the deck back for re-reading - a validation note
-  tells the orchestrator which case occurred.
+  tells the orchestrator which case occurred. **On a deck with more than one page this key is
+  REQUIRED** - write `"image_pages": []` when this property's photos really are only on its own
+  `page_no`.
 - **Pick the property description.** Set `description` to the property's own
   descriptive PROSE, copied verbatim from the page text (the marketing paragraph
   that says what the scheme is and where it sits, e.g. "EVO Corby 169 is a prime
@@ -382,6 +388,24 @@ records matching `templates/record_schema.json`:
   {"source_file": "<file>", "needs_raster": true}}`) and note why - on the re-run
   the deck escalates to the raster path so you read the page images instead.
 - `region`/`country` = the manifest's values for that deck.
+
+### Required media keys (`image_pages`, `plan_page`)
+
+On a deck of MORE THAN ONE page, both keys must be PRESENT on every record you emit.
+`[]` and `null` are perfectly good answers. **Silence is not an answer.**
+
+The reason is a defect this cost a whole run. Both keys were optional, so an omission and a
+considered "this property has no other pages / no site plan" were written identically - and when
+the visual aids never reached the reader (a lost image capability, a poisoned prep cache), every
+record came back with both keys absent, which read downstream as fourteen decks whose properties
+genuinely had one page and no plan. The harvest collapsed to one page per property and every
+artefact of the run looked correct. Making the keys required does not make you guess: it makes
+your ANSWER distinguishable from your SILENCE, so a run in which nobody could see anything is
+visible as exactly that.
+
+If you have no page render to look at, say so - set the keys to `[]` / `null` and put one line in
+`__meta.notes` saying you had no visual aid for this deck. That is an honest, useful record.
+A validation NOTE (never a block) names any record on a multi-page deck that omits either key.
 
 ### Raster mode (fallback - the historical vision contract)
 Read each page **image** and transcribe - this section IS the raster contract:

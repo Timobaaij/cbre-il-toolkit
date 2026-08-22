@@ -55,6 +55,11 @@ Read this file FIRST and follow it exactly (TEXT mode):
   photo/aerial/render ONLY - a map, plan, icon or logo is never the hero; honest `null` is
   always safe), `planRef`, `plan_page` (from the page `render` thumbnails), `image_pages`
   (this property's own pages only) and `exclude_refs` (decorative graphics).
+- On a deck of MORE THAN ONE page, `__meta.image_pages` and `__meta.plan_page` are REQUIRED keys.
+  `[]` and `null` are good answers; OMITTING them is not - an omission is indistinguishable from
+  a reader who was handed no page renders and could not look at all. If the manifest gave you no
+  `render` for a page (or the deck entry carries `aids_degraded`), set them to `[]` / `null` and
+  say in `__meta.notes` that you had no visual aid.
 - `description` = the property's own marketing prose copied verbatim, or omit; never the legal
   footer or a spec table. Disclose self-contradictions and ranges in `__meta.source_conflicts`.
 - If the schedule prints its own TOTAL area, record it in `__meta.statedTotalArea` +

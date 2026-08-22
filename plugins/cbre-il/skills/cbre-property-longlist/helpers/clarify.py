@@ -30,6 +30,33 @@ sub-agent can make from the source (how many properties are on this page?), and 
 when it is a decision no amount of reading can settle (what unit does this unlabelled column
 use? which source is authoritative?). Python only ever ASKS - it never answers, and it never
 guesses when an answer does not come.
+
+BLOCKING, AND WHY IT NOW EXISTS (B49). The bound above - ask once, then ship the default - is
+too weak for the questions where THE DEFAULT IS THE DAMAGE. A live 17-option run shipped 41
+cards because the source-authority question fell through to its documented default, "the union
+of both": the run finished, every gate went green, and 24 options the client never shortlisted
+reached a client-facing dashboard. The caveat was written and, exactly as this module's opening
+paragraph predicts, nobody read it. Presuming is not honest merely because the presumption is
+disclosed.
+
+So a question now carries `blocking`. A NON-blocking question keeps the original contract
+(asked once; unanswered ships the disclosed gap). A BLOCKING question is re-offered every pass
+until it is either ANSWERED or EXPLICITLY DECLINED - the run cannot proceed on an assumption
+about it.
+
+That is still bounded, and the shape of the bound is what makes it safe: the escape is EXPLICIT
+rather than implicit-on-silence. Three ways out, each a RECORDED DECISION rather than a
+shrug -
+  - answer it;
+  - decline it (`"skip"`, `"you decide"`, any DECLINE_TOKEN as the whole answer), which ships
+    the stated default and is disclosed in the Gaps Report as a decision, not as a gap;
+  - `work/clarify.SKIP_ALL` (or `project.yaml clarify.assume_defaults: true`) - the
+    non-interactive escape for a headless/cron run with no broker to ask.
+`offers` counts how many times each blocking question has been put; after ESCALATE_AFTER passes
+the hand-off text spells out the decline path, so an orchestrator that keeps re-running without
+either asking the broker or recording a decline is told in the exit text how to end it. What it
+never does is auto-presume: silence is the one thing that no longer resolves a blocking
+question.
 """
 from __future__ import annotations
 
@@ -44,6 +71,7 @@ import _common as C  # noqa: E402
 QUESTIONS_FILE = "questions.json"
 STATE_FILE = "clarify_state.json"
 ANSWERS_FILE = "answers.json"
+SKIP_ALL_FILE = "clarify.SKIP_ALL"
 
 # every question kind, and who can answer it
 KINDS = {
@@ -51,7 +79,27 @@ KINDS = {
     "rent_unit": "broker",        # a rent whose source states no currency / per-area
     "record_count": "agent",      # a deck that may hold more properties than were emitted
     "source_authority": "broker",  # two sources disagree on HOW MANY properties exist
+    "dataset_unit": "broker",     # the corpus states BOTH sq ft and sq m - which is displayed
 }
+
+# The kinds whose DEFAULT IS THE DAMAGE, so silence must not resolve them (B49):
+#   source_authority - the default ships every phantom extra (the live 41-vs-17 failure)
+#   dataset_unit     - the default silently relabels half a mixed dataset, 10.76x out
+#   area_unit /      - an unlabelled figure inherits a unit it was never measured in, which
+#   rent_unit          is the 10.76x error class this whole skill exists to avoid
+BLOCKING_KINDS = {"source_authority", "dataset_unit", "area_unit", "rent_unit"}
+
+# An answer meaning "I am not going to answer this - proceed on the stated default, and record
+# that I chose to." Matched against the WHOLE answer, case- and punctuation-insensitively, so a
+# real answer that merely contains one of these words ("skip the brochures") is never misread as
+# a decline. Being explicit is the entire point: this is a decision, not silence.
+DECLINE_TOKENS = {
+    "skip", "skipped", "skip it", "skip this", "decline", "declined", "default", "defaults",
+    "the default", "accept the default", "use the default", "you decide", "your call",
+    "no answer", "no preference", "dont know", "don't know", "do not know", "unknown",
+    "unsure", "no idea", "whatever you think", "proceed", "n/a", "na",
+}
+ESCALATE_AFTER = 2   # blocking offers before the hand-off text spells out the decline path
 
 
 def qid(kind: str, subject: str, field: str = "") -> str:
@@ -81,10 +129,19 @@ def load_state(work) -> dict:
         st = {}
     st.setdefault("asked", [])
     st.setdefault("answers", {})
+    st.setdefault("declined", [])   # blocking questions the answerer explicitly waved through
+    st.setdefault("offers", {})     # id -> how many times it has been PUT (blocking escalation)
+    st.setdefault("titles", {})     # id -> {kind, subject, question} for the Gaps disclosure
     if not isinstance(st["asked"], list):
         st["asked"] = []
     if not isinstance(st["answers"], dict):
         st["answers"] = {}
+    if not isinstance(st["declined"], list):
+        st["declined"] = []
+    if not isinstance(st["offers"], dict):
+        st["offers"] = {}
+    if not isinstance(st["titles"], dict):
+        st["titles"] = {}
     return st
 
 
@@ -103,6 +160,37 @@ def save_state(work, st: dict) -> Path:
     except OSError:
         pass
     return C.atomic_write_text(p, body)
+
+
+def _norm_answer(v) -> str:
+    """Lowercased, stripped of surrounding punctuation - for DECLINE matching only."""
+    return str(v or "").strip().strip(".!?,;:'\"()[]").strip().lower()
+
+
+def is_decline(v) -> bool:
+    """Is this answer an EXPLICIT 'proceed on the default'?
+
+    Matched on the WHOLE answer, never as a substring: 'skip' declines, but 'skip the
+    brochures' is a real instruction and must not be swallowed as one. A decline is a recorded
+    decision - it unblocks the run and is disclosed as a choice, not as an unread gap."""
+    return _norm_answer(v) in DECLINE_TOKENS
+
+
+def skip_all(work) -> bool:
+    """The non-interactive escape: every blocking question is treated as explicitly declined.
+
+    For a headless/cron run with no broker to ask. Deliberately a FILE (or a project.yaml
+    flag), never the default - an unattended run must opt in to presuming, and the Gaps Report
+    still names every default it took."""
+    if (Path(work) / SKIP_ALL_FILE).exists():
+        return True
+    try:
+        import yaml  # optional dependency; absent -> the file is the only escape
+        cfg = yaml.safe_load((Path(work).parent / "project.yaml").read_text(
+            encoding="utf-8-sig")) or {}
+        return bool((cfg.get("clarify") or {}).get("assume_defaults"))
+    except Exception:
+        return False
 
 
 def ingest_answers(work) -> dict:
@@ -137,19 +225,60 @@ def ingest_answers(work) -> dict:
             continue
         if known and k not in known:
             continue  # an id we never asked -> ignore, never mis-apply
+        if is_decline(v):
+            # An EXPLICIT decline. Recorded as a decision so the question stops blocking, but
+            # deliberately NOT stored as an answer: apply_answers must never receive "skip" as
+            # if it were a unit, and the Gaps Report reports it as an accepted default.
+            if k not in st["declined"]:
+                st["declined"].append(k)
+            st["answers"].pop(k, None)
+            continue
         st["answers"][k] = v
+        if k in st["declined"]:
+            st["declined"].remove(k)   # a real answer supersedes an earlier decline
     save_state(work, st)
     return dict(st["answers"])
 
 
+def declined_ids(work) -> set:
+    """Every question explicitly waved through, including all of them under SKIP_ALL."""
+    st = load_state(work)
+    if skip_all(work):
+        return set(st.get("asked") or []) | set(st.get("declined") or [])
+    return set(st.get("declined") or [])
+
+
+def is_blocking(q) -> bool:
+    """Explicit `blocking` if the producer set one, else the kind's default (B49)."""
+    if isinstance(q, dict) and "blocking" in q:
+        return bool(q.get("blocking"))
+    return bool(isinstance(q, dict) and q.get("kind") in BLOCKING_KINDS)
+
+
 def pending(work, questions: list) -> list:
-    """The questions not yet ASKED. Answered ones are excluded by construction (they were
-    asked), and so are unanswered ones - that is the bound: ask once, then ship honestly."""
-    asked = set(load_state(work).get("asked") or [])
+    """The questions still outstanding.
+
+    TWO CONTRACTS, and the difference is the whole of B49:
+
+      NON-BLOCKING - excluded once ASKED, answered or not. That is the original bound: ask
+      once, then ship the disclosed gap. A broker who answers nothing is never asked twice.
+
+      BLOCKING - excluded only once ANSWERED or explicitly DECLINED. Silence keeps it
+      outstanding, because for these kinds the fall-through default IS the damage (the live
+      41-vs-17 run). It still cannot loop forever: `is_decline` and `skip_all` are both a
+      one-step, always-available exit, and both are recorded as a decision."""
+    st = load_state(work)
+    asked = set(st.get("asked") or [])
+    answered = set(st.get("answers") or {})
+    declined = declined_ids(work)
     seen, out = set(), []
     for q in questions:
         i = q.get("id")
-        if not i or i in asked or i in seen:
+        if not i or i in seen:
+            continue
+        if i in answered or i in declined:
+            continue
+        if i in asked and not is_blocking(q):
             continue
         seen.add(i)
         out.append(q)
@@ -159,10 +288,27 @@ def pending(work, questions: list) -> list:
 def emit(work, questions: list) -> Path:
     """Write the batched hand-off and mark every question ASKED.
 
-    Marking happens HERE, not when an answer arrives, so a skipped question is never
-    re-asked. That is what makes the channel converge."""
+    Marking happens HERE, not when an answer arrives, so a skipped NON-blocking question is
+    never re-asked. That is what makes the channel converge. A BLOCKING question is marked too
+    (the telemetry is unchanged) but `pending` no longer reads `asked` for it - it reads
+    answered/declined, so it comes back until it is decided (B49). Each pass increments its
+    `offers` count and, past ESCALATE_AFTER, stamps `escalated` so the hand-off text can spell
+    out the decline path rather than repeating itself identically."""
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
+    st0 = load_state(work)
+    _offers = st0.get("offers") or {}
+    for q in questions:
+        if not (isinstance(q, dict) and q.get("id")):
+            continue
+        if is_blocking(q):
+            n = int(_offers.get(q["id"], 0)) + 1
+            q["blocking"] = True
+            q["times_asked"] = n
+            if n > ESCALATE_AFTER:
+                q["escalated"] = True
+        else:
+            q.setdefault("blocking", False)
     payload = {
         "schema_version": 1,
         "output": f"work/{ANSWERS_FILE}",
@@ -177,18 +323,44 @@ def emit(work, questions: list) -> Path:
             "dispatch an ISOLATED sub-agent with the named source (never answer it from the "
             "orchestrator's own context); \"broker\" = a decision no reading can settle, so "
             "put it to the user in plain language, together, in one message.\n"
-            "ANSWER ONLY WHAT YOU KNOW. Every question is asked exactly ONCE: anything left "
-            "unanswered ships as the honest gap named in its `if_unanswered`, and the run "
-            "proceeds. Never invent an answer to clear the list - a wrong unit is a 10.76x "
-            "error on a client's card, and an unanswered question is merely a disclosed one."),
+            "ANSWER ONLY WHAT YOU KNOW. Never invent an answer to clear the list - a wrong unit is "
+            "a 10.76x error on a client's card, and an unanswered question is merely a disclosed one.\n"
+            "TWO SORTS OF QUESTION, and `blocking` says which:\n"
+            "  blocking:false - asked exactly ONCE. Unanswered it ships as the honest gap named in "
+            "its `if_unanswered`, and the run proceeds.\n"
+            "  blocking:true  - the run STOPS here until this is DECIDED, because the fall-through "
+            "default is itself the damage (a wrong unit; or a longlist padded with options the client "
+            "never shortlisted). It comes back every pass until it is decided, so do NOT just re-run: "
+            "either put it to the broker and record their answer, or - if they genuinely have no "
+            "preference - record an explicit decline by answering \"skip\", which ships the stated "
+            "default AS A DECISION and is disclosed as one in the Gaps Report. A headless run with no "
+            "broker to ask can create work/clarify.SKIP_ALL to decline all of them at once.\n"
+            "NEVER answer a blocking BROKER question from your own context to clear the exit - that "
+            "is exactly the presumption these questions exist to prevent. Ask the human; record a "
+            "decline in their name only when they have said they have no preference."),
         "questions": questions,
     }
     out = work / QUESTIONS_FILE
     C.atomic_write_text(out, json.dumps(payload, ensure_ascii=False, indent=2))
     st = load_state(work)
     for q in questions:
-        if q.get("id") and q["id"] not in st["asked"]:
+        if not q.get("id"):
+            continue
+        if q["id"] not in st["asked"]:
             st["asked"].append(q["id"])
+        if is_blocking(q):
+            st["offers"][q["id"]] = int(q.get("times_asked") or 0)
+        # Remember enough to DISCLOSE the decision later. questions.json only ever holds the
+        # LAST batch, so without this an answer or a decline from an earlier batch could not be
+        # named in the Gaps Report - and a default nobody can see is the silent presumption
+        # again, one level up.
+        st["titles"][q["id"]] = {
+            "kind": str(q.get("kind") or ""),
+            "subject": str(q.get("subject") or ""),
+            "question": str(q.get("question") or "")[:400],
+            "blocking": bool(is_blocking(q)),
+            "if_unanswered": str(q.get("if_unanswered") or "")[:300],
+        }
     save_state(work, st)
     return out
 
@@ -319,6 +491,54 @@ def unit_questions(records: list) -> list:
     return out
 
 
+DATASET_UNIT_QID = qid("dataset_unit", "dataset area unit")
+_MIXED_MIN_SHARE = 0.15   # the minority unit must be a real share, not one stray record
+_MIXED_MIN_RECORDS = 2
+
+
+def dataset_unit_questions(records: list) -> list:
+    """The corpus states BOTH sq ft and sq m, and something must pick which the cards show.
+
+    `merge.dominant_units` decides this by silent majority vote and the whole grid is then
+    labelled in the winner, with every minority figure converted into it. That is a
+    presumption of exactly the kind this channel exists to replace: on a genuinely mixed
+    corpus (a UK tracker beside metric decks, or the reverse) the vote can be 20-15 and the
+    broker never learns a choice was made for them.
+
+    Deliberately narrow, because a channel that cries wolf trains the orchestrator to skim the
+    questions that are precise. It fires ONLY when both units are genuinely present - each
+    stated by at least _MIXED_MIN_RECORDS records, with the minority at least
+    _MIXED_MIN_SHARE of the stated total. A unanimous corpus (the common case, and every
+    single-country run) asks nothing."""
+    from collections import Counter
+    c = Counter(str(r.get("areaUnit")).strip().lower() for r in (records or [])
+                if isinstance(r, dict) and r.get("areaUnit"))
+    ft = c.get("sq ft", 0) + c.get("sqft", 0) + c.get("sf", 0)
+    sm = c.get("sq m", 0) + c.get("sqm", 0) + c.get("m2", 0) + c.get("m\u00b2", 0)
+    tot = ft + sm
+    if not tot or min(ft, sm) < _MIXED_MIN_RECORDS or min(ft, sm) / tot < _MIXED_MIN_SHARE:
+        return []
+    lead = "sq ft" if ft >= sm else "sq m"
+    return [{
+        "id": DATASET_UNIT_QID,
+        "kind": "dataset_unit", "asked_of": KINDS["dataset_unit"],
+        "blocking": True,
+        "subject": "dataset area unit",
+        "question": (f"Your sources are mixed: {ft} record(s) give areas in sq ft and {sm} in "
+                     f"sq m. Which unit should the dashboard show? Areas are converted to the "
+                     f"one you pick (rents keep their own currency - that is never converted)."),
+        "options": ["sq ft", "sq m"],
+        "counts": {"sq ft": ft, "sq m": sm},
+        "why_it_matters": ("the two differ by 10.76x. With no answer the majority unit wins a "
+                          "silent vote and every minority figure is converted into it - "
+                          "correct arithmetic, but a display convention the broker never chose "
+                          "and may not want in front of this client."),
+        "if_unanswered": (f"nothing is built. Answer 'skip' to accept the majority vote "
+                          f"('{lead}'), which is then recorded as your decision rather than an "
+                          f"assumption"),
+    }]
+
+
 def record_count_questions(deck_pages: dict, records_by_source: dict) -> list:
     """A deck that may hold more properties than it produced records. NOT WIRED - see below.
 
@@ -407,7 +627,7 @@ def settled_authority(answers: dict) -> str:
     return normalise_authority(answers.get(AUTHORITY_QID))
 
 
-def source_authority_questions(extras: dict) -> list:
+def source_authority_questions(extras: dict, counts=None, by_source=None) -> list:
     """Clustering has SETTLED and the two sources still disagree about what belongs.
 
     `extras` maps family -> [display names of the properties ONLY that family evidences], as
@@ -439,23 +659,67 @@ def source_authority_questions(extras: dict) -> list:
 
     bits = []
     if only_b:
-        bits.append(f"{len(only_b)} in the brochures only: {_name_list(only_b)}")
+        bits.append(f"{len(only_b)} evidenced ONLY by the brochures: {_name_list(only_b)}")
     if only_t:
-        bits.append(f"{len(only_t)} in the tracker only: {_name_list(only_t)}")
-    out.append({
+        bits.append(f"{len(only_t)} evidenced ONLY by the tracker: {_name_list(only_t)}")
+
+    # LEAD WITH THE ARITHMETIC (B49). The old text opened on two lists of names, which buries
+    # the one number a broker can check against their own shortlist in a second. That framing
+    # is not neutral: on the live failure it presented two 14-item lists, and any reasonable
+    # reader concluded that dropping either would lose 14 options - so the answer that doubled
+    # the deliverable was the only comfortable one. "17 in your tracker, 41 after the
+    # brochures" is a question anybody can answer correctly.
+    counts = counts if isinstance(counts, dict) else {}
+    n_roster = counts.get("tracker_rows")
+    n_total = counts.get("merged_total")
+    head = ""
+    opt_t, opt_u = "the tracker", "the union of both"
+    if isinstance(n_roster, int) and isinstance(n_total, int) and n_total != n_roster:
+        head = (f"Your tracker lists {n_roster} option(s), but after reading the brochures "
+                f"this longlist has {n_total}. ")
+        opt_t = f"the tracker's {n_roster}"
+        opt_u = f"all {n_total} (the union of both)"
+
+    # WHERE the divergence comes from, per source file. A deck that yielded 15 units while the
+    # tracker lists 1 option in that town is the signature of a park-wide availability schedule
+    # read as 15 separate options - the exact shape of the live failure - and naming the deck
+    # turns an abstract count into something the broker can settle from memory.
+    lines = []
+    for row in (by_source or []):
+        if not isinstance(row, dict):
+            continue
+        f, n_rec = str(row.get("source_file") or ""), row.get("records")
+        n_ros, where = row.get("roster_options"), str(row.get("where") or "").strip()
+        if not f or not isinstance(n_rec, int) or not isinstance(n_ros, int) or n_rec <= n_ros:
+            continue
+        lines.append(f"{f}: {n_rec} separate units read, but your tracker lists {n_ros} "
+                     f"option(s)" + (f" in {where}" if where else ""))
+
+    q = {
         "id": AUTHORITY_QID,
         "kind": "source_authority", "asked_of": KINDS["source_authority"],
+        "blocking": True,
         "subject": "property count",
-        "question": ("After matching, some options are evidenced by only ONE of your sources - "
-                     + "; ".join(bits) + ". Which source is guiding for what belongs on this "
+        "question": (head + "Some options are evidenced by only ONE of your sources - "
+                     + "; ".join(bits) + ". Which source decides what belongs on this "
                      "longlist?"),
-        "options": ["tracker", "brochures", "the union of both"],
+        "options": [opt_t, "the brochures", opt_u],
         "only_in_brochures": only_b,
         "only_in_tracker": only_t,
         "why_it_matters": ("this decides whether those options are MISSING from the longlist or "
-                           "are EXTRAS the client never shortlisted. Everything excluded is "
-                           "named in the Gaps Report, never dropped silently."),
-        "if_unanswered": ("every property found in either source ships (the union), and the "
-                          "discrepancy is noted in the Gaps Report"),
-    })
+                           "are EXTRAS the client never shortlisted. A brochure usually "
+                           "advertises every unit on its park, and those neighbours are real "
+                           "buildings but not necessarily options on this brief - shipping "
+                           "them pads a client-facing longlist. Everything excluded is named "
+                           "in the Gaps Report, never dropped silently."),
+        "if_unanswered": ("nothing is built. This one BLOCKS because its old default - ship "
+                          "the union - is what put 24 unrequested options on a client "
+                          "dashboard. Answer 'skip' to take the union deliberately, and it is "
+                          "recorded as your decision rather than an assumption"),
+    }
+    if lines:
+        q["where_they_come_from"] = lines
+        q["question"] += (" The divergence is concentrated here - " + "; ".join(lines[:4])
+                          + (f" (+{len(lines) - 4} more)" if len(lines) > 4 else "") + ".")
+    out.append(q)
     return out

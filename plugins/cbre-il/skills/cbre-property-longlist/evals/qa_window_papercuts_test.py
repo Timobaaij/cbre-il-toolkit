@@ -219,8 +219,22 @@ def main() -> int:
     _body = src.split("def _qa_run_key", 1)[1].split("\ndef ", 1)[0]
     ck("enrich_signature" not in _body,
        "the window is NOT reset by enrichment (that would wipe a recorded round)")
-    ck("inventory.json" in _body and "resolve()" in _body,
-       "..._qa_run_key still keys on the work dir + intake hash only")
+    ck("_qa_inv_hash" in _body,
+       "..._qa_run_key keys on the intake corpus hash")
+    # F31 - the key must NOT be path-coupled. It used to include `Path(work).resolve()`, so
+    # renaming or moving the project folder changed the key, `_qa_load` treated a byte-identical
+    # qa_state.json as "a different corpus" and wiped `rounds`; the next deliver.py then shipped
+    # a Gaps Report with NO "Known limitations" section and qa_round_number fell back to 0.
+    # Observed live: a project reorganised into the `1. Input`/`2. Work Files`/`3. Output`
+    # layout lost twelve reviewed-and-accepted limitations for nothing but a folder rename.
+    # Strip the docstring first: it QUOTES `Path(work).resolve()` while explaining the fix,
+    # so a naive substring check matches the prose that documents the bug, not the bug.
+    _code = _body.split('"""', 2)[-1] if _body.count('"""') >= 2 else _body
+    ck("resolve()" not in _code,
+       "...and is NOT path-coupled, so moving the work dir cannot wipe a recorded window")
+    ck("_qa_run_key_legacy(work)" in src,
+       "...while the legacy path-coupled key is still honoured on read, so the fix itself "
+       "adopts an existing window instead of wiping it")
 
     print()
     if fails:

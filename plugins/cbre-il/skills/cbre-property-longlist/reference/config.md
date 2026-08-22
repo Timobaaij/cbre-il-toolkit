@@ -1,6 +1,8 @@
 # project.yaml + auto-discovery
 
-One `project.yaml` per client project, kept in the working folder (never in the skill - nothing client-specific is baked into the skill). `intake.py` scaffolds it from auto-discovery; the orchestrator confirms it with the broker before running.
+One `project.yaml` per client project, kept in the **work dir** (`2. Work Files/project.yaml` in the three-folder project layout; never in the skill - nothing client-specific is baked into the skill). `intake.py` scaffolds it from auto-discovery; the orchestrator confirms it with the broker before running.
+
+`inputs.folder` is relative to the inputs folder itself, and every persisted path in the work dir (the inventory's relpaths, the extract filenames, the image-cache keys) is **relative or name-keyed, never an absolute project path** - which is why a project folder can be renamed or restructured into the three-folder layout without invalidating a single cached stage. The one absolute path any run writes is `<work>/.claude/launch.json` (the preview server), and it is rewritten from scratch every time it is needed.
 
 ```yaml
 client:

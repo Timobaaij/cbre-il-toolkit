@@ -3,6 +3,11 @@
 Two artefacts, written between enrichment and the pre-build gates. One is how you SEE a single
 option; the other is how you CORRECT it. They are deliberately not the same file.
 
+Both live in the **work dir** - `work/<x>` below means `<the work dir>/<x>`, i.e.
+`2. Work Files/<x>` in the three-folder project layout (SKILL.md "The project folder"). They are
+internal, never client-facing: nothing from `properties/` or `repairs.json` is ever copied into
+`3. Output`.
+
 ## Why this exists
 
 Everything upstream of the merge is about the SET: which sources describe the same building,
@@ -25,12 +30,54 @@ re-keyed nine settled value decisions.
 ```
 work/properties/
   01-indurent-park-chippenham-unit-c112/
-    property.json     the record, readable, base64 blobs replaced by media filenames
-    media/            hero.jpg, gallery-02.jpg ..., plan.jpg - real files you can open
-    sources.csv       this property's Source Ledger rows and nothing else
-    notes.md          its unknowns, its conflicts, its repairs, and its repair key
+    property.json         the record, readable, base64 blobs replaced by media filenames
+    media/                hero.jpg, gallery-02.jpg ..., plan.jpg - real files you can open
+    media/considered/     the DISCARD PILE: every page render + candidate image this property
+                          had to choose from - p<page>-render.png, p<page>-c<index>.jpg
+    media_decisions.json  chosen vs rejected vs never-looked-at, each with WHY
+    sources.csv           this property's Source Ledger rows and nothing else
+    notes.md              its unknowns, its conflicts, its repairs, and its repair key
+  _unassigned/            deck pages NO property claimed (once per run)
   index.json
 ```
+
+### `media/considered/` and `media_decisions.json` - the discard pile
+
+`media/` answers *what did this card ship*. It cannot answer the question anyone actually asks
+when a card looks thin: *was there anything better, and why was it not used?* On a run whose
+image layer was quietly degraded that question had no answerable form at all - every artefact of
+a blind harvest is identical to one of an empty source.
+
+So the projection also writes what merge CONSIDERED. Page and candidate numbers are **0-based**,
+the same numbering as `__meta.page_no` and `__meta.heroRef` / `planRef`, so a reviewer who spots
+the right image here can read its number off the filename and put it straight into
+`repairs.json`. `media_decisions.json` states, per deck: the pages this property looked at, the
+pages it did NOT (each with the rule that removed them - claimed by a neighbour, off-limits for
+the plan slot, or rejected by a visual-QA reviewer), the candidates the interpreter excluded as
+decorative, what was chosen for the hero/plan/gallery and where it came from, and the site-plan
+near-misses (a page that LOOKED plan-ish but a precision guard refused, with the reason). The
+per-deck block carries `claimed`, `foreign`, `plan_reach` and `gallery_reach` separately, so
+"why is this carousel thin" is answerable without a debugger: a page in `claimed`/`gallery_reach`
+whose image is not in `media/` was LOOKED AT and refused by a carousel floor (decorative, or below
+`images.MIN_GALLERY_W/H`); a page in neither was never in reach at all. `hero.promoted` is true
+when the bound hero itself failed those floors and a card-quality photograph replaced it.
+
+It is per **PROPERTY**, not per brochure. Two units sharing one deck each get their own complete
+folder and the same image can appear in both. That duplication is intended: the question is what
+THIS card had to choose from, and an answer that makes you open a second folder to find out is
+not an answer.
+
+Requires `--source-dir` (the spine passes it automatically); without it the folder is simply
+absent and the projection is exactly what it was before. Same for `--no-media`.
+
+### `_unassigned/` - the pages nobody claimed
+
+Once per run: every deck page that no property claimed, neither as its `__meta.page_no` nor in
+its `__meta.image_pages`. Nothing in the harvest looked at these - not the carousel, not the
+site-plan tier, not the placeholder audit - so on a multi-property or whole-park donor deck this
+is exactly where a missed site plan hides. The `media-harvest` gate raises a `[SIGNAL]` for the
+same pages. The fix is always a RECORD-level one (give the page to the property it shows via
+`__meta.image_pages` / `__meta.plan_page` on a re-read), never an edit here.
 
 Rebuilt from `canonical.json` on every run. **Nothing reads it back.** Editing a file here
 changes nothing and the next run overwrites it - there is an eval that asserts exactly that.

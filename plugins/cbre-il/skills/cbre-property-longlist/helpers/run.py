@@ -66,8 +66,10 @@ never misdiagnose):
       impossible ones (a >15% size conflict; a developer disagreement is a GREY pair
       the sub-agent adjudicates, never a hard block), (a) some GREY-ZONE
       cross-source MATCH pairs may remain (cross-source, not forbidden, not auto, but
-      plausibly the same property - same city / within ~2 km / a shared distinctive park
-      token / a borderline fuzzy key), AND (b) some genuine cross-source VALUE CONFLICTS
+      plausibly the same property - within ~2 km / a shared distinctive IDENTITY token,
+      read across ALL the park/address/scheme-ish fields with place words stripped / a
+      borderline fuzzy key / a party name linking the two records inside one city; a
+      shared city ALONE is never a signal), AND (b) some genuine cross-source VALUE CONFLICTS
       may remain (a field where two+ sources state different non-unknown values within one
       merged property). The spine writes BOTH to work/match_candidates.json (the `pairs`
       and `field_conflicts` arrays) and exits 10. Dispatch an isolated sub-agent to decide,
@@ -149,6 +151,24 @@ QUIET = True  # DEFAULT (B27); --verbose opts out. Quiet = plain-English step ma
               # run that forgets a flag stays clean, and the handoff instructions the
               # orchestrator needs print regardless (see _say_orchestrator).
 RESUME = False  # set by --resume: skip a stage whose output is already current (gates/freeze never skipped)
+
+# THE THREE-FOLDER PROJECT LAYOUT (the DEFAULT convention; `--project <root>` derives all
+# three). A broker opening the project folder must see exactly three numbered folders and
+# know instantly which one holds the dashboard - the old shape put the deliverables three
+# levels down inside a work dir holding ~40 technical files, and a non-technical user could
+# not find the .html. NUMBERED so file explorers sort them in pipeline order.
+#   1. Input      - what the broker supplied (brochures, trackers, photos). READ-ONLY here.
+#   2. Work Files - every internal pipeline artefact. This IS "the work directory" that
+#                   every helper still calls `--work`; nothing about its contents changed.
+#   3. Output     - ONLY the four client-facing deliverables (dashboard .html, Gaps Report
+#                   .md, Longlist .xlsx, Source Ledger .xlsx). Nothing technical.
+# `--folder` / `--work` / `--out-dir` still work as explicit overrides, and a legacy
+# invocation with only `--folder`/`--work` keeps delivering to `<work>/deliverables`.
+INPUT_DIRNAME = "1. Input"
+WORK_DIRNAME = "2. Work Files"
+OUTPUT_DIRNAME = "3. Output"
+LEGACY_OUTPUT_SUBDIR = "deliverables"   # where a --folder/--work run has always delivered
+OUTPUT_POINTER = ".output_dir"           # written in the work dir: where the deliverables went
 
 
 # B58: fields the pipeline ASSIGNS, so a reader must never be asked for them. Everything
@@ -1215,6 +1235,54 @@ def _report_pdf_engine() -> None:
             print("(orchestrator: the bundled vendor/ PyMuPDF wheel did NOT load"
                   + (f" - {why}" if why else "")
                   + "; use the native engine before resorting to the vision pass.)", file=sys.stderr)
+    _report_media_engine()
+
+
+def _report_media_engine() -> None:
+    """The MEDIA capability line, beside `PDF engine:` and for the same reason - except that the
+    media layer needs saying LOUDER, because its failure mode is silent by design.
+
+    "PDF engine: native PyMuPDF - full-fidelity extraction" was true on a run whose placed-image
+    geometry was nonetheless dead: the engine was fine, one of the things the media path asks it
+    for was not, and every media tier answered the way it answers a source that genuinely holds
+    nothing. So the run printed a confident engine line, shipped eleven cards with no site plan,
+    and nothing anywhere said a capability was missing. This states each media capability as a
+    PROBED fact (images.media_capabilities()), so "the deck has no site plan" and "this host
+    cannot see site plans" can never again look identical.
+
+    QUIET when everything is present (one short line, not noise); LOUD in BOTH verbosity modes
+    the moment anything media-critical is unavailable, with the consequence spelled out."""
+    try:
+        import images as IMG
+        caps = IMG.media_capabilities()
+        missing = [c for c in IMG.MEDIA_CRITICAL_CAPS if not caps.get(c)]
+    except Exception as e:
+        print(f"media engine: UNKNOWN - the image layer could not be probed ({type(e).__name__}: "
+              f"{e}); treat every missing photo/site plan in this run as unexplained.")
+        return
+    if not missing:
+        if not QUIET:
+            print(f"media engine: all media capabilities present "
+                  f"(geometry via {caps.get('geometry_backend')}) - photos, galleries, page "
+                  f"renders and vector site plans are all reachable.")
+        return
+    _COST = {
+        "pillow": "no image can be decoded, cropped or compressed - EVERY card gets the placeholder",
+        "renderer": "no page can be rasterised - no page renders for the interpretation agents, "
+                    "and no rendered (vector) site plan",
+        "geometry": "placed-image boxes are unreadable - the tier-B hero crop and the "
+                    "placed-image site-plan tier are dead",
+        "drawings": "page.get_drawings() is unavailable - a VECTOR site plan cannot be detected "
+                    "at all",
+        "text": "no page text - plan titles, site-plan labels and the spec-page guard are all blind",
+    }
+    print(f"media engine: DEGRADED - {len(missing)} media capability(ies) UNAVAILABLE on this "
+          f"host ({', '.join(missing)}); engine {caps.get('engine')}.")
+    for c in missing:
+        print(f"  - {c}: {_COST.get(c, 'a media tier that needs it degrades to an honest null')}")
+    print("  Every media tier degrades to an honest null, so a thin gallery or a missing site "
+          "plan in this run may be THIS HOST, not the sources. The `media-harvest` gate repeats "
+          "it in the scorecard; do not sign off 'no usable image' without reading it.")
 
 
 def _say_orchestrator(msg: str) -> None:
@@ -1270,8 +1338,22 @@ def _yield_stdout_lines(notes, link_ix, report_path) -> list[str]:
 
 def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--folder", required=True)
-    ap.add_argument("--work", required=True)
+    ap.add_argument("--project", default="",
+                    help="RECOMMENDED. The project folder. Derives the three-folder layout: "
+                         f"inputs = '<root>/{INPUT_DIRNAME}', work dir = "
+                         f"'<root>/{WORK_DIRNAME}', deliverables = '<root>/{OUTPUT_DIRNAME}'. "
+                         "The three folders are created if missing. --folder/--work/--out-dir "
+                         "each override their slot.")
+    ap.add_argument("--folder", default="",
+                    help="the inputs folder (overrides the --project default). Required when "
+                         "--project is not given.")
+    ap.add_argument("--work", default="",
+                    help="the work directory - every internal pipeline artefact (overrides the "
+                         "--project default). Required when --project is not given.")
+    ap.add_argument("--out-dir", dest="out_dir", default="",
+                    help="where the four client-facing deliverables are written. Defaults to "
+                         f"'<project>/{OUTPUT_DIRNAME}' with --project, and to "
+                         f"'<work>/{LEGACY_OUTPUT_SUBDIR}' on a legacy --folder/--work run.")
     ap.add_argument("--client", default="Client")
     ap.add_argument("--no-pptx", action="store_true", help="skip pptx (use pdf only)")
     ap.add_argument("--geocode", action="store_true")
@@ -1303,6 +1385,42 @@ def _resolve_quiet(args) -> bool:
     ~35 `_run_spine` calls in extract_test.py still pass it, and deleting the option
     would turn argparse's SystemExit(2) into a wall of reds for the wrong reason. (B27)"""
     return not bool(getattr(args, "verbose", False))
+
+
+def _resolve_layout(args):
+    """(inputs, work, out_dir) from --project and/or the explicit overrides.
+
+    THE ONE PLACE the three-folder convention is decided, so every helper below keeps
+    taking the same `--work <path>` it always took - the work dir simply has a
+    broker-legible NAME now. Two shapes, both supported for ever:
+
+      --project "<root>"                -> "<root>/1. Input", "<root>/2. Work Files",
+                                           "<root>/3. Output"   (the RECOMMENDED default)
+      --folder "<in>" --work "<w>"      -> exactly those, delivering to "<w>/deliverables"
+                                           (the LEGACY shape - unchanged, never broken)
+
+    Any slot may be overridden explicitly, so a half-migrated project ("--project <root>
+    --folder <old inputs dir>") works too. Raises ValueError with a plain-English sentence
+    when neither shape is satisfied - never a bare argparse usage dump."""
+    proj = str(getattr(args, "project", "") or "").strip()
+    fold = str(getattr(args, "folder", "") or "").strip()
+    work = str(getattr(args, "work", "") or "").strip()
+    outd = str(getattr(args, "out_dir", "") or "").strip()
+    root = Path(proj).resolve() if proj else None
+    if not proj and not (fold and work):
+        raise ValueError(
+            "I need to know where the project is. Pass --project \"<project folder>\" (it uses "
+            f"'{INPUT_DIRNAME}', '{WORK_DIRNAME}' and '{OUTPUT_DIRNAME}' inside it), or pass "
+            "--folder and --work explicitly.")
+    inputs = Path(fold).resolve() if fold else (root / INPUT_DIRNAME)
+    workd = Path(work).resolve() if work else (root / WORK_DIRNAME)
+    if outd:
+        out = Path(outd).resolve()
+    elif root is not None:
+        out = root / OUTPUT_DIRNAME
+    else:
+        out = workd / LEGACY_OUTPUT_SUBDIR   # legacy shape: exactly where it always was
+    return inputs, workd, out
 
 
 def main() -> None:
@@ -1384,10 +1502,29 @@ def main() -> None:
         for _n, _err in reader_failures:
             print(f"(optional reader {_n} unavailable: {_err})", file=sys.stderr)
 
-    folder = Path(args.folder).resolve()
-    work = Path(args.work).resolve()
+    try:
+        folder, work, out_dir = _resolve_layout(args)
+    except ValueError as e:
+        print(str(e))
+        sys.exit(2)
+    # The three-folder layout is SET UP here, not by the orchestrator: a `--project` run
+    # creates the folders it names so "put your files in 1. Input" is the only instruction
+    # a broker ever needs. Creating an empty inputs folder is deliberate - intake then
+    # exits 2 with "no readable property sources", which names the folder to fill.
+    for _d in (folder, work, out_dir):
+        try:
+            _d.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass  # an unwritable path is diagnosed by the stage that needs it, in plain English
     extract = work / "extract"
     extract.mkdir(parents=True, exist_ok=True)
+    # Where the deliverables went, recorded IN the work dir. The out dir is no longer a fixed
+    # `<work>/deliverables`, so anything that needs to find the delivered artefacts from the
+    # work dir alone (gate_runner's QA artefact fingerprint) reads this instead of guessing.
+    try:
+        (work / OUTPUT_POINTER).write_text(str(out_dir), encoding="utf-8")
+    except OSError:
+        pass
     # ROUND-TRIP BACKSTOP. Every non-zero exit is a request to the orchestrator, and NOTHING in
     # the skill bounded how many times the same request could be re-emitted - so any guard that
     # is narrower than the set of legitimate answers degrades into a SILENT infinite loop rather
@@ -2082,6 +2219,41 @@ def main() -> None:
                 raster_targets.append((s, region, country))
     elif vision_targets:
         raster_targets = list(vision_targets)
+
+    # VISUAL AIDS ACCOUNTING. A text-mode deck's agent is asked to pick __meta.plan_page and
+    # __meta.image_pages by LOOKING at a per-page render and candidate thumbnails. When those
+    # were never produced - a lost image capability, a poisoned cached entry - the agent answered
+    # from text alone, correctly returned nothing, and the whole gallery/plan harvest silently
+    # collapsed to each property's single anchor page. Nothing recorded that it had happened. So
+    # the counts are written down (the media-harvest gate reads this same file back) and a deck
+    # that reaches its agent BLIND says so on stdout, in both verbosity modes.
+    _aids_all: dict = {}
+    for _e in interpret_decks:
+        _va = dict(_e.get("visual_aids") or {})
+        if _e.get("aids_degraded"):
+            _va["degraded"] = _e["aids_degraded"]
+        _aids_all[_e.get("source_file") or "?"] = _va
+    if _aids_all:
+        try:
+            (work / "vision").mkdir(parents=True, exist_ok=True)
+            (work / "vision" / "visual_aids.json").write_text(
+                json.dumps(_aids_all, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+        for _f, _va in sorted(_aids_all.items()):
+            if int(_va.get("pages") or 0) > 1 and int(_va.get("renders") or 0) == 0:
+                print(f"[SIGNAL] visual aids: {_f} reaches its interpretation agent with ZERO "
+                      f"page renders ({_va.get('pages')} page(s), "
+                      f"{_va.get('candidates') or 0} candidate thumbnail(s)) - it is being asked "
+                      f"to pick __meta.plan_page / __meta.image_pages BLIND, so a null answer "
+                      f"from it is not evidence that the deck holds no plan or no photos.")
+        if not QUIET:
+            _tot_r = sum(int(v.get("renders") or 0) for v in _aids_all.values())
+            _tot_c = sum(int(v.get("candidates") or 0) for v in _aids_all.values())
+            print(f"(visual aids for {len(_aids_all)} text deck(s): {_tot_r} page render(s), "
+                  f"{_tot_c} candidate thumbnail(s) -> {work / 'vision' / 'visual_aids.json'})",
+                  file=sys.stderr)
+
     # downstream (photo-match + the raster prep loop) operate on the textless decks
     vision_targets = raster_targets
 
@@ -2575,9 +2747,11 @@ def main() -> None:
 
     # CROSS-SOURCE MATCH ADJUDICATION (exit 10) - mirrors photo-match (exit 9). The
     # deterministic matcher (match.py) auto-merges the confident pairs and HARD-BLOCKS
-    # the impossible ones (developer disagreement / >15% size conflict). What is left -
-    # a GREY ZONE of cross-source pairs that are plausibly the same property (same city /
-    # within ~2 km / a shared distinctive park token / a borderline fuzzy key) - is the
+    # the impossible ones (a >15% size conflict; a developer disagreement is a GREY pair,
+    # never a hard block). What is left - a GREY ZONE of cross-source pairs that are
+    # plausibly the same property (within ~2 km / a shared distinctive identity token, read
+    # across every park/address/scheme-ish field with place words stripped / a borderline
+    # fuzzy key / a party name linking the two records inside one city) - is the
     # genuinely ambiguous middle an isolated sub-agent resolves by MEANING. This runs
     # AFTER every record source is final (vision folded, trackers mapped) and BEFORE
     # merge, so the merge consumes a settled decision. The grey set is computed in pure
@@ -2619,7 +2793,11 @@ def main() -> None:
     # tracker row is not an extra at all. So the broker was asked to arbitrate a discrepancy
     # that the very next stage often dissolves. It now fires AFTER clustering has settled,
     # below, where an "extra" is well defined and the question can NAME the options at stake.
-    _questions = _clarify.unit_questions(_recs_for_q)
+    # THE DATASET DISPLAY UNIT rides the same first batch (B49). It is a property of the whole
+    # corpus rather than of one record, so it is derivable here, before matching, and an answer
+    # changes every card - which makes this the last moment it can be asked for free.
+    _questions = _clarify.unit_questions(_recs_for_q) \
+        + _clarify.dataset_unit_questions(_recs_for_q)
     def _ask_and_exit(questions, quiet_intro, reason, extra=""):
         """The ONE emit site - questions are BATCHED here, never dripped.
 
@@ -2630,6 +2808,26 @@ def main() -> None:
         protects, and evals/clarify_test.py asserts the count."""
         qf = _clarify.emit(work, questions)
         n_br = sum(1 for q in questions if q.get("asked_of") == "broker")
+        # BLOCKING questions do not fall through to a default, so the hand-off must say so -
+        # an orchestrator told only "anything unanswered ships as a gap" will reasonably just
+        # re-run, and re-running is precisely what does not clear these. (B49)
+        _blk = [q for q in questions if _clarify.is_blocking(q)]
+        _esc = any(q.get("escalated") for q in _blk)
+        _blk_note = ""
+        if _blk:
+            _blk_note = (
+                f" {len(_blk)} of these BLOCK the build: their fall-through default is itself "
+                f"the damage (a wrong unit, or a longlist padded with options the client never "
+                f"shortlisted), so they come back every pass until they are DECIDED. "
+                f"Re-running alone will not clear them: put them to the user in plain "
+                f"language, or - only if the user says they have no preference - record an "
+                f"explicit decline by answering 'skip'.")
+            if _esc:
+                _blk_note += (
+                    " ALREADY ASKED MORE THAN ONCE: if you have not put these to the user yet, "
+                    "do that now rather than re-running; if there is no user to ask (a headless "
+                    "run), create work/" + _clarify.SKIP_ALL_FILE + " to accept every default "
+                    "as an explicit decision.")
         _pl = ""
         if len(questions) - n_br > 0:  # a prompt only for the agent-answerable questions
             _pl = _render_dispatch_prompts(work, [
@@ -2643,12 +2841,13 @@ def main() -> None:
                 f"(orchestrator: {len(questions)} clarification(s) needed ({n_br} for the "
                 f"user, {len(questions) - n_br} for an isolated sub-agent) per {qf} -> "
                 f"{extra}write work/answers.json as {{id: answer}} and re-run. Each question "
-                f"is asked ONCE: anything unanswered ships as the honest gap named in its "
-                f"`if_unanswered`, so answer only what you know and never invent one.{_pl})")
+                f"is asked ONCE unless it is marked `blocking`: a non-blocking question left "
+                f"unanswered ships as the honest gap named in its `if_unanswered`, so answer "
+                f"only what you know and never invent one.{_blk_note}{_pl})")
         else:
             print(f"\nCLARIFICATION NEEDED ({len(questions)}): see {qf}. Answer what you can "
-                  f"into work/answers.json ({{id: answer}}) and re-run. Asked once only - "
-                  f"anything unanswered ships as a disclosed gap.{_pl}")
+                  f"into work/answers.json ({{id: answer}}) and re-run. Non-blocking questions "
+                  f"are asked once and then ship as a disclosed gap.{_blk_note}{_pl}")
         _exit_round_trip(work, 13, _attempts, reason,
                          diagnosis=[
                              f"question '{q.get('id')}' (asked_of: {q.get('asked_of')}) "
@@ -2740,8 +2939,54 @@ def main() -> None:
         # still ships the union, so this can never wedge a run.
         if not grey_uncovered:
             _extras = _merge.authority_extras(clusters)
-            _auth_q = _clarify.pending(work, _clarify.source_authority_questions(_extras)) \
-                if _extras else []
+            # THE ARITHMETIC AND WHERE IT COMES FROM (B49). The question used to open on two
+            # lists of names, which reads as "you are about to lose 14 options" and drove the
+            # answer that doubled the deliverable. Give it the two totals a broker can check
+            # against their own shortlist - the roster's row count and what the run actually
+            # holds - plus, per deck, how many separate units that deck yielded against how
+            # many options the roster lists in the same town. A park-wide availability schedule
+            # read as 15 options shows up here as "15 units read, tracker lists 1".
+            def _row_key(_r, _f, _i):
+                """A tracker record's ROW identity: the sheet!row locator it already carries.
+
+                Counting record objects would double-count if the same rows ever arrived via
+                two record files, and "your tracker lists 34 options" for a 17-row sheet
+                mis-frames the exact decision being asked about."""
+                for _v in (((_r.get("__meta") or {}).get("prov") or {}) or {}).values():
+                    _t = str(_v or "").split()[0].strip()
+                    if "!" in _t:
+                        return f"{_f}|{_t}"
+                return f"{_f}|#{_i}"
+
+            _roster_keys, _roster_by_city = set(), {}
+            for _f, _rs in _by_src.items():
+                if not str(_f).lower().endswith(_clarify.AUTHORITY_FAMILIES["tracker"]):
+                    continue
+                for _i, _r in enumerate(_rs):
+                    _k = _row_key(_r, _f, _i)
+                    if _k in _roster_keys:
+                        continue
+                    _roster_keys.add(_k)
+                    _c = str(_r.get("city") or "").strip().lower()
+                    if _c:
+                        _roster_by_city[_c] = _roster_by_city.get(_c, 0) + 1
+            _roster_rows = len(_roster_keys)
+            _by_source_rows = []
+            for _f, _rs in sorted(_by_src.items()):
+                if not str(_f).lower().endswith(_clarify.AUTHORITY_FAMILIES["brochures"]):
+                    continue
+                _cities = {str(r.get("city") or "").strip().lower() for r in _rs}
+                _cities.discard("")
+                _by_source_rows.append({
+                    "source_file": _f, "records": len(_rs),
+                    "roster_options": sum(_roster_by_city.get(c, 0) for c in _cities),
+                    "where": ", ".join(sorted({str(r.get("city") or "").strip()
+                                               for r in _rs if r.get("city")})),
+                })
+            _auth_q = _clarify.pending(work, _clarify.source_authority_questions(
+                _extras,
+                counts={"tracker_rows": _roster_rows, "merged_total": len(clusters)},
+                by_source=_by_source_rows)) if _extras else []
             if _auth_q:
                 _ask_and_exit(_auth_q,
                               "Your sources disagree about which options belong on this "
@@ -3519,10 +3764,16 @@ def main() -> None:
     # view a human opens shows the prose that actually ships rather than its source language.
     try:
         import project_properties as _proj
-        _pr = _proj.build(work)
+        # --source-dir/--image-cache turn on the CONSIDERED SET: per property, every page render
+        # and candidate image it had to choose from, plus media_decisions.json, plus a once-per-run
+        # _unassigned/ for deck pages no property claimed. Still strictly derived - the projection
+        # reads canonical + merge's media_considered.json sidecar and writes nothing either reads.
+        _pr = _proj.build(work, source_dir=folder, image_cache=work / ".image_cache")
         if not QUIET:
             print(f"(per-property view: {_pr['count']} folder(s) under work/properties/ - "
-                  f"read-only; corrections go in work/repairs.json)", file=sys.stderr)
+                  f"read-only; corrections go in work/repairs.json"
+                  + (f"; {_pr['unassigned']} unclaimed deck page(s) in properties/_unassigned/"
+                     if _pr.get("unassigned") else "") + ")", file=sys.stderr)
     except Exception as _e:
         print(f"(per-property view skipped: {type(_e).__name__}: {_e})", file=sys.stderr)
 
@@ -3546,6 +3797,14 @@ def main() -> None:
     # scorecard file the reviewers already read.
     g1.append(run_gate(gate_runner, "input-accounting", canonical, "--work", work))
     g1.append(run_gate(gate_runner, "capture-symmetry", "--work", work))
+    # ...and its twin one layer over: capture-symmetry asks whether a reader skipped FIELDS a
+    # page printed, media-harvest asks whether the harvest skipped IMAGES a deck holds. Same
+    # idiom, same scorecard - but NOT always 0: its two HARD-FACT signals (a media capability
+    # the probe says is unavailable, and a text deck whose interpretation agent got zero page
+    # renders) BLOCK, because both mean a whole tier did not run and both are invisible in every
+    # other artefact. Its three heuristic signals stay advisory. Both blocks are cleared by an
+    # explicit `gate_runner.py ack` key - the gate's message names the exact command.
+    g1.append(run_gate(gate_runner, "media-harvest", canonical, "--work", work))
     g1.append(run_gate(gate_runner, "trace-coverage", canonical, "--ledger", ledger_csv))
     # B52: a value citing "page N" must actually occur on that page. Sits beside trace-coverage
     # because it is the same question one level deeper - trace-coverage asks whether a field HAS
@@ -3664,7 +3923,9 @@ def main() -> None:
     # it by merge), the ledger csv, and the Gaps sidecars. A changed canonical/built/ledger,
     # or a new output filename (a flag change), fails the check and re-delivers. --no-resume
     # => _is_current is always False => unchanged behaviour for the byte-identity battery. (#25)
-    deliverables = work / "deliverables"
+    # The client-facing output folder ('3. Output' in the three-folder layout, or the legacy
+    # '<work>/deliverables'). Resolved once, at startup, by _resolve_layout.
+    deliverables = out_dir
     # qa_state.json is load-bearing, not decorative: final_gate BLOCKS when the delivered Gaps
     # Report's "Known limitations" is not the LATEST recorded round's carried list. Without it
     # here, a fresh `qa-round record` leaves Stage 7 looking current, --resume (the DEFAULT) skips
@@ -3686,12 +3947,12 @@ def main() -> None:
     # failed with no way through the spine.
     import deliver as _deliver_mod  # imported inside main(), as every helper here is
     if _is_current(deliverables / filename, _deliver_inputs) \
-            and _deliver_mod.delivery_complete(deliverables):
+            and _deliver_mod.delivery_complete(deliverables, work):
         _resumed("deliver")
     else:
         call(deliver, "--canonical", canonical, "--html", built,
              "--ledger", ledger_csv, "--out-dir", deliverables, "--slug", args.client,
-             "--filename", filename)
+             "--filename", filename, "--marker-dir", work)
 
     # PHOTO-MATCH DOUBTS (P0-1): an uncertain brochure<->property pairing ships as a
     # PLACEHOLDER and is surfaced here as an actionable yes/no prompt - the broker
@@ -3741,13 +4002,15 @@ def main() -> None:
               "(emails/region research as configured, then the isolated G-honesty / G-trace / "
               "G-images / G-visual reviewers). The QA window is ONE review pass: the reviewers "
               "PROPOSE findings, you IMPLEMENT them, then deliver. Dispatch the gate batch "
-              f"concurrently -> `gate_runner.py qa-round record --work {work} --reviews "
-              f"{work}\\reviews` -> implement each `blocking:` finding and record it with "
+              f"concurrently -> `gate_runner.py qa-round record --work \"{work}\" --reviews "
+              f"\"{work / 'reviews'}\"` -> implement each `blocking:` finding and record it with "
               "`qa-round resolve --id <id> --because \"<what you changed>\"` -> deliver: "
-              f"`deliver.py --canonical {canonical} --html {built} --ledger {ledger_csv} "
-              f"--out-dir {deliverables} --slug {args.client} --filename {filename}` -> "
-              f"`final_gate.py --canonical {canonical} --html {built} --deliverables "
-              f"{deliverables} --reviews {work}\\reviews --qa-state {work}`. Advisory findings "
+              f"`deliver.py --canonical \"{canonical}\" --html \"{built}\" "
+              f"--ledger \"{ledger_csv}\" --out-dir \"{deliverables}\" --marker-dir \"{work}\" "
+              f"--slug {args.client} --filename \"{filename}\"` -> "
+              f"`final_gate.py --canonical \"{canonical}\" --html \"{built}\" --deliverables "
+              f"\"{deliverables}\" --reviews \"{work / 'reviews'}\" --qa-state \"{work}\"`. "
+              "Advisory findings "
               "Report's 'Known limitations', not fixed and not re-reviewed. There is no second "
               "review pass and no adjudication round. final_gate.py is the ship backstop - it "
               "blocks while any blocking finding has no recorded repair; do not declare done to "

@@ -32,6 +32,8 @@ text-mode `__meta` rule:
 - Rents ANNUAL; `areaUnit`/`rentUnit` read off the page, never inferred, never converted.
 - `__meta.page_no` copied VERBATIM (0-based, the HERO photo page); set `image_pages`,
   `plan_page`, `heroRef`/`planRef`/`exclude_refs` per the contract; `source_lang` too.
+  On a deck of MORE THAN ONE page `image_pages` and `plan_page` are REQUIRED keys - `[]` / `null`
+  are good answers, an OMISSION is not (it cannot be told apart from a reader who saw nothing).
 - `cluster_label` is routing, NEVER evidence. DMS/map links verbatim into
   `__meta.map_candidates`. Transcribe, never invent; `"tbd"` is first-class.
 - A page you cannot rasterise or read at all is an honest gap - say so; never fill it in.

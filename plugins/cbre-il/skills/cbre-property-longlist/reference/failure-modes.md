@@ -17,3 +17,18 @@ The rule: **always degrade and report, never fabricate.** Every degraded case wr
 | Zero property sources | Stage 0 halts before any work with a written explanation; no empty dashboard | direct message to the user |
 
 A render crash from a single bad record is prevented structurally: `merge.canonicalize()` fills every chrome-read key with a sentinel, and the template's `fmt()` returns `"tbd"` for non-numbers (`reference/template-contract.md`).
+
+## A BLOCKING clarification with nobody to answer it (exit 13)
+
+Two exit-13 question kinds do not degrade to a default, because for them the default is the damage: **which source defines the longlist** (the union default shipped 41 cards for a 17-option brief) and **which unit a mixed dataset displays** (a silent majority vote converts the minority by 10.76x). They are re-offered every pass until decided.
+
+That is deliberate, and it is bounded rather than open-ended - the escape is explicit rather than implicit-on-silence:
+
+| situation | what to do | what ships |
+|---|---|---|
+| a broker is available | put the question to them, record the answer | their decision, named in the Gaps Report |
+| the broker has no preference | answer `"skip"` | the stated default, disclosed as an accepted decision |
+| headless / cron, nobody to ask | `work/clarify.SKIP_ALL` (or `project.yaml clarify.assume_defaults: true`) | every default, each one named in the Gaps Report |
+| the orchestrator just re-runs | nothing changes - the question returns, and after two passes the exit text spells out the decline path | nothing is built, which is the point |
+
+The one thing that no longer resolves a blocking question is silence. Every other clarification kind keeps the original contract: asked once, then it ships as the honest gap named in its `if_unanswered`.

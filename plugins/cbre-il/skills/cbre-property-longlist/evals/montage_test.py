@@ -118,9 +118,14 @@ def main() -> int:
     # the resume guard must cover the sheet, or a kill serves a manifest pointing at nothing
     entry = {"pages": [{"candidates": [{"image": str(d / "c0.png")}],
                         "render": None, "candidates_sheet": got}]}
-    ck(IP._thumbs_present(entry), "_thumbs_present passes when the sheet is on disk")
+    # `x.pdf` does not exist, so _can_render() is False and the NON-VACUOUS rule stands down -
+    # this case is purely the REFERENTIAL half of the guard (media_harvest_test part E covers
+    # the non-vacuous half against a real renderable deck).
+    ck(IP._entry_aids_intact(entry, Path("x.pdf")),
+       "_entry_aids_intact passes when the sheet is on disk")
     Path(got[0]).unlink()
-    ck(not IP._thumbs_present(entry), "_thumbs_present FAILS when the sheet was lost")
+    ck(not IP._entry_aids_intact(entry, Path("x.pdf")),
+       "_entry_aids_intact FAILS when the sheet was lost")
 
     # --- the manifest contract (B19 wiring + B22) ------------------------------
     ck("candidates_sheet" in RUN_SRC,

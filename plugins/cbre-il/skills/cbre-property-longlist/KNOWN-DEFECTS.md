@@ -245,3 +245,21 @@ Two bugs were found BY the new evals during implementation, which is the argumen
 `save_deck_outputs`/`_save_force_raster` used a module-level `_common` alias that does not exist in
 `run.py` (imports are function-local there), and the failure was swallowed by the sidecar
 `except Exception: pass`; and capture-symmetry's first ranking metric promoted the rarest fields.
+
+---
+
+# Second batch: path coupling and non-idempotent disclosure (2026-08-20)
+
+Found while restructuring a live project into the three-folder layout (`1. Input` / `2. Work Files`
+/ `3. Output`). Both are pure MECHANISM defects, both cost DISCLOSURE - lines that belong in the
+honesty document silently stopped being written - and neither shows up in any scorecard, which is
+exactly why they lasted. Both are fixed, each with an eval.
+
+| # | Defect | Why it mattered | Fix | Eval |
+|---|---|---|---|---|
+| D9 | `_qa_run_key` hashed `Path(work).resolve()` alongside the intake `input_hash`, so the QA window was **path-coupled**. Renaming or moving the project folder changed the key, `_qa_load` treated a byte-identical `qa_state.json` as "a different corpus", wiped `rounds`, `qa_carried()` returned `[]` and `qa_round_number()` fell to 0. | Observed live: the very next `deliver.py` shipped a Gaps Report with **no "Known limitations" section at all** - 51 reviewed-and-accepted limitations gone from the one document whose job is honesty - and PASS-WITH-REMEDIATION was disabled, all because a folder was renamed. `final_gate` still printed ALL-PASS, because the delivered report matched the (now empty) recorded pass. | The key hashes the CORPUS identity only (`corpus\|<input_hash>`). The work dir's path added nothing - `qa_state.json` lives IN the work dir, so it is per-work-dir by construction. `_qa_run_key_legacy` is accepted on read in an UNMOVED dir and re-keyed in place, so the upgrade itself never wipes a window; a genuinely different `input_hash` still opens a fresh one. | `project_layout_test` (D2) |
+| D10 | `harmonise_region_levels` returned early (`if not changed: return 0`) whenever every property already carried its bound NUTS-3 name - i.e. on the SECOND and every later `--regions` pass - while the regions layer REPLACES its gap bucket each run. | The "region labels were stated at more than one administrative level ... each property's region is now the NUTS-3 area its own coordinates fall inside" line dropped out of the delivered Gaps Report on every re-run, even though `meta.regionHarmonised` still recorded the harmonisation. The deliverable stopped saying the shipped region label is DERIVED rather than source-stated. A disclosure that disappears when you re-run is worse than no disclosure. | The line is RESTATED from `meta.regionHarmonised`, and only while it is still true (every recorded property still carries the bound name it records). The return value stays honest - `0`, because nothing was rewritten this pass. | `region_harmony_test` |
+
+The shape both share: a guard or a bucket that is correct on the FIRST pass and quietly lossy on
+the second. Re-running is the skill's normal mode (resume is the default, every shell-cap kill is a
+re-run), so "correct only on a cold run" is not correct.

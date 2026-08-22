@@ -53,20 +53,54 @@ the pair comes to you instead. Python converts or abstains; it never decides sam
   owner/asset-manager/landlord into the developer), a genuine developer-name difference
   (a naming variant, a JV, an asset sale) is a GREY signal you adjudicate, not a veto;
   the >15% size conflict remains the hard blocker.
-- **grey** - cross-source, NOT forbidden, NOT auto, but it cleared a RECALL pre-filter:
-  within ~2 km, OR sharing >= 1 distinctive park token, OR a borderline fuzzy key in
-  [70, 88), OR in the same city with the developer linking the two records (the same known
-  developer on both, or one side's developer name appearing in the other's park string).
-  This INCLUDES a developer-disagreement pair that clears the pre-filter. **These are the
-  only pairs in `match_candidates.json`** - the genuinely ambiguous middle. (The coord-net
+- **grey** - cross-source, NOT forbidden, NOT auto, but it cleared a RECALL pre-filter.
+  **These are the only pairs in `match_candidates.json`** - the genuinely ambiguous middle.
+  This INCLUDES a developer-disagreement pair that clears the pre-filter. (The coord-net
   AUTO path still requires developer agreement, so a disagreement is never auto-merged -
   it always comes to you as grey.)
+
+  **The pre-filter reads the two records' identifying free text HOLISTICALLY, not
+  field-by-field.** Each record contributes two bags of tokens:
+  - an **identity bag** - every park / address / street / scheme / estate / building /
+    site / postcode-ish field it happens to carry;
+  - a **party bag** - every developer / landlord / owner-ish field it happens to carry.
+
+  Both bags are stripped of the pair's **place words** (city, region, district, country),
+  of generic scheme words ("park", "logistics", "estate", "unit"...), of street furniture
+  and corporate boilerplate ("street", "north", "management", "holdings"...), of single
+  characters, and of **area-code-shaped tokens** (a UK postcode OUTWARD code like `NN17`,
+  a road number like `A1` - both label a whole town, not a building; the inward half
+  `5JX` survives, because it narrows to a handful of addresses).
+
+  A pair then clears the pre-filter when ANY of these holds:
+  - a pin within ~2 km; **OR**
+  - the two **identity bags share a token** - in any direction and across any pair of
+    fields, so the scheme name a broker typed into an "Address" column corroborates the
+    scheme name a brochure printed as its title; **OR**
+  - a borderline fuzzy key in [70, 88); **OR**
+  - the two records state the **same known city** AND a **party name links them** - the
+    same known developer on both, a party token of one record appearing in the other's
+    identity bag (either direction), or the two party bags sharing a token (which is how
+    a "Landlord" on one side meets a "Developer" on the other).
+
+  **Why the identity bag is un-gated and the party bag is city-gated.** A scheme or street
+  name discriminates on its own. A party name does not: one developer builds many sheds,
+  so an un-gated party match would make the grey set quadratic across a whole country.
+
   **A SHARED CITY ALONE DOES NOT CLEAR THE PRE-FILTER.** A longlist is usually one town or
   one market, so the city is the one attribute every record shares and it distinguishes
   nothing; treating it as a signal made the grey set quadratic and spent two LLM
-  judgements per pair on questions with no evidence behind them. So if you are wondering
+  judgements per pair on questions with no evidence behind them. The same argument is why
+  region, district and country names are stripped from both bags. So if you are wondering
   why two obviously-unrelated buildings in the same town are not in your file: that is
   deliberate, and a wrong split is caught downstream by the coverage dedupe gate.
+
+  **What this means for you.** Because the field boundary is gone, a grey pair you receive
+  may be corroborated by a name that sits in DIFFERENT fields on the two records - a park
+  name against an address fragment, a landlord against a developer. That is a real signal,
+  not a bug in the file. It is also only a *candidate* signal: the pre-filter's job is
+  recall, yours is the judgement, and "DEFAULT TO 'different' WHEN UNSURE" below is
+  unchanged.
 - **no** - definitely distinct; never shown to you.
 
 So your job is narrow and honest: for each grey pair, decide whether `a` and `b`
@@ -111,6 +145,13 @@ is preferred because the reason lands in the audit trail.)
   postal park) - the same property.
 - **different** - two distinct properties that happen to look similar. Example:
   `"Alpha Park"` and `"Beta Park"`, same developer and city - different schemes.
+- **A DIFFERING PARTY NAME IS NOT, BY ITSELF, A 'different' VERDICT.** One record's
+  `developer` may be the other's `landlord`, a JV partner, a fund that bought the asset, or
+  the same house after a rebrand - and a broker's spreadsheet column headed "Landlord" is
+  routinely bound to `developer` and vice versa. Weigh the PROPERTY evidence (the scheme
+  name, the address, the size, the specification, the pin) and treat the party names as one
+  more field that may disagree. Equally: two records sharing only a party name and nothing
+  else are `different` - a developer builds many sheds in one town.
 - **DEFAULT TO 'different' WHEN UNSURE.** This is the honest, safe choice: an over-SPLIT
   is caught and force-fixed by the coverage dedupe gate (two cards with the same
   park+city+developer+area BLOCK the build until merged); an over-MERGE silently

@@ -117,7 +117,10 @@ def main() -> int:
     # the two conditions must be CONJOINED in one statement: input-freshness alone was the
     # defect, and delivery-completeness alone would never re-deliver after a data change.
     stmt = RUN_SRC[i_guard:i_guard + 400].split("_resumed(")[0]
-    ck("delivery_complete(deliverables)" in stmt and "and" in stmt,
+    # `delivery_complete(deliverables` (no closing paren pinned): the marker now lives in the
+    # WORK dir, so the call carries a second argument - `delivery_complete(deliverables, work)`.
+    # What matters is the conjunction, not the arity.
+    ck("delivery_complete(deliverables" in stmt and "and" in stmt,
        "it is ANDed with delivery_complete in the same guard")
 
     if fails:

@@ -83,6 +83,7 @@
         "incentives": {"type": "string"},
         "plotArea": {"type": ["number", "string", "null"]},
         "warehouseArea": {"type": "number", "minimum": 0},
+        "warehouseAreaSqm": {"type": ["string", "null"], "description": "The dataset's own warehouseArea figure re-stated in square metres (a display-only secondary unit, e.g. '61,263 sq m') - not read by the dashboard template's own rendering logic (the card shows one unit, areaUnit), but carried through to the Excel deliverables (Longlist, Source Ledger) so a client working in metric has the figure without converting by hand."},
         "divisibleFrom": {"type": ["number", "string", "null"]},
         "officeArea": {"type": ["number", "string", "null"]},
         "officeAreaVal": {"type": ["number", "null"], "description": "Office GLA as a clean number in the dataset's area unit, derived by merge from officeArea for total-GLA rent maths. Null when unparseable/absent."},

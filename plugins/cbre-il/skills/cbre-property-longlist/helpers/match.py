@@ -19,6 +19,17 @@ pre-filter deliberately does NOT treat a shared city as a signal on its own: a
 longlist is usually one town, so the city distinguishes nothing there and made
 the grey set quadratic in the skill's most common corpus. See
 `_cross_source_grey`. (I9)
+
+The pre-filter reads a record's identifying free text HOLISTICALLY, not field-by-
+field. A broker's spreadsheet is human input: the scheme name lands in an "Address"
+column as often as in "Park", and the party that owns the shed is written under
+whichever header the broker had ("Landlord", "Developer", "Owner") - so requiring
+park-to-park and developer-to-developer alignment hid real matches. Each record
+contributes ONE bag of identity tokens (every park/address/scheme-ish field) and one
+bag of party tokens (developer/landlord-ish fields); the filter looks for overlap
+ACROSS the two bags in either direction. Place words (city, region, district,
+country) are stripped from both, so the I9 rule - a shared town corroborates
+nothing - still holds. See `_grey_bag`. (I12)
 """
 from __future__ import annotations
 
@@ -78,8 +89,33 @@ def match_key(rec: dict) -> str:
 
 
 def _area(r):
-    v = r.get("warehouseArea")
-    return float(v) if isinstance(v, (int, float)) else None
+    """The record's warehouse area as a bare NUMBER, whatever shape the source printed it in.
+
+    `warehouseArea` is a STRING far more often than a float, BY DESIGN. The brochure-
+    interpretation contract (reference/interpretation.md) is "write the value the way the
+    source prints it": a dimensioned value keeps its unit inside the value, so a brochure
+    record routinely carries '425,621 sq ft' or '700,000 SQ FT', not 425621.0. This used to
+    test `isinstance(v, (int, float))` and returned None for every one of them, which
+    silently disabled EVERY size check resting on it:
+
+      * `_same_source_verdict` fell through to its "no area on either side" escape hatch and
+        merged two GENUINELY DIFFERENT units of one multi-unit brochure into one property -
+        the exact inverse of the skill's own "dedupe cross-source, NEVER within one brochure"
+        guarantee, and it fired on essentially every same-brochure sibling pair, because ALL
+        brochure-sourced areas are unit-suffixed strings;
+      * `_area_pair` returned (None, None) - "footing unknown, refuse to compare" - for a
+        pair a human reads at a glance, so the cross-source size veto and the size-agreement
+        tests in `_cross_source_auto` went dark too.
+
+    Delegates to `normalize.normalize_number`, the parser the extractors already share, so a
+    comma/space/NBSP thousands group, a European decimal comma and a trailing unit read the
+    same here as everywhere else - and a RANGE ('25,000 - 50,000 sq ft') still yields no
+    number, because it honestly has none.
+
+    UNITS ARE NOT THIS FUNCTION'S JOB - only the magnitude. Footing lives in each record's
+    separate `areaUnit` field and is resolved by `_area_pair`; reading a unit out of the
+    value here would silently compare a sq ft figure against a sq m one."""
+    return N.normalize_number(r.get("warehouseArea"))
 
 
 def _area_pair(a, b):
@@ -170,8 +206,116 @@ def _grey_tokens(park, city_tokens: set) -> set:
     'corby' and {alpha} <= {alpha, beta} - a NEW auto-merge, in the one tier that merges
     without asking anybody. Here every change can only move a pair grey -> 'no', which is
     the split direction, so the same strip is safe. The eval carries that fixture as a
-    positive control."""
+    positive control.
+
+    Since I12 the caller is `_grey_bag`, which feeds it ANY identifying free text (an
+    address, a scheme name, a developer), not only a park, and passes the pair's full PLACE
+    token set (city + region + district + country) as `city_tokens`. The parameter names are
+    kept for call-site compatibility; the function only tokenises and subtracts."""
     return _distinctive_tokens(park) - city_tokens
+
+
+# Place fields carry NO identity. The I9 argument for the city generalises to every one of
+# them: a longlist is one market, so its records share the region, often the district, and
+# always the country - a "shared" place token corroborates nothing and, as a signal, is
+# exactly what made the grey set quadratic. `city` comes via `_grey_city_tokens`.
+_PLACE_FIELDS_EXTRA = ("region", "district", "country")
+
+
+def _grey_place_tokens(a: dict, b: dict) -> set:
+    """The PAIR's PLACE tokens: `_grey_city_tokens` widened with region / district /
+    country, unioned over BOTH records so the result is order-independent. This is the set
+    the GREY bags are stripped against. A superset can only SHRINK a bag, i.e. move a pair
+    grey -> 'no' - the split direction, which is always the safe one. (I12)"""
+    out = set(_grey_city_tokens(a, b))
+    for r in (a, b):
+        for f in _PLACE_FIELDS_EXTRA:
+            v = r.get(f)
+            if isinstance(v, str) and v.strip():
+                out |= {t for t in norm(v).split() if t}
+    return out
+
+
+# The free text a record is IDENTIFIED by - a scheme / estate / street / building name - in
+# WHATEVER field the extractor happened to bind it to. `record_schema.json` is deliberately
+# open (`additionalProperties: true`), and a broker's own headers are messier still: the
+# scheme name arrives under "Address" as often as under "Park". So this is an OPEN list of
+# the names actually in use across the pipeline (merge._IDENTITY_NAME_FIELDS,
+# gate_runner.PROV_ADVISE_FIELDS, the canonical schema) plus the obvious camelCase variants.
+# Adding a name here can only WIDEN the grey tier - never auto, never forbidden - so extend
+# it freely when a corpus shows a new one.
+_GREY_IDENT_FIELDS = ("park", "address", "addressLine", "addressLine1", "street",
+                      "postcode", "postalCode", "name", "propertyName", "scheme",
+                      "schemeName", "estate", "site", "siteName", "building",
+                      "buildingName", "unit", "unitName")
+
+# The PARTIES a record names. A party is identity too, but a WEAKER one - a developer builds
+# many sheds in one market - so a party token only ever counts INSIDE the same known city
+# (see `_cross_source_grey`). `landlord` is here because the roles are routinely written into
+# each other's column by hand, and because an asset sale or rebrand leaves the SAME building
+# with a different party name on each side: that is a question for the adjudicator, not a
+# reason to hide the pair.
+_GREY_PARTY_FIELDS = ("developer", "landlord", "owner", "assetManager", "freeholder")
+
+# GREY-ONLY extra stop-words. Once ADDRESS text and PARTY names join the bag, street
+# furniture, compass words and corporate boilerplate would manufacture corroboration out of
+# nothing: two unrelated sheds on two different roads must not read as a match because both
+# addresses say "north", and two different owners must not link through the word
+# "management".
+#
+# DELIBERATELY NOT FOLDED INTO `_GENERIC_PARK`, and that asymmetry is the safety property.
+# `_GENERIC_PARK` feeds `_distinctive_tokens`, which `_cross_source_auto`'s containment
+# branch reads, and shrinking a token set there can only ADD subset relations - a NEW
+# auto-merge, in the one tier that merges without asking anybody. Applied here, a smaller bag
+# can only move a pair grey -> 'no', the split direction. (Same argument as `_grey_tokens`.)
+_GREY_GENERIC_EXTRA = {
+    # street furniture
+    "street", "avenue", "close", "crescent", "gardens", "square", "terrace", "row",
+    "drive", "court", "place", "boulevard", "parade", "circus", "walk",
+    # compass / relative position
+    "north", "south", "east", "west", "northern", "southern", "eastern", "western",
+    "upper", "lower",
+    # corporate boilerplate in a party name
+    "group", "holdings", "partners", "partnership", "capital", "management", "managers",
+    "investments", "investment", "properties", "property", "developments", "ventures",
+    "trust", "fund", "funds", "assets", "asset", "real", "international", "global",
+    "european", "europe",
+    # generic building/plot words an address or a unit name adds
+    "building", "buildings", "site", "sites", "units", "block", "plot", "floor",
+    "works", "yard", "premises", "facility",
+}
+
+# A short letter-then-digits token: a UK postcode OUTWARD code ('nn17', 'mk45') or a road
+# number ('a1', 'm6'). Both are AREA labels, not building identity - an outward code covers a
+# whole town, which is the shared-city problem wearing a different hat, and it is exactly how
+# address text would re-create the I9 quadratic blowup. The INWARD half ('5jx') starts with a
+# digit, does not match, and is kept: it narrows to a handful of addresses and is real
+# evidence. 'mk450' (three digits) does not match either - a scheme name survives.
+_CODEISH = re.compile(r"^[a-z]{1,2}\d{1,2}[a-z]?$")
+
+
+def _grey_bag(rec: dict, fields: tuple, place_tokens: set) -> set:
+    """One record's DISTINCTIVE tokens gathered from `fields`, stripped of the pair's place
+    tokens, the grey-only stop-words, single characters and area-code-shaped tokens.
+
+    This is the whole of the I12 change: the pre-filter compares BAGS, so a token the broker
+    typed into "Address" can corroborate a token the brochure printed as its scheme name, and
+    a party name written under "Landlord" on one side can corroborate the "Developer" on the
+    other. Which FIELD a name lives in is an accident of whoever built the spreadsheet; the
+    name itself is the evidence.
+
+    GREY-ONLY by construction: nothing in this function is reachable from `_cross_source_auto`
+    or `_cross_source_forbidden`, so it can only ever move a pair 'no' -> grey (more LLM
+    adjudication) or grey -> 'no' (an honest split the coverage dedupe gate catches). It can
+    never merge anything on its own."""
+    out: set = set()
+    for f in fields:
+        v = rec.get(f)
+        if not isinstance(v, str) or not v.strip() or N.looks_unknown(v):
+            continue
+        out |= _grey_tokens(v, place_tokens)
+    return {t for t in out
+            if len(t) > 1 and t not in _GREY_GENERIC_EXTRA and not _CODEISH.match(t)}
 
 
 def _same_source_verdict(a: dict, b: dict) -> bool:
@@ -186,7 +330,16 @@ def _same_source_verdict(a: dict, b: dict) -> bool:
         return False
     aa, ba = _area(a), _area(b)
     if aa is None and ba is None:
-        return True  # indistinguishable restatement - keeping both adds nothing
+        # NO COMPARABLE NUMBER ON EITHER SIDE. Merging here is only honest when the area is
+        # genuinely UNSTATED on both records. An area that IS stated but does not reduce to
+        # one number - a range, '25,000 - 50,000 sq ft' - is not evidence of sameness, and
+        # treating it as such is how this branch used to swallow whole multi-unit brochures
+        # back when `_area` could not read a unit-suffixed string at all. Default to
+        # different when unsure; only an IDENTICAL unparseable string is one unit restated.
+        ra, rb = a.get("warehouseArea"), b.get("warehouseArea")
+        if N.looks_unknown(ra) and N.looks_unknown(rb):
+            return True  # indistinguishable restatement - keeping both adds nothing
+        return N.clean_value(ra).casefold() == N.clean_value(rb).casefold()
     if aa and ba and abs(aa - ba) / max(aa, ba) <= 0.01:
         return True  # same unit stated twice (summary row + detail page)
     return False  # different/partial areas = distinct phases, keep both
@@ -204,9 +357,10 @@ def _cross_source_forbidden(a: dict, b: dict) -> bool:
     A DEVELOPER DISAGREEMENT is NO LONGER a hard block. Landlord and developer are
     distinct fields now (extract_xlsx no longer conflates them), so a 'developer
     disagreement' is a genuine naming/JV/asset-sale signal, not a landlord masquerading
-    as a developer. A cross-source dev-disagreement pair therefore falls through to
-    _cross_source_grey (same city / ~2 km / shared distinctive park token / fuzzy 70-88)
-    and the LLM adjudicates it. _cross_source_auto is UNCHANGED - its coord-net auto
+    as a developer. A cross-source dev-disagreement pair therefore falls through to the grey
+    pre-filter (~2 km / a shared distinctive identity token / fuzzy 70-88 / a party name
+    linking the two records in one city) and the LLM adjudicates it. _cross_source_auto is
+    UNCHANGED - its coord-net auto
     path still REQUIRES developer agreement, so a disagreement goes to grey, never auto.
 
     The size test is FOOTING-AWARE (B10): a mixed-unit pair is converted before comparing,
@@ -289,9 +443,11 @@ RECALL_KM = COORD_MERGE_KM  # the auto coord-net radius (a grey pin is wider, se
 
 def _cross_source_grey(a: dict, b: dict) -> bool:
     """RECALL pre-filter: a cross-source pair that is NOT forbidden and NOT auto, but is
-    plausible enough to ask the LLM about - within ~2 km, OR sharing >= 1 distinctive park
-    token (city tokens excluded), OR a borderline fuzzy key in [70, 88), OR same city AND
-    the same KNOWN developer.
+    plausible enough to ask the LLM about - within ~2 km, OR sharing >= 1 distinctive
+    IDENTITY token (any park/address/scheme-ish field on one side against any on the other,
+    place words stripped), OR a borderline fuzzy key in [70, 88), OR - inside the same known
+    city - a PARTY name (developer/landlord-ish) that links the two records in either
+    direction.
 
     SAME CITY ALONE IS NOT A SIGNAL (I9). A property longlist is by definition usually one
     town or one market, so every record shares the city and it distinguishes nothing - yet
@@ -302,60 +458,95 @@ def _cross_source_grey(a: dict, b: dict) -> bool:
     and the survivor is the one true cross-source match that `auto` misses (its two stated
     areas sit 9.2% apart, over the containment branch's 5% ceiling).
 
-    WHY THE DEVELOPER STILL EARNS A CITY-PAIRED SIGNAL, when the city cannot stand alone:
-    the developer DISCRIMINATES in a single-market corpus and the city does not. One
-    developer building in one town is a small subset of pairs; 'both in Corby' is every
-    pair. The developer connects two records in either of two forms, and both are needed:
+    FIELD NAMES ARE AN ACCIDENT; NAMES ARE THE EVIDENCE (I12). The filter used to insist on
+    field-name alignment: park token against park token, and the developer only ever against
+    the other side's PARK. Real broker input does not respect that. A tracker's free-text
+    "Address" column carries the scheme name ('MPC2 Magna Park Corby, 100 Kettering Road,
+    Weldon'); a column headed "Landlord" is bound to `developer`; an asset sale leaves the
+    SAME building recorded as one owner on the tracker and its predecessor on the brochure.
+    Nearly every row of a live 17-row tracker was the same physical property as one of 15
+    brochures - confirmed later by exact warehouse-area matches - and most of those pairs
+    were never even generated as candidates, so they shipped as duplicate cards.
 
-      * BOTH developers known and equal - keeps a same-city/same-developer/different-park
-        pair visible (Apollo Court vs Mercury House, both Prologis: fuzzy 65.5, disjoint
-        tokens, no coords, so it has no other signal);
-      * one record's known developer appearing as a distinctive token in the OTHER's park
-        string. This is the same identity evidence the containment branch uses, crossing
-        the developer/park field boundary - and it is how real corpora are shaped: a
-        brochure names the scheme 'Panattoni Park Doncaster' while the tracker carries the
-        developer in a marketing name or address. It rescues the live TEMU pair pinned by
+    So each record now contributes TWO bags (`_grey_bag`):
+      * an IDENTITY bag - every park/address/scheme/street/building-ish field it has;
+      * a PARTY bag - every developer/landlord/owner-ish field it has;
+    both stripped of the pair's place tokens, grey-only stop-words and area-code-shaped
+    tokens. Overlap is then tested ACROSS the bags in BOTH directions.
+
+    WHY IDENTITY OVERLAP IS UN-GATED AND PARTY OVERLAP IS CITY-GATED: a scheme/street name
+    discriminates on its own, a party name does not. One developer building in one town is
+    still a small subset of pairs; that same developer across a continent is most of them,
+    which is the shared-city blowup wearing a different hat. So a party token only counts
+    when both records state the SAME known city. The three party forms, all of which are
+    needed:
+
+      * BOTH developers known and equal under `norm_dev` (which also resolves the aliases,
+        'CTPark' -> 'ctp') - keeps a same-city/same-developer/different-park pair visible
+        (Apollo Court vs Mercury House, both Prologis: fuzzy 65.5, disjoint tokens, no
+        coords, so it has no other signal);
+      * a party token of ONE record appearing in the OTHER's IDENTITY bag, either direction.
+        A brochure names the scheme 'Panattoni Park Doncaster' while the tracker carries the
+        developer inside a marketing name or address. It rescues the live TEMU pair pinned by
         evals/source_authority_test.py (B48), where the tracker's park reads 'Panattoni
         Doncaster 770, Blyth Road, Harworth' and the brochure's DEVELOPER is Panattoni.
         Without it, a broker's disclosed city correction - made precisely so the two
-        records could be compared - would have had no route to make the pair askable.
+        records could be compared - would have had no route to make the pair askable;
+      * the two PARTY bags sharing a token. This is what catches a landlord written on one
+        side against a developer on the other, and a party name that agrees on its
+        distinctive word but not on its first ('Tritax' vs 'Tritax Symmetry'), which
+        `norm_dev` equality misses.
 
-    Neither form needs an area guard: a pair whose areas differ by more than 15% is already
+    A party DISAGREEMENT is still not a signal by itself - two different owner names
+    corroborate nothing, and the pair reaches the LLM (if at all) on its identity tokens,
+    which is the honest route. That is the asset-sale case: the shared scheme name makes it
+    askable, and the adjudicator decides what the differing owner means.
+
+    No form needs an area guard: a pair whose areas differ by more than 15% is already
     `forbidden`, which `pair_class` tests before grey. A CLOSE area match was considered as
     a signal in its own right and rejected - sheds in one market are all similar sizes, so
     on the Corby corpus alone it would have re-admitted most of the pairs this rule removes.
     That is why >15% is a veto here and <15% is not evidence.
 
-    THE CHANGE CAN ONLY MOVE PAIRS grey -> 'no'. Every signal removed was a disjunct and
-    nothing is added; the `auto` and `forbidden` tiers are untouched. So with
+    THIS TIER IS THE ONLY ONE THAT MOVES. I9 could only move pairs grey -> 'no'; I12 mostly
+    moves them 'no' -> grey (more identity fields, more cross-field forms) and, where the
+    place strip widened or a stop-word/area-code token was dropped, grey -> 'no'. NEITHER
+    direction can merge anything on its own: `auto` and `forbidden` are untouched, so with
     `decisions=None` - every offline path - the clustering verdict is byte-identical
-    (`same_property` returns False for grey-without-a-decision and for 'no' alike). The one
-    behavioural change is that a demoted pair can no longer be merged by an LLM 'same':
-    that is an over-SPLIT risk, never an over-merge, and the coverage dedupe gate catches a
-    wrong split. Accepted, and asserted in evals/grey_prefilter_test.py.
+    (`same_property` returns False for grey-without-a-decision and for 'no' alike). A wider
+    grey set costs two LLM judgements per pair and nothing else; a narrower one risks an
+    over-SPLIT, never an over-merge, and the coverage dedupe gate catches a wrong split.
+    Asserted in evals/grey_prefilter_test.py.
 
     RESIDUAL, recorded not fixed: a single-developer single-city corpus still fires the
-    fourth disjunct on every pair inside 15% area. Strictly better than firing on every
+    party disjunct on every pair inside 15% area. Strictly better than firing on every
     pair regardless, and such a pair is worth asking about."""
     la, lb = _latlng(a), _latlng(b)
     if la and lb and _km(la, lb) <= GREY_COORD_KM:
         return True
-    city_tokens = _grey_city_tokens(a, b)
-    da_ = _grey_tokens(a.get("park"), city_tokens)
-    db_ = _grey_tokens(b.get("park"), city_tokens)
-    if da_ and db_ and (da_ & db_):
+    place = _grey_place_tokens(a, b)
+    ia = _grey_bag(a, _GREY_IDENT_FIELDS, place)
+    ib = _grey_bag(b, _GREY_IDENT_FIELDS, place)
+    if ia & ib:
         return True
     score = _tsr(match_key(a), match_key(b))
     if GREY_LOW <= score < MATCH_THRESHOLD:
         return True
     ca, cb = norm(a.get("city")), norm(b.get("city"))
     if ca and cb and ca == cb:
+        # an unknown developer ('tbd'/'??') is neither agreement nor evidence - `_known_dev`
+        # returns "" for it and `_grey_bag` skips it, so every form below is inert on it by
+        # construction
         ka, kb = _known_dev(a), _known_dev(b)
         if ka and kb and ka == kb:
             return True
-        # an unknown developer ('tbd'/'??') is neither agreement nor evidence - `_known_dev`
-        # returns "" for it, so both forms below are inert on it by construction
-        if (ka and ka in db_) or (kb and kb in da_):
+        pa_ = _grey_bag(a, _GREY_PARTY_FIELDS, place)
+        pb_ = _grey_bag(b, _GREY_PARTY_FIELDS, place)
+        # the alias-canonical form too ('CTPark' -> 'ctp'), which is not a token of the
+        # developer string and would otherwise be lost when the bags replaced it
+        if (ka and ka in ib) or (kb and kb in ia):
+            return True
+        if (pa_ & ib) or (pb_ & ia) or (pa_ & pb_):
             return True
     return False
 
@@ -366,8 +557,11 @@ def pair_class(a: dict, b: dict) -> str:
       'grey'      - cross-source, not forbidden, not auto, but clears the recall
                     pre-filter: the genuinely ambiguous middle the LLM adjudicates.
                     A SHARED CITY ALONE DOES NOT CLEAR IT (I9) - it needs a pin
-                    within ~2 km, a shared distinctive park token, a borderline
-                    fuzzy key, or the same known developer in that city
+                    within ~2 km, a shared distinctive IDENTITY token (any
+                    park/address/scheme-ish field of one record against any of the
+                    other's, place words stripped - I12), a borderline fuzzy key, or
+                    a PARTY name (developer/landlord-ish) linking the two records in
+                    that city, in either direction
       'forbidden' - a HARD blocker (>15% size conflict / same-source differing area);
                     can NEVER merge, even on an LLM 'same' verdict. A developer
                     disagreement is NOT forbidden - it falls to 'grey' for the LLM.
@@ -447,7 +641,9 @@ def grey_pairs(records: list[dict]) -> list[dict]:
     the LLM cost is O(grey pairs). Before I9 a shared city alone qualified, so a
     single-market longlist put a QUADRATIC number of pairs in front of two LLM passes -
     a 4-property Corby corpus produced 14 pairs / 28 judgements / 0 merges. With the city
-    no longer sufficient on its own, that corpus yields 1."""
+    no longer sufficient on its own, that corpus yields 1 - and still yields 1 after I12
+    widened WHICH fields the surviving signals may be read from, because the place strip,
+    the grey-only stop-words and the area-code filter keep the widening on real names."""
     out: list[dict] = []
     seen: set = set()
     n = len(records)

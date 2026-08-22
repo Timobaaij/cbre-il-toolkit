@@ -75,6 +75,80 @@ plan = {
               {"kind": "card", "style": "decimal", "n": 3, "title": "Redesign", "text": "Plan the combined network."}]},
             {"weight": 0.9, "cells": [{"kind": "image", "path": "does_not_exist.png", "alt": "network map placeholder"}]}]},
 
+        # --- skeletons: a flat cell list carved up by a named geometry ------
+        # rail: a full-height left column beside a stack. The asymmetric shape
+        # the rows-only model could not express.
+        {"kind": "scene", "tone": "dark", "shape": "rail", "eyebrow": "04 | RAIL",
+         "headline": "One argument, evidence stacked beside it",
+         "cells": [
+            {"kind": "prose", "label": "THE READ",
+             "text": "A rail puts the argument on the left at full height and lets the evidence stack independently on the right, so the two read as claim and support rather than as two unrelated bands."},
+            {"kind": "stat", "value": "46%", "label": "of new leases in Tier-2 corridors"},
+            {"kind": "stat", "value": "17", "label": "BTS projects in advanced planning"}]},
+
+        # hero: one dominant cell over a supporting strip
+        {"kind": "scene", "tone": "light", "shape": "hero", "eyebrow": "05 | THE SHIFT",
+         "headline": "From build-up to impact",
+         "cells": [
+            {"kind": "from_to", "from": "Build-up", "to": "Impact and usability",
+             "from_sub": "capability created", "to_sub": "commercially relevant"},
+            {"kind": "prose", "text": "Emphasis moves from creating capability to making it useful."},
+            {"kind": "prose", "text": "The same teams, pointed at outcomes rather than platform work."}]},
+
+        # bands: a single tall device
+        {"kind": "scene", "tone": "dark", "shape": "bands", "eyebrow": "06 | STATUS",
+         "headline": "On track, and entering execution",
+         "cells": [
+            {"kind": "timeline", "phases": [
+                {"n": "01", "label": "BUILD", "text": "Platform and tooling established.", "done": True},
+                {"n": "02", "label": "ROLL-OUT", "text": "Operational across markets.", "done": True},
+                {"n": "03", "label": "EXECUTE", "text": "Commercial impact and client work.", "done": False}]}]},
+
+        # ledger: a narrow read against wide evidence
+        {"kind": "scene", "tone": "light", "shape": "ledger", "eyebrow": "07 | PRIORITY",
+         "headline": "Where to focus first",
+         "cells": [
+            {"kind": "prose", "text": "Priority here is a decision about sequence, not about importance."},
+            {"kind": "tiers", "tiers": [
+                {"label": "01 - PRIMARY FOCUS", "title": "Commercial execution",
+                 "note": "Everything now serves direct commercial impact.", "emphasis": True},
+                {"label": "02 - SECONDARY, FOR NOW", "title": "Capability build-out",
+                 "note": "Leverage what exists; scale in a second phase."}]}]},
+
+        # mosaic: two devices side by side
+        {"kind": "scene", "tone": "dark", "shape": "mosaic", "eyebrow": "08 | REFINEMENTS",
+         "headline": "Strengthened, refocused, deprioritised",
+         "cells": [
+            {"kind": "directions", "rows": [
+                {"direction": "up", "label": "Strengthened",
+                 "items": ["Thought leadership", "Client engagement"]},
+                {"direction": "down", "label": "Deprioritised",
+                 "items": ["Sector scaling"], "subtag": "TEMPORARY"}]},
+            {"kind": "bars", "tiers": [
+                {"label": "HIGH", "sub": "Top priority", "frac": 1.0},
+                {"label": "MEDIUM", "sub": "Active management", "frac": 0.72},
+                {"label": "LIGHT", "sub": "Selective", "frac": 0.46}]}]},
+
+        # poster: one blockbuster number, space left beneath
+        {"kind": "scene", "tone": "light", "shape": "poster", "eyebrow": "09 | THE NUMBER",
+         "headline": "One number that carries the case",
+         "cells": [
+            {"kind": "stat", "value": "EUR 16.9m", "label": "annual run-rate", "scale": "hero"},
+            {"kind": "prose", "text": "Achieved without additional headcount."}]},
+
+        # explicit nesting: a split cell inside a row
+        {"kind": "scene", "tone": "dark", "eyebrow": "10 | NESTED",
+         "headline": "A quadrant built by nesting",
+         "scene": [
+            {"weight": 1.0, "cells": [
+                {"kind": "quote", "span": 0.9,
+                 "text": "Compose the slide the argument wants.", "attrib": "House rule"},
+                {"kind": "split", "span": 1.1, "scene": [
+                    {"weight": 1.0, "cells": [{"kind": "heading", "text": "What changed"}]},
+                    {"weight": 2.0, "cells": [
+                        {"kind": "prose", "text": "Nesting is a partition of a partition, so asymmetry costs nothing in safety."},
+                        {"kind": "chips", "items": ["rail", "hero", "ledger", "mosaic"]}]}]}]}]},
+
         {"kind": "section", "tone": "dark", "number": 2, "title": "What it means",
          "lead": "From context to action.", "items": ["Release", "Reuse", "Redesign"]},
 
@@ -84,9 +158,24 @@ plan = {
 }
 
 print("composing (no PowerPoint: resolve + label + bake off)...")
-compose.render(plan, str(out), resolve=False, label_and_bake=False, audit=False)
+# This file is a COVERAGE harness: it must exercise every skeleton and every
+# cell kind in one deck, so the editorial-discipline checks (rationing, the
+# shape_why requirement, the novelty floor) cannot apply to it - a real deck
+# would never use all six skeletons. Structural checks still run strict:
+# repeated skeletons and any geometry problem (canvas bleed, text past the
+# safe bottom, text-on-text collision) fail the test rather than printing a
+# warning nobody reads.
+audit_scene_shapes_result = compose.audit_scene_shapes(
+    plan, verbose=True, strict=True, discipline=False)
+compose.render(plan, str(out), resolve=False, label_and_bake=False,
+               audit=False, geometry_strict=True)
 from pptx import Presentation  # noqa: E402
 n = len(Presentation(str(out)).slides)
 print(f"OK: composed {n} slides -> {out}")
-assert n == 8, f"expected 8 slides, got {n}"
-print("PASS")
+assert n == 15, f"expected 15 slides, got {n}"
+
+# Every cell kind the composer advertises must actually be reachable.
+missing = compose.CELL_KINDS - set(compose.CELL) - {"split"}
+assert not missing, f"cell kinds declared but not registered: {missing}"
+print(f"PASS: {n} slides, {len(compose.CELL)} cell kinds, "
+      f"{len(compose.SKELETONS)} skeletons, strict audits clean")

@@ -7,6 +7,39 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.8.0] — 2026-08-22
+
+Marketplace 1.8.0: **CBRE I&L Toolkit 1.5.0** — two skills updated. UK I&L Toolkit unchanged
+at 1.3.0.
+
+### Added
+- **Corporate decks — the deck is now *looked at*, not just asserted about.** The library could
+  always render slides to PNG, but only ever used that to correct text-box heights; nothing
+  inspected the result, and no assertion can catch "this deck reads as templated" or "slide 6 is
+  a wall of grey". `scripts/contact_sheet.py` tiles a rendered deck into ONE image so the whole
+  thing can be judged at once, and `scripts/critique/` judges that render against a **gold
+  reference** set (dark-shift, dark-statement, white-evidence-table and a gold contact sheet).
+  A new `references/chrome-spec.md` pins the part that never varies, measured from a signed-off
+  CBRE proposal in inches on the 13.33 × 7.50 canvas. Supporting updates to `build.py`,
+  `compose.py` and the layout, scene-composition and spacing references.
+- **Property longlist — three new evals for v39.** `media_harvest_test` pins the media
+  under-harvest fix end to end (every media tier degrades to an honest `None`/`[]` rather than
+  quietly shipping less), `office_breakdown_test` (`.py` + `.mjs`) holds a multi-component
+  `officeArea` to a bold summary line over a real bulleted breakdown while leaving every other
+  shape untouched, and `project_layout_test` closes the arbitrary-inputs-folder defect with a
+  fixed three-folder project layout.
+### Changed
+- **Property longlist — dashboard template v38 → v39** with a matching `chrome_sha256`, and
+  broad updates across `clarify`, `deliver`, `enrich`, `final_gate`, `gate_runner`, `images`,
+  `intake`, `interpret_prep`, `ledger`, `match`, `merge`, `plan_signal`, `project_properties`
+  and eleven existing evals. Integrity manifest regenerated (93 files, 48 helpers).
+
+### Known issues
+Unchanged from 1.2.0 and still open upstream — each fails identically on an untouched copy:
+`open_field_scalar_test` (3), `repairs_projection_test` (1) and `plan_reject_test` (2). 96 of
+the longlist's 110 evals pass on a bare Linux box; the other 11 failures are only missing
+Pillow/PyMuPDF/openpyxl, which Cowork provides.
+
 ## [1.7.0] — 2026-08-19
 
 Marketplace 1.7.0: **UK I&L Toolkit 1.3.0**. CBRE I&L Toolkit unchanged at 1.4.0.
@@ -599,6 +632,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.8.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.8.0
 [1.7.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.7.0
 [1.6.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.6.0
 [1.5.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.5.0

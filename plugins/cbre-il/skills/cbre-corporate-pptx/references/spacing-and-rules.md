@@ -1,9 +1,12 @@
-# Spacing, layout and content rules (learnings from the EMBLA Horizon deck)
+# Spacing, layout and content rules (learned across board-grade builds)
 
-This document captures the rules and traps that the EMBLA Horizon Phase 0 build
+This document captures the rules and traps that real board-grade builds have
 exposed in the skill. Read this **before building any new deck** — almost every
 rule here was learned the hard way (broken renders, board-grade QA feedback,
 client style violations) and codifies the fix.
+
+Worked examples use a fictional occupier, "Meridian", so the lesson travels
+without carrying anything client-identifying.
 
 The rules are listed in priority order: things that make the deck fail to open
 or render correctly first, then visual quality, then content style.
@@ -73,7 +76,7 @@ spacing stays content-driven:
 f = Flow(s, x=PAGE_X, y=EYEBROW_Y, w=PAGE_W, tone=tone)
 f.eyebrow("01 · CONTEXT", accent="gold")
 f.gap(GAP_EYEBROW_TITLE)
-f.title("What EMBLA asked CBRE to assess", size=32, color=COLORS["ink"])
+f.title("What Meridian asked CBRE to assess", size=32, color=COLORS["ink"])
 f.gap(GAP_TITLE_BODY)
 f.body("The European hub is set for…", size=12.5, color=COLORS["ink"])
 f.gap(GAP_BODY_CONTENT)
@@ -93,7 +96,7 @@ on the font**, and the surrounding text frame adds another ~0.05–0.10" of
 internal padding. So Flow's `gap()` values are *additional* on top of that
 hidden padding — they need to be smaller than instinct suggests.
 
-The values that produced clean rhythm across the EMBLA deck:
+The values that produced clean rhythm across a full board deck:
 
 ```python
 GAP_EYEBROW_TITLE = 0.12   # eyebrow → title
@@ -329,7 +332,7 @@ The deck is CBRE talking *to* the board, not CBRE narrating its own process.
 |---|---|
 | "Our remit is to…" | "CBRE was asked to…" |
 | "We sensitise NPV across…" | "We modelled NPV across…" |
-| "EMBLA WACC withheld from CBRE pre-NDA" | "EMBLA's WACC was not shared with CBRE for Phase 0" |
+| "WACC withheld from CBRE pre-NDA" | "The client's WACC was not shared with CBRE at this stage" |
 | "The verdict flips at 10.13%" | "The BTO vs Lease answer flips at 10.13%" |
 | "Captured in the NPV" | "Already reflected in the NPV" |
 

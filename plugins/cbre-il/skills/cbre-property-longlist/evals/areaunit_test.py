@@ -95,14 +95,27 @@ def main() -> int:
     # and areaStr passes a string through untouched - correct for a plotArea carrying its own
     # "acres", useless for a bare "1200". Routing officeArea through areaStr alone changes nothing
     # visible; the string never reaches the numeric branch. Asserted below on real rendered output.
+    #
+    # v39 moved the MODAL office-area site one hop further out, to officeAreaHTML(p) - the
+    # breakdown renderer, which returns officeAreaStr(p) unchanged on every value that is not a
+    # multi-component string and otherwise wraps that same formatting in a summary line + <ul>.
+    # So the unit rule below still governs it; office_breakdown_test.py pins the breakdown half.
+    # Compare deliberately KEEPS the flattened officeAreaStr (a matrix cell, not a list).
     for site in ("row(T('row_plot_area'), areaStr(p.plotArea)",
                  "[T('row_plot_area'), p=>areaStr(p.plotArea)",
                  "row(T('row_warehouse_area'), areaStr(p.warehouseArea)",
                  "[T('row_warehouse_area'), p=>areaStr(p.warehouseArea)",
-                 "row(T('row_office_area'), officeAreaStr(p)",
+                 "row(T('row_office_area'), officeAreaHTML(p)",
                  "[T('row_office_area'), p=>officeAreaStr(p)",
                  "${areaStr(p.warehouseArea)}"):
         ck(site in h, f"site routed through areaStr: {ascii(site[:46])}")
+    # and officeAreaHTML must never grow its own formatting - it delegates, or the unit rule
+    # would exist in two places and drift
+    _oah = h.split("function officeAreaHTML(")[1][:500]
+    ck("officeAreaStr(p)" in _oah,
+       "officeAreaHTML delegates to officeAreaStr, so there is still ONE unit rule")
+    ck("AREA_UNIT" not in _oah,
+       "...and it appends no unit of its own; that lives in the shared oaWithUnit helper")
 
     # the SEMANTICS, evaluated the way the chrome would
     def area_str(v, unit="sq ft"):

@@ -644,6 +644,47 @@ def _num_unit(v):
     return (num * fam[1], fam[0], fam[1])
 
 
+# The area fields the canonical schema types as a NUMBER and nothing else - `warehouseArea`
+# is {"type": "number"} and `officeAreaVal` is {"type": ["number","null"]} - so a STRING in
+# either one is a hard validate-data failure, not a formatting preference.
+#
+# `plotArea` is DELIBERATELY ABSENT. The schema types it ["number","string","null"] and a
+# string plot area carrying its own notation ("31.629 acres (12.8 ha)") is a SUPPORTED shape
+# the chrome renders verbatim - areaunit_test pins exactly that value. Coercing it would throw
+# away the parenthetical the source printed in order to fix a failure it does not have.
+_NUMERIC_ONLY_AREA_FIELDS = ("warehouseArea", "officeAreaVal")
+
+
+def _area_text_value(v):
+    """(magnitude, the unit the TEXT itself states or None) for a human-formatted area string,
+    or None when the text holds no single usable number.
+
+    Brochure-interpretation records store an area the way the page PRINTS it
+    (reference/interpretation.md: "a dimensioned value keeps its unit inside the value"), so
+    `warehouseArea` arrives as '436,000 sq ft' / '700,000 SQ FT' far more often than as
+    436000.0. `match._area` hit the identical problem one layer up and fixed it with the same
+    parser; this is that fix at the merge boundary, where the SCHEMA requires the number.
+
+    normalize_number + area_unit_of, NOT `_num_unit`. `_num_unit` answers a different question
+    ("are these two values the same fact?"), so it SCALES its result into sq ft and returns
+    None for any unit outside its comparison table (acres, ha) or for a suffix carrying extra
+    words ('436,000 sq ft GIA'). The caller needs the magnitude in the SOURCE's own unit plus
+    that unit's canonical name - which is precisely the pair `N.area_factor` is keyed on.
+
+    None - never a fabricated figure - on: an unknown sentinel ('tbd'), a RANGE ('25,000 -
+    50,000 sq ft' honestly has no single value), a non-positive figure, and anything
+    unparseable. The caller must then drop the field, not invent a number for it."""
+    if v is None or isinstance(v, bool) or isinstance(v, (int, float)):
+        return None
+    s = str(v).strip()
+    if not s or N.looks_unknown(s):
+        return None
+    num = N.normalize_number(s)   # the shared parser: comma/NBSP thousands, EU decimals, ranges -> None
+    if num is None or num <= 0:
+        return None
+    return (float(num), N.area_unit_of(s))
+
+
 def _as_month(v):
     """(year, month) at MONTH precision, or None - so an ISO date and 'April 2026' compare."""
     s = str(v).strip()
@@ -741,7 +782,25 @@ def _pick_gate_verdict(field: str, value, rent_unit: str | None = None,
             else N.extract_first_number(str(value))
         if num is None or num <= 0:
             return "fail"
-        lo, hi = N.area_band_for(area_unit, field=field)  # plotArea gets the SITE ceiling (T1)
+        # B63: judge the figure on ITS OWN FOOTING - the unit the VALUE itself prints (a
+        # brochure record keeps the unit inside the value by contract, so this branch routinely
+        # sees '700,000 SQ FT'), else the unit the caller supplies. Both used to be ignored:
+        # with no `area_unit` passed, every area fell through to `area_band_for(None)`, the sq m
+        # band, and an ordinary 700,000 sq ft shed was struck against a 600,000 SQ M ceiling
+        # with a note telling the broker the source looked implausible.
+        #
+        # KNOWING THE UNIT MAY ONLY WIDEN THIS BAND, NEVER NARROW IT - hence the union with the
+        # unit-unknown band below, and it is load-bearing, not defensive. `area_band_for` raises
+        # the FLOOR as well as the ceiling (sq m 300 -> sq ft 3,000), so passing the unit
+        # straight through would have struck a perfectly ordinary 1,200 sq ft `officeArea` -
+        # this gate covers offices and plots, not just sheds, and 3,000 is a WAREHOUSE garble
+        # floor that was never calibrated for them. A gate that fires STRIKES the field to tbd,
+        # so new information about a value must never be able to make it less acceptable than
+        # it was while the unit was unknown. The ceiling half is what recovers the sq ft sheds.
+        _own = N.area_unit_of(value) if isinstance(value, str) else None
+        lo, hi = N.area_band_for(_own or area_unit, field=field)  # plotArea: SITE ceiling (T1)
+        _lo0, _hi0 = N.area_band_for(None, field=field)           # the unit-unknown band
+        lo, hi = min(lo, _lo0), max(hi, _hi0)
         return "pass" if lo <= num <= hi else "fail"
     if field in ("lat", "lng"):
         if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -1291,8 +1350,22 @@ def merge_cluster(cluster: list[dict], decisions: dict | None = None,
         # shipped from a single source, with no conflict and no override involved at all. Only
         # fields with an explicit gate are affected ("none" is a no-op), and an already-unknown
         # value is left alone so this cannot clobber the notes written above.
+        # B63: on ITS OWN SUPPLIER'S FOOTING. This call omitted `area_unit`, so every area band
+        # fell through to `area_band_for(None)` - the sq m band, ceiling 600,000 - no matter what
+        # unit the dataset or the record was in. On a live UK (sq ft) run that struck three
+        # perfectly ordinary big-box sheds the tracker plainly states (659,428 / 783,309 /
+        # 1,000,000 sq ft) to 'tbd', each with a note telling the broker to check whether the
+        # source really prints it. `areaUnitOfSource` was recorded on this field's own prov entry
+        # a few lines above and is the very value the alignment step in main() converts on, so
+        # the gate that STRIKES a figure can no longer disagree with the step that scales it.
+        # STRICTLY NON-REGRESSIVE, but NOT because area_band_for is monotonic - it is not; the
+        # sq ft band raises the FLOOR from 300 to 3,000 as well as the ceiling. The gate itself
+        # unions the unit-aware band with the unit-unknown one for exactly that reason, so no
+        # value that passes today can start failing here.
+        # (`_pick_gate_verdict` ignores this argument for every non-area field.)
         if field in out and not N.looks_unknown(out[field]) \
-                and _pick_gate_verdict(field, out[field], rent_unit) == "fail":
+                and _pick_gate_verdict(field, out[field], rent_unit,
+                                       (prov.get(field) or {}).get("areaUnitOfSource")) == "fail":
             _bad = out[field]
             out[field] = "tbd"
             _src = (prov.get(field) or {}).get("source_file") or "?"
@@ -1486,6 +1559,428 @@ def plan_offlimits_pages(clusters: list[list[dict]], source_dir: Path) -> list[d
     return out
 
 
+# --- PLAN-SLOT REACH over the pages NOBODY claimed ---------------------------------------- #
+# The deterministic site-plan tier scans a property's OWN claimed pages (page_no U image_pages)
+# minus the foreign ones. On a run where `image_pages` never came back - the reader had no page
+# renders to look at, which is the whole defect this work exists to fix - that set is the single
+# anchor page, so on a 13-page brochure the tier looks at ONE page and the site plan two pages
+# later is out of reach. Measured on the 17-property corpus: the detector finds a real site plan
+# on 15 of 16 decks when handed the deck, and bound 5, purely because of scope.
+#
+# The pages at issue are the ones NO property claims and NO property anchors. Reaching them is a
+# recall question, and it is answered WITHOUT weakening ownership:
+#   * SOLE-CLAIMANT deck - only one property draws on it at all, so `plan_offlimits` is empty by
+#     construction and no page of that deck can be a neighbour's. The scope restriction protects
+#     nothing there; it is pure recall loss. Every unclaimed page comes into reach.
+#   * MULTI-CLAIMANT deck - a page could belong to either property, so a page comes into reach
+#     ONLY when the page's own TYPOGRAPHY settles it: the property's distinguishing name token
+#     appears at a font size at least PLAN_REACH_SIZE_RATIO times larger than any OTHER
+#     claimant's token on that page. A brochure spread for unit B mentions unit A in a small
+#     context label; the headline is the subject. Anything less decisive stays out of reach and
+#     is disclosed, because a wrong image in the trace-less Site Plan slot is worse than none -
+#     and an identical-duplicate bind across two units of one deck has happened on this corpus.
+# THIS function is the PLAN SLOT's reach. The CAROUSEL has its own - `gallery_reach_pages`,
+# below - built on the same `_deck_ownership` / `_page_allowed` base but with a recall-tuned
+# attribution rule, because the two slots carry different risk. Relying on `__meta.image_pages`
+# for the carousel was tried and MEASURED WRONG: the reader returned it for 4 of 17 properties,
+# so the other 13 carousels could see a single page of a whole brochure.
+PLAN_REACH_AREA_MIN = 1000      # below this a figure is a door count, not an area
+_AREA_NUM_RE = re.compile(r"\d[\d,. ]*")
+# The property fields that carry its own SIZE, i.e. the figures a brochure spread prints in the
+# unit's schedule of accommodation. Strings are parsed for their leading number ('39,541 sq m').
+_IDENTITY_AREA_FIELDS = ("warehouseArea", "warehouseAreaSqM", "warehouseAreaSqm",
+                         "plotArea", "plotAreaSqM", "officeAreaVal", "officeAreaSqM")
+
+
+def _page_figures(text: str) -> set:
+    """Every integer >= PLAN_REACH_AREA_MIN printed on a page, thousands separators tolerated."""
+    out: set = set()
+    for m in _AREA_NUM_RE.finditer(str(text or "")):
+        raw = m.group(0).replace(",", "").replace(" ", "").rstrip(".")
+        if raw.isdigit():
+            v = int(raw)
+            if v >= PLAN_REACH_AREA_MIN:
+                out.add(v)
+    return out
+
+
+def _identity_figures(cluster: list[dict]) -> set:
+    """A merged property's own AREA figures - the numbers its unit's schedule prints."""
+    out: set = set()
+    for r in cluster:
+        for fld in _IDENTITY_AREA_FIELDS:
+            v = r.get(fld)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                if v >= PLAN_REACH_AREA_MIN:
+                    out.add(int(v))
+            elif isinstance(v, str):
+                out |= _page_figures(v)
+    return out
+
+
+# The non-warehouse area fields a brochure adds to the warehouse figure to print its headline
+# TOTAL GIA. Used ONLY by _identity_figures_wide (the carousel), never by the plan slot.
+_IDENTITY_OFFICE_FIELDS = ("officeAreaVal", "officeAreaSqM", "officeAreaSqm",
+                           "gatehouseArea", "gatehouseAreaSqM")
+GALLERY_FIGURE_TOL = 0.005   # 0.5% - a brochure headlines '338,000 sq ft' for a 338,308 unit
+
+
+def _identity_figures_wide(cluster: list[dict]) -> set:
+    """`_identity_figures` PLUS the TOTAL a brochure actually headlines - warehouse area plus
+    each non-warehouse component, in the same unit.
+
+    Why the carousel needs this and the plan slot does not. A record stores the schedule
+    BROKEN DOWN (warehouseArea 318,826 + office 19,482); the brochure's title page and site
+    overview print the TOTAL (338,308), and that total is the only figure on those pages. So
+    `_identity_figures` alone reports 'this page names no unit I recognise' for a property's
+    OWN title spread - measured on this corpus: the two best photographs in a deck (1173x729
+    and 1173x488) sat on pages that print only the total.
+
+    Kept SEPARATE from `_identity_figures` on purpose: that set feeds `plan_reach_pages`, where
+    a single wrong bind puts a neighbour's drawing in a trace-less slot. Widening the identity
+    set widens what a plan may reach, so the plan slot keeps the narrow, measured set and stays
+    byte-identical; the carousel - which shows several photos a broker can eyeball - takes the
+    recall."""
+    base = _identity_figures(cluster)
+    out = set(base)
+    for r in cluster:
+        for wfld in ("warehouseArea", "warehouseAreaSqM", "warehouseAreaSqm"):
+            wv = _leading_figure(r.get(wfld))
+            if wv is None:
+                continue
+            for ofld in _IDENTITY_OFFICE_FIELDS:
+                ov = _leading_figure(r.get(ofld))
+                if ov is None:
+                    continue
+                tot = wv + ov
+                if tot >= PLAN_REACH_AREA_MIN:
+                    out.add(int(tot))
+    return out
+
+
+def _leading_figure(v) -> int | None:
+    """The leading integer of an area value ('19,482 sq ft total ...' -> 19482), or None."""
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return int(v) if v > 0 else None
+    if isinstance(v, str):
+        m = _AREA_NUM_RE.search(v)
+        if m:
+            raw = m.group(0).replace(",", "").replace(" ", "").rstrip(".")
+            if raw.isdigit() and int(raw) > 0:
+                return int(raw)
+    return None
+
+
+GALLERY_SCALE_BAND = 10.0   # a rival unit's size is within an order of magnitude of this one's
+
+
+def _names_another_scheme(page_figs: set, own: set) -> bool:
+    """Does this page print a figure that could be ANOTHER UNIT'S size?
+
+    The carousel's neutrality test (a sole-claimant deck's unclaimed page that attributes
+    itself to nobody is in reach) needs 'attributes itself to another scheme', and
+    `_page_figures` is far too blunt for that on its own: it returns every integer >= 1000 on
+    the page, which on real brochure pages means YEARS ('ambitions to 2030'), MONEY ('saving up
+    to GBP 55,000 pa'), head counts ('2,500 international customers'), phone numbers and even
+    ROAD numbers (A1065 -> 1065). Measured: those alone pushed two pages of genuine building
+    photography out of reach on this corpus.
+
+    A figure can only be a rival unit's schedule if it is of the same ORDER as this unit's own
+    size, so the test is scale-banded around the property's largest own figure. Anything outside
+    that band cannot be a comparable unit's area and is therefore not evidence of another
+    scheme. A page printing a genuinely comparable area - a second unit on the same park - still
+    reads as another scheme's and stays out, which is the case that matters."""
+    if not page_figs:
+        return False
+    if not own:
+        return True          # nothing to scale against: treat any figure as foreign evidence
+    anchor = max(own)
+    lo, hi = anchor / GALLERY_SCALE_BAND, anchor * GALLERY_SCALE_BAND
+    return any(lo <= f <= hi for f in page_figs)
+
+
+# The identity STRINGS a property is known by. Only ever used to compute what DISTINGUISHES two
+# claimants of one deck from each other, so a shared word ("panattoni", "park", the city) can
+# never survive the set difference and cannot accidentally attribute a page.
+_IDENTITY_NAME_FIELDS = ("park", "name", "unit", "building", "scheme", "address", "postcode")
+_TOKEN_RE = re.compile(r"[0-9a-z]+")
+_NAME_TOKEN_MIN = 3        # 'mk450' discriminates; '6' does not, and would match any folio
+
+
+def _page_tokens(text: str) -> set:
+    """The page's lowercased alphanumeric tokens, >= _NAME_TOKEN_MIN characters."""
+    return {t for t in _TOKEN_RE.findall(str(text or "").lower()) if len(t) >= _NAME_TOKEN_MIN}
+
+
+def _cluster_name_tokens(cluster: list[dict]) -> set:
+    """Every token of a property's identity strings."""
+    out: set = set()
+    for r in cluster:
+        for fld in _IDENTITY_NAME_FIELDS:
+            v = r.get(fld)
+            if isinstance(v, str) and v.strip():
+                out |= _page_tokens(v)
+    return out
+
+
+def _distinct_name_tokens(clusters: list[list[dict]], owners) -> dict:
+    """{claimant index: the tokens of its name that NO OTHER claimant of this deck shares}.
+
+    This is the NAME half of "whose page is this", and it exists because the figure half is
+    blind to the commonest shape of a shared-deck spread: a page headed with one unit's name and
+    a photograph, carrying no schedule table at all. Computing it as a set DIFFERENCE is what
+    makes it safe without a dictionary of stop-words - "panattoni", "park", "milton", "keynes"
+    and the city appear in both claimants' names and vanish; "mk450" and "mk345" survive.
+    Claimants with no distinguishing token are dropped, so the caller can tell whether names
+    discriminate on this deck at all."""
+    toks = {i: _cluster_name_tokens(clusters[i]) for i in owners}
+    out = {}
+    for i in owners:
+        others = set().union(*(toks[j] for j in owners if j != i)) if len(owners) > 1 else set()
+        d = toks[i] - others
+        if d:
+            out[i] = d
+    return out
+
+
+def _figs_hit(page_figs: set, own: set, tol: float = GALLERY_FIGURE_TOL) -> set:
+    """The subset of `own` a page prints, tolerating the ROUNDING a brochure headline uses
+    ('391,000 sq ft' beside a schedule that totals 391,077). Exact equality is included by
+    construction (a zero difference is inside any tolerance). Used by the carousel reach only;
+    the plan slot keeps its exact `&` intersection."""
+    if not page_figs or not own:
+        return set()
+    hits = set()
+    for o in own:
+        for f in page_figs:
+            if abs(f - o) <= tol * max(abs(f), abs(o)):
+                hits.add(o)
+                break
+    return hits
+
+
+def _page_owner_by_figures(src: str, page: int, distinct: dict) -> object:
+    """Which claimant of a MULTI-property deck this page belongs to, or None when the page does
+    not settle it - in which case the page stays out of every property's reach.
+
+    The evidence is the page's own SCHEDULE OF ACCOMMODATION. An industrial brochure spread
+    prints the unit's warehouse / office / plot areas beside its drawing, and those figures are
+    as specific as an identifier: `distinct` holds, per claimant, the area figures NO other
+    claimant of this deck shares. A page qualifies for claimant i only when it prints at least
+    one of i's figures and NOT ONE of anybody else's - so a park overview listing both units'
+    totals, a page printing nothing, and any page that mixes the two are all refused.
+
+    A TYPOGRAPHIC rule was tried first (whose name is printed biggest) and MEASURED WRONG on the
+    corpus this was built against: on the MK345 spread the giant "MK345" title is vector outline
+    art, so in the TEXT layer the only readable "MK" names print at 12.9pt for MK345 and 17.6pt
+    for a small "MK450" context label - i.e. the rule would have bound BOTH units the same
+    masterplan, which is precisely the identical-duplicate wrong-bind this corpus has produced
+    before. Figures are read off the schedule the drawing is captioned with, not off a heading
+    that may not be text at all."""
+    if not isinstance(page, int):
+        return None
+    figs = _page_figures(IMG._page_plaintext(Path(src), page))
+    if not figs:
+        return None
+    hits = {i: (figs & d) for i, d in distinct.items()}
+    named = [i for i, h in hits.items() if h]
+    if len(named) != 1:
+        return None                       # nobody, or more than one -> the page does not say
+    return named[0]
+
+
+def plan_reach_pages(clusters: list[list[dict]], source_dir: Path) -> list[dict[str, set]]:
+    """Per cluster, the EXTRA pages it may consider for the PLAN SLOT ONLY: pages of a deck it
+    touches that NO cluster claims and NO cluster anchors, gated as described above. Parallel to
+    `clusters`, same shape as `build_foreign_pages`. Never raises; an unreadable deck simply
+    contributes nothing."""
+    pages_per_cluster, anchor_owner, claims = _deck_ownership(clusters, source_dir)
+    touched: dict[str, set] = {}             # deck -> the clusters that draw on it
+    for i, pbs in enumerate(pages_per_cluster):
+        for s in pbs:
+            touched.setdefault(s, set()).add(i)
+    out: list[dict[str, set]] = [dict() for _ in clusters]
+    for s, owners in sorted(touched.items()):
+        try:
+            n = int((IMG.deck_media_facts(Path(s)) or {}).get("pages") or 0)
+        except Exception:
+            n = 0
+        if n <= 0:
+            continue
+        spoken = {p for (ss, p) in claims if ss == s} | {p for (ss, p) in anchor_owner if ss == s}
+        unclaimed = {p for p in range(n) if p not in spoken}
+        if not unclaimed:
+            continue
+        figs = {i: _identity_figures(clusters[i]) for i in owners}
+        if len(owners) == 1:
+            i = next(iter(owners))
+            own = figs[i]
+            if not own:
+                # NO figures known for this property: there is no other claimant to harm and
+                # nothing better to go on, so the whole unclaimed set is in reach.
+                out[i][s] = set(unclaimed)
+                continue
+            mine = {p for p in unclaimed if _page_figures(IMG._page_plaintext(Path(s), p)) & own}
+            # ...and when the deck states this property's figures NOWHERE, it is a whole-park
+            # DONOR deck that never identifies a page as this unit's: reach NOTHING. Measured -
+            # on a 16-page park brochure covering seven other schemes, the widest-reaching
+            # unclaimed page is a masterplan of a DIFFERENT part of the park, and binding it
+            # put a neighbouring scheme's site plan on this card. Every other deck of that
+            # corpus prints the property's own schedule on exactly its own spread, so this
+            # costs nothing real and refuses precisely the case that was wrong.
+            out[i][s] = mine
+            continue
+        # MULTI-CLAIMANT: the page must name its owner in its own SCHEDULE, unambiguously.
+        distinct = {i: (f - set().union(*(figs[j] for j in owners if j != i)))
+                    for i, f in figs.items()}
+        distinct = {i: f for i, f in distinct.items() if f}
+        if len(distinct) < 2:
+            continue                          # nothing tells these claimants apart by figure
+        for p in sorted(unclaimed):
+            owner = _page_owner_by_figures(s, p, distinct)
+            if owner is not None:
+                out[owner].setdefault(s, set()).add(p)
+    try:
+        IMG.close_doc_cache()
+    except Exception:
+        pass
+    return out
+
+
+# --- CAROUSEL REACH over the pages NOBODY claimed ----------------------------------------- #
+# The carousel had the SAME scope bug the plan slot had, and worse: its pages were the
+# cluster's `page_no` UNION the reader's `__meta.image_pages`, and on this corpus the reader
+# returned `image_pages` for only 4 of 17 properties. For the other 13 the carousel could see
+# exactly ONE page of a 5-16 page brochure. Measured consequences: a 7-page deck whose pages 1
+# and 2 hold 26 card-quality photographs shipped a ONE-image card; a 5-page deck shipped four
+# 323x215 thumbnails off its anchor page while a 1173x729 photograph sat one page away, never
+# CONSIDERED - not rejected, never looked at.
+#
+# The reach is built on the SAME ownership machinery as the plan slot (`_deck_ownership` /
+# `_page_allowed`): a page any other property claims or anchors can never enter a carousel, so
+# a shared two-unit deck and a whole-park donor deck are guarded exactly as before. It differs
+# from `plan_reach_pages` in two deliberate ways, because the two slots carry different risk -
+# the plan slot binds ONE drawing whose wrongness is invisible to the reader, while the
+# carousel shows photographs the broker can sanity-check at a glance:
+#   1. IDENTITY FIGURES ARE WIDENED (`_identity_figures_wide` + a 0.5% rounding tolerance),
+#      because a property's own title spread prints the headline TOTAL, not the schedule
+#      breakdown the record stores. See that function.
+#   2a. ON A MULTI-CLAIMANT DECK A PAGE THAT NAMES NO CLAIMANT AT ALL IS PARK-LEVEL, and goes to
+#      EVERY claimant of that deck. Approved by the broker: every claimant of a shared deck is
+#      on this card grid, so the only subject an unattributable page can have is the thing they
+#      share - their park. Attribution reads NAMES as well as figures now (see
+#      _distinct_name_tokens), so a spread headed with one unit's name still goes to that unit
+#      alone, a spread naming both still goes to neither, and a page printing a THIRD scheme's
+#      unit-scale figure is still refused: an identifiable neighbour's building never reaches a
+#      card. This does NOT extend to a whole-park DONOR deck (see the guard below) - there the
+#      other schemes have no card at all, so "names no claimant" means "we cannot tell whose".
+#   2b. ON A SOLE-CLAIMANT DECK A PAGE THAT NAMES NO OTHER SCHEME IS NEUTRAL, so it is in reach.
+#      Nothing on such a page attributes it elsewhere; refusing it costs real photographs (a
+#      deck's 'indicative internal CGI' spread carries no figures at all, and a sustainability
+#      spread carries only a target year). 'Names another scheme' is scale-banded rather than
+#      "prints any integer >= 1000" - see _names_another_scheme.
+#      The plan slot refuses it, correctly - an unattributed masterplan page is precisely the
+#      wrong-bind case it was burned by.
+# The DONOR-DECK guard is kept and made explicit: if the deck states this property's figures on
+# NO page at all, it is a whole-park brochure that never identifies a page as this unit's, and
+# the reach is EMPTY - rule 2 included. MULTI-CLAIMANT decks are unchanged in kind: a page must
+# still be settled decisively by one claimant's distinct figures.
+def gallery_reach_pages(clusters: list[list[dict]], source_dir: Path,
+                        park_level: list | None = None) -> list[dict[str, set]]:
+    """Per cluster, the EXTRA pages it may draw CAROUSEL photos from: pages of a deck it
+    touches that NO cluster claims and NO cluster anchors, gated as described above. Parallel
+    to `clusters`, same shape as `build_foreign_pages` / `plan_reach_pages`. Never raises; an
+    unreadable deck simply contributes nothing.
+
+    `park_level` (optional, OUT): a list parallel to `clusters`, FILLED with the subset of each
+    cluster's reach admitted under the SHARED-PARK rule ({src: {pages}}). Pure disclosure - the
+    return value is unaffected and nothing reads it back - so `media_decisions.json` can tell an
+    auditor which carousel pages are park-level (and therefore appear on a sibling card too)
+    rather than unit-specific."""
+    if park_level is not None:
+        park_level[:] = [dict() for _ in clusters]
+    pages_per_cluster, anchor_owner, claims = _deck_ownership(clusters, source_dir)
+    touched: dict[str, set] = {}             # deck -> the clusters that draw on it
+    for i, pbs in enumerate(pages_per_cluster):
+        for s in pbs:
+            touched.setdefault(s, set()).add(i)
+    out: list[dict[str, set]] = [dict() for _ in clusters]
+    for s, owners in sorted(touched.items()):
+        try:
+            n = int((IMG.deck_media_facts(Path(s)) or {}).get("pages") or 0)
+        except Exception:
+            n = 0
+        if n <= 0:
+            continue
+        spoken = {p for (ss, p) in claims if ss == s} | {p for (ss, p) in anchor_owner if ss == s}
+        unclaimed = {p for p in range(n) if p not in spoken}
+        if not unclaimed:
+            continue
+        figs = {i: _identity_figures_wide(clusters[i]) for i in owners}
+        page_figs = {p: _page_figures(IMG._page_plaintext(Path(s), p)) for p in range(n)}
+        if len(owners) == 1:
+            i = next(iter(owners))
+            own = figs[i]
+            if not own:
+                # NO figures known for this property: there is no other claimant to harm and
+                # nothing better to go on, so the whole unclaimed set is in reach.
+                out[i][s] = set(unclaimed)
+                continue
+            # DONOR-DECK guard, evaluated over the WHOLE deck (strictly more evidence than the
+            # unclaimed pages alone): a deck that never prints this unit's figures anywhere is
+            # a whole-park brochure marketing other schemes - reach nothing.
+            if not any(_figs_hit(page_figs.get(p) or set(), own) for p in range(n)):
+                continue
+            out[i][s] = {p for p in unclaimed
+                         if _figs_hit(page_figs.get(p) or set(), own)   # names me
+                         or not _names_another_scheme(page_figs.get(p) or set(), own)}
+            continue
+        # MULTI-CLAIMANT. Two questions per page, in this order: WHO does the page name, and -
+        # when it names nobody - is it PARK-LEVEL imagery the claimants genuinely share?
+        distinct = {i: (f - set().union(*(figs[j] for j in owners if j != i)))
+                    for i, f in figs.items()}
+        distinct = {i: f for i, f in distinct.items() if f}
+        names = _distinct_name_tokens(clusters, owners)
+        if len(distinct) < 2 and len(names) < 2:
+            continue                # nothing tells these claimants apart, by figure or by name
+        all_own = set().union(*(figs[i] for i in owners)) if owners else set()
+        anchors = [max(figs[i]) for i in owners if figs[i]]
+        for p in sorted(unclaimed):
+            pf = page_figs.get(p) or set()
+            toks = _page_tokens(IMG._page_plaintext(Path(s), p))
+            # ATTRIBUTION, now reading NAMES as well as figures. A spread headed with the unit's
+            # own name but no schedule table was previously invisible to this branch.
+            named = {i for i, d in distinct.items() if _figs_hit(pf, d)}
+            named |= {i for i, t in names.items() if t & toks}
+            if len(named) == 1:
+                out[next(iter(named))].setdefault(s, set()).add(p)
+                continue
+            if named:
+                continue            # names MORE THAN ONE claimant - not park-level, not theirs
+            # PARK-LEVEL: the page names no claimant at all. On a shared deck EVERY claimant is
+            # on this card grid, so the subject such a page can depict is the thing they share -
+            # the park itself (an aerial, the entrance, landscaping, an amenity spread). The
+            # broker's call is that this belongs on both cards rather than being wasted.
+            # THE ONE THING THAT STILL REFUSES IT is evidence of a THIRD scheme: a printed figure
+            # that is unit-scale for some claimant yet matches NO claimant's own schedule reads
+            # as somebody else's unit ("Unit 3 - 200,000 sq ft"), and an identifiable neighbour's
+            # building must never reach a card. (The floors - photo kind, 640x400, detail - still
+            # apply downstream, so a park page's decorative wash is refused like any other.)
+            if any(any(a / GALLERY_SCALE_BAND <= f <= a * GALLERY_SCALE_BAND for a in anchors)
+                   and not _figs_hit({f}, all_own)
+                   for f in pf):
+                continue
+            for i in owners:
+                out[i].setdefault(s, set()).add(p)
+                if park_level is not None:
+                    park_level[i].setdefault(s, set()).add(p)
+    try:
+        IMG.close_doc_cache()
+    except Exception:
+        pass
+    return out
+
+
 def _plan_reject_norm(source_file, page_no=None) -> tuple[str, str]:
     """The two ack forms a plan rejection may take, normalised: a bare '<file>' (reject
     EVERY plan from that file) and '<file>#<1-based page>' (reject just that page).
@@ -1550,7 +2045,11 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
                  foreign_pages: dict[str, set] | None = None,
                  plan_offlimits: dict[str, set] | None = None,
                  plan_near_miss: list | None = None,
-                 plan_rejected: set | None = None
+                 plan_rejected: set | None = None,
+                 considered: dict | None = None,
+                 plan_reach: dict[str, set] | None = None,
+                 gallery_reach: dict[str, set] | None = None,
+                 gallery_park_level: dict[str, set] | None = None
                  ) -> tuple[str, str | None, dict | None, dict | None, list, list]:
     """(photo_uri, plan_uri, photo_rec, plan_rec, tried_pages, gallery) for a merged property.
 
@@ -1564,9 +2063,23 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
     plan picker. Combination rules per the broker's brief: photo found -> photo
     is the hero and the plan fills the plan slot (or stays absent); plan-only
     page -> the plan IS the hero AND the plan slot; neither -> placeholder.
-    photo_rec/plan_rec is None when the placeholder / no plan was used."""
+    photo_rec/plan_rec is None when the placeholder / no plan was used.
+
+    `considered` (optional, OUT): when a dict is passed it is FILLED with this cluster's whole
+    media consideration set - per deck the pages it claimed, the foreign pages the anti-leak
+    guard subtracted, the plan-offlimits and plan-rejected pages, plus the chosen hero/plan
+    provenance, the gallery size and the near-miss list. PURE RECORDING: not one branch above
+    reads it, so `canonical.json` and `built.html` bytes are identical whether it is passed or
+    not (an eval pins that). It exists because "why does this card have one photo and no site
+    plan" was previously unanswerable without re-running the merge under a debugger."""
     photo = plan = None
     photo_rec = plan_rec = None
+    # An EXPLICIT hero pick (an interpretation sub-agent's __meta.heroRef) is never silently
+    # replaced by the carousel's hero floor: the LLM proposes and the G-images gate DISPOSES,
+    # and auto-repairing the pick here would take that verification away from the reviewer.
+    # The floor still applies to every DETERMINISTICALLY bound hero, which is where the
+    # 323x215-thumbnail-as-hero failure came from.
+    hero_pinned = False
     tried: list[tuple] = []  # (source path, page/slide no, kind) - the placeholder audit trail
     embedded = [r for r in cluster
                 if isinstance(r.get("photo"), str) and r["photo"].startswith("data:image/")]
@@ -1617,6 +2130,7 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
                     h = None
                 if h:
                     photo, photo_rec = h, r
+                    hero_pinned = True   # an EXPLICIT pick: never silently replaced below
                     # stash the locator so the caller's prov['photo'] reflects the LLM pick
                     meta.setdefault("prov", {})["photo"] = \
                         f"page {page_no + 1} (hero chosen by interpretation)"
@@ -1680,24 +2194,31 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
                     plan, plan_rec = p, r
     if photo is None:
         photo, photo_rec = IMG.placeholder(), None
-    # GALLERY (cap IMG.GALLERY_MAX, best-first): the photos for the carousel. PAGE-SCOPED
-    # per record so a MULTI-PROPERTY deck contributes only THIS property's pages, never a
-    # neighbour's. The hero is guaranteed first; extractor-embedded record photos are
-    # included; deduped by URI bytes. A render-tier hero that no embedded scan reproduces
-    # simply stays as the sole/first entry. The placeholder property gets a 1-item gallery.
-    gallery: list[str] = []
+    # GALLERY (cap IMG.GALLERY_MAX, best-first): the photos for the carousel, gathered as a
+    # CANDIDATE list here and composed into the final gallery by _compose_gallery below (which
+    # also enforces the gallery[0] == hero invariant the images gate asserts).
+    #
+    # Candidate order IS the carousel's quality order, in two tiers:
+    #   1. the property's OWN claimed pages (page_no U validated __meta.image_pages), best-first
+    #      within the tier by the deck index's ranking;
+    #   2. its CAROUSEL REACH (see gallery_reach_pages) - pages of the same deck that no other
+    #      property claims or anchors and that the deck itself attributes to this property.
+    # Claimed-before-reach means a property with enough of its own pages never draws on the
+    # reach at all; only a card that would otherwise be thin reaches further.
+    #
+    # PAGE-SCOPED per record throughout, so a MULTI-PROPERTY deck contributes only THIS
+    # property's pages, never a neighbour's. Deduped by URI bytes.
+    cand: list[str] = []
 
-    def _g_add(uri):
-        if isinstance(uri, str) and uri.startswith("data:image/") and uri not in gallery:
-            gallery.append(uri)
+    def _c_add(uri):
+        if isinstance(uri, str) and uri.startswith("data:image/") and uri not in cand:
+            cand.append(uri)
 
-    _g_add(photo)
     for r in embedded:
-        _g_add(r.get("photo"))
+        _c_add(r.get("photo"))
     # PAGES this property may draw carousel photos from: each record's page_no
     # UNION its validated __meta.image_pages (the LLM's "these pages show THIS
-    # property" pick), keyed by the resolved source. When NO record carries
-    # image_pages this reduces to the page_no-only set -> byte-identical to today.
+    # property" pick), keyed by the resolved source.
     # the SAME union the anti-leak guard computes (shared helper), so the harvester and
     # the guard can never diverge and leak a neighbouring property's page (audit S2-26).
     pages_by_src = _cluster_pages_by_src(cluster, source_dir)
@@ -1723,26 +2244,47 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
             if isinstance(refs, list):
                 d.setdefault(p, set()).update(
                     x for x in refs if isinstance(x, int) and not isinstance(x, bool) and x >= 0)
-    for src_str, pgs in sorted(pages_by_src.items()):
-        # the deterministic anti-leak guard (computed once over ALL clusters)
-        # tells us which of these pages are FOREIGN (owned/claimed by another
-        # property of the same deck); subtract them before harvesting. None /
-        # absent -> no-op, so a cluster's own page_no is never foreign.
-        allowed = pgs - (foreign_pages or {}).get(src_str, set())
+    def _harvest(src_str, allowed):
         if not allowed:
-            continue  # every claimed page was foreign: harvest nothing for this deck
-            # (gallery_for_pages treats an empty page set as "whole deck" - never that here).
-            # A cluster's own page_no is normally its own anchor (not foreign), so this rarely
-            # fires; the skip is a DEFENSIVE guard - if a clustering anomaly made two properties
-            # anchor the same page it is foreign to both, and this prevents the empty-set
-            # whole-deck leak.
+            return
         try:
-            uris, _total = IMG.gallery_for_pages(Path(src_str), sorted(allowed), budget_kb, image_cache,
+            uris, _total = IMG.gallery_for_pages(Path(src_str), sorted(allowed), budget_kb,
+                                                 image_cache,
                                                  exclude_by_page=excl_by_src.get(src_str))
         except Exception:
             uris = []
         for uri in uris:
-            _g_add(uri)
+            _c_add(uri)
+
+    gallery_reach_used: dict[str, set] = {}
+    park_level_used: dict[str, set] = {}   # DISCLOSURE ONLY - the shared-park subset of the reach
+    for src_str, pgs in sorted(pages_by_src.items()):
+        # TIER 1 - the property's OWN claimed pages. The deterministic anti-leak guard
+        # (computed once over ALL clusters) tells us which of these pages are FOREIGN
+        # (owned/claimed by another property of the same deck); subtract them before
+        # harvesting. None / absent -> no-op, so a cluster's own page_no is never foreign.
+        # An EMPTY allowed set harvests nothing rather than falling through to the whole
+        # deck (gallery_for_pages treats an empty page set as "whole deck" - never that
+        # here). A cluster's own page_no is normally its own anchor (not foreign), so that
+        # is a DEFENSIVE guard - if a clustering anomaly made two properties anchor the
+        # same page it is foreign to both, and this prevents the empty-set whole-deck leak.
+        _harvest(src_str, pgs - (foreign_pages or {}).get(src_str, set()))
+    for src_str in sorted(pages_by_src):
+        # TIER 2 - the CAROUSEL REACH: pages of this deck that NO property claims and NO
+        # property anchors, admitted only where the deck itself attributes them to this
+        # property (gallery_reach_pages). Subtracted by the SAME two guards as the claimed
+        # pages, and by `plan_offlimits` too: unlike the claimed-page set (where the two are
+        # disjoint by construction) this set is drawn from the whole deck, so the guard can
+        # genuinely fire. Never a substitute for tier 1 - it only fills the slots tier 1 left.
+        reach = ((gallery_reach or {}).get(src_str, set())
+                 - (plan_offlimits or {}).get(src_str, set())
+                 - (foreign_pages or {}).get(src_str, set()))
+        if reach:
+            gallery_reach_used[src_str] = set(reach)
+            pl = (gallery_park_level or {}).get(src_str, set()) & reach
+            if pl:
+                park_level_used[src_str] = set(pl)
+        _harvest(src_str, reach)
     # DETERMINISTIC RENDERED-PLAN FALLBACK (no plan_page hint, or the hint missed): scan the
     # property's OWN pages - the SAME per-property allowed set the gallery uses (pages_by_src
     # minus foreign_pages) so a neighbour's plan page can never bind on a multi-property deck -
@@ -1762,10 +2304,20 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
     # Adding `allowed -= plan_offlimits` here is a provable no-op - and worse than useless: a
     # guard that can never fire implies the sets differ in that direction, which is how B40 got
     # filed in the first place.
+    _nm_acc: list = []  # near-miss pages (a plan signal that a precision guard rejected)
     if plan is None:
-        _nm_acc: list = []  # near-miss pages (a plan signal that a precision guard rejected)
         for src_str, pgs in sorted(pages_by_src.items()):
             allowed = pgs - (foreign_pages or {}).get(src_str, set())
+            # PLAN-SLOT REACH (see plan_reach_pages): the pages of this deck that NO property
+            # claims and NO property anchors, admitted only under the sole-claimant rule or a
+            # decisive typographic name match. Unioned HERE and nowhere else - it is the plan
+            # slot only, never the hero and never the carousel. Subtracted afterwards by the
+            # SAME two guards as the claimed pages, and `plan_offlimits` is subtracted too:
+            # unlike the claimed-page set (where the two are disjoint by construction, see the
+            # note above) this set is drawn from the whole deck, so the guard can genuinely fire.
+            allowed = allowed | ((plan_reach or {}).get(src_str, set())
+                                 - (plan_offlimits or {}).get(src_str, set())
+                                 - (foreign_pages or {}).get(src_str, set()))
             # A page the visual-QA reviewer REJECTED as a site plan must not be re-bound here
             # either. This was the one plan path of five with no ack check - and it is the tier
             # the incident report blames for binding an interior warehouse photo into the Site
@@ -1779,8 +2331,11 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
                 continue
             _nm: list = []
             try:
+                # the property's OWN schedule figures, so a park deck carrying a masterplan per
+                # unit binds THIS unit's, not a neighbouring unit's (see images._plan_rank)
                 uri, pno = IMG.best_plan_page_render(Path(src_str), sorted(allowed),
-                                                     budget_kb, image_cache, near_miss=_nm)
+                                                     budget_kb, image_cache, near_miss=_nm,
+                                                     own_figures=_identity_figures(cluster))
             except Exception:
                 uri, pno = None, None
             for _e in _nm:
@@ -1800,7 +2355,154 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
                 break
         if plan is None and plan_near_miss is not None and _nm_acc:
             plan_near_miss.extend(_nm_acc)
-    return photo, plan, photo_rec, plan_rec, tried, gallery[:IMG.GALLERY_MAX]
+    photo, gallery, promoted = _compose_gallery(photo, cand, hero_pinned=hero_pinned)
+    if promoted:
+        # The bound hero failed the carousel's own floors (a 323x215 thumbnail off an anchor
+        # page whose deck holds a 1173x729 photograph two pages away) and a better image was
+        # promoted in its place. Re-point the provenance at the record that actually supplies
+        # it, so the ledger keeps naming the right deck.
+        new_rec, new_page = _locate_uri(cluster, source_dir, promoted, budget_kb, image_cache)
+        if new_rec is not None:
+            photo_rec = new_rec
+            if isinstance(new_page, int):
+                new_rec.get("__meta", {}).setdefault("prov", {})["photo"] = \
+                    f"page {new_page + 1} (carousel-quality photo, promoted from the deck)"
+    if considered is not None:
+        _record_considered(considered, source_dir, pages_by_src, foreign_pages, plan_offlimits,
+                           plan_rejected, photo, photo_rec, plan, plan_rec, gallery, _nm_acc,
+                           excl_by_src, plan_reach, gallery_reach_used, promoted,
+                           park_level_used)
+    return photo, plan, photo_rec, plan_rec, tried, gallery
+
+
+def _compose_gallery(photo, candidates, max_n: int = None, hero_pinned: bool = False) -> tuple:
+    """(hero, gallery, promoted_uri) from the bound hero + the ordered candidate list.
+
+    Three jobs, all of which have to happen in ONE place or they contradict each other:
+      * the carousel carries only CARD-QUALITY PHOTOGRAPHS - every candidate must clear
+        IMG.gallery_admissible (decorative graphics, plans/maps that duplicate the Site Plan
+        slot, and thumbnail-scale rasters are dropped);
+      * `gallery[0] == hero` - the invariant the images gate asserts and the template's
+        carousel relies on;
+      * THE HERO IS HELD TO THE SAME FLOORS. A DETERMINISTICALLY bound hero that fails them is
+        REPLACED by the best admissible candidate rather than dragging a thumbnail onto the
+        card and into the carousel. (The G-images gate already blocks a non-PHOTO hero; it has
+        no view of RESOLUTION, which is how four 323x215 images shipped on a client card.)
+        `hero_pinned` exempts an EXPLICIT pick - an interpretation sub-agent's heroRef - from
+        the replacement: that pick exists to be VERIFIED by the blind G-images reviewer, and
+        auto-repairing it here would quietly remove the thing the reviewer is there to catch.
+    A property with no admissible candidate at all keeps its bound hero and a 1-item gallery -
+    a card never loses its only image, and the placeholder path is untouched."""
+    if max_n is None:
+        max_n = IMG.GALLERY_MAX
+    hero_ok = (isinstance(photo, str) and photo.startswith("data:image/")
+               and (hero_pinned or IMG.uri_gallery_admissible(photo)))
+    ok = [u for u in candidates if u == photo or IMG.uri_gallery_admissible(u)]
+    promoted = None
+    if not hero_ok:
+        better = next((u for u in ok if u != photo), None)
+        if better is not None:
+            promoted = better
+            photo = better
+    gallery = [photo] + [u for u in ok if u != photo]
+    if not hero_ok and promoted is None:
+        gallery = [photo]          # nothing admissible anywhere: keep the honest single image
+    return photo, gallery[:max_n], promoted
+
+
+def _locate_uri(cluster, source_dir, uri, budget_kb, image_cache):
+    """(record, 0-based page) that supplies `uri`, by looking it up in each of the cluster's
+    deck indexes. Only ever called on the rare hero-promotion path. (None, None) when the URI
+    came from somewhere with no page (an extractor-embedded record photo is matched directly)."""
+    for r in cluster:
+        if r.get("photo") == uri:
+            return r, (r.get("__meta", {}) or {}).get("page_no")
+    for r in cluster:
+        m = r.get("__meta", {}) or {}
+        if m.get("source_type") not in ("pdf", "pptx"):
+            continue
+        s = _resolve_source(source_dir, m.get("source_file", ""))
+        if not s:
+            continue
+        try:
+            idx = IMG._deck_photo_index(Path(s), budget_kb, image_cache)
+        except Exception:
+            continue
+        for e in idx:
+            if e.get("uri") == uri:
+                return r, e.get("page")
+    return None, None
+
+
+def _slot_prov(rec: dict | None, slot: str) -> dict | None:
+    """Where a bound hero/plan came FROM, as {source_file, page, locator} - read off the record
+    merge actually bound, so the recording cannot drift from the binding."""
+    if not isinstance(rec, dict):
+        return None
+    meta = rec.get("__meta", {}) or {}
+    return {"source_file": meta.get("source_file"),
+            "page": meta.get("page_no"),
+            "locator": (meta.get("prov", {}) or {}).get(slot)}
+
+
+def _record_considered(out: dict, source_dir, pages_by_src, foreign_pages, plan_offlimits,
+                       plan_rejected, photo, photo_rec, plan, plan_rec, gallery, near_miss,
+                       excl_by_src, plan_reach=None, gallery_reach=None, promoted=None,
+                       park_level=None) -> None:
+    """Fill `out` with ONE cluster's media consideration set. PURE RECORDING - no caller branch
+    reads it, so it cannot change a single byte of the dataset.
+
+    The question it answers is the one no artefact could answer before: for THIS property, which
+    deck pages were in reach, which were taken away by which rule, what was bound, and what was
+    never looked at. Every set here is the SAME object the harvest itself used (`pages_by_src`,
+    `foreign_pages`, `plan_offlimits`, `plan_rejected`, `exclude_refs`), never a re-derivation,
+    so the record cannot disagree with what happened."""
+    decks: dict = {}
+    for src_str, pgs in sorted((pages_by_src or {}).items()):
+        name = Path(src_str).name
+        claimed = sorted(int(p) for p in pgs)
+        foreign = sorted(int(p) for p in ((foreign_pages or {}).get(src_str, set()) & set(pgs)))
+        offl = sorted(int(p) for p in (plan_offlimits or {}).get(src_str, set()))
+        rej = sorted(p for p in claimed
+                     if _plan_is_rejected(plan_rejected, name, p))
+        excl = {str(k): sorted(v) for k, v in sorted((excl_by_src or {}).get(src_str, {}).items())}
+        # pages nobody claimed that the PLAN SLOT could additionally reach (plan_reach_pages)
+        reach = sorted(int(p) for p in ((plan_reach or {}).get(src_str, set())
+                                        - set(offl) - set(foreign)))
+        # pages nobody claimed that the CAROUSEL could additionally reach (gallery_reach_pages),
+        # already net of the same two guards where it was applied
+        greach = sorted(int(p) for p in (gallery_reach or {}).get(src_str, set()))
+        # ...and the subset of those admitted because the page names NO claimant of a SHARED
+        # deck, i.e. park-level imagery this property's sibling card carries too. Disclosure:
+        # an auditor can see at a glance which carousel pages are park-level, not unit-specific.
+        plevel = sorted(int(p) for p in (park_level or {}).get(src_str, set()))
+        decks[name] = {
+            "path": src_str,
+            "claimed": claimed,
+            "foreign": foreign,
+            # what the harvest could ACTUALLY read: the claim minus the anti-leak subtraction,
+            # plus the plan-slot reach and the carousel reach over the pages no property claimed
+            "looked": sorted(set(p for p in claimed if p not in set(foreign))
+                             | set(reach) | set(greach)),
+            "claimed_looked": [p for p in claimed if p not in set(foreign)],
+            "plan_reach": reach,
+            "gallery_reach": greach,
+            "park_level_reach": plevel,
+            "plan_offlimits": offl,
+            "plan_rejected": rej,
+            "exclude_refs": excl,
+        }
+    out.update({
+        "decks": decks,
+        "hero": {"bound": bool(photo_rec is not None),
+                 "placeholder": bool(photo_rec is None),
+                 "from": _slot_prov(photo_rec, "photo"),
+                 # the bound hero failed the carousel floors and a better image took its place
+                 "promoted": bool(promoted)},
+        "plan": {"bound": bool(plan), "from": _slot_prov(plan_rec, "plan")},
+        "gallery": len(gallery or []),
+        "near_miss": list(near_miss or []),
+    })
 
 
 def prewarm_images(all_records, source_dir, image_cache, budget_kb,
@@ -2234,6 +2936,26 @@ def main() -> None:
 
     compute_file_quality(all_records)  # demote mostly-poor brochures in precedence
     area_unit, rent_unit = dominant_units(all_records)
+    # AN ANSWERED DISPLAY UNIT BEATS THE VOTE (B49). dominant_units is a silent majority
+    # count, which is the right DEFAULT but the wrong thing to do quietly on a genuinely mixed
+    # corpus: a 20-15 split converts 15 figures by 10.76x on a convention nobody chose.
+    # clarify.dataset_unit_questions asks in that case, and the broker's answer lands here.
+    # Selection-only, exactly like clarify.apply_answers: the answer may only be one of the two
+    # units offered, so it can never introduce a unit nobody was asked about. Unanswered (or
+    # explicitly declined) leaves the vote untouched, so a run without an answer is
+    # byte-identical to before.
+    if getattr(args, "answers", ""):
+        try:
+            import clarify as _CQ
+            _du = (_CQ.load_state(Path(args.answers)).get("answers") or {}).get(
+                _CQ.DATASET_UNIT_QID)
+            _du = str(_du or "").strip().lower()
+            if _du in ("sq ft", "sq m") and _du != area_unit:
+                print(f"  (dataset area unit set to '{_du}' by the broker's answer, not by the "
+                      f"majority vote which said '{area_unit}')")
+                area_unit = _du
+        except Exception as e:
+            print(f"  (answered dataset unit not applied: {e})", file=sys.stderr)
     MATCH_DECISIONS = {}  # pair_id -> 'same'|'different'|{verdict,reason} (grey-zone sub-agent)
     if args.match_decisions and Path(args.match_decisions).exists():
         try:
@@ -2324,12 +3046,32 @@ def main() -> None:
     # the BROADER per-deck other-owned set for the plan_page HINT (which may name any page,
     # not just the cluster's own) - so an LLM plan_page can never bind a neighbour's plan.
     plan_offlimits_by_cluster = plan_offlimits_pages(clusters, source_dir)
+    # PLAN-SLOT REACH over the pages no property claimed (plan_reach_pages). Computed here
+    # beside its two siblings so all three ownership projections come from one place.
+    plan_reach_by_cluster = plan_reach_pages(clusters, source_dir)
+    # CAROUSEL REACH over the same unclaimed pages (gallery_reach_pages) - the same ownership
+    # base, its own recall-tuned attribution. Fourth and last projection, same place.
+    gallery_park_level: list = []
+    gallery_reach_by_cluster = gallery_reach_pages(clusters, source_dir,
+                                                   park_level=gallery_park_level)
     plan_near_miss_all: list = []  # per-property near-miss plan pages -> Gaps Report (light Fix 4)
+    # THE CONSIDERED SET (per PROPERTY, not per brochure). One entry per merged property
+    # recording every deck page that was in reach, every rule that took one away, what bound and
+    # what was never looked at. Written to work/media_considered.json; read by
+    # `gate_runner media-harvest` and projected to openable files by project_properties.py.
+    # Pure recording - see attach_media's `considered` parameter.
+    media_considered: list = []
     unit_assumptions: list = []    # areas whose unit the SOURCE never stated -> Gaps Report
     # B58: {property_id: [(field, raw value, unrecognised unit)]}. A figure the dataset cannot
     # express is withdrawn rather than mislabelled, and its gap row must say THAT instead of
     # claiming the source was silent - the false-absence claim both critical reviewers blocked on.
     withheld_units: dict = {}
+    # B63: {property_id: [(field, the raw text)]}. The twin of withheld_units for a
+    # schema-NUMERIC area whose merged value held no single number at all (a 'tbd' struck by
+    # the plausibility gate, a stated RANGE, an unparseable text). The field ships ABSENT -
+    # text cannot go in a `number` and a figure must never be invented - so its gap row has to
+    # say what was dropped rather than assert the sources were silent about it.
+    unparseable_areas: dict = {}
     stated_totals: dict = {}       # P1-1: id -> the SOURCE's own stated total area (arithmetic gate)
     for i, cl in enumerate(clusters, start=1):
         variants: dict = {}   # I10: same fact, different notation - reported, not adjudicated
@@ -2382,12 +3124,52 @@ def main() -> None:
         #
         # A field whose own supplier stated NO unit is still never converted and still records
         # the assumption - inferring it would be the invention the skill forbids.
+        #
+        # A schema-NUMERIC area that arrived as a formatted STRING is PARSED HERE, before the
+        # isinstance test, so the conversion below runs on it like any other number (B63).
+        # The test used to be the whole story: a brochure record stores '436,000 sq ft' by
+        # design, `merged[fld]` was therefore not an int/float, the loop `continue`d, and the
+        # raw string sailed into canonical.json - where `warehouseArea` is typed `number`.
+        # One live run: 17+ properties failing validate-data with "'436,000 sq ft' is not of
+        # type 'number'", and value-format flagging the SAME field for shipping a bare 387259
+        # on one card beside '160,725 sq ft' on the next. Only the properties whose area came
+        # from a tracker (already numeric) were ever right.
         _silent_any = False
         _withheld: list = []   # B58: (field, raw value, its unrecognised unit)
+        _unparseable: list = []   # B63: (field, raw text) - a numeric area that held no number
         for fld in ("warehouseArea", "plotArea", "officeAreaVal"):
+            _stated = None     # the unit the VALUE's own text printed, when it printed one
+            if fld in _NUMERIC_ONLY_AREA_FIELDS and isinstance(merged.get(fld), str):
+                _parsed = _area_text_value(merged[fld])
+                if _parsed is None:
+                    # 'tbd' (this field's only route to one is merge_cluster's plausibility
+                    # STRIKE), a range, or an unparseable text. The schema types this field as
+                    # a number, so text cannot ship in it and a number must not be invented:
+                    # the field goes ABSENT, exactly as it does when no source stated it. The
+                    # gap ledger row below then says what was dropped instead of claiming the
+                    # sources were silent, and any strike note is already in `conflicts`.
+                    _unparseable.append((fld, merged[fld]))
+                    merged.pop(fld, None)
+                    prov.pop(fld, None)
+                    continue
+                _printed = merged[fld]
+                merged[fld], _stated = _parsed
+                if fld in prov:
+                    # merge is re-notating what the page printed, and every other transformation
+                    # in this loop records itself - so this one does too, or the ledger would
+                    # show a bare 436000 against a page that prints '436,000 sq ft'.
+                    prov[fld]["locator"] = (f"{prov[fld].get('locator', '')} "
+                                            f"(printed as '{_printed}')").strip()
+                    # the unit printed NEXT TO THE NUMBER is the most specific evidence there
+                    # is - more specific than `<field>Unit`, and far more than the record-level
+                    # `areaUnit` a brochure record routinely does not carry at all. Only ever
+                    # reached for a value that WAS a string, so no already-numeric field can
+                    # have its footing moved by this.
+                    if _stated:
+                        prov[fld]["areaUnitOfSource"] = _stated
             if not isinstance(merged.get(fld), (int, float)):
                 continue
-            _u = (prov.get(fld) or {}).get("areaUnitOfSource")
+            _u = _stated or (prov.get(fld) or {}).get("areaUnitOfSource")
             if not _u:
                 _silent_any = True
                 if fld in prov:
@@ -2414,6 +3196,8 @@ def main() -> None:
                         f"{area_unit} per {_u})").strip()
         if _withheld:
             withheld_units[i] = list(_withheld)
+        if _unparseable:
+            unparseable_areas[i] = list(_unparseable)
         if _silent_any:
             # ANY area field with a silent supplier flags the property, so stated_total_for's
             # refusal stays exactly as conservative as before.
@@ -2434,12 +3218,23 @@ def main() -> None:
         if _st:
             stated_totals[str(i)] = _st
         _cluster_nm: list = []
+        _cluster_considered: dict = {}
         merged["photo"], plan_uri, photo_rec, plan_rec, tried_pages, gallery = attach_media(
             cl, source_dir, args.image_budget_kb, image_cache=image_cache,
             foreign_pages=foreign_by_cluster[i - 1],
             plan_offlimits=plan_offlimits_by_cluster[i - 1],
             plan_near_miss=_cluster_nm,
-            plan_rejected=PLAN_REJECTED)
+            plan_rejected=PLAN_REJECTED,
+            considered=_cluster_considered,
+            plan_reach=plan_reach_by_cluster[i - 1],
+            gallery_reach=gallery_reach_by_cluster[i - 1],
+            gallery_park_level=(gallery_park_level[i - 1] if gallery_park_level else None))
+        if _cluster_considered:
+            _cluster_considered["id"] = i
+            _cluster_considered["property"] = (merged.get("park") or merged.get("city")
+                                               or f"#{i}")
+            _cluster_considered["city"] = merged.get("city", "")
+            media_considered.append(_cluster_considered)
         if not plan_uri and _cluster_nm:  # a page LOOKED plan-ish but no plan bound -> surface it
             plan_near_miss_all.append({"property": merged.get("park") or merged.get("city") or "?",
                                        "city": merged.get("city", ""), "pages": _cluster_nm})
@@ -2457,13 +3252,15 @@ def main() -> None:
                 if hero:
                     merged["photo"] = hero
                     # the matched brochure IS this property (single-property deck), so the
-                    # gallery is the whole-deck top photos (best_hero_in_deck's pick is the
-                    # first of that ranked set, so the hero stays gallery[0]).
+                    # carousel candidates are the whole deck's card-quality photos. Composed
+                    # by the SAME rule as the page-scoped path: the hero leads, the hero is
+                    # held to the carousel's floors, and a hero that fails them is replaced.
                     try:
                         g_uris, _gt = IMG.gallery_for_deck(bsrc, args.image_budget_kb, image_cache)
                     except Exception:
                         g_uris = []
-                    merged["gallery"] = g_uris or [hero]
+                    merged["photo"], merged["gallery"], _promo = _compose_gallery(hero, g_uris)
+                    hero = merged["photo"]
                     prov["photo"] = {"source_file": Path(brel).name,
                                      "source_type": (Path(brel).suffix.lstrip(".") or "pdf"),
                                      "locator": "deck photo (brochure matched to this property)"}
@@ -2629,7 +3426,13 @@ def main() -> None:
                         (f"stated as {w[1]:g} {w[2]} in the source, in a unit this dataset "
                          f"cannot express; not converted"
                          for w in withheld_units.get(i, []) if w[0] == field),
-                        "absent in all sources"),
+                        # B63: the same rule for a value that held no NUMBER (a struck 'tbd', a
+                        # stated range). This field is typed `number`, so the text cannot ship
+                        # in it - but the row must not then claim the sources never spoke.
+                        next((f"the merged value was '{_short(u[1], 40)}', which carries no "
+                              f"single number this field can hold; not shipped, not invented"
+                              for u in unparseable_areas.get(i, []) if u[0] == field),
+                             "absent in all sources")),
                     "source_type": "gap",
                     "extractor": "", "confidence": "", "conflict_note": "", "verified": "no",
                 })
@@ -2783,6 +3586,49 @@ def main() -> None:
     out_path = Path(args.out)
     C.atomic_write_text(out_path, json.dumps(canonical, ensure_ascii=False, indent=2))
     print(f"OK canonical -> {args.out}  ({len(properties)} properties, {len(pois)} POIs)")
+
+    # THE CONSIDERED SET -> work/media_considered.json. Written AFTER canonical, and never read
+    # back by anything that produces canonical, so it is provably derived: the dataset is already
+    # on disk and byte-final by the time this runs.
+    #
+    # `unassigned` is the bucket that had no name before: deck pages NO property claimed. Those
+    # pages are outside the whole run's reach - no gallery, no plan tier, no audit ever looked at
+    # them - and on a multi-property or donor deck that is exactly where a missed site plan
+    # hides. Computing it needs the deck's PAGE COUNT, which is metadata (no decode).
+    try:
+        _claimed_by_deck: dict = {}
+        for _c in media_considered:
+            for _nm2, _d in (_c.get("decks") or {}).items():
+                _claimed_by_deck.setdefault(_nm2, {"path": _d.get("path"), "pages": set()})
+                _claimed_by_deck[_nm2]["pages"].update(_d.get("claimed") or [])
+        _unassigned = []
+        for _nm2, _d in sorted(_claimed_by_deck.items()):
+            _facts = IMG.deck_media_facts(Path(_d["path"])) if _d.get("path") else {}
+            _n = _facts.get("pages")
+            if not _n:
+                continue
+            _miss = [i for i in range(int(_n)) if i not in _d["pages"]]
+            if _miss:
+                _unassigned.append({"file": _nm2, "path": _d["path"], "pages": _miss,
+                                    "deck_pages": int(_n),
+                                    "large_images": _facts.get("large_images")})
+        C.atomic_write_text(
+            out_path.resolve().parent / "media_considered.json",
+            json.dumps({"schema_version": 1,
+                        "generatedAt": generated_date,
+                        "capabilities": IMG.media_capabilities(),
+                        "properties": media_considered,
+                        "unassigned": _unassigned}, ensure_ascii=False, indent=2))
+    except Exception as _e:
+        print(f"(media considered-set sidecar skipped: {type(_e).__name__}: {_e})")
+    finally:
+        # `deck_media_facts` opens each deck through IMG's shared doc cache. Release the handles:
+        # on Windows a held handle blocks an in-process caller's temp-dir cleanup, and this runs
+        # after canonical is already on disk, so there is nothing left for merge to read.
+        try:
+            IMG.close_doc_cache()
+        except Exception:
+            pass
 
     if args.ledger:
         import io as _io

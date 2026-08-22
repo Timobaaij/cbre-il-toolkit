@@ -30,20 +30,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 MARKER_NAME = ".delivery_complete.json"  # written LAST by main(); see B01 at the write site
 
 
-def delivery_complete(out_dir) -> bool:
+def delivery_complete(out_dir, marker_dir=None) -> bool:
     """True only when a delivery finished AND everything it vouched for is still present.
 
     The Stage-7 resume guard keys on THIS, not on the dashboard. The dashboard is written
-    first, so keying on it meant an incomplete delivery satisfied the guard forever. (B01)"""
+    first, so keying on it meant an incomplete delivery satisfied the guard forever. (B01)
+
+    `marker_dir` is where the marker itself lives; the artefacts it names are ALWAYS
+    resolved against `out_dir`. It exists because the marker is a TECHNICAL completion
+    record, not a deliverable: in the three-folder layout the out dir is the broker's
+    '3. Output' folder, which must hold the four client-facing files and nothing else, so
+    the spine keeps the marker in the work dir. Defaults to `out_dir` (the legacy
+    location), and the legacy location is still ACCEPTED as a fallback so a project
+    delivered before the split is still recognised as complete instead of re-delivering."""
     out = Path(out_dir)
-    try:
-        rec = json.loads((out / MARKER_NAME).read_text(encoding="utf-8-sig"))
-    except Exception:
-        return False
-    names = rec.get("artefacts")
-    if not isinstance(names, list) or not names:
-        return False
-    return all((out / str(n)).exists() for n in names)
+    cands = [Path(marker_dir) / MARKER_NAME] if marker_dir else []
+    cands.append(out / MARKER_NAME)
+    for m in cands:
+        try:
+            rec = json.loads(m.read_text(encoding="utf-8-sig"))
+        except Exception:
+            continue
+        names = rec.get("artefacts")
+        if not isinstance(names, list) or not names:
+            continue
+        if all((out / str(n)).exists() for n in names):
+            return True
+    return False
 
 
 CORE = ["warehouseArea", "warehouseRent", "status", "city", "developer", "lat", "lng",
@@ -299,6 +312,35 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
     # high in the report and names every one: excluding a property from a client's own list is
     # the most consequential thing the pipeline can do to the dataset, and the broker must be
     # able to see exactly what went and why without opening canonical.json.
+    # CLARIFICATIONS (B49). Every question the run asked, and what was decided. The declines
+    # matter more than the answers: a blocking question exists because its fall-through default
+    # is itself the damage, so "the default was accepted" is a decision the client-facing
+    # report has to carry. Read from the work dir, best-effort - a run delivered without one
+    # (or with a malformed state file) simply omits the section rather than failing to deliver.
+    try:
+        import clarify as _CQ
+        _st = _CQ.load_state(work_dir) if work_dir else {}
+    except Exception:
+        _st = {}
+    _titles = _st.get("titles") or {}
+    _answers, _declined = (_st.get("answers") or {}), list(_st.get("declined") or [])
+    if _answers or _declined:
+        lines.append("## Clarifications (what the run asked, and what was decided)")
+        lines.append("The run stops and asks rather than presuming. Each line is a decision "
+                     "that shaped the dataset.")
+        for _i, _v in sorted(_answers.items()):
+            _t = _titles.get(_i) or {}
+            _subj = _t.get("subject") or _t.get("kind") or _i
+            lines.append(f"- **{_subj}**: answered **{_v}**."
+                         + (f" ({_t.get('question', '')})" if _t.get("question") else ""))
+        for _i in sorted(_declined):
+            _t = _titles.get(_i) or {}
+            _subj = _t.get("subject") or _t.get("kind") or _i
+            lines.append(f"- **{_subj}**: NO PREFERENCE GIVEN - the default was accepted "
+                         f"deliberately. {_t.get('if_unanswered', '')}".rstrip()
+                         + (f" ({_t.get('question', '')})" if _t.get("question") else ""))
+        lines.append("")
+
     excluded = meta.get("excluded") or []
     if excluded:
         lines.append("## Options excluded (not evidenced by your guiding source)")
@@ -340,6 +382,46 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
                 continue
             lines.append(f"- **{e.get('id', '?')}** ({k}): {e.get('reason', '')} "
                          f"Intended: {e.get('set', {})} - {e.get('why', '')}")
+        lines.append("")
+
+    # PROPERTY-LEVEL corrections (work/repairs.json, applied post-merge) are a separate
+    # mechanism from the SOURCE-RECORD overrides above, but a client reading the Gaps Report
+    # for "what was manually changed" needs both in one place - the override section alone
+    # under-discloses (a real run shipped six repairs.json value changes visible only as
+    # `repair` rows in the Source Ledger, absent from this client-facing section entirely).
+    rp_rep = {}
+    if work_dir:
+        try:
+            rp_rep = json.loads((Path(work_dir) / "repairs_report.json")
+                                 .read_text(encoding="utf-8-sig"))
+        except Exception:
+            rp_rep = {}
+    rp_applied = rp_rep.get("applied") or []
+    if rp_applied:
+        lines.append("## Manual corrections applied (property-level repairs)")
+        lines.append("Each was applied to the merged property AFTER matching (work/repairs.json), "
+                     "keyed to the property rather than a single source record, and is "
+                     "re-applied on every run. Every one also has a `repair` row in the Source "
+                     "Ledger.")
+        for a in rp_applied:
+            pid = a.get("property_id")
+            for f, ch in (a.get("changed") or {}).items():
+                lines.append(f"- **id {pid} {f}**: `{ch.get('from')}` -> `{ch.get('to')}` "
+                             f"({a.get('id', '?')}) - {a.get('why', '')}"
+                             + (f" [verified by {a['verified_by']}]" if a.get("verified_by") else ""))
+        lines.append("")
+    _rp_rot = [(k, e) for k in ("stale", "ambiguous", "superseded", "invalid")
+               for e in (rp_rep.get(k) or [])]
+    if _rp_rot:
+        lines.append("## Manual corrections that matched NOTHING (stale - fix or delete)")
+        lines.append("These `work/repairs.json` entries were NOT applied, so the property still "
+                     "holds whatever matching/merge produced. Either correct the entry's "
+                     "`property` block or delete it.")
+        for k, e in _rp_rot:
+            if isinstance(e, str):
+                lines.append(f"- **{k}**: {e}")
+                continue
+            lines.append(f"- **{e.get('id', '?')}** ({k}): {e.get('reason', '')}")
         lines.append("")
 
     # KNOWN LIMITATIONS: advisory QA findings that were reviewed, judged non-blocking by the
@@ -559,13 +641,24 @@ def main() -> None:
     ap.add_argument("--canonical", required=True)
     ap.add_argument("--html", required=True)
     ap.add_argument("--ledger")
-    ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--out-dir", required=True,
+                    help="where the four client-facing deliverables go ('3. Output' in the "
+                         "three-folder project layout)")
+    ap.add_argument("--marker-dir", dest="marker_dir", default="",
+                    help="where the technical completion marker (.delivery_complete.json) is "
+                         "written. Defaults to --out-dir; the spine points it at the WORK dir so "
+                         "the broker's output folder holds only the four deliverables.")
     ap.add_argument("--slug", default="Longlist")
     ap.add_argument("--filename")
     args = ap.parse_args()
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    mark_dir = Path(args.marker_dir) if args.marker_dir else out
+    try:
+        mark_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        mark_dir = out
     canonical = json.loads(Path(args.canonical).read_text(encoding="utf-8-sig"))
 
     # 1. html
@@ -620,10 +713,18 @@ def main() -> None:
     if args.ledger and Path(args.ledger).exists():
         _led = out / f"{args.slug}_Source_Ledger.xlsx"
         _vouched.append(_led.name if _led.exists() else f"{args.slug}_Source_Ledger.csv")
-    C.atomic_write_text(out / MARKER_NAME, json.dumps(
-        {"schema_version": 1, "slug": args.slug, "artefacts": _vouched},
+    C.atomic_write_text(mark_dir / MARKER_NAME, json.dumps(
+        {"schema_version": 1, "slug": args.slug, "artefacts": _vouched,
+         "out_dir": str(out)},
         ensure_ascii=False, indent=2))
-    print(f"OK delivery complete -> {out / MARKER_NAME}")
+    # A marker left in the OUT dir by a pre-split run would keep asserting an older
+    # delivery beside the new one; the artefact list is now vouched for from mark_dir.
+    if mark_dir.resolve() != out.resolve():
+        try:
+            (out / MARKER_NAME).unlink()
+        except OSError:
+            pass
+    print(f"OK delivery complete -> {mark_dir / MARKER_NAME}")
 
 
 if __name__ == "__main__":

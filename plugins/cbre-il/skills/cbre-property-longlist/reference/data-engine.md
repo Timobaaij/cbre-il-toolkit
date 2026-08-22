@@ -14,7 +14,7 @@ Each extractor emits candidate partial-property records (canonical field names) 
 ## Matching (`match.py`)
 Key = normalised City + Developer + Park (diacritics stripped, legal suffixes removed, developer aliases like CTPark->CTP). Two records from **different** sources are the same property when the key matches >= 88 (rapidfuzz token-set) - unless exactly one record's park is empty, in which case the areas must also agree (token-set scores a missing park as a subset match at 100, which would merge every same-developer option in a city). Cross-source pairs ALSO match by **coordinate proximity**: pins <= 300 m apart with no developer disagreement (unknown = absent, never a disagreement) and no material size conflict are one property - an unknown city defeats every text key, so a vision record carrying the real city never matched its city-less deterministic twin without this. Distinct phases sharing one pin stay separate via the same +/-15% area rule. Records from the same brochure stay distinct (two pages with the same park name are distinct buildings/phases, distinguished by warehouse area) - EXCEPT a true restatement of one unit (identical key and identical/absent area, e.g. a summary-table row plus that unit's detail page), which merges so the coverage gate's duplicate check cannot block the skill's own output.
 
-**The equivalence DECISION is tiered (`pair_class`), and the genuinely ambiguous middle is LLM-adjudicated** (the same "LLM judges, Python verifies, gates block" discipline as the brochure and tracker sub-agents). Every record PAIR falls into one of four tiers: **auto** (today's confident TRUE paths above - merged deterministically, the LLM is never asked the easy questions), **forbidden** (a HARD blocker - a >15% size conflict or a same-source differing-area phase - that can NEVER merge even on an LLM 'same' verdict, because `same_property` returns False before consulting the decision; a developer DISAGREEMENT is NO LONGER forbidden - landlord and developer are distinct fields now, so a genuine developer-name difference is a grey signal the LLM adjudicates, not a veto), **grey** (cross-source, not forbidden, not auto, but clears a RECALL pre-filter: within ~2 km OR sharing >= 1 distinctive park token, city tokens excluded OR a borderline fuzzy key in [70, 88) OR same city with the developer linking the two records - the same known developer on both, or one side's developer name appearing in the other's park string; this includes a developer-disagreement pair; the coord-net AUTO path still requires developer agreement, so a disagreement is never auto-merged), and **no** (definitely distinct). **A SHARED CITY ALONE DOES NOT CLEAR THE PRE-FILTER** (I9): a longlist is usually one town, so the city is the one attribute every record shares and it distinguishes nothing - as a standalone signal it made the grey set quadratic in the skill's most common corpus (a measured 14 pairs / 28 LLM judgements / zero merges on a 4-property single-market corpus, 13 of them resting on the town's name and nothing else). Only **grey** pairs are shown to the LLM. `run.py` enumerates them with `match.grey_pairs` (pure Python, recall-pre-filtered so it is a handful, typically 0-5, not an O(n^2) LLM call), writes `work/match_candidates.json` and exits 10; an isolated sub-agent writes `work/match_decisions.json` ({pair_id: {verdict, reason}}, default 'different' when unsure); the re-run feeds it to `match.dedupe(records, decisions)` via `merge --match-decisions`. Each pair carries a stable order-independent `pair_id` (a hash of the two records' sorted match_key+area), so the verdict is cached and clustering is byte-deterministic; a NEW grey pair an input edit introduces re-emits the manifest + exit 10 rather than silently guessing. **The deterministic matcher is NOT deleted** - it is the auto/forbidden tiers, the grey RECALL pre-filter, AND the OFFLINE FALLBACK: with no decisions file (`decisions=None`, every offline eval) `same_property`/`dedupe` are byte-identical to the pre-LLM matcher. **The grey MATCH verdict is checked by an INDEPENDENT blind SECOND PASS** (not just the same-model reviewers): `match_candidates.json` also carries a `verify_pairs` array (the same grey pairs, both records, NOT the verdict); a SEPARATE fresh agent re-judges blind into `work/match_verify.json`; `run.py` diffs the two verdicts per `pair_id` in pure Python and folds any disagreement into `meta.conflicts` -> the Gaps "Source conflicts" section. ADVISORY only - the matching pass's verdict still drives clustering, never flipped; absent `match_verify.json` -> empty diff -> byte-identical. See `reference/matching.md` for the sub-agent contract.
+**The equivalence DECISION is tiered (`pair_class`), and the genuinely ambiguous middle is LLM-adjudicated** (the same "LLM judges, Python verifies, gates block" discipline as the brochure and tracker sub-agents). Every record PAIR falls into one of four tiers: **auto** (today's confident TRUE paths above - merged deterministically, the LLM is never asked the easy questions), **forbidden** (a HARD blocker - a >15% size conflict or a same-source differing-area phase - that can NEVER merge even on an LLM 'same' verdict, because `same_property` returns False before consulting the decision; a developer DISAGREEMENT is NO LONGER forbidden - landlord and developer are distinct fields now, so a genuine developer-name difference is a grey signal the LLM adjudicates, not a veto), **grey** (cross-source, not forbidden, not auto, but clears a RECALL pre-filter: within ~2 km OR the two records' IDENTITY bags share a token OR a borderline fuzzy key in [70, 88) OR same city with a PARTY name linking the two records; this includes a developer-disagreement pair; the coord-net AUTO path still requires developer agreement, so a disagreement is never auto-merged), and **no** (definitely distinct). **THE PRE-FILTER READS THE IDENTIFYING FREE TEXT HOLISTICALLY, NOT FIELD-BY-FIELD** (I12): each record contributes an IDENTITY bag (every park / address / street / scheme / estate / building / site / postcode-ish field it carries) and a PARTY bag (developer / landlord / owner-ish), and overlap is tested ACROSS the two bags in BOTH directions - so a scheme name a broker typed into an "Address" column corroborates the brochure's park name, a park token corroborates the other side's developer, and a "Landlord" on one side meets a "Developer" on the other. Which FIELD a name sits in is an accident of whoever built the spreadsheet; the name itself is the evidence. This was filed after a live 17-row tracker whose rows were nearly all the same buildings as 15 brochures (proven by exact warehouse-area matches) generated almost none of those pairs as candidates and shipped duplicate cards. The identity bag is UN-GATED (a scheme or street name discriminates on its own); the party bag is CITY-GATED (one developer builds many sheds, so an un-gated party match would go quadratic across a country). Both bags strip the pair's place words, generic scheme words, street furniture, corporate boilerplate, single characters, and area-code-shaped tokens (a UK postcode OUTWARD code such as `NN17`, a road number such as `A1` - each labels a whole town; the inward half `5JX` survives). **A SHARED CITY ALONE DOES NOT CLEAR THE PRE-FILTER** (I9): a longlist is usually one town, so the city is the one attribute every record shares and it distinguishes nothing - as a standalone signal it made the grey set quadratic in the skill's most common corpus (a measured 14 pairs / 28 LLM judgements / zero merges on a 4-property single-market corpus, 13 of them resting on the town's name and nothing else). I12 extends that argument from the city to the region, district and country. Only **grey** pairs are shown to the LLM. `run.py` enumerates them with `match.grey_pairs` (pure Python, recall-pre-filtered so it is a handful, typically 0-5, not an O(n^2) LLM call), writes `work/match_candidates.json` and exits 10; an isolated sub-agent writes `work/match_decisions.json` ({pair_id: {verdict, reason}}, default 'different' when unsure); the re-run feeds it to `match.dedupe(records, decisions)` via `merge --match-decisions`. Each pair carries a stable order-independent `pair_id` (a hash of the two records' sorted match_key+area), so the verdict is cached and clustering is byte-deterministic; a NEW grey pair an input edit introduces re-emits the manifest + exit 10 rather than silently guessing. **The deterministic matcher is NOT deleted** - it is the auto/forbidden tiers, the grey RECALL pre-filter, AND the OFFLINE FALLBACK: with no decisions file (`decisions=None`, every offline eval) `same_property`/`dedupe` are byte-identical to the pre-LLM matcher. **The grey MATCH verdict is checked by an INDEPENDENT blind SECOND PASS** (not just the same-model reviewers): `match_candidates.json` also carries a `verify_pairs` array (the same grey pairs, both records, NOT the verdict); a SEPARATE fresh agent re-judges blind into `work/match_verify.json`; `run.py` diffs the two verdicts per `pair_id` in pure Python and folds any disagreement into `meta.conflicts` -> the Gaps "Source conflicts" section. ADVISORY only - the matching pass's verdict still drives clustering, never flipped; absent `match_verify.json` -> empty diff -> byte-identical. See `reference/matching.md` for the sub-agent contract.
 
 ## Merge (`merge.py`)
 Cluster -> one property by field-class precedence: **commercials** (rent/terms/incentives/land) newest email > excel > brochure; **specs/geo/everything else** brochure (pdf > pptx) > excel > email. The static brochure order is **quality-aware** (`compute_file_quality`, the same probe run.py routes files to vision with): a brochure whose records MOSTLY parsed poorly loses every precedence contest to a cleaner twin - "PDF preferred for fields" holds only while the PDF parse is actually reliable, so a print-export PDF with a flattened text layer can no longer outrank its clean PPTX twin on rank alone. Non-brochure sources (xlsx/email) are never demoted - their records are legitimately sparse. A **RICH tracker** (`__meta.tracker_rich`, >=8 mapped columns) additionally LEADS the structured spec fields and coordinates (`TRACKER_AUTHORITATIVE`: areas, clear height, floor load, doors, power, parking, BREEAM, status, early access, lat/lng) - curated internal data beats brochure prose for measured values; naming and narrative stay brochure-first. Merge also owns the **dataset unit convention**: the dominant `areaUnit` is stamped on every property (minority-unit areas convert arithmetically, prov-noted), `meta.units` records both conventions, and currency is NEVER converted (a lone €/m² rent in a £/sq ft dataset keeps its own honest unit and sits out the hero rent range). Assigns stable ids, attaches a compressed base64 hero by **image** precedence (a PPTX slide picture if one was extracted - the preferred image source - else a raster of the brochure PDF page, else a CBRE placeholder), fills every chrome-read key with its sentinel and coerces honest numerics in string-typed fields (`canonicalize` -> `loadingDocks: 12` becomes `"12"` so it can't fail the schema), and writes `canonical.json` + `source_ledger.csv`. **Rent contract:** `warehouseRentVal` is the ANNUAL EUR/m²/year figure shown in `warehouseRent`; a monthly quote (`/mes`, `/month`, …) is annualised x12, with the conversion recorded in the ledger. Note the hero's image precedence is the inverse of the field precedence: PDF wins fields, PPTX wins pictures.
@@ -31,6 +31,94 @@ Per-image byte budget (~110 KB): resize to <=1280 px and step JPEG quality down 
 - **Tier D - placeholder**, recorded as an honest gap row.
 
 **SITE PLANS are harvested too** (the modal's Photo/Site-Plan toggle reads `p.plan`): the page's best non-hero image region with the PLAN SIGNATURE - a balanced mix of white paper and drawn ink (white fraction 0.15-0.90, balance x area ranked). The hyperlinked location map is excluded by its maps-service link sitting on/under the box; boilerplate logos/legends are excluded by image-OBJECT identity repeating on >=3 pages (never by position - templated brochures place content at identical positions every page). Combination rules: photo found -> photo is the hero, plan fills the plan slot (or stays absent); plan-only page -> the plan IS the hero and fills the plan slot; a record-level `plan` data URI (orchestrator-bound standalone file) outranks the page plan.
+**A VECTOR site plan is found by its DRAWING, not by its pixels.** Most masterplans are vector
+line-art drawn straight into the page, so they have no placed image box at all, and the designed
+ones defeat the pixel classifier outright (a full-bleed colour ground reads 'photo'; a plan on grey
+or dark paper falls outside the white-balance band). `images.page_vector_art` reads
+`page.get_drawings()` directly - `{items, cells, span}` - and a page whose BODY is a full-page
+vector drawing becomes plan-eligible. Vector density ALONE is not a plan signal: a regional road
+map, a drive-time map and a locator map are all just as vector-dense (measured at 2,900 / 2,600 /
+6,600 drawing objects on real ones). What a masterplan has and a map does not is LABELLED DRAWING
+FURNITURE - dock doors, yard depth, parking bays, a gatehouse, a site boundary, a schedule of
+accommodation - so the vector route additionally requires `plan_signal.plan_furniture_score`
+corroboration (`assets/plan_lexicon.json` `plan_furniture`, multilingual). Plan slot only: a vector
+plan is never made the card hero. An engine with no `get_drawings` yields `{}` and the route simply
+cannot fire.
+
+**How two eligible plan pages are ordered (`images._plan_rank`): the property's OWN schedule
+figures, then furniture, then the classifier verdict, then a plan title, then white/ink balance.**
+A park brochure routinely carries a masterplan PER UNIT while the longlist holds only one of them,
+so "is this page a site plan" is not the whole question - "is it THIS unit's site plan" is. The
+page printing the property's own warehouse / office / plot figures is that unit's spread; every
+other masterplan in the deck is a neighbouring unit's, i.e. a wrong bind in a trace-less slot
+(measured: the property was the 734,636 sq ft unit and the 436,000 sq ft unit's masterplan was
+winning purely on carrying a plan title). With no figures known the component is inert.
+Furniture outranks the classifier because the
+classifier was measured wrong where they disagree: on a live 13-page deck the property's regional
+DRIVE-TIME MAP classified `kind='plan'` with the best balance on the deck (0.980) while the real
+unit site plan classified `kind='map'` - ranked classifier-first the drive-time map won the
+trace-less Site Plan slot outright. Ranking only orders pages that already passed the eligibility
+gates, so it can never admit a page, only choose between admissible ones.
+
+**PLAN-SLOT REACH over the pages nobody claimed (`merge.plan_reach_pages`).** The deterministic
+plan tier scans a property's OWN claimed pages (`page_no` U `image_pages`) minus the foreign ones.
+When `image_pages` is absent - a reader that had no page renders to look at, or a single-page
+listing - that is one page, so a site plan two pages later is out of reach. The pages at issue are
+the ones NO property claims and NO property anchors, and they are admitted WITHOUT weakening
+ownership, by ONE rule: **a page comes into reach when the deck says it is THIS property's** - it
+prints the property's own SCHEDULE figures (warehouse / office / plot) and, on a deck with more
+than one claimant, NOT ONE of any other claimant's. A park overview listing both units' totals, a
+page printing nothing, and any page that mixes the two are all refused. Two consequences worth
+stating: a property with NO figures at all on a **sole-claimant** deck falls back to every
+unclaimed page (there is no neighbour to harm and nothing better to go on); and a whole-park
+**DONOR deck that states this property's size nowhere** reaches NOTHING - measured, because on a
+16-page park brochure covering seven other schemes the reach otherwise bound a DIFFERENT scheme's
+masterplan to the card, and every other deck of that corpus prints the property's own schedule on
+exactly its own spread, so the refusal costs nothing real. (A typographic rule - whose name prints biggest - was tried
+first and MEASURED WRONG: on one two-unit deck the giant unit title is vector outline art, so in
+the text layer the rival unit's small context label prints LARGER, and the rule would have bound
+both units the same masterplan.) PLAN SLOT ONLY - never the hero, never the carousel.
+`plan_offlimits`, `foreign_pages` and `plan_rejected` are all still subtracted from the wider set.
+
+**CAROUSEL REACH (`merge.gallery_reach_pages`) and the carousel's three floors.** The carousel had
+the same scope problem and worse. Its pages were `page_no` U `__meta.image_pages`, and on a real
+17-property run the reader returned `image_pages` for FOUR of them: the other thirteen carousels
+could see ONE page of a 5-16 page brochure. Measured consequences - a 7-page deck whose pages 1-2
+hold 26 card-quality photographs shipped a ONE-image card; a 5-page deck shipped four 323x215
+thumbnails off its anchor page while a 1173x729 photograph sat one page away, never CONSIDERED.
+
+So the carousel gets its own reach, on the SAME ownership base (`_deck_ownership` / `_page_allowed`,
+so a page any other property claims or anchors can never enter a carousel), differing from the plan
+slot in exactly two ways - both because the plan slot binds ONE drawing whose wrongness is invisible
+to the reader, while the carousel shows photographs a broker can eyeball:
+1. **Identity figures are widened** (`_identity_figures_wide`) with the headline TOTAL a brochure
+   prints - warehouse plus each non-warehouse component - and matched with a 0.5% ROUNDING
+   tolerance. A record stores the schedule broken down (318,826 + 19,482); the title spread prints
+   338,308 and the cover prints "338,000". `_identity_figures` itself is untouched, so the plan
+   slot is byte-identical.
+2. **On a SOLE-claimant deck a page printing NO schedule figure at all is neutral, so it is in
+   reach** - nothing on it attributes it elsewhere, and refusing it costs real photographs (an
+   "indicative internal CGI" spread carries no figures). The plan slot still refuses it. The
+   DONOR-deck guard is unchanged in intent and now explicit: a deck that states this property's
+   figures on NO page reaches NOTHING. **Multi-claimant decks are unchanged in kind** - a page must
+   still be settled decisively by one claimant's distinct figures.
+Harvest order is claimed pages FIRST, reach pages second, so a property with enough of its own
+pages never draws on the reach at all.
+
+Three floors then decide what may enter (`images.gallery_admissible`), each closing a hole a live
+run shipped through: **`kind == 'photo'`** (the Site Plan has its own slot and toggle, and the old
+`score >= MODEST_PHOTO` admission is how a flat decorative background reached a card);
+**`MIN_GALLERY_W/H = 640x400`**, the card thumb's rendered box at 1.5x DPR (the hero floor is
+320x200, which four 323x215 thumbnails cleared); and **`MIN_GALLERY_DETAIL = 2.5`**
+(`images.detail_score` - mean adjacent-pixel luminance step, measured 0.03-1.84 for decoration of
+every kind and 3.33+ for real photographs across 159 candidates in 15 decks). `classify_image`
+reads smooth gradient art as `photo` and `photographic_score` scores it 50-97, so detail is the
+only signal that separates them. THE HERO IS HELD TO THE SAME FLOORS: a deterministically bound
+hero that fails them is replaced by the best admissible photograph (`merge._compose_gallery`); an
+EXPLICIT `__meta.heroRef` pick is exempt, because it exists to be verified by the blind G-images
+reviewer. `GALLERY_MAX` stays 6 - the cap never starved a card, and 6-per-property already lands
+the self-contained HTML near the edge of emailable.
+
 Engines: PyMuPDF preferred; `fitz_shim` falls back to pypdfium2, and (new) to pdfplumber-ONLY - where text and embedded JPEG/JPEG2000 photos still extract (decoded straight from the PDF streams) and only page rendering is unavailable. Heroes are memoised on disk per (source, page, budget).
 
 ## Known quality notes

@@ -81,17 +81,17 @@ Quick start
             ("EUR 7.3B", "EU investment lost"),
             ("4 yrs", "Behind schedule vs course-correction"),
         ],
-        callout_title="LESSON FOR NIO",
+        callout_title="LESSON FOR THE OCCUPIER",
         callout_body="Every location variable that forced CATL's costly pivot is "
                      "identifiable before ground was broken. Energy, permitting, "
                      "labour, incentives: none were surprises, they were blind "
-                     "spots. For NIO's European manufacturing decision, "
-                     "independent location advisory eliminates those blind spots "
-                     "before the billion-euro lessons.",
-        callout_tag="BG / RO / PL / HU SHORTLIST")
+                     "spots. On any European manufacturing decision, independent "
+                     "location advisory eliminates those blind spots before the "
+                     "billion-euro lessons.",
+        callout_tag="CEE SHORTLIST")
 
     build.thank_you(deck)
-    build.save(deck, "Project-Horizon.pptx")
+    build.save(deck, "Example-Deck.pptx")
 
 
 Pattern catalogue
@@ -327,9 +327,14 @@ def save(deck: Presentation, path: Union[str, Path],
          resolve: Optional[bool] = None,
          resolve_verbose: bool = True,
          bake: Optional[bool] = None,
+         geometry_strict: bool = False,
          label_from: Optional[Union[str, Path]] = None) -> Path:
-    """Save the deck. By default, also runs audit_tones() and prints the
-    dark/light balance report — pass audit=False to suppress.
+    """Save the deck. By default, also runs audit_tones(), audit_line_of_sight()
+    and audit_geometry(), printing their reports — pass audit=False to suppress.
+
+    `geometry_strict=True` turns audit_geometry's findings (canvas bleed, text
+    running past the safe bottom, text-on-text collisions) into an
+    AssertionError instead of a warning. Use it in CI or a smoke test.
 
     Resolve pass
     ------------
@@ -428,6 +433,7 @@ def save(deck: Presentation, path: Union[str, Path],
         if audit:
             audit_tones(deck, verbose=True)
             audit_line_of_sight(deck, verbose=True)
+            audit_geometry(deck, verbose=True, strict=geometry_strict)
         return out
 
     # Resolve pass: save draft, render+measure each slide, re-save final.
@@ -479,6 +485,7 @@ def save(deck: Presentation, path: Union[str, Path],
     if audit:
         audit_tones(deck, verbose=True)
         audit_line_of_sight(deck, verbose=True)
+        audit_geometry(deck, verbose=True, strict=geometry_strict)
     return out
 
 
@@ -849,10 +856,12 @@ def audit_tones(deck: Presentation, *, verbose: bool = True) -> dict:
     """Scan the tone log accumulated during deck construction and warn if the
     dark/light mix has drifted outside the recommended band.
 
-    Recommended mix (for any deck of >= 6 slides):
-      - 50%–70% dark slides
-      - 30%–50% light slides (counting split-tone as 'dark' since the bulk
-        of the visual area is dark)
+    Recommended mix (for any deck of >= 6 slides): an even 50/50 split of
+    dark and light, with a 40-60% working band before this warns. Split-tone
+    counts as 'dark' since the bulk of the visual area is dark.
+
+    The even split is the house pattern: dark carries covers, dividers and
+    statement moments; white carries the content slides that do the work.
 
     Returns a dict like:
       {
@@ -882,18 +891,19 @@ def audit_tones(deck: Presentation, *, verbose: bool = True) -> dict:
     else:
         dark_pct = dark / n
         light_pct = light / n
-        if dark_pct > 0.80:
+        if dark_pct > 0.60:
             warnings.append(
                 f"Too dark: {dark}/{n} slides ({dark_pct:.0%}) are dark. "
-                f"Recommended 50-70%. Consider switching a worksheet, "
-                f"comparison_table, or stat_strip to tone='light'."
+                f"Target is an even 50/50 split (40-60% band). White carries "
+                f"the content slides that do the work - consider moving a "
+                f"table, comparison or stat slide to tone='light'."
             )
-        elif dark_pct < 0.50:
+        elif dark_pct < 0.40:
             warnings.append(
                 f"Too light: only {dark}/{n} slides ({dark_pct:.0%}) are dark. "
-                f"Recommended 50-70%. The CBRE deck should feel anchored in "
-                f"dark teal-green - consider keeping cover, contents, "
-                f"section_divider, case_study, statement, and thank_you on dark."
+                f"Target is an even 50/50 split (40-60% band). Dark carries "
+                f"the cover, section dividers, statement moments and closing - "
+                f"consider returning one of those to tone='dark'."
             )
 
     result = {
@@ -919,6 +929,225 @@ def audit_tones(deck: Presentation, *, verbose: bool = True) -> dict:
             print(f"  [warn] {w}")
         if not warnings and n >= 3:
             print("  [ok] Tone mix looks balanced.")
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Geometry backstop — verify what the composer promises
+# ---------------------------------------------------------------------------
+
+# Only *substantial* overlaps are reported. Autofit boxes declare a height that
+# can exceed their rendered text (the resolve pass corrects this on Windows but
+# not on Linux), so stacked text boxes routinely nominally overlap by a hair.
+_GEOM_MIN_OVERLAP_X = 0.10      # inches of horizontal intrusion
+# Vertical needs more slack than horizontal: a value box sitting directly above
+# its caption routinely declares a height a shade taller than the glyphs need.
+_GEOM_MIN_OVERLAP_Y = 0.15
+_GEOM_MIN_OVERLAP_FRAC = 0.18   # of the smaller shape's area
+_GEOM_BLEED_TOL = 0.04          # inches a shape may sit outside the canvas
+_CHROME_TAG = "cbre-chrome"     # shape-name prefix for library-drawn chrome
+
+
+def _mark_chrome(shape):
+    """Tag a shape as library chrome (footer, wordmark, page number).
+
+    Chrome legitimately occupies the bottom strip and is exempt from the
+    safe-bottom and collision checks in audit_geometry. The tag travels in the
+    shape's name, so it survives the save/reload round trip.
+    """
+    try:
+        if shape is not None and getattr(shape, "name", None) is not None:
+            shape.name = f"{_CHROME_TAG}:{shape.name}"
+    except (AttributeError, ValueError):
+        pass
+    return shape
+
+
+def _is_chrome(shape) -> bool:
+    return str(getattr(shape, "name", "") or "").startswith(_CHROME_TAG)
+
+
+def _shape_rect(sh) -> Optional[tuple]:
+    """(left, top, right, bottom) in inches, or None if unpositioned."""
+    try:
+        if sh.left is None or sh.top is None:
+            return None
+        l = sh.left / 914400.0
+        t = sh.top / 914400.0
+        return (l, t, l + (sh.width or 0) / 914400.0,
+                t + (sh.height or 0) / 914400.0)
+    except (AttributeError, TypeError):
+        return None
+
+
+_NARROW_CHARS = "Iiljftr.,;:'!|()[] "
+_WIDE_CHARS = "WMmw@%"
+
+
+def _line_units(line: str) -> float:
+    """Width of a line in 'average character' units, glyph-width aware."""
+    total = 0.0
+    for ch in line:
+        if ch in _NARROW_CHARS:
+            total += 0.42
+        elif ch in _WIDE_CHARS:
+            total += 1.15
+        else:
+            total += 1.0
+    return total
+
+
+def _ink_width(sh, box_w: float) -> float:
+    """Approximate the width the TEXT actually occupies inside its box.
+
+    Several primitives deliberately give a short string a generously wide box
+    and tuck a sibling into the slack - roman_card, for instance, puts a ~0.4in
+    numeral in a 1.0in box and pulls the title left into the gap. Comparing raw
+    boxes would report that as a collision every time. Comparing ink does not,
+    while still catching a numeral that genuinely is too wide for its slot.
+
+    Deliberately generous (over-estimates ink) so real overlaps still surface,
+    but glyph-width aware: a flat per-character average makes "III" look nearly
+    three times its real width and invents a collision that is not there.
+    """
+    try:
+        tf = sh.text_frame
+        lines = tf.text.splitlines() or [""]
+        longest = max((_line_units(ln) for ln in lines), default=0.0)
+        if longest <= 0:
+            return box_w
+        size = None
+        for p in tf.paragraphs:
+            for r in p.runs:
+                if r.font.size is not None:
+                    size = r.font.size.pt
+                    break
+            if size:
+                break
+        size = size or 12.0
+        return min(box_w, longest * size * 0.0086)
+    except (AttributeError, TypeError, ValueError):
+        return box_w
+
+
+def _collect_text_rects(shapes, out, _depth=0):
+    """Text-bearing shapes only, groups flattened. Decorative rects, lines,
+    bars and pictures are skipped: a text box sitting inside its container
+    rect is the normal case, not a collision."""
+    if _depth > 6:
+        return
+    for sh in shapes:
+        try:
+            if _is_chrome(sh):                # footer / wordmark: exempt
+                continue
+            if sh.shape_type == 6:            # MSO group
+                _collect_text_rects(sh.shapes, out, _depth + 1)
+                continue
+            has_text = getattr(sh, "has_text_frame", False) and \
+                sh.text_frame.text.strip()
+            has_table = getattr(sh, "has_table", False)
+            if not (has_text or has_table):
+                continue
+            r = _shape_rect(sh)
+            if r and r[2] > r[0] and r[3] > r[1]:
+                label = (sh.text_frame.text.strip().splitlines()[0][:34]
+                         if has_text else "<table>")
+                if has_text:
+                    # Compare ink, not the box, so a short string in a wide box
+                    # does not read as colliding with whatever sits in the slack.
+                    try:
+                        align = sh.text_frame.paragraphs[0].alignment
+                    except (AttributeError, IndexError):
+                        align = None
+                    ink = _ink_width(sh, r[2] - r[0])
+                    if str(align) .startswith("CENTER"):
+                        mid = (r[0] + r[2]) / 2.0
+                        r = (mid - ink / 2, r[1], mid + ink / 2, r[3])
+                    elif str(align).startswith("RIGHT"):
+                        r = (r[2] - ink, r[1], r[2], r[3])
+                    else:
+                        r = (r[0], r[1], r[0] + ink, r[3])
+                out.append((r, label))
+        except (AttributeError, ValueError):
+            continue
+
+
+def audit_geometry(deck: Presentation, *, verbose: bool = True,
+                   strict: bool = False) -> dict:
+    """Verify the geometry the composer is supposed to guarantee.
+
+    Three checks, per slide:
+      1. **Canvas bleed** - no text shape sits outside the slide.
+      2. **Below the safe bottom** - no text intrudes into the wordmark band.
+      3. **Text-on-text overlap** - no two text shapes substantially collide.
+
+    Containment is NOT an error: accent stripes sit behind text and callout
+    bodies sit inside their background rect by design, so only *text-bearing*
+    shapes are compared against each other.
+
+    Until now the geometry guarantee came only from restricting what the caller
+    could do. This verifies it, which is what makes a richer layout engine
+    affordable. Returns a dict; raises AssertionError when strict=True.
+    """
+    issues: List[str] = []
+    n_shapes = 0
+    n_slides = 0
+
+    for idx, slide in enumerate(deck.slides, start=1):
+        n_slides = idx
+        rects: List[tuple] = []
+        _collect_text_rects(slide.shapes, rects)
+        n_shapes += len(rects)
+
+        for (l, t, r, b), label in rects:
+            if (l < -_GEOM_BLEED_TOL or t < -_GEOM_BLEED_TOL
+                    or r > SLIDE_W + _GEOM_BLEED_TOL
+                    or b > SLIDE_H + _GEOM_BLEED_TOL):
+                issues.append(
+                    f"slide {idx}: '{label}' bleeds off the canvas "
+                    f"(l={l:.2f} t={t:.2f} r={r:.2f} b={b:.2f})")
+            elif b > SAFE_B + 0.16:
+                issues.append(
+                    f"slide {idx}: '{label}' runs past the safe bottom "
+                    f"(b={b:.2f} > {SAFE_B:.2f}); it will collide with the "
+                    f"wordmark band")
+
+        for i in range(len(rects)):
+            (al, at, ar, ab), alab = rects[i]
+            for j in range(i + 1, len(rects)):
+                (bl, bt, br, bb), blab = rects[j]
+                ox = min(ar, br) - max(al, bl)
+                oy = min(ab, bb) - max(at, bt)
+                if ox <= _GEOM_MIN_OVERLAP_X or oy <= _GEOM_MIN_OVERLAP_Y:
+                    continue
+                area_a = max(1e-6, (ar - al) * (ab - at))
+                area_b = max(1e-6, (br - bl) * (bb - bt))
+                if (ox * oy) / min(area_a, area_b) < _GEOM_MIN_OVERLAP_FRAC:
+                    continue
+                issues.append(
+                    f"slide {idx}: text overlaps text - '{alab}' and "
+                    f"'{blab}' share {ox:.2f}x{oy:.2f}in")
+
+    result = {"slides": n_slides, "text_shapes": n_shapes,
+              "issues": issues, "ok": not issues}
+
+    if verbose:
+        n_sl = n_slides
+        if issues:
+            print(f"[geometry audit] {n_sl} slides, {n_shapes} text shapes - "
+                  f"{len(issues)} issue(s)")
+            for m in issues[:14]:
+                print(f"  [warn] {m}")
+            if len(issues) > 14:
+                print(f"  ... and {len(issues) - 14} more")
+        else:
+            print(f"[geometry audit] {n_sl} slides, {n_shapes} text shapes - "
+                  f"[ok] no bleed, no overflow, no text collisions.")
+
+    if strict and issues:
+        raise AssertionError(
+            f"audit_geometry found {len(issues)} layout problem(s):\n  "
+            + "\n  ".join(issues[:14]))
     return result
 
 
@@ -1913,9 +2142,12 @@ def _logo(slide, tone: str, *, w: float = 1.05):
 def _paint_footer(slide, tone: str, *, page_no: Optional[int] = None):
     """Standard CBRE footer: copyright bottom-left, logo artwork bottom-right."""
     fg = COLORS["charcoal"] if tone == "light" else COLORS["mint_dark"]
-    _text(slide, "Confidential & Proprietary | (c) 2026 CBRE, Inc.",
-          x=0.55, y=7.15, w=6.0, h=0.22,
-          font=FONTS["sans"], size=9, color=fg, anchor="top")
+    _foot = _text(slide, "Confidential & Proprietary | (c) 2026 CBRE, Inc.",
+                  x=0.55, y=7.15, w=6.0, h=0.22,
+                  font=FONTS["sans"], size=9, color=fg, anchor="top")
+    # Chrome legitimately lives in the bottom strip; mark it so audit_geometry
+    # does not report the library's own footer as an overflow.
+    _mark_chrome(_foot)
 
     # CBRE wordmark — official artwork bottom-right (brand: never type the logo).
     if _logo(slide, tone) is None:
@@ -1929,9 +2161,10 @@ def _paint_footer(slide, tone: str, *, page_no: Optional[int] = None):
                 "decks brand-compliant.", file=sys.stderr)
             _LOGO_WARNED = True
         wm_color = COLORS["white"] if tone == "dark" else COLORS["cbre_green"]
-        _text(slide, "CBRE", x=12.10, y=6.92, w=1.10, h=0.45,
-              font=FONTS["sans_b"], size=22, color=wm_color,
-              bold=True, align="right", letter_spacing=-0.05, anchor="middle")
+        _mark_chrome(_text(slide, "CBRE", x=12.10, y=6.92, w=1.10, h=0.45,
+                           font=FONTS["sans_b"], size=22, color=wm_color,
+                           bold=True, align="right", letter_spacing=-0.05,
+                           anchor="middle"))
 
 
 def blank(deck: Presentation, *, tone: str = "dark"):
@@ -1962,9 +2195,12 @@ def eyebrow(slide, text: str, *, tone: str = "dark", x: float = 0.55,
     if color is not None:
         c = color
     elif tone == "dark":
-        c = COLORS["gold"] if accent == "gold" else COLORS["mint"]
+        c = COLORS["gold"] if accent in ("gold", "auto") else COLORS["mint"]
     else:
-        c = COLORS["ink"] if accent == "gold" else COLORS["mint_dark"]
+        # Primary accent on white is bright Accent Green, not ink. See the
+        # note on the tone-conditional accent rule in _accent()/SKILL.md.
+        c = (COLORS["bright_green"] if accent in ("gold", "auto")
+             else COLORS["mint_dark"])
     _text(slide, text, x=x, y=y, w=8.0, h=0.28,
           font=FONTS["sans_sb"], size=10, color=c,
           bold=True, uppercase=True, letter_spacing=1.5, anchor="top")
@@ -2551,7 +2787,7 @@ def table(slide, headers: Sequence[str], rows: Sequence[Sequence[str]], *,
 
 
 # ---------------------------------------------------------------------------
-# Callout boxes (e.g. "LESSON FOR NIO", "CBRE VIEW")
+# Callout boxes (e.g. "LESSON FOR THE OCCUPIER", "CBRE VIEW")
 # ---------------------------------------------------------------------------
 
 # Internal layout constants for callout — kept in sync between
@@ -2641,7 +2877,7 @@ def callout(slide, *, title: str, body_text: str,
             accent: Optional[RGBColor] = None):
     """The CBRE 'expert note' callout: lifted card with a left vertical mint
     bar, gold/cream uppercase title, white body, optional ribbon tag on the
-    right (e.g. 'LESSON FOR NIO | BG / RO / PL / HU SHORTLIST').
+    right (e.g. 'LESSON FOR THE OCCUPIER | CEE SHORTLIST').
     """
     title_accent = accent or COLORS["gold"]
     bar_color = COLORS["mint"] if tone == "dark" else COLORS["mint_dark"]
@@ -2761,9 +2997,23 @@ def cover(deck: Presentation, *, title: str, subtitle: Optional[str] = None,
               color=COLORS["gold"] if tone == "dark" else COLORS["charcoal"],
               uppercase=True, letter_spacing=2.0, align="right", anchor="middle")
 
-    # Title — auto-size: short titles get bigger
-    title_size = 110 if len(title) <= 22 else 88 if len(title) <= 36 else 70 if len(title) <= 54 else 56
-    serif_title(s, title, x=0.55, y=1.55, w=SLIDE_W - 1.10, h=2.10,
+    # Title — auto-size: short titles get bigger.
+    # Sizing on character count alone is not enough: a 22-character title at
+    # 110pt still wraps to two lines (~3.12"), overruns the 2.10" box and lands
+    # on the subtitle. So step down the ladder until the WRAPPED height fits.
+    _TITLE_BOX_H = 2.10
+    _title_w = SLIDE_W - 1.10
+    title_size = 56
+    for cand in (110, 88, 70, 56):
+        if len(title) > {110: 22, 88: 36, 70: 54}.get(cand, 10 ** 6):
+            continue                      # keep the original upper bounds
+        # Financier Display runs ~0.0052 x point size in inches per character.
+        cpl = max(1, int(_title_w / (0.0052 * cand)))
+        lines = max(1, -(-len(title) // cpl))
+        if lines * (cand / 72.0) * 1.02 <= _TITLE_BOX_H:
+            title_size = cand
+            break
+    serif_title(s, title, x=0.55, y=1.55, w=_title_w, h=_TITLE_BOX_H,
                 size=title_size, tone=tone, line_spacing=1.02)
 
     # Subtitle sits directly under the title (no big gap)
@@ -3171,7 +3421,7 @@ def value_prop_intro(deck: Presentation, *, eyebrow_text: str, title: str,
     """
     s = _blank_slide(deck)
     # Split-tone canvas: dark top (eyebrow + title + stats), light bottom (cards).
-    # Mirrors the reference deck "Manufacturing Site Selection for NIO" feel.
+    # Mirrors the manufacturing site-selection slide in the reference deck.
     split_y = 3.50
     _paint_bg_native(s, "dark" if tone == "dark" else "light", log=False)
     if tone == "dark":
@@ -4272,19 +4522,27 @@ def tier_ladder(slide, tiers, *, y, gap=0.30, tone="light", x=None, w=None):
             labelc = COLORS["charcoal"]
             titlec = COLORS["ink_2"] if tone == "light" else COLORS["mint_pale"]
         _vbar(slide, x, ty, h, color=barc, width_in=0.07)
-        _text(slide, t["label"], x=x + 0.35, y=ty + 0.22, w=6.0, h=0.26,
+        # Widths below were absolute constants tuned for the full content
+        # width; clamp them so the ladder also works inside a narrower cell.
+        # The label must stop short of the note column (which starts at
+        # x + w*0.62), not merely inside the cell, or the two boxes collide.
+        _text(slide, t["label"], x=x + 0.35, y=ty + 0.22,
+              w=min(6.0, w * 0.60 - 0.35), h=0.26,
               font=FONTS["sans_sb"], size=11, color=labelc, bold=True,
               uppercase=True, letter_spacing=2.0, anchor="top")
         serif_title(slide, t["title"], x=x + 0.35, y=ty + 0.52, w=w * 0.58,
                     h=0.70, size=26 if emph else 24, tone=tone, color=titlec)
         if t.get("items"):
+            items = list(t["items"])
+            avail_w = (w * 0.62) - 0.35
+            col_w = min(4.0, avail_w / max(1, len(items)))
             ix = x + 0.35
-            for it in t["items"]:
-                _text(slide, "–  " + it, x=ix, y=ty + 1.20, w=4.0, h=0.30,
+            for it in items:
+                _text(slide, "–  " + it, x=ix, y=ty + 1.20, w=col_w, h=0.30,
                       font=FONTS["sans"], size=12,
                       color=COLORS["ink"] if tone == "light"
                       else COLORS["white"], anchor="top")
-                ix += 4.0
+                ix += col_w
         if t.get("note"):
             _text(slide, t["note"], x=x + w * 0.62, y=ty, w=w * 0.38 - 0.30,
                   h=h, font=FONTS["sans_l"], size=12,
@@ -4295,19 +4553,28 @@ def tier_ladder(slide, tiers, *, y, gap=0.30, tone="light", x=None, w=None):
 
 
 def directional_ladder(slide, rows, *, y, tone="dark", x=None, w=None,
-                       label_col=4.15, gap=0.26):
+                       label_col=4.15, gap=0.26, h=None):
     """Up / sideways / down rows for "strengthened / refocused / deprioritised"
     style slides. `rows` = list of (direction, label, accent, items, subtag):
         ("up",    "Strengthened",   COLORS["mint"], [...],        None)
         ("right", "Refocused",      COLORS["gold"], [...],        None)
         ("down",  "Deprioritised",  COLORS["blue"], [...], "TEMPORARY")
     Each row is a band with a coloured bar, a directional arrow, a serif
-    label, and the items rendered as chips. Rows fill the area from `y` down
-    to ED_SAFE_BOT."""
+    label, and the items rendered as chips.
+
+    Rows fill the area from `y` down to `y + h`. `h=None` (the default) keeps
+    the original full-slide behaviour and fills down to ED_SAFE_BOT; pass `h`
+    to bound the device inside a scene cell."""
     x = ED_X if x is None else x
     w = ED_W if w is None else w
+    bottom = (y + h) if h is not None else ED_SAFE_BOT
+    # The label column is an absolute default tuned for the full content width;
+    # in a narrower cell it would swallow the chip area, so cap it - but not so
+    # hard that the serif label wraps mid-word. Below, the label type is sized
+    # to whatever column survives.
+    label_col = min(label_col, max(1.95, w * 0.50))
     n = len(rows)
-    rh = (ED_SAFE_BOT - y - gap * (n - 1)) / n
+    rh = (bottom - y - gap * (n - 1)) / n
     for i, (direction, label, accent, items, subtag) in enumerate(rows):
         ry = y + i * (rh + gap)
         _rect(slide, x, ry, w, rh,
@@ -4319,8 +4586,19 @@ def directional_ladder(slide, rows, *, y, tone="dark", x=None, w=None,
         elif direction in _ARROW_SHAPES:
             arrow(slide, direction, x=x + 0.48, y=ry + rh / 2 - 0.28,
                   w=0.40, h=0.56, color=accent)
-        _text(slide, label, x=x + 1.15, y=ry, w=label_col - 1.30, h=rh,
-              font=FONTS["serif"], size=24,
+        # Reserve the subtag strip so the centred label box does not extend
+        # over it (they would collide on a short row).
+        label_h = rh - (0.40 if subtag else 0.0)
+        label_w = label_col - 1.30
+        # Size the serif label to the column it actually got. Financier Display
+        # runs ~0.52 x its point size per character at these weights; without
+        # this a narrowed column breaks a word across two lines ("Strength /
+        # ened"), which no geometry assertion can see.
+        lsize = 24.0
+        while lsize > 14.0 and len(label) * lsize * 0.0072 > label_w:
+            lsize -= 0.5
+        _text(slide, label, x=x + 1.15, y=ry, w=label_w, h=label_h,
+              font=FONTS["serif"], size=lsize,
               color=COLORS["white"] if tone == "dark" else COLORS["green"],
               anchor="middle")
         if subtag:

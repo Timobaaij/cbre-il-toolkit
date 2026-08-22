@@ -33,7 +33,7 @@ Hero cover with eyebrow tag, accent bar, giant serif title, subtitle, themes pre
 | `presenter` | str? | "Name | Role" line. |
 | `org` | str? | Org affiliation line. |
 | `date` | str? | "MAY 2026" — uppercase mono in top-right. |
-| `eyebrow_text` | str? | Top-left tag, e.g. "CLIENT PITCH \| NIO MANUFACTURING". |
+| `eyebrow_text` | str? | Top-left tag, e.g. "CLIENT PITCH \| MERIDIAN MANUFACTURING". |
 | `themes` | list[str]? | **3–4 short labels.** Renders as numbered preview band in the middle-bottom. Critical for density. |
 | `tone` | str | "dark" (default) or "light". |
 
@@ -74,7 +74,7 @@ Serif headline + subtitle + right-side stat column + 4 decimal-numbered cards al
 - `tone`
 
 ### `case_study(deck, **kwargs)`
-Dense case-study slide replicating the CATL reference. 4 decimal cards (left) + comparison table (right) + KPI strip + mint callout.
+Dense case-study slide from the visual reference set. 4 decimal cards (left) + comparison table (right) + KPI strip + mint callout.
 
 - `eyebrow_text`, `title`, `intro`
 - `framework_title`, `framework` — list of `(num, label, body)`, exactly 4 items

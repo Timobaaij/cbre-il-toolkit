@@ -1646,9 +1646,28 @@ def harmonise_regions(canonical: dict, ds: dict | None, gaps: list,
                 f"which is a different level from other properties in this longlist")
             updates.append(row)
 
+    _meta = canonical.setdefault("meta", {})
+    # IDEMPOTENT DISCLOSURE. A SECOND `--regions` pass over an already-harmonised canonical
+    # rewrites nothing (each property's region already IS its bound NUTS-3 name), so
+    # `changed` comes back empty - and because the regions layer REPLACES its gap bucket
+    # every run, the harmonisation line silently dropped out of the delivered Gaps Report on
+    # every re-run while `meta.regionHarmonised` still recorded it. A disclosure that
+    # disappears when you re-run is worse than no disclosure: the deliverable stopped saying
+    # the shipped region label is DERIVED rather than source-stated. So restate the SAME line
+    # from the recorded harmonisation - and only while it is still true, i.e. every recorded
+    # property still carries the bound name it records. `restated` keeps the return value
+    # honest: nothing was rewritten this pass.
+    restated = False
+    if not changed:
+        prior = _meta.get("regionHarmonised")
+        if isinstance(prior, list) and prior:
+            by_id = {p.get("id"): p for p in props}
+            if all(_norm_region(str((by_id.get(c.get("id")) or {}).get("region") or ""))
+                   == _norm_region(str(c.get("bound") or "")) for c in prior):
+                changed, restated = list(prior), True
     if not changed:
         return 0
-    canonical.setdefault("meta", {})["regionHarmonised"] = changed
+    _meta["regionHarmonised"] = changed
     stated_levels = "; ".join(sorted({c["stated"] for c in changed} | set(unbound)))
     bound_names = "; ".join(sorted({c["bound"] for c in changed}))
     msg = (f"Region labels were stated at more than one administrative level "
@@ -1660,7 +1679,7 @@ def harmonise_regions(canonical: dict, ds: dict | None, gaps: list,
                 f"bound to a NUTS-3 area (no usable coordinates) and keep the label their "
                 f"source stated.")
     gaps.append(msg)
-    return len(changed)
+    return 0 if restated else len(changed)
 
 
 def merge_regions(canonical: dict, gaps: list, updates: list | None = None) -> int:

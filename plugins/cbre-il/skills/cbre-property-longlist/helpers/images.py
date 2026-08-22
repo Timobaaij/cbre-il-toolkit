@@ -60,7 +60,30 @@ GALLERY_MAX = 6  # max photos attached per property for the carousel (hero + up 
 #                  filled BEST-FIRST by photographic_score; the rest are noted in the Gaps Report.
 #                  The single self-contained HTML embeds every image as base64, so this cap keeps
 #                  the file portable (shareable/emailable) even on an image-heavy deck.
+#                  DELIBERATELY 6, re-confirmed when the carousel's page scope was widened: the
+#                  cap was never what starved a card (no property was short of SLOTS, they were
+#                  short of CANDIDATES), 6 is the ergonomic size for a MANUAL prev/next carousel,
+#                  a brochure holds 2-10 distinct photographs (median 5) so the 7th is a
+#                  near-duplicate elevation, and 6-per-property lands the self-contained HTML at
+#                  ~19 MB - already the edge of emailable, where 8 would push ~24 MB.
 MIN_HERO_W, MIN_HERO_H = 320, 200  # reject logos/icons (PHOTO hero floor)
+# --- CAROUSEL (gallery) floors - STRICTER than the hero's, and for different reasons ------- #
+# The hero floor exists to reject logos/icons; anything above it can lead a card because the
+# alternative is the placeholder. A CAROUSEL entry has a real alternative - not being there -
+# so it is held to what the card actually RENDERS. The card thumb is
+# `repeat(auto-fill,minmax(340px,1fr))` in a 1400px container (~432 CSS px wide) at
+# `aspect-ratio:16/10` => ~432x270 CSS px. 640x400 is that box at 1.5x device-pixel-ratio: never
+# upscaled on a standard display, still sharp on a HiDPI laptop, 2x the linear size of the
+# 323x215 thumbnails this floor exists to stop, and it rejects banner strips (3242x250) on the
+# height term without a separate rule.
+MIN_GALLERY_W, MIN_GALLERY_H = 640, 400
+# DETAIL floor (see detail_score): the discriminator between a PHOTOGRAPH and flat vector /
+# gradient DECORATION. Neither photographic_score nor classify_image separates them - a flat
+# yellow geometric background scored 7.8 (over MODEST_PHOTO) and smooth gradient art classifies
+# as 'photo' (high luminance entropy, no flat 8x8 blocks). Measured over 159 candidates in 15
+# real decks: decorative art of EVERY kind sits at 0.03-1.84, real photographs at 3.33-20+, with
+# an empty band between. 2.5 sits inside that band with ~1.4x margin on both sides.
+MIN_GALLERY_DETAIL = 2.5
 # plans get their OWN, lower floor: a usable site plan is often small, and the
 # photo floor silently discarded it before any scoring happened (a real
 # placeholder-shipped-despite-usable-plan failure). Below even this = icon.
@@ -384,8 +407,93 @@ def classify_image(img, sig: dict | None = None) -> str:
 
 # hero ladder: a photo/aerial/render leads; a plan beats a map beats text/logo; only drop
 # a tier when nothing higher exists on the property's pages (plans + maps still go in the
-# gallery + the Site Plan toggle, they just stop being the first impression).
+# Site Plan toggle, they just stop being the first impression).
 HERO_TIER = {"photo": 0, "plan": 2, "map": 3, "text": 4, "logo": 5}
+
+
+def detail_score(img) -> float:
+    """Mean absolute adjacent-pixel LUMINANCE STEP on a 512-long-edge greyscale - 'how much
+    fine detail does this image actually carry?'. Pure pixel statistics, so it is client /
+    brand / language / region agnostic like every other signal here, and it answers the ONE
+    question classify_image and photographic_score cannot: PHOTOGRAPH vs DECORATION.
+
+    A photograph carries texture everywhere - foliage, brick, tarmac, cladding seams, sensor
+    noise - so neighbouring pixels differ constantly. Synthetic marketing decoration (a
+    gradient mesh, a flat geometric background, a light-streak render, a brand wash) is smooth
+    by construction: neighbouring pixels are nearly equal everywhere except at a handful of
+    banding edges. classify_image reads a smooth gradient as continuous tone and calls it
+    'photo'; photographic_score reads it as colourful and scores it 50-75. This does not.
+
+    Measured over 159 candidate rasters in 15 real industrial decks: decoration of every
+    classified kind lands 0.03-1.84, real photographs 3.33 and up, with nothing in between.
+    Sampled every other row/column - the statistic is scale-stable and this keeps it cheap.
+    Never raises: 0.0 on any failure, which reads as 'flat' and fails the floor (fail-closed -
+    an image we cannot measure must not silently enter a client-facing carousel)."""
+    if Image is None:
+        return 0.0
+    try:
+        im = img.convert("L")
+        w, h = im.size
+        if w < 2 or h < 2:
+            return 0.0
+        s = min(1.0, 512 / max(w, h))
+        if s < 1.0:
+            im = im.resize((max(2, int(w * s)), max(2, int(h * s))), Image.LANCZOS)
+        px = im.load()
+        W, H = im.size
+        total = 0
+        n = 0
+        for y in range(0, H, 2):
+            for x in range(1, W, 2):
+                total += abs(px[x, y] - px[x - 1, y])
+                n += 1
+        return total / n if n else 0.0
+    except Exception:
+        return 0.0
+
+
+def gallery_admissible(entry: dict) -> bool:
+    """Is one `_deck_photo_index` entry fit for the CAROUSEL a client sees?
+
+    Three floors, each closing a hole a real run shipped through:
+      * kind == 'photo'  - the carousel is the PHOTO carousel. A plan/map has its own Site
+        Plan slot and toggle in the modal, so admitting it here only duplicates it - and the
+        admission path that let a non-photo in (`score >= MODEST_PHOTO`) is exactly how a flat
+        decorative background graphic reached a card as a 'photo'.
+      * MIN_GALLERY_W/H  - what the card actually renders (four 323x215 thumbnails shipped).
+      * MIN_GALLERY_DETAIL - photograph vs decoration (gradient art classifies as 'photo').
+
+    FAIL-CLOSED on an entry written by an older cache that carries no measurements: an image
+    whose admissibility cannot be established does not enter a client-facing carousel."""
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("kind") != "photo":
+        return False
+    w, h, d = entry.get("w"), entry.get("h"), entry.get("detail")
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (w, h, d)):
+        return False
+    return w >= MIN_GALLERY_W and h >= MIN_GALLERY_H and d >= MIN_GALLERY_DETAIL
+
+
+def uri_gallery_admissible(uri: str) -> bool:
+    """gallery_admissible for an already-compressed 'data:image/...;base64,...' URI - the form
+    the bound HERO takes by the time merge can compare it against the carousel floors. Decodes
+    once and re-derives the same three measurements. False on any decode/stats failure."""
+    if Image is None or not (isinstance(uri, str) and "base64," in uri):
+        return False
+    try:
+        import base64
+        raw = base64.b64decode(uri.split("base64,", 1)[1])
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+    except Exception:
+        return False
+    try:
+        w, h = img.size
+        return gallery_admissible({"kind": classify_image(img), "w": w, "h": h,
+                                   "detail": detail_score(img)})
+    except Exception:
+        return False
 
 
 def is_photo_kind(img) -> bool:
@@ -473,7 +581,12 @@ def _engine_tag() -> str:
     if backend:
         name = f"{name}.{backend}"
     ver = (getattr(fitz, "__version__", "") or getattr(fitz, "VersionBind", "") or "0")
-    return f"{name}|{'pil' if _HAS_PIL else 'nopil'}|{ver}"
+    # ...and the GEOMETRY backend, for exactly the same reason as the decode tier: which
+    # engine answers "where is this image placed / how wide is this page" decides whether
+    # the tier-B hero crop and the whole placed-image plan tier can see anything at all.
+    # A cache filled while geometry was unavailable holds negatives that are wrong the
+    # moment it becomes available, and mtimes alone would never invalidate them.
+    return f"{name}|{'pil' if _HAS_PIL else 'nopil'}|{ver}|geom:{_geom_backend()}"
 
 
 def _cache_file(pdf_path, page_index, budget_kb, kind, cache_dir, ext=".uri"):
@@ -485,7 +598,12 @@ def _cache_file(pdf_path, page_index, budget_kb, kind, cache_dir, ext=".uri"):
     try:
         import hashlib
         st = Path(pdf_path).stat()
-        key = hashlib.sha1(f"v3|{Path(pdf_path).name}|{st.st_size}|{st.st_mtime_ns}|"
+        # v4 (2026-08-20): `page_plan` now rejects a candidate the classifier reads as a PHOTO.
+        # A cached v3 plan URI was computed WITHOUT that screen, and one of them is a bright-sky
+        # aeroplane photo sitting in a property's Site Plan slot - a stale positive the engine tag
+        # cannot invalidate, because the engine did not change, the RULE did. Bumping the prefix
+        # is the documented human decision for exactly this (merge's resume note says so).
+        key = hashlib.sha1(f"v4|{Path(pdf_path).name}|{st.st_size}|{st.st_mtime_ns}|"
                            f"{page_index}|{budget_kb}|{kind}|{_engine_tag()}".encode()).hexdigest()
         cdir = Path(cache_dir)
         cdir.mkdir(parents=True, exist_ok=True)
@@ -681,7 +799,7 @@ def _deck_photo_index(path: Path, budget_kb: int, cache_dir, max_pages: int = 80
     if Image is None:
         return []
     path = Path(path)
-    cf = _cache_file(path, "deck", budget_kb, "galleryidx", cache_dir)
+    cf = _cache_file(path, "deck", budget_kb, "galleryidx2", cache_dir)
     if cf is not None and cf.exists():
         try:
             return json.loads(cf.read_text(encoding="utf-8"))
@@ -709,24 +827,38 @@ def _deck_photo_index(path: Path, budget_kb: int, cache_dir, max_pages: int = 80
                 prev["page"] = min(prev["page"], e["page"])
                 if e["score"] > prev["score"]:
                     prev["score"], prev["uri"] = e["score"], e["uri"]
+                    for k in ("w", "h", "detail"):  # the measurements travel WITH the uri
+                        if k in e:
+                            prev[k] = e[k]
     # rank by KIND TIER first (a real photo/aerial/render leads best_hero_in_deck and the
-    # gallery; a plan/map never leads) then by score - so the photo-match hero is a photo,
-    # not a map/plan, while plans/maps still appear later in the gallery. (kind defaults to
-    # 'photo' for an older cache written before the classifier, preserving its score order.)
+    # gallery) then by score - so the photo-match hero is a photo, not a map/plan. (kind
+    # defaults to 'photo' for an older cache written before the classifier, preserving its
+    # score order.) The carousel filters this ranked list by gallery_admissible, so its
+    # best-first order IS the carousel's quality order.
     ranked = sorted(by_sig.values(),
                     key=lambda d: (HERO_TIER.get(d.get("kind", "photo"), 9),
                                    -d["score"], d["page"], d["sig"]))
     index = [{"page": d["page"], "score": d["score"], "sig": d["sig"], "uri": d["uri"],
-              "kind": d.get("kind", "photo")} for d in ranked]
+              "kind": d.get("kind", "photo"), "w": d.get("w"), "h": d.get("h"),
+              "detail": d.get("detail")} for d in ranked]
     _cache_write_json(cf, index)  # whole-deck index (cheap once the per-page caches exist)
     return index
 
 
 def _deck_page_photos(path: Path, page_index: int, budget_kb: int, cache_dir) -> list[dict]:
-    """One page/slide's qualifying photos as [{page, score, sig, uri}] - the highest-
-    scoring instance per distinct image (sig), >= hero size AND >= MODEST_PHOTO, compressed
-    to a data URI. Cached per (deck, page, budget) so _deck_photo_index resumes mid-deck."""
-    cf = _cache_file(path, page_index, budget_kb, "gidxpage", cache_dir, ext=".json")
+    """One page/slide's qualifying photos as [{page, score, sig, uri, kind, w, h, detail}] -
+    the highest-scoring instance per distinct image (sig), >= hero size AND >= MODEST_PHOTO,
+    compressed to a data URI. Cached per (deck, page, budget) so _deck_photo_index resumes
+    mid-deck.
+
+    ADMISSION IS THE HERO'S, deliberately unchanged: this index feeds best_hero_in_deck (the
+    photo-match hero) as well as the carousel, so tightening it here would silently change
+    which hero a card gets. The CAROUSEL's stricter floors are applied downstream, in
+    gallery_for_pages / gallery_for_deck via gallery_admissible - which is why every entry
+    now also carries the measurements that decision needs. `w`/`h` are the RENDERED dimensions
+    (post HERO_MAX_EDGE downscale, i.e. what the URI actually contains and the card actually
+    shows), not the source raster's."""
+    cf = _cache_file(path, page_index, budget_kb, "gidxpage2", cache_dir, ext=".json")
     cached = _cache_read_json(cf)
     if cached is not None:
         return cached
@@ -741,8 +873,8 @@ def _deck_page_photos(path: Path, page_index: int, budget_kb: int, cache_dir) ->
                 kind = classify_image(im["img"])
                 sc = photographic_score(im["img"])
                 # keep a real PHOTO even when the colourfulness score under-rates it
-                # (grey/industrial), and keep a plan/map that clears the score (the gallery
-                # + Site Plan toggle keep them - the tier rank just never lets them LEAD)
+                # (grey/industrial), and keep a plan/map that clears the score (the Site Plan
+                # toggle keeps them - the tier rank just never lets them LEAD)
                 if kind != "photo" and sc < MODEST_PHOTO:
                     continue
                 sig = _photo_sig(im["img"])
@@ -757,8 +889,12 @@ def _deck_page_photos(path: Path, page_index: int, budget_kb: int, cache_dir) ->
             uri = to_data_uri(compress(d["_img"], HERO_MAX_EDGE, budget_kb))
         except Exception:
             continue
+        sw, sh = d["_img"].size
+        scale = min(1.0, HERO_MAX_EDGE / max(1, max(sw, sh)))
         out.append({"page": page_index, "score": round(d["_sc"], 3), "sig": sig,
-                    "uri": uri, "kind": d["_kind"]})
+                    "uri": uri, "kind": d["_kind"],
+                    "w": max(1, int(sw * scale)), "h": max(1, int(sh * scale)),
+                    "detail": round(detail_score(d["_img"]), 3)})
     _cache_write_json(cf, out)
     return out
 
@@ -798,7 +934,12 @@ def gallery_for_pages(path: Path, page_nos, budget_kb: int = DEFAULT_BUDGET_KB,
 
     exclude_by_page = {page: [candidate indices]} (the interpreter's __meta.exclude_refs -
     candidates it judged DECORATIVE/non-building via vision). Those candidates are dropped
-    from the carousel by SIG match (no cache-key change; empty/None = byte-identical to today)."""
+    from the carousel by SIG match (no cache-key change; empty/None = byte-identical to today).
+
+    QUALITY: filtered by gallery_admissible, so a decorative graphic, a plan/map duplicate of
+    the Site Plan slot, and a thumbnail-scale raster never reach a client-facing carousel.
+    `total_available` counts the ADMISSIBLE photos on those pages - i.e. what the cap actually
+    withheld, not how many rasters the page happened to hold."""
     pages = set(page_nos or [])
     idx = _deck_photo_index(Path(path), budget_kb, cache_dir)
     items = [e for e in idx if e["page"] in pages] if pages else idx
@@ -806,15 +947,21 @@ def gallery_for_pages(path: Path, page_nos, budget_kb: int = DEFAULT_BUDGET_KB,
         excl = _excluded_sigs(Path(path), exclude_by_page)
         if excl:
             items = [e for e in items if e.get("sig") not in excl]
+    items = [e for e in items if gallery_admissible(e)]
     return [e["uri"] for e in items[:max_n]], len(items)
 
 
 def gallery_for_deck(path: Path, budget_kb: int = DEFAULT_BUDGET_KB,
                      cache_dir: Path | str | None = None, max_n: int = GALLERY_MAX) -> list[str]:
     """Up to max_n best photo data URIs across a WHOLE deck (the photo-match case: a single
-    brochure matched to a tracker property IS that property). (uris, total_available)."""
+    brochure matched to a tracker property IS that property). (uris, total_available).
+
+    Filtered by gallery_admissible, exactly like gallery_for_pages. The caller composes the
+    final carousel (the hero leads it) - see merge._compose_gallery: this returns CANDIDATES,
+    not a finished gallery, so [0] is not guaranteed to be the deck's hero."""
     idx = _deck_photo_index(Path(path), budget_kb, cache_dir)
-    return [e["uri"] for e in idx[:max_n]], len(idx)
+    items = [e for e in idx if gallery_admissible(e)]
+    return [e["uri"] for e in items[:max_n]], len(items)
 
 
 def page_image_audit(pdf_path: Path, page_index: int, out_dir: Path, tag: str,
@@ -947,9 +1094,291 @@ def _extract_geom_for_page(page) -> list[dict]:
     return entries
 
 
+# --- MEDIA GEOMETRY: PyMuPDF is the PRIMARY backend, pdfplumber the FALLBACK ------- #
+# This layer used to be written pdfplumber-FIRST even though PyMuPDF is the skill's primary
+# engine, so on a host with the BETTER engine and no fallback installed the whole layer went
+# silently dead: `_placed_layout` returned 0 boxes on every page of every deck (killing the
+# tier-B hero crop AND the entire placed-image site-plan tier), and `_page_crops` opened
+# pdfplumber solely to read the page WIDTH IN POINTS and `return []` when it could not - one
+# number, gating two media tiers. PyMuPDF answers all three questions natively (`page.rect`,
+# `page.get_image_info()` / `get_image_bbox()`, `page.get_links()`), so the dependency
+# direction is now the right way round. pdfplumber is still fully wired for a genuine
+# no-PyMuPDF sandbox - the point is not to DEPEND on the fallback when the primary is present.
+_GEOM_BACKEND: str | None = None
+
+
+def _geom_backend() -> str:
+    """'fitz' when the ACTIVE engine serves image geometry natively, else 'plumber'.
+    Probed from the engine's own Page surface (the `fitz_shim` Page has `get_links` but
+    no `get_image_info`/`rect`, so a real sandbox shim still routes to pdfplumber).
+    Memoised - it cannot change within a process."""
+    global _GEOM_BACKEND
+    if _GEOM_BACKEND is None:
+        try:
+            pg = getattr(fitz, "Page", None)
+            _GEOM_BACKEND = ("fitz" if (pg is not None
+                                        and hasattr(pg, "get_image_info")
+                                        and hasattr(pg, "get_links")
+                                        and hasattr(pg, "rect")) else "plumber")
+        except Exception:
+            _GEOM_BACKEND = "plumber"
+    return _GEOM_BACKEND
+
+
+_MEDIA_CAPS: dict | None = None
+
+
+def media_capabilities() -> dict:
+    """What this host can ACTUALLY do to media, probed - never guessed.
+
+    Every media tier in this module degrades to an honest `None`/`[]` when its capability is
+    absent, which is correct behaviour and exactly why the absence is invisible: a run whose
+    image layer is dead looks, in every artefact it writes, like a run whose sources hold no
+    images. That indistinguishability is the defect this function exists to close - it is read
+    by `gate_runner media-harvest` and printed by `run.py` beside the `PDF engine:` line, so a
+    lost CAPABILITY is stated as a fact instead of being inferred from a thin gallery.
+
+    Each key is a HARD probe against a synthesised one-page document, not a version sniff or an
+    `hasattr` guess (the `fitz_shim` Page carries several of these names and raises when called):
+      pillow    - PIL is importable, so a raster can be decoded/cropped/compressed at all
+      renderer  - the engine can rasterise a page (hero tier-C, every page render, plan renders)
+      geometry  - placed-image boxes + page width are answerable (hero tier-B, plan crop tier)
+      drawings  - `page.get_drawings()` works, i.e. the VECTOR site-plan route can fire
+      text      - a page's text layer is readable (plan titles, furniture, the spec gate)
+    plus `engine` (the cache-key engine tag) and `geometry_backend` ('fitz'/'plumber').
+
+    Memoised; never raises."""
+    global _MEDIA_CAPS
+    if _MEDIA_CAPS is not None:
+        return dict(_MEDIA_CAPS)
+    caps = {"pillow": Image is not None, "renderer": False, "geometry": False,
+            "drawings": False, "text": False}
+    doc = None
+    try:
+        doc = fitz.open()                       # a new, empty in-memory document
+        page = doc.new_page()
+        try:
+            page.draw_line((10, 10), (100, 100))
+        except Exception:
+            pass
+        try:
+            caps["renderer"] = page.get_pixmap(dpi=18) is not None
+        except Exception:
+            pass
+        try:
+            page.get_image_info(xrefs=True)
+            page.get_links()
+            float(page.rect.width)
+            caps["geometry"] = True
+        except Exception:
+            pass
+        try:
+            caps["drawings"] = isinstance(page.get_drawings(), (list, tuple))
+        except Exception:
+            pass
+        try:
+            page.get_text()
+            caps["text"] = True
+        except Exception:
+            pass
+    except Exception:
+        pass
+    finally:
+        try:
+            if doc is not None:
+                doc.close()
+        except Exception:
+            pass
+    if not caps["geometry"]:
+        # a host whose engine cannot answer geometry natively may still answer via the
+        # pdfplumber FALLBACK - the capability is present, just on the slower backend
+        try:
+            import pdfplumber  # noqa: F401
+            caps["geometry"] = True
+        except Exception:
+            pass
+    caps["engine"] = _engine_tag()
+    caps["geometry_backend"] = _geom_backend()
+    _MEDIA_CAPS = caps
+    return dict(caps)
+
+
+# The capabilities whose ABSENCE materially costs media (the ones worth shouting about).
+MEDIA_CRITICAL_CAPS = ("pillow", "renderer", "geometry", "drawings", "text")
+
+
+def deck_media_facts(path: Path) -> dict:
+    """What a deck HOLDS, cheaply: `{pages, large_images}` - the page count and how many distinct
+    embedded rasters clear the hero size floor (MIN_HERO_W x MIN_HERO_H). METADATA ONLY: image
+    dimensions are read off the xref table, nothing is decoded, so this is a millisecond-scale
+    read even on a 40-page deck - it is a SIGNAL input, not a harvest.
+
+    Its purpose is the arithmetic no gate could previously do: compare what a source HOLDS with
+    what a property TOOK from it. `{}` on any failure (an honest absence - the caller then simply
+    has no signal for that deck, never a false one)."""
+    try:
+        path = Path(path)
+        if path.suffix.lower() == ".pptx":
+            slides = _get_pptx(path).slides
+            n = len(list(slides))
+            big = 0
+            for i in range(n):
+                for im in slide_pictures(path, i):
+                    if im.get("w", 0) >= MIN_HERO_W and im.get("h", 0) >= MIN_HERO_H:
+                        big += 1
+            return {"pages": n, "large_images": big}
+        doc = _get_doc(path)
+        n = doc.page_count
+        seen: set = set()
+        for p in range(n):
+            try:
+                for info in (doc.get_page_images(p, full=True) or ()):
+                    # (xref, smask, width, height, bpc, colorspace, ...) - PyMuPDF's own order
+                    xref, w, h = info[0], info[2], info[3]
+                    if int(w) >= MIN_HERO_W and int(h) >= MIN_HERO_H:
+                        seen.add(int(xref))   # by xref: a boilerplate banner counts ONCE
+            except Exception:
+                continue
+        return {"pages": n, "large_images": len(seen)}
+    except Exception:
+        return {}
+
+
+def _fitz_map_links(page) -> list[dict]:
+    """The page's maps-service hyperlinks, emitted in pdfplumber's HYPERLINK SHAPE
+    ({uri, x0, top, x1, bottom}, page-relative top-left coords) so `_link_near_box` is
+    reused byte-for-byte by both backends and the location-map exclusion cannot diverge."""
+    out: list[dict] = []
+    try:
+        r = page.rect
+        ox, oy = float(r.x0), float(r.y0)
+        for lk in (page.get_links() or []):
+            uri = str(lk.get("uri") or "")
+            if not _MAP_URI.search(uri):
+                continue
+            fr = lk.get("from")
+            if fr is None:
+                continue
+            out.append({"uri": uri,
+                        "x0": float(fr.x0) - ox, "top": float(fr.y0) - oy,
+                        "x1": float(fr.x1) - ox, "bottom": float(fr.y1) - oy})
+    except Exception:
+        return []
+    return out
+
+
+def _fitz_placed_boxes(page) -> list[tuple]:
+    """[(xref, (x0, top, x1, bottom))] for the page's PLACED image boxes, in page-relative
+    top-left points. `get_image_info(xrefs=True)` yields one entry per PLACEMENT (the same
+    image placed twice gives two boxes - exactly pdfplumber's `page.images` semantics);
+    `get_images` + `get_image_bbox` is the fallback for an engine build without it."""
+    r = page.rect
+    ox, oy = float(r.x0), float(r.y0)
+    out: list[tuple] = []
+    infos = None
+    try:
+        infos = page.get_image_info(xrefs=True)
+    except Exception:
+        infos = None
+    if infos:
+        for it in infos:
+            bb = it.get("bbox")
+            if not bb:
+                continue
+            try:
+                out.append((int(it.get("xref") or 0),
+                            (float(bb[0]) - ox, float(bb[1]) - oy,
+                             float(bb[2]) - ox, float(bb[3]) - oy)))
+            except (TypeError, ValueError):
+                continue
+        return out
+    for im in (page.get_images(full=True) or []):
+        try:
+            bb = page.get_image_bbox(im)
+            out.append((int(im[0]), (float(bb.x0) - ox, float(bb.y0) - oy,
+                                     float(bb.x1) - ox, float(bb.y1) - oy)))
+        except Exception:
+            continue
+    return out
+
+
+# A page with more placed boxes than this is vector art / a tiled background rather than a
+# normal brochure page. The pdfplumber backend SKIPS such a page entirely (its `page.images`
+# access costs 20-35s, over the shell cap) and sacrifices that page's plan slot. The fitz
+# backend has no such cost (`get_image_info` is ~ms), so it keeps the page and merely drops
+# the icon-scale boxes - the same floor `_page_crops` applies anyway - which bounds the cache
+# without sacrificing the site-plan slot on exactly the vector-heavy pages a masterplan lives on.
+_GEOM_DENSE_FLOOR = 0.012
+
+
+def _extract_geom_for_page_fitz(page) -> list[dict] | None:
+    """RAW image-geometry entries for ONE PyMuPDF page, under the SAME contract as
+    `_extract_geom_for_page` ([{bbox, key, frac, aspect, map}]) so every consumer is
+    untouched. `key` is the PDF image OBJECT number (xref) - the same cross-page-stable
+    identity pdfplumber's `stream.objid` gave, so the >=3-page boilerplate detector behaves
+    identically. None when this engine cannot answer (caller falls back to pdfplumber)."""
+    try:
+        r = page.rect
+        pw, ph = float(r.width), float(r.height)
+        if pw <= 0 or ph <= 0:
+            return []
+        links = _fitz_map_links(page)
+        boxes = _fitz_placed_boxes(page)
+        dense = len(boxes) > _PATHOLOGICAL_IMAGES
+        entries: list[dict] = []
+        for xref, (x0, top, x1, bot) in boxes:
+            # CLIP to the page. A placement rectangle is reported UNCLIPPED, so a masked or
+            # bleed-off tile legitimately extends past the page (measured: boxes from -587
+            # to +1938 pt on an 1190 pt page). Unclipped they overstate `frac`, and a
+            # negative edge crashed the crop downstream. Clipping is also the RIGHT
+            # semantic here: every consumer asks "how much of the PAGE does this cover".
+            x0, x1 = max(0.0, min(x0, x1)), min(pw, max(x0, x1))
+            top, bot = max(0.0, min(top, bot)), min(ph, max(top, bot))
+            w, h = x1 - x0, bot - top
+            if w <= 4 or h <= 4:
+                continue
+            frac = (w * h) / (pw * ph)
+            if dense and frac < _GEOM_DENSE_FLOOR:
+                continue
+            ks = (f"o:{xref}" if xref
+                  else f"b:{round(x0)},{round(top)},{round(x1)},{round(bot)}")
+            entries.append({"bbox": [x0, top, x1, bot], "key": ks,
+                            "frac": frac, "aspect": w / h,
+                            "map": any(_link_near_box(hl, x0, top, x1, bot) for hl in links)})
+        return entries
+    except Exception:
+        return None
+
+
+def _page_width_pts(pdf_path: Path, page_index: int) -> float | None:
+    """The page's width in POINTS - `page.rect.width` natively, pdfplumber only when the
+    active engine cannot answer. This single number is the only reason `_page_crops` ever
+    opened pdfplumber, and returning [] when it could not is what disabled the tier-B hero
+    crop and the placed-image plan tier on every PyMuPDF-only host."""
+    try:
+        doc = _get_doc(pdf_path)
+        if 0 <= page_index < doc.page_count:
+            w = float(doc[page_index].rect.width)
+            if w > 0:
+                return w
+    except Exception:
+        pass
+    try:
+        import pdfplumber
+        with pdfplumber.open(str(pdf_path)) as pl:
+            if page_index < len(pl.pages):
+                w = float(pl.pages[page_index].width)
+                return w if w > 0 else None
+    except Exception:
+        pass
+    return None
+
+
 def _page_pathological(pdf_path: Path, page_index: int) -> bool:
     """True for a vector-art/tiled page (thousands of placed images) - its 20-35s
-    pdfplumber page.images access is SKIPPED (Tier A/C still give a hero). O(1) fitz check."""
+    pdfplumber page.images access is SKIPPED (Tier A/C still give a hero). O(1) fitz check.
+    Only consulted on the PDFPLUMBER geometry backend: the fitz backend pays no such cost
+    and keeps the page (see `_extract_geom_for_page_fitz`)."""
     try:
         doc = _get_doc(pdf_path)
         return (page_index < doc.page_count
@@ -968,7 +1397,18 @@ def _placed_page(pdf_path: Path, page_index: int, cache_dir: Path | str | None =
         return cached
     entries: list[dict] = []
     try:
-        if not _page_pathological(pdf_path, page_index):
+        if _geom_backend() == "fitz":
+            doc = _get_doc(pdf_path)
+            if 0 <= page_index < doc.page_count:
+                entries = _extract_geom_for_page_fitz(doc[page_index])
+            if entries is None:                 # engine could not answer -> pdfplumber
+                entries = []
+                if not _page_pathological(pdf_path, page_index):
+                    import pdfplumber
+                    with pdfplumber.open(str(pdf_path)) as pl:
+                        if page_index < len(pl.pages):
+                            entries = _extract_geom_for_page(pl.pages[page_index])
+        elif not _page_pathological(pdf_path, page_index):
             import pdfplumber
             with pdfplumber.open(str(pdf_path)) as pl:
                 if page_index < len(pl.pages):
@@ -1002,21 +1442,39 @@ def _placed_layout(pdf_path: Path, cache_dir: Path | str | None = None) -> dict:
                 return disk
         except Exception:
             pass
-    # page count (cheap, fitz) + per-page pathological set
+    # page count (cheap, fitz) + the per-page pathological set, which only the PDFPLUMBER
+    # backend needs (it is a cost dodge for `page.images`, not a correctness rule)
     n = 0
     skip_pages: set = set()
+    _plumber_geom = _geom_backend() != "fitz"
     try:
         doc = _get_doc(pdf_path)
         n = doc.page_count
-        for p in range(n):
-            if len(doc[p].get_images(full=True)) > _PATHOLOGICAL_IMAGES:
-                skip_pages.add(p)
+        if _plumber_geom:
+            for p in range(n):
+                if len(doc[p].get_images(full=True)) > _PATHOLOGICAL_IMAGES:
+                    skip_pages.add(p)
     except Exception:
         pass
-    # read whatever per-page caches already exist; compute the rest with ONE pdfplumber open
+    # read whatever per-page caches already exist; compute the rest in ONE deck-wide pass
     raw: list = [_cache_read_json(_cache_file(pdf_path, p, 0, "placedpage", cache_dir, ext=".json"))
                  for p in range(n)]
     missing = [p for p in range(n) if raw[p] is None]
+    if missing and _geom_backend() == "fitz":
+        # NATIVE: the doc is already open in the shared handle cache, so there is no
+        # deck-wide open to amortise and no pathological-page cost to dodge.
+        try:
+            doc = _get_doc(pdf_path)
+            for p in list(missing):
+                entries = (_extract_geom_for_page_fitz(doc[p]) if p < doc.page_count else [])
+                if entries is None:
+                    continue                    # leave it missing -> the plumber pass below
+                raw[p] = entries
+                _cache_write_json(_cache_file(pdf_path, p, 0, "placedpage", cache_dir,
+                                              ext=".json"), entries)
+            missing = [p for p in range(n) if raw[p] is None]
+        except Exception:
+            pass
     if missing:
         try:
             import pdfplumber
@@ -1053,7 +1511,9 @@ def _unit_cached(spec) -> bool:
     if kind == "placedpage":
         cf = _cache_file(path_str, page, 0, "placedpage", cache_str, ext=".json")
     elif kind == "gidxpage":
-        cf = _cache_file(path_str, page, budget, "gidxpage", cache_str, ext=".json")
+        # the WORK-UNIT name is stable; the cache TAG carries the entry-shape version, so a
+        # pre-warm never reports a v1 cache as covering the v2 unit it would now compute
+        cf = _cache_file(path_str, page, budget, "gidxpage2", cache_str, ext=".json")
     else:  # 'hero' (PDF) / 'slidehero' (PPTX) -> the hero .uri is the primary artefact
         cf = _cache_file(path_str, page, budget,
                          "slide_hero" if kind == "slidehero" else "hero", cache_str)
@@ -1121,20 +1581,25 @@ def _page_crops(pdf_path: Path, page_index: int, dpi: int = 150,
         raster = page_raster(_get_doc(pdf_path), page_index, dpi=dpi)
     except Exception:
         return []  # renderer-less sandbox tier
-    # raster width / page width in points -> px per point
-    try:
-        import pdfplumber
-        with pdfplumber.open(str(pdf_path)) as pl:
-            pw = float(pl.pages[page_index].width)
-    except Exception:
+    # raster width / page width in points -> px per point. NATIVE (`page.rect.width`) with a
+    # pdfplumber fallback; this one number used to be a hard pdfplumber dependency and its
+    # failure silently disabled BOTH the tier-B hero crop and the placed-image plan tier.
+    pw = _page_width_pts(pdf_path, page_index)
+    if not pw:
         return []
     scale = raster.width / pw
     out = []
     for b in boxes:
         x0, top, x1, bot = b["bbox"]
-        crop = raster.crop((max(0, int(x0 * scale)), max(0, int(top * scale)),
-                            min(raster.width, int(x1 * scale)),
-                            min(raster.height, int(bot * scale))))
+        # CLAMP into the raster, in that order (clamp the low edge first, then hold the high
+        # edge at or above it). A placement box can legitimately sit partly off-page, and the
+        # old expression turned that into `lower < upper` -> a hard ValueError that killed the
+        # whole page's crops. A box already inside the raster is unaffected.
+        cx0 = min(max(0, int(x0 * scale)), raster.width)
+        cy0 = min(max(0, int(top * scale)), raster.height)
+        cx1 = max(cx0, min(raster.width, int(x1 * scale)))
+        cy1 = max(cy0, min(raster.height, int(bot * scale)))
+        crop = raster.crop((cx0, cy0, cx1, cy1))
         # the PLAN floor, not the photo floor: small site plans must reach the
         # scorers (photo candidacy re-applies MIN_HERO downstream)
         if crop.width < MIN_PLAN_W or crop.height < MIN_PLAN_H:
@@ -1181,8 +1646,19 @@ def page_plan(pdf_path: Path, page_index: int, dpi: int = 150,
     hero = max(cands, key=lambda c: c["score"])
     if hero["score"] < MODEST_PHOTO:
         hero = None  # no photo on this page - every region stays a plan candidate
+    # ...and it must not be a PHOTOGRAPH. "Not the page's hero" was the only photo screen here,
+    # which is no screen at all on a page carrying SEVERAL photos: the runner-up photo then sits
+    # in the plan slot. It bound a bright-sky aeroplane photo (a park landmark) as a property's
+    # site plan the moment the placed-image geometry backend started answering again, because a
+    # sky puts the white fraction squarely inside the plan band. `classify_image` is the right
+    # test and the one `_page_has_dominant_photo` already uses for the same question: it judges
+    # TONE (continuous-tone vs drawn ink), so a COLOURFUL site plan - which the colourfulness
+    # score over-rates at photo-ish ~13, the case this band was calibrated on - still classifies
+    # 'plan' and still qualifies. Precision: a wrong image in the trace-less Site Plan slot is
+    # worse than an honest gap.
     plans = [c for c in cands
-             if c is not hero and 0.15 <= c["white"] <= 0.90]
+             if c is not hero and 0.15 <= c["white"] <= 0.90
+             and classify_image(c["crop"]) != "photo"]
     best = max(plans, key=lambda c: c["rank"], default=None)
     return best["crop"] if best else None
 
@@ -1250,8 +1726,155 @@ def _rendered_plan_crop(path: Path, page_index: int, dpi: int = PLAN_RENDER_DPI,
 
 PLAN_TITLE_MIN = 1.0  # plan_signal.plan_title_score at/above which a real plan TITLE rescues a page
 
+# --- VECTOR SITE-PLAN SIGNAL (page.get_drawings) ----------------------------------------- #
+# The placed-image geometry above can only see PLACED RASTER boxes. Most masterplans are VECTOR
+# line art drawn straight into the page, so they have NO placed box at all: the geometry tier
+# yields nothing for them even with a working backend, and the whole-page render+classify tier
+# mis-reads the designed ones (a full-bleed colour-background plan classifies 'photo'; a plan on
+# grey or dark paper falls outside the white-balance band). `page.get_drawings()` exposes the
+# vector art DIRECTLY, which is the only route by which such a page is discoverable at all.
+#
+# THE PRECISION PROBLEM, and how it is answered. Vector density alone is NOT a plan signal: a
+# regional road map, a drive-time map and a locator map are all just as vector-dense (measured:
+# 2,900 / 2,600 / 6,600 drawing objects on real ones). What a masterplan has and a map does not is
+# LABELLED DRAWING FURNITURE - dock doors, yard depth, parking bays, a gatehouse, access gates, a
+# site boundary, an accommodation schedule. So the vector route requires BOTH a full-page vector
+# body AND `plan_signal.plan_furniture_score` corroboration, and it stays ranked BELOW the two
+# existing routes so a real white-paper drawing still wins its own cluster.
+VEC_MIN_ITEMS = 800     # primitive path items. A site layout is hundreds of segments for the
+#                         building outline alone, then parking bays, dock doors and a boundary;
+#                         below this a page's vector content is rules, icons and a logo.
+VEC_MIN_CELLS = 0.30    # fraction of a 24x24 page grid the drawing touches - it must be the
+#                         page's SUBJECT, not a chart in a corner.
+VEC_MIN_SPAN = 0.35     # union-bbox area / page area - same requirement, stated as extent.
+_VEC_GRID = 24
 
-def _plan_page_eligible(kind, sig, has_photo, title_score, is_spec, has_marker) -> tuple:
+
+def page_vector_art(path: Path, page_index: int, cache_dir: Path | str | None = None) -> dict:
+    """The page's VECTOR line-art signal: `{items, cells, span}`.
+      items - count of primitive path items (lines/curves/rects) actually drawn on the page;
+      cells - fraction of a 24x24 page grid touched by a drawing's bbox (is it the page's subject);
+      span  - union bbox of all drawings / page area (the same question as extent).
+    `{}` when the engine cannot answer - `get_drawings` is PyMuPDF-only, so on the sandbox shim
+    this is empty and the vector route can never fire (today's behaviour, exactly). Cached per
+    (deck, page) so a shell-cap kill resumes and a re-run is byte-deterministic. Never raises."""
+    cf = _cache_file(path, page_index, 0, "vecart", cache_dir, ext=".json")
+    cached = _cache_read_json(cf)
+    if isinstance(cached, dict):
+        return cached
+    out: dict = {}
+    try:
+        path = Path(path)
+        if path.suffix.lower() == ".pptx":
+            pdf = soffice_pdf(path, cache_dir)
+            if pdf is None:
+                return {}
+            doc = _get_doc(pdf)
+        else:
+            doc = _get_doc(path)
+        if not (0 <= page_index < doc.page_count):
+            return {}
+        page = doc[page_index]
+        pr = page.rect
+        parea = float(pr.width) * float(pr.height)
+        if parea <= 0:
+            return {}
+        items = 0
+        cells: set = set()
+        ux0 = uy0 = float("inf")
+        ux1 = uy1 = float("-inf")
+        for dr in (page.get_drawings() or []):
+            r = dr.get("rect")
+            if r is None:
+                continue
+            r = r & pr                      # clip to the page: bleed is not page coverage
+            if r.is_empty:
+                continue
+            items += len(dr.get("items") or ())
+            ux0 = min(ux0, r.x0); uy0 = min(uy0, r.y0)
+            ux1 = max(ux1, r.x1); uy1 = max(uy1, r.y1)
+            cx0 = int((r.x0 - pr.x0) / pr.width * _VEC_GRID)
+            cx1 = int((r.x1 - pr.x0) / pr.width * _VEC_GRID)
+            cy0 = int((r.y0 - pr.y0) / pr.height * _VEC_GRID)
+            cy1 = int((r.y1 - pr.y0) / pr.height * _VEC_GRID)
+            for cx in range(max(0, cx0), min(_VEC_GRID - 1, cx1) + 1):
+                for cy in range(max(0, cy0), min(_VEC_GRID - 1, cy1) + 1):
+                    cells.add((cx, cy))
+        span = 0.0 if ux1 < ux0 else ((ux1 - ux0) * (uy1 - uy0)) / parea
+        out = {"items": items, "cells": len(cells) / float(_VEC_GRID * _VEC_GRID),
+               "span": round(span, 4)}
+    except Exception:
+        return {}                            # no get_drawings / open failure -> honest silence
+    _cache_write_json(cf, out)
+    return out
+
+
+def _vector_body(vector) -> bool:
+    """True when the page carries a full-page VECTOR DRAWING BODY (not rules, icons or a chart)."""
+    if not isinstance(vector, dict) or not vector:
+        return False
+    return (vector.get("items", 0) >= VEC_MIN_ITEMS
+            and vector.get("cells", 0.0) >= VEC_MIN_CELLS
+            and vector.get("span", 0.0) >= VEC_MIN_SPAN)
+
+
+PLAN_FURNITURE_MIN = 2       # distinct drawing annotations needed to call a vector body a PLAN
+PLAN_FURNITURE_SPEC_MIN = 4  # ...and to out-argue the spec gate on a half-spec/half-plan spread
+
+
+PLAN_FIGURE_MIN = 1000            # below this a printed number is a door count, not an area
+_PLAN_FIGURE_RE = re.compile(r"\d[\d,. ]*")
+
+
+def page_area_figures(path: Path, page_index: int, cache: Path | str | None = None) -> set:
+    """Every integer >= PLAN_FIGURE_MIN printed on a page, thousands separators tolerated - the
+    page's own SCHEDULE OF ACCOMMODATION, read as a set of figures. Empty on any failure."""
+    out: set = set()
+    for m in _PLAN_FIGURE_RE.finditer(_page_plaintext(path, page_index, cache) or ""):
+        raw = m.group(0).replace(",", "").replace(" ", "").rstrip(".")
+        if raw.isdigit():
+            v = int(raw)
+            if v >= PLAN_FIGURE_MIN:
+                out.add(v)
+    return out
+
+
+def _plan_rank(kind, furnished, titled, balance, own_figures=False) -> tuple:
+    """How two ELIGIBLE plan pages of ONE property are ordered. Higher wins.
+
+    THE PROPERTY'S OWN FIGURES FIRST. A park brochure routinely carries a masterplan per UNIT,
+    and the longlist usually holds only one of them - so "is this page a site plan" is not the
+    whole question, "is it THIS unit's site plan" is. The page that prints the property's own
+    warehouse / office / plot figures is that unit's spread; every other masterplan in the deck
+    is a NEIGHBOURING UNIT's, which is a wrong bind in a trace-less slot. Measured: on a
+    two-unit park deck the property is the 734,636 sq ft unit, and the OTHER unit's masterplan
+    (436,000 sq ft) was winning the slot purely because it also carried a plan title. Absent /
+    unknown figures make this component 0 on every page, i.e. exactly the ranking below it.
+
+    Then FURNITURE, above the pixel classifier's own verdict. That order was measured, not
+    assumed, and it is the fix for a live WRONG BIND. On a real 13-page deck the property's
+    regional DRIVE-TIME MAP classified `kind='plan'` (a pale, line-heavy page) with the best
+    white/ink balance on the deck (0.980), while the actual unit site plan - dock doors, 55 m
+    yard depth, 595 car parking spaces, gatehouse, schedule of accommodation, all printed ON the
+    drawing - classified `kind='map'`. Ranked classifier-first, the drive-time map won the
+    trace-less Site Plan slot outright. `kind` is a pixel heuristic about tone and ink; the
+    furniture count is direct TEXTUAL evidence that the page is a site layout, and it is the
+    stronger signal of the two whenever they disagree.
+
+    Precision is unaffected: this only orders pages that ALREADY passed `_plan_page_eligible`
+    (a photo-dominated page, a spec page and an unlabelled location map are all rejected before
+    they ever reach a rank), so it can never admit a page - only choose between admissible ones.
+    Then the classifier verdict, then a plan TITLE, then the most balanced white/ink page."""
+    return (1 if own_figures else 0, 1 if furnished else 0, 1 if kind == "plan" else 0,
+            1 if titled else 0, balance)
+
+# Bumped whenever the DETECTOR changes. It keys `best_plan_page_render`'s whole-verdict cache, so a
+# cached "no plan on this deck" from an older detector is never served to a newer one.
+_PLAN_DETECTOR_SIG = 5
+
+
+def _plan_page_eligible(kind, sig, has_photo, title_score, is_spec, has_marker,
+                        vector=None, furniture=0) -> tuple:
     """Unified plan-page acceptance, shared by page_render_plan (LLM-hint tier) AND
     best_plan_page_render (deterministic fallback) so the two never diverge. Returns (ok, titled).
 
@@ -1273,19 +1896,41 @@ def _plan_page_eligible(kind, sig, has_photo, title_score, is_spec, has_marker) 
         overview map (titled "Site Plan" but carrying no drawing furniture) - the latter used to
         wrong-bind. A 'text'/'logo' page (a bare 'SITE PLAN' divider/agenda that merely NAMES a plan)
         is never rescued, and only inside the SAME tight white band.
+      * VECTOR (added 2026-08-20, the ONLY route to a vector masterplan): the page's BODY is a
+        full-page VECTOR DRAWING (`_vector_body`: >= VEC_MIN_ITEMS primitive path items spread over
+        >= VEC_MIN_CELLS of the page grid with >= VEC_MIN_SPAN extent) AND it carries >=
+        PLAN_FURNITURE_MIN distinct site-plan DRAWING ANNOTATIONS (`plan_signal.
+        plan_furniture_score`: dock doors, yard depth, parking bays, gatehouse, access gates, site
+        boundary, accommodation schedule). Both halves are required and neither is sufficient:
+        vector density alone also describes a regional road map, a drive-time map and a locator map
+        (measured at 2,900 / 2,600 / 6,600 drawing objects on real ones), and the furniture count
+        alone also describes a spec sheet. Together they are close to the definition of a labelled
+        site layout, which is why this route may overrule the two verdicts that are DEMONSTRABLY
+        wrong on a designed plan - the whole-page classifier ('photo' for a full-bleed colour plan,
+        'map' for a pale one), the white-balance band (a plan on grey or dark paper) and
+        `has_photo` (a decorative gradient tile that classifies 'photo' at 31% of the page) - while
+        every one of those verdicts still stands on its own for a page with NO vector body.
+        The SPEC gate is the one it may not simply overrule: a half-spec/half-plan SPREAD (the
+        contract already tells the interpretation agent to nominate exactly this shape) needs the
+        strictly higher PLAN_FURNITURE_SPEC_MIN before the drawing out-argues the spec labels.
     `titled` reports the title hit (used for ranking + near-miss)."""
     titled = (title_score or 0.0) >= PLAN_TITLE_MIN
-    if is_spec:
-        return (False, titled)
-    if has_photo:
-        return (False, titled)
-    if kind == "photo":
-        return (False, titled)
     white = (sig or {}).get("white", 0.0)
     in_band = 0.15 <= white <= 0.90
+    furn = int(furniture or 0)
+    vec_body = _vector_body(vector)
+    vector_ok = vec_body and furn >= PLAN_FURNITURE_MIN
+    if is_spec:
+        # a full-page LABELLED vector drawing on a page that also carries >=2 own-line spec labels
+        # is the half-spec/half-plan spread, not a spec sheet - but it must clear the higher bar
+        return ((vec_body and furn >= PLAN_FURNITURE_SPEC_MIN), titled)
+    if has_photo:
+        return (vector_ok, titled)
+    if kind == "photo":
+        return (vector_ok, titled)
     visual_ok = (kind == "plan") and in_band
     title_ok = titled and in_band and (kind == "map") and bool(has_marker)
-    return ((visual_ok or title_ok), titled)
+    return ((visual_ok or title_ok or vector_ok), titled)
 
 
 def _page_plaintext(path: Path, page_index: int, cache: Path | str | None = None) -> str:
@@ -1371,7 +2016,8 @@ def page_render_plan(path: Path, page_index: int, budget_kb: int = DEFAULT_BUDGE
 
 
 def best_plan_page_render(path: Path, page_nos, budget_kb: int = DEFAULT_BUDGET_KB,
-                          cache_dir: Path | str | None = None, near_miss: list | None = None) -> tuple:
+                          cache_dir: Path | str | None = None, near_miss: list | None = None,
+                          own_figures: set | None = None) -> tuple:
     """DETERMINISTIC fallback (no LLM hint): over the given (per-property) pages, render+ink-crop+
     classify and pick the most plan-like page via the shared `_plan_page_eligible` predicate - so a
     designed plan carrying a small logo/legend (previously disqualified by the blunt image-light
@@ -1398,8 +2044,15 @@ def best_plan_page_render(path: Path, page_nos, budget_kb: int = DEFAULT_BUDGET_
     # The NEAR-MISS list is cached WITH the verdict on purpose: it feeds the Gaps Report's
     # "possible site plans not captured" lines, and a resumed run that skipped the scan would
     # otherwise drop them silently - trading a hang for a quiet loss of honesty.
+    # The signature below is part of the verdict-cache key on purpose: a cached "no plan on this
+    # deck" is only valid for the DETECTOR that produced it, and adding the vector route changes
+    # the answer. Without it a warm work dir would keep serving the pre-vector negative for ever -
+    # the same class of stale-negative poisoning `_engine_tag` exists to prevent.
     import hashlib as _hl
-    _vk = _hl.sha1(",".join(map(str, pages)).encode()).hexdigest()[:12]
+    # own_figures is part of the verdict-cache key: it changes WHICH eligible page wins, so a
+    # verdict computed without it (or with another property's figures) must not be served.
+    _ofk = ",".join(str(x) for x in sorted(own_figures or ()))
+    _vk = _hl.sha1((",".join(map(str, pages)) + f"|d{_PLAN_DETECTOR_SIG}|f{_ofk}").encode()).hexdigest()[:12]
     _vf = _cache_file(path, 0, budget_kb, f"planverdict{_vk}", cache_dir, ext=".json")
     _v = _cache_read_json(_vf)
     if isinstance(_v, dict) and "page" in _v:
@@ -1423,10 +2076,15 @@ def best_plan_page_render(path: Path, page_nos, budget_kb: int = DEFAULT_BUDGET_
         title = _PS.plan_title_score(text)
         has_photo = _page_has_dominant_photo(path, pno)
         has_marker = _PS.has_drawing_marker(text)
-        ok, titled = _plan_page_eligible(kind, sig, has_photo, title, is_spec, has_marker)
+        vector = page_vector_art(path, pno, cache_dir)
+        furniture = _PS.plan_furniture_score(text)
+        ok, titled = _plan_page_eligible(kind, sig, has_photo, title, is_spec, has_marker,
+                                         vector=vector, furniture=furniture)
         white = sig.get("white", 0.0)
         in_band = 0.15 <= white <= 0.90
         balance = 4.0 * white * (1.0 - white)
+        vec_body = _vector_body(vector)
+        furnished = furniture >= PLAN_FURNITURE_MIN
         if not ok:
             # NEAR-MISS: a page carrying a positive plan signal (classify 'plan', or a plan title)
             # that a precision guard rejected -> surface it so a real missed plan is visible.
@@ -1438,6 +2096,21 @@ def best_plan_page_render(path: Path, page_nos, budget_kb: int = DEFAULT_BUDGET_
                 # title-block) - the spec gate rejected it; surface it so it is not silently lost.
                 _nm.append({"page": pno,
                             "why": "classified as a spec page but has the site-plan visual signature"})
+            elif vec_body and not furnished and not has_photo:
+                # VECTOR NEAR-MISS: the page's whole body IS a full-page vector drawing - the
+                # shape a masterplan has - but it carries no site-plan drawing labels to tell it
+                # apart from a vector LOCATION MAP / infographic, so the vector route refused it.
+                # This is the honest disclosure the precision bar buys: a positive plan-shaped
+                # signal that did NOT bind, surfaced rather than silently dropped.
+                # It is deliberately ranked ABOVE the generic branch below: on such a page
+                # "classified 'plan' outside the white-balance band" is a true but MISLEADING
+                # explanation - the band is not what refused it, the missing labels are, and
+                # only the second sentence tells a reviewer what to go and look at.
+                _nm.append({"page": pno,
+                            "why": ("full-page vector drawing (%d path items) but no site-plan "
+                                    "labels (dock doors / yard / parking / boundary) to confirm "
+                                    "it is a site plan rather than a map"
+                                    % int((vector or {}).get("items", 0)))})
             elif not is_spec and (kind == "plan" or titled):
                 why = ("a real photo dominates the page" if has_photo
                        else "classified '%s' outside the plan white-balance band" % kind if kind == "plan"
@@ -1451,9 +2124,9 @@ def best_plan_page_render(path: Path, page_nos, budget_kb: int = DEFAULT_BUDGET_
         if uri is None:
             uri = to_data_uri(compress(crop, PLAN_MAX_EDGE, budget_kb))
             _cache_write(cf, uri)
-        # prefer a VISUAL plan (kind=='plan') over a title-rescued 'map', then a titled page, then
-        # the most balanced - so a real drawing beats a merely-named page in the same cluster.
-        rank = (1 if kind == "plan" else 0, 1 if titled else 0, balance)
+        # does this page print THIS property's own schedule figures? (see _plan_rank)
+        own = bool(own_figures) and bool(set(own_figures) & page_area_figures(path, pno, cache_dir))
+        rank = _plan_rank(kind, furnished, titled, balance, own)  # see _plan_rank for the order
         if uri and (best is None or rank > best[0]):
             best = (rank, pno, uri)
     _cache_write_json(_vf, {"page": (best[1] if best else None), "near_miss": _nm})

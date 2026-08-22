@@ -25,6 +25,7 @@ Each subcommand prints a scorecard fragment and exits non-zero on a blocking fai
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import re
@@ -36,6 +37,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _common as C
 import build_dashboard
 import normalize as N
+
+# a genuinely long field (e.g. an accumulated conflict_note spanning many
+# contributing sources) can exceed Python's defensive default (131072) - this
+# is a legitimate long value, not a memory bomb, so every ledger reader below
+# must accept it.
+csv.field_size_limit(2**31 - 1)
 
 
 def _ok(msg): print(f"[PASS] {msg}")
@@ -780,6 +787,282 @@ def cmd_capture_symmetry(args) -> int:
         f"{len(signals)} of them SIGNAL (a core field, or >= {SIGNAL_MIN_RECORDS} records "
         f"affected with >= {SIGNAL_MIN_PRESENT} carrying it elsewhere) - ADVISORY, for the "
         f"G-honesty/G-trace reviewers to re-derive")
+    print("STATUS: ALL-PASS")
+    return 0
+
+
+# --- MEDIA HARVEST ------------------------------------------------------------------------ #
+# capture-symmetry's twin, one layer over: that gate asks whether a reader skipped FIELDS a page
+# printed; this asks whether the harvest skipped IMAGES a deck holds.
+MEDIA_SIGNAL_IMAGES = 6    # a deck holding this many hero-size rasters, all offered to a property
+#                            that looked at ONE page, is a shortfall worth naming
+MEDIA_SIGNAL_PAGES = 4     # ...or this many pages, same reasoning stated in pages
+MEDIA_THIN_GALLERY = 3     # a card carrying this few carousel images is VISIBLY thin
+
+
+def _media_claims(work: Path) -> tuple[dict, list]:
+    """(claims, unassigned) - which deck pages each property actually LOOKED at.
+
+    Primary source is `work/media_considered.json`, merge's own recording of the considered set
+    (authoritative: it already has the foreign-page subtraction and the plan-offlimits rules
+    applied). It falls back to re-deriving the claim from the extract records' `__meta`
+    (`page_no` union the validated `image_pages`) so the gate still answers on a work dir written
+    before that sidecar existed, or one where merge did not reach the write. ({}, []) when
+    neither is readable - the gate then reports only what it can prove."""
+    considered = work / "media_considered.json"
+    if considered.exists():
+        try:
+            obj = json.loads(considered.read_text(encoding="utf-8-sig")) or {}
+            props = obj.get("properties") or []
+            if isinstance(props, list):
+                claims = {}
+                for p in props:
+                    if isinstance(p, dict) and p.get("id") is not None:
+                        claims[str(p["id"])] = p
+                return claims, list(obj.get("unassigned") or [])
+        except Exception:
+            pass
+    return {}, []
+
+
+def cmd_media_harvest(args) -> int:
+    """Did the run actually HARVEST the media its sources hold? (media under-harvest)
+
+    MOSTLY ADVISORY, with TWO BLOCKING HARD FACTS - see "WHY MOSTLY ADVISORY" below.
+
+    THE DEFECT THIS EXISTS FOR. Every media tier in `images.py` degrades to an honest `None` or
+    `[]` when it cannot answer - which is right, and is exactly why a dead image layer is
+    INVISIBLE. On a live 17-property run the placed-image geometry backend was absent, so the
+    hero tier-B crop and the WHOLE site-plan geometry tier returned zero on every page of every
+    deck; the interpretation agents were handed manifests carrying `render: null` and
+    `candidates: []`; and eleven cards shipped with no site plan and a one- or two-image gallery.
+    Not one gate could fire, because nothing in the pipeline compared what a source HOLDS with
+    what the run TOOK from it. Every artefact of that run is indistinguishable from a run whose
+    sources genuinely hold nothing. This gate makes the comparison.
+
+    WHY MOSTLY ADVISORY. Three of the five signals below are HEURISTICS about what a source
+    MIGHT hold: a single-page listing in a whole-park donor deck and a one-pager that really
+    does have one photo are both legitimate, so blocking on them would fire on almost every
+    honest run and train the ack reflex - which is what devalues a sign-off key. The house
+    already places this class (under-capture) at advisory-with-SIGNAL - `capture-symmetry` does
+    exactly this and routes to the G-honesty/G-images reviewers.
+
+    WHY TWO OF THEM BLOCK. Signals 1 and 4 are not heuristics at all: they are HARD FACTS about
+    this run - a capability probe that came back false, and an agent that provably received zero
+    renders. Both mean a whole tier of the pipeline did not run, and both are indistinguishable
+    in every other artefact from "the sources hold nothing", which is exactly how this class of
+    failure shipped silently to a broker. A gate that only whispers about a dead image layer is
+    not a gate. They BLOCK (exit 1, STATUS: BLOCKED).
+
+    A legitimately renderer-less environment is still a legitimate run, so both have the house
+    remedy - an explicit, recorded sign-off merged into `placeholder_audit_ack.json` by
+    `gate_runner.py ack --work <work> --add <key>=<value>`, the same file and command the
+    `images` and `arithmetic` gates use. Proceeding stays possible; doing so silently does not.
+      * `media_capability_ok=<cap>`         (e.g. `renderer`, or `all`)
+      * `blind_interpretation_ok=<deck.pdf>` (or `all`)
+
+    Five things it says out loud:
+      1. a media CAPABILITY that is unavailable on this host (a HARD probe - BLOCKING);
+      2. a property that looked at ONE page of a deck holding many pages / many hero-size images;
+      3. a property with NO site plan whose own deck still has pages it never looked at;
+      4. a text-mode deck that shipped ZERO per-page renders to its interpretation agent
+         (i.e. that agent was asked to pick `plan_page` while blind - BLOCKING);
+      5. deck pages NO property claimed at all.
+    (2, 3 and 5 stay ADVISORY - they are ranked hints for the G-images reviewer.)
+    """
+    import images as IMG
+    work = Path(args.work)
+    data = C.load_canonical(Path(args.canonical))
+    props = data.get("properties") or []
+    ph = IMG.placeholder()
+    caps = IMG.media_capabilities()
+    # the SAME sign-off file the images and arithmetic gates read, merged by `gate_runner ack`
+    ack_file = work / "placeholder_audit_ack.json"
+    ack: dict = {}
+    if ack_file.exists():
+        try:
+            ack = json.loads(ack_file.read_text(encoding="utf-8-sig")) or {}
+        except Exception:
+            ack = {}
+
+    def _acked(key: str, value: str) -> bool:
+        """True when a reviewer has signed this exact item off (or the whole key with 'all')."""
+        vals = ack.get(key)
+        vals = vals if isinstance(vals, list) else ([] if vals is None else [vals])
+        low = {str(v).strip().lower() for v in vals}
+        return "all" in low or str(value).strip().lower() in low
+
+    claims, unassigned = _media_claims(work)
+    aids = {}
+    try:
+        aids = json.loads((work / "vision" / "visual_aids.json").read_text(encoding="utf-8-sig")) or {}
+    except Exception:
+        aids = {}
+    folder = None
+    try:
+        folder = Path(json.loads((work / "inventory.json").read_text(encoding="utf-8-sig"))["folder"])
+    except Exception:
+        folder = None
+
+    deck_facts: dict = {}
+
+    def _facts(name: str) -> dict:
+        """What the named deck HOLDS (pages + hero-size rasters), memoised. {} when the source
+        file cannot be located from this work dir - the gate then simply has no signal for it."""
+        if name in deck_facts:
+            return deck_facts[name]
+        f = {}
+        if folder is not None:
+            for cand in (folder / name, *folder.rglob(name)):
+                if cand.exists():
+                    f = IMG.deck_media_facts(cand) or {}
+                    break
+        deck_facts[name] = f
+        return f
+
+    findings: list = []
+
+    # (1) CAPABILITY - a hard fact about this host, and the only one of the five that can
+    # explain ALL the others at once, so it is reported first and always.
+    for cap in IMG.MEDIA_CRITICAL_CAPS:
+        if not caps.get(cap):
+            findings.append({"kind": "capability", "signal": True, "weight": 10 ** 6,
+                             "what": cap,
+                             "blocking": not _acked("media_capability_ok", cap),
+                             "acked": _acked("media_capability_ok", cap),
+                             "text": (f"media capability `{cap}` is UNAVAILABLE on this host "
+                                      f"(engine {caps.get('engine')}, geometry backend "
+                                      f"{caps.get('geometry_backend')}) - every media tier that "
+                                      f"needs it degrades to an honest null, so thin galleries "
+                                      f"and missing site plans below may be THIS, not the "
+                                      f"sources")})
+
+    # (2)/(3) per property: what it took vs what its decks hold
+    for p in props:
+        pid = str(p.get("id"))
+        label = p.get("park") or p.get("city") or f"#{pid}"
+        gal_n = len(p.get("gallery") or [])
+        has_plan = isinstance(p.get("plan"), str) and p["plan"].startswith("data:image/")
+        placeholder_hero = (p.get("photo") == ph)
+        thin = placeholder_hero or (gal_n <= MEDIA_THIN_GALLERY) or not has_plan
+        for deck, info in sorted((claims.get(pid, {}).get("decks") or {}).items()):
+            looked = sorted({int(x) for x in (info.get("looked") or [])})
+            f = _facts(deck)
+            pages, imgs = f.get("pages"), f.get("large_images")
+            if pages is None:
+                continue
+            unlooked = [i for i in range(pages) if i not in set(looked)]
+            if (len(looked) == 1 and (int(imgs or 0) >= MEDIA_SIGNAL_IMAGES
+                                      or pages >= MEDIA_SIGNAL_PAGES)):
+                findings.append({
+                    "kind": "under-harvest", "signal": bool(thin), "property": label, "id": pid,
+                    "deck": deck, "looked": looked, "pages": pages, "large_images": imgs,
+                    "gallery": gal_n, "plan": has_plan,
+                    "weight": (pages - 1) * 10 + max(0, int(imgs or 0) - gal_n),
+                    "text": (f"id={pid} {label}: looked at page {looked[0] + 1} ONLY of "
+                             f"`{deck}` ({pages} pages, {imgs} hero-size image(s)) and shipped a "
+                             f"{gal_n}-image gallery"
+                             + ("" if has_plan else " and NO site plan")
+                             + " - confirm the other pages really are another property's / hold "
+                               "nothing for this card, rather than never having been read")})
+            elif not has_plan and unlooked:
+                findings.append({
+                    "kind": "no-plan-unlooked", "signal": True, "property": label, "id": pid,
+                    "deck": deck, "looked": looked, "pages": pages, "unlooked": unlooked,
+                    "gallery": gal_n, "plan": False, "weight": len(unlooked),
+                    "text": (f"id={pid} {label}: NO site plan bound, and {len(unlooked)} page(s) "
+                             f"of `{deck}` were never looked at (pages "
+                             f"{', '.join(str(i + 1) for i in unlooked[:12])}"
+                             f"{' ...' if len(unlooked) > 12 else ''}) - a site plan may be "
+                             f"sitting on one of them")})
+
+    # (4) an interpretation agent that was asked to pick a plan page while BLIND
+    for deck, a in sorted(aids.items()):
+        if not isinstance(a, dict) or a.get("mode") != "text":
+            continue
+        if int(a.get("pages") or 0) > 1 and int(a.get("renders") or 0) == 0:
+            findings.append({
+                "kind": "no-renders", "signal": True, "deck": deck, "weight": 10 ** 5,
+                "blocking": not _acked("blind_interpretation_ok", deck),
+                "acked": _acked("blind_interpretation_ok", deck),
+                "pages": a.get("pages"), "candidates": a.get("candidates"),
+                "text": (f"`{deck}`: the interpretation agent was handed {a.get('pages')} page(s) "
+                         f"with ZERO page renders and {a.get('candidates') or 0} candidate "
+                         f"thumbnail(s) - it was asked to pick __meta.plan_page / image_pages "
+                         f"while BLIND, so a null answer from it means nothing")})
+
+    # (5) pages NO property claimed at all
+    for u in unassigned:
+        if not isinstance(u, dict):
+            continue
+        pgs = sorted({int(x) for x in (u.get("pages") or [])})
+        if not pgs:
+            continue
+        findings.append({
+            "kind": "orphan-pages", "signal": True, "deck": u.get("file"), "pages": pgs,
+            "weight": len(pgs),
+            "text": (f"`{u.get('file')}`: {len(pgs)} page(s) that NO property claimed (pages "
+                     f"{', '.join(str(i + 1) for i in pgs[:12])}"
+                     f"{' ...' if len(pgs) > 12 else ''}) - every image on them is outside the "
+                     f"run's reach; work/properties/_unassigned/ holds them for inspection")})
+
+    # `deck_media_facts` opens each deck through IMG's shared doc cache, and the gates run
+    # IN-PROCESS inside run.py - a held handle blocks the caller's temp-dir cleanup on Windows.
+    # Everything above is already computed, so release them here.
+    try:
+        IMG.close_doc_cache()
+    except Exception:
+        pass
+    findings.sort(key=lambda f: (not f.get("signal"), -f.get("weight", 0),
+                                 str(f.get("kind")), str(f.get("property") or f.get("deck") or "")))
+    try:
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "media_harvest.json").write_text(
+            json.dumps({"capabilities": caps,
+                        "thresholds": {"images": MEDIA_SIGNAL_IMAGES, "pages": MEDIA_SIGNAL_PAGES,
+                                       "thin_gallery": MEDIA_THIN_GALLERY},
+                        "decks": deck_facts, "visual_aids": aids,
+                        "findings": findings}, ensure_ascii=False, indent=2),
+            encoding="utf-8")
+    except Exception:
+        pass
+
+    signals = [f for f in findings if f.get("signal")]
+    rest = [f for f in findings if not f.get("signal")]
+    blocking = [f for f in findings if f.get("blocking")]
+    for f in signals:                     # UNCAPPED: a signal must never fall off the tail
+        print(f"  [{'FAIL' if f.get('blocking') else 'SIGNAL'}] {f['text']}")
+    shown = rest[: max(0, args.max_notes - len(signals))]
+    for f in shown:
+        print(f"  [note] {f['text']}")
+    if len(rest) > len(shown):
+        print(f"  [note] ... and {len(rest) - len(shown)} more media note(s) - the full list is "
+              f"in {work / 'media_harvest.json'}")
+    missing = [c for c in IMG.MEDIA_CRITICAL_CAPS if not caps.get(c)]
+    _ok(f"media harvest: {len(findings)} finding(s), {len(signals)} SIGNAL; capabilities "
+        + (f"DEGRADED (missing: {', '.join(missing)})" if missing else "all present")
+        + f" on engine {caps.get('engine')}"
+        + (f" - {len(blocking)} BLOCKING" if blocking
+           else " - remaining findings ADVISORY, for the G-images reviewer to re-derive"))
+    if blocking:
+        # EVERY REFUSAL NAMES ITS REMEDY (house rule). Both of these are hard facts, not
+        # judgement, so the way past them is an explicit recorded sign-off - never silence.
+        for f in blocking:
+            if f.get("kind") == "capability":
+                print(f"  [FAIL] the media layer is DEGRADED, so a thin gallery or a missing "
+                      f"site plan on this run cannot be distinguished from a source that holds "
+                      f"nothing. Install the missing dependency and re-run, or - if this "
+                      f"environment genuinely cannot render - record the decision: "
+                      f"`gate_runner.py ack --work \"{work}\" "
+                      f"--add media_capability_ok={f.get('what')}`")
+            else:
+                print(f"  [FAIL] `{f.get('deck')}` was interpreted BLIND, so its plan_page / "
+                      f"image_pages answers prove nothing. Re-run so the page renders are "
+                      f"prepared and re-dispatch that deck, or record the decision: "
+                      f"`gate_runner.py ack --work \"{work}\" "
+                      f"--add blind_interpretation_ok={f.get('deck')}`")
+        print("STATUS: BLOCKED")
+        return 1
     print("STATUS: ALL-PASS")
     return 0
 
@@ -1974,7 +2257,19 @@ def _artefact_fingerprint(work) -> str:
     #
     # This only ever WIDENS the guard - more artefacts are watched, so nothing that was
     # refused before is now accepted without a real byte change.
-    for d in (w, w / "deliverables"):
+    #
+    # The out dir is no longer a fixed `<work>/deliverables`: the three-folder project layout
+    # delivers to a sibling '3. Output'. run.py records where it went in `<work>/.output_dir`,
+    # so this reads that pointer and keeps watching the delivered documents wherever they are.
+    # Both legacy locations stay in the list, so an older project is fingerprinted identically.
+    _outs = [w, w / "deliverables"]
+    try:
+        _p = (w / ".output_dir").read_text(encoding="utf-8-sig").strip()
+        if _p and Path(_p) not in _outs:
+            _outs.append(Path(_p))
+    except Exception:
+        pass
+    for d in _outs:
         try:
             for p in sorted(d.glob("*")):
                 if p.suffix.lower() not in (".html", ".md", ".xlsx", ".csv") or not p.is_file():
@@ -1990,16 +2285,39 @@ def _qa_state_path(work: Path) -> Path:
     return Path(work) / "qa_state.json"
 
 
-def _qa_run_key(work: Path) -> str:
-    """WORK DIR + the intake input hash. Deliberately independent of canonical.json's bytes."""
-    import hashlib
-    inv_h = ""
+def _qa_inv_hash(work: Path) -> str:
+    """The intake corpus identity - `inventory.json`'s content-derived `input_hash`."""
     try:
         inv = json.loads((Path(work) / "inventory.json").read_text(encoding="utf-8-sig"))
-        inv_h = str(inv.get("input_hash") or inv.get("folder") or "")
+        return str(inv.get("input_hash") or inv.get("folder") or "")
     except Exception:
-        pass
-    return hashlib.sha256(f"{Path(work).resolve()}|{inv_h}".encode()).hexdigest()[:16]
+        return ""
+
+
+def _qa_run_key(work: Path) -> str:
+    """The CORPUS identity, and ONLY the corpus identity. Deliberately independent of
+    canonical.json's bytes AND of where the work dir happens to sit on disk.
+
+    IT USED TO INCLUDE `Path(work).resolve()`, and that made the QA window silently
+    PATH-COUPLED: renaming or moving the project folder changed the key, `_qa_load` treated
+    a byte-identical qa_state.json as "a different corpus", wiped `rounds`, and the very next
+    `deliver.py` shipped a Gaps Report with NO "Known limitations" section at all while
+    `qa_round_number` fell back to 0 (disabling PASS-WITH-REMEDIATION). Observed live: a
+    project reorganised into the `1. Input` / `2. Work Files` / `3. Output` layout lost twelve
+    reviewed-and-accepted limitations from the honesty document, for no reason but a folder
+    rename. The path added nothing it was needed for - qa_state.json already lives IN the work
+    dir, so it is per-work-dir by construction - while the input hash is exactly the "is this
+    the same corpus?" question the window is asking."""
+    import hashlib
+    return hashlib.sha256(f"corpus|{_qa_inv_hash(work)}".encode()).hexdigest()[:16]
+
+
+def _qa_run_key_legacy(work: Path) -> str:
+    """The pre-fix, path-coupled key. Accepted on READ so an existing window in an
+    UNMOVED work dir is adopted (and re-keyed) instead of wiped by the upgrade itself."""
+    import hashlib
+    return hashlib.sha256(
+        f"{Path(work).resolve()}|{_qa_inv_hash(work)}".encode()).hexdigest()[:16]
 
 
 def enrich_signature(work) -> str:
@@ -2031,6 +2349,11 @@ def _qa_load(work: Path) -> dict:
     if not isinstance(st, dict):
         st = {}
     key = _qa_run_key(work)
+    if st.get("run_key") == _qa_run_key_legacy(work) and st.get("run_key") != key:
+        # written before the key stopped including the work dir's path: same corpus, same
+        # folder, so ADOPT it and re-key. Wiping here would destroy a recorded round purely
+        # because the skill was upgraded.
+        st["run_key"] = key
     if st.get("run_key") != key:  # a different corpus in this work dir -> a fresh window
         st = {"schema_version": 2, "run_key": key, "rounds": [], "advisory_carried": []}
     if st.get("schema_version") != 2:
@@ -2389,6 +2712,15 @@ def main() -> None:
     p.add_argument("--work", required=True)
     p.add_argument("--max-notes", type=int, default=25)
     p.set_defaults(fn=cmd_capture_symmetry)
+    p = sub.add_parser("media-harvest",
+                       help="did the run HARVEST the media its sources hold - BLOCKS on a lost "
+                            "media capability or an interpretation agent handed no page renders "
+                            "(both hard facts, ack-able); ADVISORY on a property that read one "
+                            "page of a whole deck and on orphan deck pages")
+    p.add_argument("canonical")
+    p.add_argument("--work", required=True)
+    p.add_argument("--max-notes", type=int, default=25)
+    p.set_defaults(fn=cmd_media_harvest)
     p = sub.add_parser("ack",
                        help="MERGE a key into placeholder_audit_ack.json (the only concurrency-"
                             "safe way to write it - authoring it whole loses a parallel agent's "

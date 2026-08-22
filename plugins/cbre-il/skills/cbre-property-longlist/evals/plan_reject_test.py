@@ -79,6 +79,19 @@ class _FakeIMG:
     def slide_hero_and_plan(self, src, page, budget, cache_dir=None):
         return (None, None)
 
+    def gallery_for_pages(self, *a, **k):
+        return ([], 0)
+
+    def uri_gallery_admissible(self, uri):
+        """The carousel's card-quality floor. The fake's stand-in URIs are not decodable
+        images, so 'admissible' here means 'a real data URI that is not the placeholder' -
+        enough for merge's hero/gallery composition to behave as it does on real images,
+        without this suite (whose subject is the PLAN slot) depending on pixel statistics."""
+        return isinstance(uri, str) and uri.startswith("data:image/") and "PLACEHOLDER" not in uri
+
+    def gallery_admissible(self, entry):
+        return True
+
     def page_gallery(self, *a, **k):
         return []
 
@@ -91,14 +104,20 @@ class _FakeIMG:
     def slide_image_audit(self, *a, **k):
         return []
 
-    def best_plan_page_render(self, src, pages, budget, cache_dir=None, near_miss=None):
+    def best_plan_page_render(self, src, pages, budget, cache_dir=None, near_miss=None,
+                              own_figures=None):
         """TIER 5, the DETERMINISTIC fallback - and the tier the incident report blames for
         binding an interior photo into the Site Plan slot.
 
         This method was ABSENT from the fake, so merge's call raised AttributeError straight
         into the bare `except Exception` two lines below it, `uri` stayed None, and the two
         assertions that should have caught the missing rejection check passed VACUOUSLY. The
-        suite's own "all 5 tiers" headline was true and completely misleading. (B04)"""
+        suite's own "all 5 tiers" headline was true and completely misleading. (B04)
+
+        KEEP THE SIGNATURE IN STEP WITH THE REAL ONE. Every new keyword merge passes must be
+        accepted here, or the call raises TypeError into that same bare `except` and this whole
+        tier silently stops being tested again - which is the exact failure the docstring above
+        records. (`own_figures` added 2026-08-20 with the own-schedule plan ranking.)"""
         self.calls.append(("best_plan_page_render", Path(src).name, tuple(pages)))
         return (OTHER, sorted(pages)[0]) if pages else (None, None)
 

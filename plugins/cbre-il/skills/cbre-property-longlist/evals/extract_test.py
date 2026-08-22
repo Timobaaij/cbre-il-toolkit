@@ -1707,36 +1707,50 @@ def tedi_cases() -> None:
         # Fix 1 (shim tiers): pdfplumber-ONLY backend still extracts the photo;
         # rendering raises a CLASSIFIED error instead of a silent wrong hero
         import importlib
-        saved = sys.modules.pop("pypdfium2", None)
-        sys.modules["pypdfium2"] = None  # force ImportError inside the shim
         try:
-            import fitz_shim
-            importlib.reload(fitz_shim)
-            check(fitz_shim.ENGINE == "pdfplumber-only", "Fix1: shim detects the pdfplumber-only tier")
-            doc = fitz_shim.open(pdf)
-            check("Warehouse Area" in doc[0].get_text(), "Fix1: shim text works without a renderer")
-            infos = doc[0].get_images(full=True)
-            ok_img = False
-            for info in infos:
-                raw = doc.extract_image(info[0])["image"]
-                try:
-                    im = Image.open(_io.BytesIO(raw)); im.load()
-                    ok_img = ok_img or (im.width >= 320 and IMG.photographic_score(im) >= IMG.MODEST_PHOTO)
-                except Exception:
-                    pass
-            check(ok_img, "Fix1: shim decodes the embedded JPEG straight from the PDF stream")
+            import pdfplumber as _pp_probe  # noqa: F401
+            _have_plumber = True
+        except Exception:
+            _have_plumber = False
+        if not _have_plumber:
+            # The pdfplumber-ONLY shim tier cannot be exercised on a host without
+            # pdfplumber. SKIP it explicitly rather than raising ModuleNotFoundError out
+            # of the middle of the battery: an abort here silently retired every LATER
+            # case in this file, so a missing optional dependency was masking real
+            # coverage. (The tier itself is unchanged; only its exerciser is conditional.)
+            print("  [skip] pdfplumber-only shim tier: pdfplumber is not installed on "
+                  "this host (the tier is a sandbox fallback, not the primary engine)")
+        if _have_plumber:
+            saved = sys.modules.pop("pypdfium2", None)
+            sys.modules["pypdfium2"] = None  # force ImportError inside the shim
             try:
-                doc[0].get_pixmap(dpi=72)
-                check(False, "Fix1: renderer-less get_pixmap raises a clear error")
-            except RuntimeError:
-                check(True, "Fix1: renderer-less get_pixmap raises a clear error")
-            doc.close()
-        finally:
-            del sys.modules["pypdfium2"]
-            if saved is not None:
-                sys.modules["pypdfium2"] = saved
-            import fitz_shim
-            importlib.reload(fitz_shim)
+                import fitz_shim
+                importlib.reload(fitz_shim)
+                check(fitz_shim.ENGINE == "pdfplumber-only", "Fix1: shim detects the pdfplumber-only tier")
+                doc = fitz_shim.open(pdf)
+                check("Warehouse Area" in doc[0].get_text(), "Fix1: shim text works without a renderer")
+                infos = doc[0].get_images(full=True)
+                ok_img = False
+                for info in infos:
+                    raw = doc.extract_image(info[0])["image"]
+                    try:
+                        im = Image.open(_io.BytesIO(raw)); im.load()
+                        ok_img = ok_img or (im.width >= 320 and IMG.photographic_score(im) >= IMG.MODEST_PHOTO)
+                    except Exception:
+                        pass
+                check(ok_img, "Fix1: shim decodes the embedded JPEG straight from the PDF stream")
+                try:
+                    doc[0].get_pixmap(dpi=72)
+                    check(False, "Fix1: renderer-less get_pixmap raises a clear error")
+                except RuntimeError:
+                    check(True, "Fix1: renderer-less get_pixmap raises a clear error")
+                doc.close()
+            finally:
+                del sys.modules["pypdfium2"]
+                if saved is not None:
+                    sys.modules["pypdfium2"] = saved
+                import fitz_shim
+                importlib.reload(fitz_shim)
 
         # Fix 2: vision_prep is per-page resumable (and defaults to 120 dpi)
         import vision_prep
@@ -1841,9 +1855,12 @@ def vision_validate_cases() -> None:
              "pages": [{"page_no": 1}, {"page_no": 2}, {"page_no": 3}]}]}), encoding="utf-8")
 
         def rec(**kw):
+            # image_pages / plan_page are REQUIRED keys on a multi-page deck (an explicit
+            # []/null is a fine answer, silence is not - reference/interpretation.md), so a
+            # fixture modelling a COMPLIANT reader states them, exactly as a real one does.
             base = {"park": "P", "city": "C", "warehouseRentVal": 55.0,
                     "__meta": {"source_file": "Scan.pdf", "source_type": "pdf",
-                               "page_no": 1, "prov": {}}}
+                               "page_no": 1, "prov": {}, "image_pages": [], "plan_page": None}}
             meta_over = kw.pop("__meta", {})
             base.update(kw)
             base["__meta"] = {**base["__meta"], **meta_over}
@@ -1856,6 +1873,20 @@ def vision_validate_cases() -> None:
         write([rec(), rec(__meta={"page_no": 2}), rec(__meta={"page_no": 3})])
         errors, warnings = VV.validate(work)
         check(not errors and not warnings, "clean transcription validates clean")
+
+        # REQUIRED MEDIA KEYS: omitting them on a multi-page deck is a NOTE, never a block -
+        # the two answers ("[]/null" and silence) used to be written identically, which is how a
+        # run whose readers were handed no visual aids looked exactly like a run whose decks
+        # genuinely had one page and no plan.
+        _silent = rec()
+        _silent["__meta"].pop("image_pages")
+        _silent["__meta"].pop("plan_page")
+        write([_silent, rec(__meta={"page_no": 2}), rec(__meta={"page_no": 3})])
+        errors, warnings = VV.validate(work)
+        check(not errors, "required media keys: an omission is NEVER an error (no re-dispatch)")
+        check(any("image_pages" in w and "plan_page" in w and "ABSENT" in w for w in warnings),
+              "required media keys: a record omitting BOTH on a multi-page deck raises ONE note")
+        write([rec(), rec(__meta={"page_no": 2}), rec(__meta={"page_no": 3})])
 
         write([rec(__meta={"page_no": 7})])  # out-of-range binding
         errors, _ = VV.validate(work)
@@ -3384,10 +3415,18 @@ def batch_a_cases() -> None:
           and d0.get("warehouseRentVal") == 54.0 and d0.get("rentUnit") == "€/sq m/yr",
           "P0-6: DE tracker maps (Stadt/Hallenfläche/Miete €/m²/Monat x12) - English-first preserved")
 
-    # P0-6 byte-stability: the real UK Corby tracker is unchanged by the ledger merge
-    cor = X.detect_and_extract(Path(r"C:\Claude Projects\Corby Test Run\Building_Data_12_06_2026.xlsx"), "Corby", "GB")["records"]
-    check(len(cor) == 4 and cor[0]["warehouseArea"] == 159291 and cor[0]["rentUnit"] == "£/sq ft/yr",
-          "P0-6: UK Corby tracker stable (4 records; warehouse = GIA - office = 172,867 - 13,576 = 159,291; £/sq ft)")
+    # P0-6 byte-stability: the real UK Corby tracker is unchanged by the ledger merge.
+    # The fixture is an EXTERNAL absolute path, so it is absent on most hosts - skip
+    # explicitly rather than raising out of the battery and silently retiring every later
+    # case in this file (that abort is how two real failures stayed invisible).
+    _cor_fx = Path(r"C:\Claude Projects\Corby Test Run\Building_Data_12_06_2026.xlsx")
+    if _cor_fx.exists():
+        cor = X.detect_and_extract(_cor_fx, "Corby", "GB")["records"]
+        check(len(cor) == 4 and cor[0]["warehouseArea"] == 159291 and cor[0]["rentUnit"] == "£/sq ft/yr",
+              "P0-6: UK Corby tracker stable (4 records; warehouse = GIA - office = 172,867 - 13,576 = 159,291; £/sq ft)")
+    else:
+        print(f"  [skip] P0-6 UK Corby tracker byte-stability: fixture not on this host "
+              f"({_cor_fx})")
 
     # P1-3 cell-unit fallback / P1-4 cell-monthly x12
     _, p13 = build(["Property", "City", "Quoting rent"], [["Alpha", "Leeds", "£8.50 / sq ft / yr"]])
@@ -3483,10 +3522,16 @@ def batch_b_cases() -> None:
     import io as _io2
 
     def _noise_jpeg(w=900, h=560):
-        # a smooth colour gradient scores as photographic (colourful, non-white,
-        # spread across shades) - a self-contained stand-in for a real hero photo
+        # a colour gradient WITH PER-PIXEL TEXTURE - a self-contained stand-in for a real
+        # hero photo. The texture is not decoration: a perfectly SMOOTH gradient is exactly
+        # what marketing decoration looks like, and images.detail_score refuses it from the
+        # carousel (see MIN_GALLERY_DETAIL), so a smooth stand-in would model the wrong thing.
+        import random as _rnd
+        _g = _rnd.Random(11)
         im = _PILImg.new("RGB", (w, h))
-        im.putdata([(((x * 255) // w), ((y * 255) // h), (((x + y) * 127) // (w + h)))
+        im.putdata([(((x * 255) // w + _g.randrange(96)) % 256,
+                     ((y * 255) // h + _g.randrange(96)) % 256,
+                     (((x + y) * 127) // (w + h) + _g.randrange(96)) % 256)
                     for y in range(h) for x in range(w)])
         b = _io2.BytesIO(); im.save(b, format="JPEG", quality=85); return b.getvalue()
 
@@ -4484,14 +4529,22 @@ def image_pages_carousel_cases() -> None:
         check(False, f"image_pages: fitz unavailable ({e})"); return
     from PIL import Image
 
-    def _seeded_photo(seed: int, w: int = 360, h: int = 240) -> bytes:
+    def _seeded_photo(seed: int, w: int = 660, h: int = 440) -> bytes:
         """A distinct synthetic 'photo' per seed (so the gallery dedup-by-URI keeps each
-        page's photo as its own entry). Colourful noise scores high as a photo."""
+        page's photo as its own entry).
+
+        A TEXTURED GRADIENT, not pure noise, and 660x440, not 360x240 - both deliberate.
+        Pure RGB noise has a near-Gaussian luminance histogram, so classify_image reads it as
+        'plan', and the carousel now takes only kind=='photo'; and a 360x240 stand-in is below
+        images.MIN_GALLERY_W/H, which is the thumbnail floor this suite's subject depends on.
+        A stand-in for a real brochure photo has to actually look like one."""
         import random
         rnd = random.Random(seed)
         img = Image.new("RGB", (w, h))
-        img.putdata([(rnd.randrange(256), rnd.randrange(256), rnd.randrange(256))
-                     for _ in range(w * h)])
+        img.putdata([(((x * 255) // w + rnd.randrange(96)) % 256,
+                      ((y * 255) // h + rnd.randrange(96)) % 256,
+                      (((x + y) * 127) // (w + h) + rnd.randrange(96)) % 256)
+                     for y in range(h) for x in range(w)])
         buf = __import__("io").BytesIO()
         img.save(buf, format="JPEG", quality=85)
         return buf.getvalue()
@@ -4973,11 +5026,18 @@ def geometry_prebatch_cases() -> None:
     try:
         import merge as _M
         import fitz as _fz
-        import pdfplumber as _pp
         from PIL import Image as _Img
     except Exception as e:
         check(False, f"#20: setup import failed ({e})")
         return
+    # pdfplumber is the FALLBACK geometry backend, not the primary one, so it may be absent.
+    # When it is importable we still count its opens; when the ACTIVE geometry backend is
+    # fitz the correct expectation is ZERO opens, which is the stronger claim.
+    try:
+        import pdfplumber as _pp
+    except Exception:
+        _pp = None
+    _native_geom = IMG._geom_backend() == "fitz"
 
     def _noise(seed, w=340, h=240):
         _r.seed(seed)
@@ -5012,14 +5072,15 @@ def geometry_prebatch_cases() -> None:
         # count pdfplumber.open() during a SERIAL prewarm on a fresh geometry cache
         warm = td / ".warm"
         warm.mkdir()
-        orig = _pp.open
+        orig = _pp.open if _pp is not None else None
         cnt = {"n": 0}
 
         def _counting(*a, **k):
             cnt["n"] += 1
             return orig(*a, **k)
 
-        _pp.open = _counting
+        if _pp is not None:
+            _pp.open = _counting
         # isolate GEOMETRY opens: the hero path's crop tier (_page_crops) keeps its OWN
         # per-page pdfplumber open for the page width, which #20's minimal fix deliberately
         # does NOT touch (it reaches into crop-scale math, a byte-identity risk). Neutralise
@@ -5029,15 +5090,27 @@ def geometry_prebatch_cases() -> None:
         try:
             _M.prewarm_images(recs, td, warm, IMG.DEFAULT_BUDGET_KB, seconds=60, workers=1)
         finally:
-            _pp.open = orig
+            if _pp is not None:
+                _pp.open = orig
             IMG._page_crops = _crops_orig
         _clear()
         lay_warm = IMG._placed_layout(f, warm)
         _clear()
         check(lay_warm == lay_ref,
               "#20: serial-prewarmed deck geometry is byte-identical to the per-page reference")
-        check(cnt["n"] <= 2,
-              f"#20: serial prewarm opens the deck ONCE for geometry, not once per page (geometry opens={cnt['n']}, was 4)")
+        check(any(len(pg) for pg in lay_ref["pages"]),
+              "#20: the geometry backend actually SEES the placed images (non-empty on the "
+              "reference build) - an all-empty layout is the silent-collapse failure")
+        if _pp is None:
+            print("  [skip] #20 pdfplumber open-count: pdfplumber is not installed "
+                  f"(active geometry backend: {IMG._geom_backend()})")
+        elif _native_geom:
+            check(cnt["n"] == 0,
+                  f"#20: with the NATIVE geometry backend the prewarm opens pdfplumber "
+                  f"ZERO times (opens={cnt['n']})")
+        else:
+            check(cnt["n"] <= 2,
+                  f"#20: serial prewarm opens the deck ONCE for geometry, not once per page (geometry opens={cnt['n']}, was 4)")
 
 
 def match_memo_cases() -> None:
@@ -5504,10 +5577,27 @@ def exclude_refs_cases() -> None:
         check(False, f"exclude_refs: setup import failed ({e})")
         return
 
-    def _noise(seed, w, h):
+    def _noise(seed, w, h, sat=1.0):
+        # a TEXTURED GRADIENT: pure RGB noise has a near-Gaussian luminance histogram, so
+        # classify_image reads it as 'plan' and the carousel (photo-only) refuses it - the
+        # stand-in has to carry a real photograph's signature, not just be non-uniform.
+        # `sat` scales colourfulness, i.e. photographic_score, WITHOUT touching the
+        # photo/decoration verdict: it is how the fixture pins which candidate the hero
+        # ladder picks (the deck index ranks by score, so two equally colourful stand-ins
+        # would order by JPEG noise and the 'non-hero secondary' below would be a coin toss).
         _r.seed(seed)
         im = _Img.new("RGB", (w, h))
-        im.putdata([(_r.randint(0, 255), _r.randint(0, 255), _r.randint(0, 255)) for _ in range(w * h)])
+
+        def _px(x, y):
+            rgb = (((x * 255) // w + _r.randrange(96)) % 256,
+                   ((y * 255) // h + _r.randrange(96)) % 256,
+                   (((x + y) * 127) // (w + h) + _r.randrange(96)) % 256)
+            if sat >= 1.0:
+                return rgb
+            g = sum(rgb) // 3
+            return tuple(int(g + (v - g) * sat) for v in rgb)
+
+        im.putdata([_px(x, y) for y in range(h) for x in range(w)])
         b = _io.BytesIO()
         im.save(b, "JPEG", quality=80)
         return b.getvalue()
@@ -5517,7 +5607,9 @@ def exclude_refs_cases() -> None:
         doc = _fz.open()
         pg = doc.new_page(width=800, height=1000)
         pg.insert_image(_fz.Rect(40, 40, 700, 520), stream=_noise(1, 640, 480))   # larger -> candidate index 0
-        pg.insert_image(_fz.Rect(40, 560, 560, 960), stream=_noise(2, 520, 400))  # smaller -> candidate index 1
+        # smaller (so it stays candidate index 1 - candidates are area-ordered) but still
+        # over the carousel floor images.MIN_GALLERY_W/H, or it never reaches the carousel
+        pg.insert_image(_fz.Rect(40, 560, 560, 960), stream=_noise(2, 660, 420, sat=0.25))  # -> candidate index 1
         f = td / "deck.pdf"
         doc.save(f)
         doc.close()
@@ -5558,10 +5650,27 @@ def exclude_refs_merge_cases() -> None:
         check(False, f"exclude_refs merge: setup import failed ({e})")
         return
 
-    def _noise(seed, w, h):
+    def _noise(seed, w, h, sat=1.0):
+        # a TEXTURED GRADIENT: pure RGB noise has a near-Gaussian luminance histogram, so
+        # classify_image reads it as 'plan' and the carousel (photo-only) refuses it - the
+        # stand-in has to carry a real photograph's signature, not just be non-uniform.
+        # `sat` scales colourfulness, i.e. photographic_score, WITHOUT touching the
+        # photo/decoration verdict: it is how the fixture pins which candidate the hero
+        # ladder picks (the deck index ranks by score, so two equally colourful stand-ins
+        # would order by JPEG noise and the 'non-hero secondary' below would be a coin toss).
         _r.seed(seed)
         im = _Img.new("RGB", (w, h))
-        im.putdata([(_r.randint(0, 255), _r.randint(0, 255), _r.randint(0, 255)) for _ in range(w * h)])
+
+        def _px(x, y):
+            rgb = (((x * 255) // w + _r.randrange(96)) % 256,
+                   ((y * 255) // h + _r.randrange(96)) % 256,
+                   (((x + y) * 127) // (w + h) + _r.randrange(96)) % 256)
+            if sat >= 1.0:
+                return rgb
+            g = sum(rgb) // 3
+            return tuple(int(g + (v - g) * sat) for v in rgb)
+
+        im.putdata([_px(x, y) for y in range(h) for x in range(w)])
         b = _io.BytesIO()
         im.save(b, "JPEG", quality=80)
         return b.getvalue()
@@ -5571,7 +5680,7 @@ def exclude_refs_merge_cases() -> None:
         doc = _fz.open()
         pg = doc.new_page(width=800, height=1000)
         pg.insert_image(_fz.Rect(40, 40, 700, 520), stream=_noise(1, 640, 480))   # candidate 0 (hero)
-        pg.insert_image(_fz.Rect(40, 560, 560, 960), stream=_noise(2, 520, 400))  # candidate 1 (secondary)
+        pg.insert_image(_fz.Rect(40, 560, 560, 960), stream=_noise(2, 660, 420, sat=0.25))  # candidate 1 (secondary, lower score -> never the hero)
         # UNIQUE filename: merge._SRC_RESOLVE memoises source paths by BARE filename across the
         # whole process, so a name shared with another case (e.g. 'deck.pdf') would serve a stale
         # deleted-temp path here (FileNotFoundError). (memory.md)

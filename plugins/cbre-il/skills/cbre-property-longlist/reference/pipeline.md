@@ -2,7 +2,9 @@
 
 Contract between stages: files on disk. The Orchestrator (you) owns `canonical.json`, runs deterministic scripts, dispatches isolated sub-agents for judgement work, and adjudicates verdicts. `helpers/run.py` runs the deterministic spine (Stages 0-7) in one command; the agentic steps are layered around it.
 
-> **Running a single stage directly:** prefer `run.py` (it wires every stage correctly). If you do call a stage by hand, note the per-script CLI differs: `intake.py <folder> --out-dir <work>` (also accepts `--folder`/`--work` aliases), `merge.py --records … --source-dir <inputs> --out <canonical>`, `enrich.py <canonical> --geocode …`, `gate_runner.py <subcommand> …`, `build_dashboard.py <canonical> --out <html>`, `render_qa.py <html> --out <dir>` (`--out-dir` alias). `--help` on any script lists its flags.
+> **Where the files live - the three-folder project layout.** A project folder holds exactly three numbered top-level folders: **`1. Input`** (the broker's source files), **`2. Work Files`** (every internal artefact - this IS "the work dir", `--work`) and **`3. Output`** (only the four client-facing deliverables). `run.py --project "<root>"` derives all three and creates them. Throughout these docs `work/<x>` means `<the work dir>/<x>`, i.e. `2. Work Files/<x>`; nothing about the work dir's CONTENTS changed, only its name and the fact that the deliverables no longer sit inside it. The legacy `--folder <inputs> --work <workdir>` invocation still works and still delivers to `<work>/deliverables`. Full setup instructions: SKILL.md "The project folder".
+
+> **Running a single stage directly:** prefer `run.py` (it wires every stage correctly). If you do call a stage by hand, note the per-script CLI differs: `intake.py <folder> --out-dir <work>` (also accepts `--folder`/`--work` aliases), `merge.py --records … --source-dir <inputs> --out <canonical>`, `enrich.py <canonical> --geocode …`, `gate_runner.py <subcommand> …`, `build_dashboard.py <canonical> --out <html>`, `render_qa.py <html> --out <dir>` (`--out-dir` alias), `deliver.py --canonical … --html … --ledger … --out-dir <output dir> [--marker-dir <work>]`. `--help` on any script lists its flags. Every stage still takes the work dir as a plain path - none of them cares what it is called.
 
 | Stage | Owner | In -> Out | Pass criteria |
 |---|---|---|---|
@@ -13,7 +15,7 @@ Contract between stages: files on disk. The Orchestrator (you) owns `canonical.j
 | 4 PRE-BUILD GATE (BLOCKING) | scripts + isolated reviewers | -> `gate1_scorecard.md`, `reviews/*` | all mechanical + judgement clear; freeze `canonical.json` at `STATUS: ALL-PASS` |
 | 5 Build | `build_dashboard.py` | frozen canonical + template -> `built.html` | three blocks injected; chrome byte-identical; nothing added |
 | 6 POST-BUILD GATE (BLOCKING) | scripts + isolated reviewer | `built.html` -> `gate2_scorecard.md`, `render/*`, `reviews/G-visual.md` | HTML valid; reconcile clean; visual render passes |
-| 7 Deliver | `deliver.py`, `final_gate.py` | -> 3 deliverables | both scorecards ALL-PASS; ledger exported; every gap on the report; final gate green |
+| 7 Deliver | `deliver.py`, `final_gate.py` | -> the 4 deliverables in `3. Output` (`--out-dir "<project>/3. Output" --marker-dir "<work>"`; the `.delivery_complete.json` marker is technical and stays in the work dir, so the broker's folder holds only the four files) | both scorecards ALL-PASS; ledger exported; every gap on the report; final gate green |
 
 ## Parallelism
 - Stage 1 fans out one sub-agent per source file or per-city cluster (the reference is organised Bratislava / Budapest / Pilsen).

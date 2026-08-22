@@ -12,17 +12,31 @@ fourteen had `same-city` as their ONLY signal; a thirteenth was corroborated sol
 token `corby`, because the town name sits inside the tracker's park strings. One pair had a
 real signal.
 
-The rule now: within ~2 km, OR a shared distinctive park token with the pair's city tokens
-excluded, OR a fuzzy key in [70, 88), OR same city AND the same KNOWN developer. The
-developer keeps a city-paired disjunct because it DISCRIMINATES in a single-market corpus
-and the city does not.
+The rule now: within ~2 km, OR a shared distinctive IDENTITY token with the pair's place
+tokens excluded, OR a fuzzy key in [70, 88), OR - inside the same known city - a PARTY name
+linking the two records. The party keeps a city-paired disjunct because it DISCRIMINATES in
+a single-market corpus and the city does not.
+
+I12 then fixed the OTHER half of the same bug: WHICH FIELD a name sits in is an accident of
+whoever built the spreadsheet. A live 17-row tracker plus 15 brochures had nearly every row
+matching one brochure exactly (identical warehouse-area figures) and most pairs were never
+even generated as candidates, because the filter compared park-to-park and developer-to-park
+only. The tracker's scheme name was in a free-text "Address" column and its owner came from
+a column headed "Landlord"; the brochure named the previous owner, an asset sale apart. So
+each record now contributes one IDENTITY bag (park/address/scheme/street/building-ish) and
+one PARTY bag (developer/landlord-ish) and overlap is tested ACROSS them, both directions.
 
 The safety argument this file pins, in order of importance:
-  1. the change only ever moves pairs grey -> 'no', so offline clustering is unchanged;
-  2. the city-token strip did NOT leak into `_cross_source_auto`'s containment branch,
-     where shrinking a token set can CREATE a subset relation and thus a new auto-merge;
-  3. the accepted cost - a demoted pair can no longer be merged by an LLM 'same' - is
-     stated as a test rather than left implicit.
+  1. neither change can merge anything on its own - `auto`/`forbidden` are untouched, so
+     offline clustering (decisions=None) is unchanged;
+  2. the place strip did NOT leak into `_cross_source_auto`'s containment branch, where
+     shrinking a token set can CREATE a subset relation and thus a new auto-merge - asserted
+     both functionally and against the call graph, now that `_grey_bag` sits in between;
+  3. the accepted cost of I9 - a demoted pair can no longer be merged by an LLM 'same' - is
+     stated as a test rather than left implicit;
+  4. I12's widening admits only REAL names: place words, corporate boilerplate, compass
+     words and area-code-shaped tokens (a postcode OUTWARD code, a road number) are stripped,
+     so address text cannot re-create the quadratic blowup I9 was filed for.
 Offline, pure, no network, no work dir."""
 from __future__ import annotations
 import itertools
@@ -220,8 +234,28 @@ def main() -> int:
             head = src.rfind("\ndef ", 0, m.start())
             out.add(src[head + 5:src.find("(", head + 5)])
         return out
-    ck(_callers("_grey_tokens") <= {"_grey_tokens", "_cross_source_grey"},
+
+    def _body(fn: str) -> str:
+        """The source of ONE top-level function, def line to the next top-level def."""
+        i = src.find("\ndef " + fn + "(")
+        if i == -1:
+            return ""
+        j = src.find("\ndef ", i + 1)
+        return src[i:j if j != -1 else len(src)]
+    # I12 put `_grey_bag` between `_grey_tokens` and the filter, so the direct-caller check
+    # is no longer the whole safety property. Assert BOTH halves: the stripped-token helpers
+    # are reachable only from the grey filter's own two functions, AND no deterministic tier
+    # mentions them at all - the second half is what actually forbids a leak, at any depth.
+    ck(_callers("_grey_tokens") <= {"_grey_tokens", "_grey_bag", "_cross_source_grey"},
        f"_grey_tokens is called ONLY from the grey filter ({sorted(_callers('_grey_tokens'))})")
+    ck(_callers("_grey_bag") <= {"_grey_bag", "_cross_source_grey"},
+       f"_grey_bag is called ONLY from the grey filter ({sorted(_callers('_grey_bag'))})")
+    for tier in ("_cross_source_auto", "_cross_source_forbidden", "_same_source_verdict"):
+        body = _body(tier)
+        ck(bool(body) and not any(h in body for h in
+                                  ("_grey_tokens", "_grey_bag", "_grey_place_tokens",
+                                   "_grey_city_tokens", "_GREY_GENERIC_EXTRA")),
+           f"{tier} never touches the place-stripped grey bag (the strip cannot reach it)")
     ck("_cross_source_auto" in _callers("_distinctive_tokens"),
        "_cross_source_auto still uses the UNSTRIPPED _distinctive_tokens")
 
@@ -278,6 +312,78 @@ def main() -> int:
     print("      ^ deliberate: the coverage dedupe gate catches a wrong split; an over-merge "
           "silently destroys a property")
 
+    # ---- 7b. I12: the bag is CROSS-FIELD, in both directions -------------------------
+    # THE LIVE BUG. A 17-row tracker and 15 brochures, nearly every row the same physical
+    # property as one brochure - proven afterwards by exact warehouse-area matches. Most of
+    # those pairs were never even GENERATED as candidates, so they shipped as duplicate
+    # cards: a thin tracker-only card beside a rich brochure-only card for one building.
+    # The pre-filter insisted on field-name alignment (park token vs park token, developer
+    # only ever against the other side's park). Broker input does not work that way - the
+    # scheme name lands in an "Address" column, and a column headed "Landlord" is bound to
+    # `developer`, so the same owner reads as two different parties after an asset sale.
+    print("\nI12 - a name is evidence wherever the broker typed it:")
+    #  (i) the reported pair: same scheme, DIFFERENT owner name on each side (an asset
+    #      sale/rebrand). The differing party is NOT the signal - the shared scheme name is,
+    #      and the adjudicator is what decides what the owner difference means.
+    ta3 = r("tracker.xlsx", "MPC2 Magna Park Corby, 100 Kettering Road, Weldon",
+            city="Corby", dev="ARES", area=659428)
+    tb3 = r("01_MPC2-Magna-Park-Corby.pdf", "Magna Park Corby", city="Corby",
+            dev="GLP", area=659428)
+    ck(M._known_dev(ta3) != M._known_dev(tb3) != "",
+       "the two sides name DIFFERENT owners (an asset sale, not a contradiction to hide)")
+    ck(M.pair_class(ta3, tb3) == "grey", f"-> grey ({M.pair_class(ta3, tb3)})")
+    #  (ii) the same property with the scheme name in a free-text ADDRESS field and NO park
+    #       at all - the shape that had no route to a candidate before I12
+    addr = {"address": "MPC2 Magna Park Corby, 100 Kettering Road, Weldon", "city": "Corby",
+            "developer": "ARES", "warehouseArea": 659428, "areaUnit": "sq ft",
+            "__meta": {"source_file": "tracker.xlsx"}}
+    ck(not addr.get("park"), "the tracker side states no park at all, only an address")
+    ck(M.pair_class(addr, tb3) == "grey",
+       f"an ADDRESS token matching the other side's PARK is grey ({M.pair_class(addr, tb3)})")
+    #  (iii) both directions of the park<->party crossing, and landlord<->developer
+    pk = r("t.xlsx", "Magna Park Corby DC1", city="Corby", area=200000)
+    dv = r("b.pdf", "DC1 Weldon", city="Corby", dev="Magna Logistics", area=200000)
+    ck(M.pair_class(pk, dv) == "grey" and M.pair_class(dv, pk) == "grey",
+       "a park token of one record inside the OTHER's developer is grey, either direction")
+    ll = {"park": "Alpha Court", "city": "Corby", "landlord": "Tritax Symmetry",
+          "warehouseArea": 100000, "areaUnit": "sq ft",
+          "__meta": {"source_file": "a.xlsx"}}
+    dd = r("b.pdf", "Beta House", city="Corby", dev="Tritax", area=105000)
+    ck(M._known_dev(ll) == "", "the tracker side states no developer, only a landlord")
+    ck(M.pair_class(ll, dd) == "grey",
+       f"a LANDLORD matching the other side's DEVELOPER is grey ({M.pair_class(ll, dd)})")
+    #  (iv) ...and the party forms are STILL city-gated, so a single developer building
+    #       across a continent cannot re-create the I9 quadratic blowup
+    ck(M.pair_class(ll, dict(dd, city="Kettering")) == "no",
+       "...while the same landlord/developer pair in two towns stays 'no' (city-gated)")
+
+    # ---- 7c. the widening must not manufacture corroboration -------------------------
+    # Everything address text and party names drag in that is NOT identity. Each of these
+    # would have been a spurious grey pair - and on a single-market corpus, a quadratic
+    # number of them, which is the exact failure I9 was filed for.
+    print("\n...but only a REAL name counts:")
+    noise = [
+        ("an outward postcode code covers a whole town",
+         r("a.pdf", "Apollo Court", city="Corby", area=50000),
+         r("b.xlsx", "Mercury House", city="Corby", area=52000), "NN17 5JX", "NN17 4XD"),
+    ]
+    for label, x, y, px, py in noise:
+        x, y = dict(x, postcode=px), dict(y, postcode=py)
+        ck(M.pair_class(x, y) == "no", f"{label} -> 'no' ({M.pair_class(x, y)})")
+    full = dict(r("a.pdf", "Apollo Court", city="Corby", area=50000), postcode="NN17 5JX")
+    full2 = dict(r("b.xlsx", "Mercury House", city="Corby", area=52000), postcode="NN17 5JX")
+    ck(M.pair_class(full, full2) == "grey",
+       "...but a FULL postcode match (its inward half survives) IS grey")
+    rg1 = r("a.pdf", "Alpha Park", city="Corby", area=50000)
+    rg2 = r("b.xlsx", "Beta Park Northamptonshire", city="Corby", area=52000)
+    rg1, rg2 = (dict(rg1, region="Northamptonshire"), dict(rg2, region="Northamptonshire"))
+    ck(M.pair_class(rg1, rg2) == "no",
+       "a shared REGION name inside a park string is not identity either (I9, generalised)")
+    bp1 = r("a.pdf", "North Point", city="Corby", dev="Ares Management", area=50000)
+    bp2 = r("b.xlsx", "North Gate", city="Corby", dev="GLP Management", area=52000)
+    ck(M.pair_class(bp1, bp2) == "no",
+       "compass words and corporate boilerplate ('north', 'management') corroborate nothing")
+
     # ---- 8. the properties the grey tier already had must still hold -----------------
     print("\nunchanged invariants:")
     gp2 = M.grey_pairs(list(reversed(recs)))
@@ -297,6 +403,84 @@ def main() -> int:
     same_src2 = r("d.pdf", "Raven Park", city="Corby", area=50000)
     ck(M.pair_class(same_src, same_src2) == "auto",
        "a same-source restatement is still 'auto', never grey")
+
+    # ---- 9. a PRINTED area is a STATED area - the multi-unit-brochure over-merge -----
+    # `_area` accepted only int/float. But the interpretation contract says to write the
+    # value the way the source PRINTS it, unit and thousands separators intact, so a
+    # BROCHURE record's warehouseArea is routinely '425,621 sq ft' - a string. Every one of
+    # them read as None, BOTH sides of a same-brochure sibling pair hit
+    # `_same_source_verdict`'s "no area on either side, so this is one unit restated"
+    # branch, and two DIFFERENT buildings of one multi-unit scheme were silently merged
+    # into one property - the exact inverse of "dedupe cross-source, NEVER within one
+    # brochure". Live: a 2-unit scheme 23% apart classed `auto`; every multi-unit brochure
+    # in that run failed the same way.
+    #
+    # WHY 110 GREEN EVALS MISSED IT: every fixture in this file, in forbidden_cluster_test
+    # and in match_footing_test passes a plain float - realistic for a TRACKER row and NOT
+    # for a brochure record - so the string path was never executed once. This section IS
+    # that path, and it is the shape that must never slip through again.
+    print("\na unit-suffixed area STRING is a stated area, not an absent one:")
+    for raw, want in (("425,621 sq ft", 425621.0), ("700,000 SQ FT", 700000.0),
+                      ("1,000,000", 1000000.0), ("338,308", 338308.0),
+                      ("10,000 sq. m", 10000.0), ("10 m", 10.0)):
+        ck(M._area({"warehouseArea": raw}) == want, f"_area({raw!r}) -> {want:g}")
+    ck(M._area({"warehouseArea": 425621}) == 425621.0, "_area is unchanged on a plain number")
+    ck(M._area({"warehouseArea": "tbd"}) is None, "_area on an unknown is still None")
+    ck(M._area({}) is None, "_area on an absent area is still None")
+
+    # the live shape: two units of ONE multi-unit brochure, identical match_key, areas 23%
+    # apart, printed as comma-formatted unit-suffixed STRINGS
+    u450 = r("scheme-brochure.pdf", "Symmetry Park", city="Milton Keynes",
+             dev="Tritax Symmetry", area="425,621 sq ft")
+    u345 = r("scheme-brochure.pdf", "Symmetry Park", city="Milton Keynes",
+             dev="Tritax Symmetry", area="326,684 sq ft")
+    ck(u450["__meta"]["source_file"] == u345["__meta"]["source_file"],
+       "the fixture is a SAME-source pair (one multi-unit brochure)")
+    ck(M.match_key(u450) == M.match_key(u345),
+       "...with an identical match_key, so only the AREA can tell the two units apart")
+    ck(M._same_source_verdict(u450, u345) is False,
+       "...and the restatement escape hatch must NOT fire on it")
+    ck(M.pair_class(u450, u345) == "forbidden",
+       f"-> 'forbidden', never 'auto' (got {M.pair_class(u450, u345)!r})")
+    ck(M.same_property(u450, u345) is False, "...same_property refuses to merge them")
+    ck(sorted(len(c) for c in M.dedupe([u450, u345])) == [1, 1],
+       "...so dedupe ships TWO properties, not one")
+
+    # the branch's comment must now be TRUE: it fires for a genuine absence, and for an
+    # identical unparseable restatement - never as a cover for a failed parse
+    absent_a = r("scheme-brochure.pdf", "Symmetry Park", city="Milton Keynes", dev="Tritax")
+    absent_b = r("scheme-brochure.pdf", "Symmetry Park", city="Milton Keynes", dev="Tritax")
+    ck(M.pair_class(absent_a, absent_b) == "auto",
+       "an area genuinely unstated on BOTH sides is still an indistinguishable restatement")
+    rng_a = r("scheme-brochure.pdf", "Symmetry Park", city="Milton Keynes", dev="Tritax",
+              area="25,000 - 50,000 sq ft")
+    rng_b = r("scheme-brochure.pdf", "Symmetry Park", city="Milton Keynes", dev="Tritax",
+              area="60,000 - 90,000 sq ft")
+    ck(M._area(rng_a) is None and M._area(rng_b) is None,
+       "a RANGE still yields no single number - it honestly has none")
+    ck(M.pair_class(rng_a, rng_b) == "forbidden",
+       "...but two DIFFERENT stated ranges are two units, not an absent area on both sides")
+    rng_c = r("scheme-brochure.pdf", "Symmetry Park", city="Milton Keynes", dev="Tritax",
+              area="25,000 - 50,000 SQ FT")
+    ck(M.pair_class(rng_a, rng_c) == "auto",
+       "...while the SAME unparseable text on both sides is one unit stated twice")
+
+    # cross-source: the size veto and the footing conversion must SEE a string too
+    xa = r("scheme-brochure.pdf", "Symmetry Park", city="Milton Keynes", dev="Tritax",
+           area="425,621 sq ft")
+    xb = r("tracker.xlsx", "Symmetry Park", city="Milton Keynes", dev="Tritax",
+           area="326,684 sq ft")
+    ck(M.pair_class(xa, xb) == "forbidden",
+       "cross-source, >15% apart as STRINGS, is forbidden - the veto is no longer blind")
+    fa = r("deck.pdf", "Raven Park", city="Corby", dev="Prologis",
+           area="12,000 sq m", unit="sq m")
+    fb = r("tracker.xlsx", "Raven Park", city="Corby", dev="Prologis",
+           area="129,167 sq ft", unit="sq ft")
+    ca_, cb_ = M._area_pair(fa, fb)
+    ck(ca_ is not None and cb_ is not None and abs(ca_ - cb_) / max(ca_, cb_) < 0.01,
+       f"_area_pair still converts sq m <-> sq ft on STRING values ({ca_}, {cb_})")
+    ck(M.pair_class(fa, fb) in ("auto", "grey"),
+       "...so a mixed-unit STRING pair of one building still reaches a decidable tier")
 
     if fails:
         print(f"\nGREY PREFILTER TEST: FAIL ({len(fails)})")

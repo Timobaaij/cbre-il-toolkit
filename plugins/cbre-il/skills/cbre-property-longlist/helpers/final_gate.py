@@ -258,7 +258,7 @@ def main() -> None:
                   "re-dispatch a reviewer, do NOT edit the report by hand.")
             print(f'        python helpers/deliver.py --canonical "{_w / "canonical.json"}" '
                   f'--html "{_w / "built.html"}" --ledger "{_w / "source_ledger.csv"}" '
-                  f'--out-dir "{dpath}" --slug "{_slug}"'
+                  f'--out-dir "{dpath}" --marker-dir "{_w}" --slug "{_slug}"'
                   + (f' --filename "{_dash}"' if _dash else ""))
             print(f"      Use exactly that --slug ('{_slug}', derived from the report being "
                   f"inspected)" + (f" and --filename ('{_dash}')" if _dash else "")

@@ -280,6 +280,45 @@ def apply(canonical: dict, entries: list, base_dir: Path | None = None) -> dict:
         for k, v in (e.get("set") or {}).items():
             changed[k] = {"from": p.get(k), "to": v}
             p[k] = v
+        # A merge-time plausibility-gate strike writes a permanent-sounding
+        # `meta.conflicts` sentence ("... so the card ships tbd ...") BEFORE this repair
+        # ever runs. Once the repair restores a real value that sentence is simply false,
+        # and it ships verbatim into the Gaps Report alongside the (correct) repair note -
+        # a live run shipped three such contradictions to the client. Annotate the stale
+        # sentence in place (never delete - the strike's own reasoning is still real audit
+        # history) rather than leave a false claim standing next to its own correction.
+        # NOTE: do not skip on ch["from"] == ch["to"] here - resume/caching means a repair
+        # already applied on a PRIOR run reads back as a same-value no-op on this run, but
+        # merge.py's meta.conflicts is a leftover from the ORIGINAL (pre-repair) merge pass
+        # and never regenerates on a resumed run, so the stale note can easily still be sitting
+        # unannotated even when this run's `changed` looks like a no-op.
+        pid = p.get("id")
+        conflicts = (canonical.get("meta") or {}).get("conflicts")
+        if isinstance(conflicts, list):
+            for field, ch in changed.items():
+                if ch["to"] in (None, "tbd"):
+                    continue  # nothing to correct the note WITH - the field is still unknown
+                prefix = f"id {pid} {field}:"
+                # Two stale-note shapes precede this repair: a plausibility-band STRIKE
+                # ("... so the card ships tbd ...") and a cross-source VALUE-CONFLICT note
+                # ("discarded 'X' from <source> (kept 'Y')") where this repair overrides the
+                # precedence winner Y that the note itself still asserts as current. Both are
+                # stale the instant the repair lands and both must be annotated, not just the
+                # first - a "kept 'Y'" note about a value this repair just replaced is exactly
+                # as false to a broker as a "ships tbd" note about a value now restored.
+                kept_marker = f"kept '{ch['from']}')" if ch["from"] is not None else None
+                for i, note in enumerate(conflicts):
+                    if not isinstance(note, str) or not note.startswith(prefix) \
+                            or "[RESOLVED" in note:
+                        continue
+                    if "ships tbd" in note:
+                        conflicts[i] = (f"{note} [RESOLVED by repair {rid}: the card now ships "
+                                        f"{ch['to']!r}, not tbd - see \"Manual corrections "
+                                        f"applied (property-level repairs)\" below.]")
+                    elif kept_marker and kept_marker in note:
+                        conflicts[i] = (f"{note} [RESOLVED by repair {rid}: the card now ships "
+                                        f"{ch['to']!r}, not {ch['from']!r} - see \"Manual "
+                                        f"corrections applied (property-level repairs)\" below.]")
         media = {}
         for slot, rel in (e.get("media") or {}).items():
             src = Path(rel)

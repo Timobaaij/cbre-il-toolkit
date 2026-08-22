@@ -161,8 +161,10 @@ if q:
           "Gamma" in qq["question"] and "Beta" in qq["question"], qq["question"])
     check("the machine-readable extras ride along for the orchestrator",
           qq.get("only_in_brochures") and qq.get("only_in_tracker"))
-    check("unanswered is documented as shipping the union",
-          "union" in qq["if_unanswered"].lower())
+    check("the question BLOCKS (its old union default shipped 41 cards for 17 options)",
+          qq.get("blocking") is True)
+    check("unanswered means the run STOPS, not that the union ships",
+          "nothing is built" in qq["if_unanswered"].lower())
     check("the question uses the stable id", qq["id"] == CQ.AUTHORITY_QID)
 
 # --------------------------------------------------------------- B48 regression

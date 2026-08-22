@@ -11,6 +11,8 @@ It is the same engine the `cbre-il-account-briefing` skill uses, generalised for
 - **Explain, do not tabulate.** Prose carries the argument; tables, stats and cards are the evidence behind it. If you are tempted to put a sentence in a table cell, it belongs in a `prose` cell.
 - **Density from substance, never from tricks.** Fill a slide with *more real, relevant content* when it helps, never with spacing, ballooned fonts or padding. Leftover space is a signal to write more or to add a genuine second beat, not to stretch what is there. Equally, deliberate emptiness around a confident hero stat is a feature, not a hole to fill.
 - **No lazy repetition.** A given scene layout should appear at most twice, ideally once. If three slides in a row are "prose then a row of cards", two of them are wrong. Recompose them as a stat strip, a quote, a table, a from-to of chips, a panel-plus-prose split.
+- **Compose first; presets are the exception.** The named skeletons are not a menu. At most one scene in three may use one, each needs a written `shape_why`, and `audit_scene_shapes` enforces both. Inventing a composition the cell set has not produced before is the expected outcome, not a risk: nesting `split` cells gives you any asymmetry you need, and the geometry audit means a bad guess fails loudly at build time instead of silently in the deck.
+- **Parallel is not repetition.** Two slides walking comparable routes should look alike. Declare `parallel_to: <slide no>` and the audit treats the shared skeleton as intentional. Pairs only.
 - **Readable, not a billboard.** Text sizes up to a readable cap to fill its cell; it never goes tiny and never becomes a giant to fill space.
 - **Be creative.** The cells are a palette, not a checklist. Compose the slide the argument wants. The grid only stops overlaps and off-canvas; it is not a template.
 - **House rules.** UK English; no em or en dashes anywhere (the composer sweeps them); lead with the point; the box grows to fit the text, the font never shrinks; 9pt floor.
@@ -25,6 +27,40 @@ A deck is an ordered list of **slides**. Each slide has a `kind`:
 - `closing` - the closing slide with optional contact cards. Delegates to `build.thank_you`.
 
 A `scene` is an ordered list of **rows**. Each row has a `weight` (its relative vertical share of the body, default 1) and a list of **cells**. Each cell has a `kind`, an optional `span` (its relative horizontal share of the row, default 1), and the content fields for that kind. Rows stack top to bottom and fill the body; cells split a row left to right.
+
+### Skeletons - the shorthand
+
+Instead of writing rows by hand, a scene slide can declare a `shape` plus a flat `cells` list, and the composer expands it. A skeleton decides how the slide is *carved up*; it never decides what the slide says.
+
+| `shape` | The carve | Reach for it when |
+|---|---|---|
+| `bands` | Full-width rows, one per cell | A single tall device, or a plain stack |
+| `rail` | Full-height left column beside an independent stack | A claim on the left, its evidence on the right |
+| `hero` | One dominant cell over a supporting strip | One idea, then what follows from it |
+| `mosaic` | Two cells per row | Parallel evidence that invites comparison |
+| `ledger` | Narrow read left, wide evidence right | A short interpretation against a table or ladder |
+| `poster` | One cell taking most of the slide, a quiet strip beneath | A blockbuster number or a statement |
+
+```json
+{"kind": "scene", "shape": "rail", "headline": "...",
+ "cells": [{"kind": "prose", "text": "..."},
+           {"kind": "stat", "value": "46%", "label": "..."}]}
+```
+
+`scene` and `shape` + `cells` are interchangeable. Write rows by hand when you want a shape the six do not give you.
+
+### Nesting
+
+Any cell can be `{"kind": "split", "scene": [...]}` - a scene inside a cell's rect. This is how asymmetry happens: quadrants, L-shapes, a rail whose right half has its own rhythm. A partition of a partition is still a partition, so nesting buys expressive range at no cost in safety. Limit is four levels; legibility gives out well before that.
+
+```json
+{"weight": 1.0, "cells": [
+  {"kind": "quote", "span": 0.9, "text": "...", "attrib": "..."},
+  {"kind": "split", "span": 1.1, "scene": [
+    {"weight": 1.0, "cells": [{"kind": "heading", "text": "What changed"}]},
+    {"weight": 2.0, "cells": [{"kind": "prose", "text": "..."},
+                              {"kind": "chips", "items": ["rail", "hero"]}]}]}]}
+```
 
 ### The cell catalogue
 
@@ -42,6 +78,22 @@ A `scene` is an ordered list of **rows**. Each row has a `weight` (its relative 
 | `chips` | A row of rounded pills (tags, countries, status) that wrap. | `items` of strings (or {`text`}) |
 | `card` | One numbered card; a row of `card` cells makes a card grid. | `style` ("roman"\|"decimal"), `n`, `title`, `text` or `items`, `accent`, `subtitle` |
 | `image` | A picture fit within the cell, centred. | `path`; `alt` |
+| `split` | A nested scene inside this cell's rect. | `scene` (rows/cells, as above) |
+
+### Editorial device cells
+
+These carry the visual distinctiveness. Each is bounded to its cell rect and declares a minimum height; ask for one in a region too small and the build stops with the fix rather than drawing something squashed.
+
+| Cell | Says | Key fields | Min height |
+|---|---|---|---|
+| `from_to` | A shift from X to Y; the destination is the emphasised panel. | `from`, `to`; optional `from_sub`, `to_sub` | 1.50in |
+| `timeline` | Where we are in a sequence. | `phases` of {`n`, `label`, `text`, `done`}; `here_label`. The one phase with `done: false` gets the gold "we are here" node. | 2.40in |
+| `tiers` | Primary versus secondary. Heights are distributed across the cell. | `tiers` of {`label`, `title`, `note`, `items`, `emphasis`} | 1.50in, and 1.20in per tier |
+| `directions` | Strengthened / refocused / deprioritised. | `rows` of {`direction` ("up"/"right"/"down"), `label`, `items`, `subtag`, `accent`} | 1.00in |
+| `bars` | Categorisation by weight. | `tiers` of {`label`, `sub`, `frac`, `fill`} | 0.80in per bar |
+| `sightline` | The signature CBRE rule device. Max one per slide. | `orientation`, `length` | 0.10in |
+
+`stat` also takes `"scale": "hero"`, which lifts the size cap so a lone number can dominate a `poster` slide.
 
 `cover`/`section`/`closing` carry their own fields (see the worked example and the `build.cover`/`section_divider`/`thank_you` signatures).
 
@@ -61,6 +113,16 @@ A `scene` is an ordered list of **rows**. Each row has a `weight` (its relative 
 - **Capital-strategy memo:** the decision framed in prose, the options as a `table` or `tier` of cards, the numbers as a stat strip, the recommendation in a `callout`.
 
 The cells are the same; the *story* decides which scenes exist and how long each chapter runs. Do not force a deck into a chapter it does not have.
+
+## What the audits enforce
+
+Three checks run on every `compose.render()` and print a report. Pass `shapes_strict=True` / `geometry_strict=True` to make findings raise instead.
+
+- **`audit_scene_shapes`** compares each scene's *signature* (its shape name plus the cell kinds in each row). Two consecutive scenes may not share one, and no signature may appear more than twice. This is the check that keeps a deck from collapsing into one repeated layout.
+- **`audit_geometry`** verifies no text bleeds off the canvas, runs into the wordmark band, or collides with other text. Containment is fine (a callout body inside its background rect is normal); only text-on-text counts.
+- **`audit_tones`** holds the dark/light rhythm at 50-70% dark.
+
+Then **look at the deck**: `python scripts/contact_sheet.py MyDeck.pptx --cols 4` tiles every slide into one image. No assertion catches "this reads as templated"; seeing the whole deck at once does. What you find revises the plan, never a coordinate.
 
 ## Density and fill rules (enforced by the renderer, upheld by you)
 

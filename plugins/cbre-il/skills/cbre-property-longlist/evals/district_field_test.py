@@ -19,6 +19,7 @@ park sits within', which two independent brochures on one live run reached for u
 Offline, no build (except a lightweight template-JS text check)."""
 from __future__ import annotations
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -87,7 +88,12 @@ def main() -> int:
     print()
     print("== version bump ==")
     version = (ROOT / "assets" / "VERSION").read_text(encoding="utf-8")
-    ck("v38" in version, "assets/VERSION was bumped to v38")
+    # >= v38, not the literal: the rename landed at v38, so any LATER label is equally valid.
+    # A literal here re-breaks on the very next unrelated bump - exactly what a literal "v28"
+    # cost areaunit_test once already (see its own recorded note), and what v39 hit.
+    _lbl = version.splitlines()[0].strip()
+    ck(int(re.sub(r"\D", "", _lbl) or 0) >= 38,
+       f"assets/VERSION was bumped at/after the district rename (v38) {ascii(_lbl)}")
     import hashlib
     tmpl_text = C.load_template()
     expected_sha = hashlib.sha256(tmpl_text.encode("utf-8")).hexdigest()

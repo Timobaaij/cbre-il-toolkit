@@ -122,14 +122,92 @@ def _decide_mode(page_texts: list[str]) -> str:
     return "text" if with_text >= TEXT_DECK_MIN_RATIO * len(page_texts) else "raster"
 
 
+# PREP SCHEMA VERSION - bumped whenever this helper changes WHAT it prepares or how it decides a
+# cached entry is still good. It is folded into the stamp KEY, which was otherwise bytes-only
+# (source size + mtime): a deck that has not changed matches the key for ever, so an entry
+# produced by an older, weaker or degraded prep was served to every later run no matter what was
+# fixed in between. That is not a hypothetical - see `_entry_aids_intact` below.
+#   1/2 - pre-versioning (implicit)
+#   3   - aids integrity: an entry with no page renders is no longer accepted while the host CAN
+#         render; entries carry `visual_aids` and, when degraded, `aids_degraded`.
+PREP_SCHEMA = 3
+
+
 def _stamp_path(out_dir: Path, path: Path) -> Path:
     return out_dir / f"{path.stem}.interpret.stamp.json"
 
 
-def _thumbs_present(entry: dict) -> bool:
-    """True when every candidate thumbnail AND every per-page render thumbnail the cached
-    TEXT entry references still exists - so a capped re-run reuses them, but a kill that lost
-    a thumbnail recomputes the entry (the resume guard for the candidate + render images)."""
+def _visual_aids(entry: dict) -> dict:
+    """What this deck entry ACTUALLY hands its interpretation agent to LOOK at:
+    `{pages, renders, candidates, sheets}`. Counting is the whole point - the manifest already
+    carried these fields, and every one of them being empty was indistinguishable from a deck
+    that legitimately has no images. run.py writes the per-deck counts to
+    work/vision/visual_aids.json and the media-harvest gate reads them back."""
+    pages = entry.get("pages") or []
+    renders = sum(1 for p in pages if p.get("render"))
+    cands = sum(len(p.get("candidates") or []) for p in pages)
+    sheets = sum(1 for p in pages if p.get("candidates_sheet"))
+    return {"pages": len(pages), "renders": renders, "candidates": cands, "sheets": sheets,
+            "mode": entry.get("mode")}
+
+
+def _can_render(path: Path) -> bool:
+    """True when THIS host can rasterise THIS deck right now - Pillow present, the engine has a
+    renderer, and the deck opens. A hard probe of the capability, so the guard below can tell
+    "this deck has no renders because nothing here can render" (an honest, re-attempted absence)
+    from "this deck has no renders although rendering works" (a poisoned entry)."""
+    try:
+        if IMG.Image is None:
+            return False
+        if not IMG.media_capabilities().get("renderer"):
+            return False
+        path = Path(path)
+        if path.suffix.lower() == ".pptx":
+            # A PPTX renders only via a LibreOffice conversion, and the only cheap way to prove
+            # that works is to run it (20-180 s). Proving it here would either cost that on every
+            # resume or, if assumed True, condemn a soffice-less host to recompute the whole
+            # entry - thumbnails and all - on every single run. So the non-vacuous rule is not
+            # applied to PPTX: the PREP_SCHEMA bump still invalidates any already-poisoned entry
+            # once, and run.py's `[SIGNAL] visual aids` line + the media-harvest gate still name
+            # a slide deck that reached its agent with no renders. Visible, not silent.
+            return False
+        # a SHORT-LIVED open, deliberately not IMG's shared doc cache: this probe runs on the
+        # RESUME path, which returns without ever calling close_doc_cache(), so a cached handle
+        # would outlive the prep step - and on Windows a held handle blocks a caller's temp-dir
+        # cleanup (the same leak class fixed in merge / gate_runner / project_properties).
+        doc = fitz.open(path)
+        try:
+            return doc.page_count > 0
+        finally:
+            try:
+                doc.close()
+            except Exception:
+                pass
+    except Exception:
+        return False
+
+
+def _entry_aids_intact(entry: dict, path: Path) -> bool:
+    """Is this cached TEXT entry still a USABLE set of visual aids for the interpretation agent?
+
+    Two questions, and only the first one used to be asked.
+
+    (a) REFERENTIAL: every candidate thumbnail, per-page render and contact sheet the entry
+        names still exists on disk, so a shell-capped re-run reuses them while a kill that lost
+        one recomputes.
+
+    (b) NON-VACUOUS (the fix): an entry that references NO thumbnails and NO renders at all
+        passed (a) trivially - every one of zero files exists - so a deck prepared in a moment
+        when the image layer was unavailable was cached with `render: null` and `candidates: []`
+        on every page and then served for ever, the stamp key being bytes-only. Measured on a
+        live run: fourteen decks' agents were handed manifests with zero visual aids, wrote no
+        `__meta.image_pages` and no `__meta.plan_page`, and the whole gallery/plan harvest
+        collapsed to each property's single anchor page. Re-running the prep produced 7/7
+        renders and 64 candidate thumbnails in 6.6 s - the machinery was fine, the CACHE was
+        poisoned. So: when the host CAN render, a multi-page entry carrying zero renders is
+        REJECTED and recomputed. When it genuinely cannot render, the entry is still accepted
+        (nothing better is obtainable) and `aids_degraded` says so on the entry.
+    """
     try:
         for pg in entry.get("pages", []):
             for c in pg.get("candidates", []):
@@ -144,6 +222,9 @@ def _thumbs_present(entry: dict) -> bool:
             for sh in (pg.get("candidates_sheet") or []):
                 if sh and not Path(sh).exists():
                     return False
+        aids = _visual_aids(entry)
+        if aids["pages"] and aids["renders"] == 0 and _can_render(path):
+            return False
         return True
     except Exception:
         return False
@@ -320,7 +401,12 @@ def prepare(path: Path, region: str, country: str, out_dir, dpi: int = 180,
     cur = None
     try:
         s = path.stat()
-        cur = {"size": s.st_size, "mtime_ns": s.st_mtime_ns}
+        # SCHEMA is part of the key, not just the bytes. A bytes-only key says "this deck has
+        # not changed", which is not the question - the question is "is the entry I cached for
+        # it still the entry this prep would produce", and a helper/feature change makes the
+        # answer no while the bytes are identical. Without this a pre-feature (or degraded)
+        # entry is served for ever.
+        cur = {"size": s.st_size, "mtime_ns": s.st_mtime_ns, "schema": PREP_SCHEMA}
         # honour --no-resume: only serve the cached entry when resuming (run.py threads
         # its RESUME flag in). The text entry is a pure function of the source bytes, so
         # a cache hit is byte-identical anyway - but an explicit recompute is honoured.
@@ -334,7 +420,7 @@ def prepare(path: Path, region: str, country: str, out_dir, dpi: int = 180,
             # file. The text entry is a pure function of the source bytes, so a hit is
             # byte-identical anyway.
             if (saved.get("key") == cur and entry.get("mode") == "text"
-                    and _thumbs_present(entry)):
+                    and _entry_aids_intact(entry, path)):
                 # the page payload + thumbnails are a pure function of the source BYTES and are
                 # reused as-is, but region/country are MANIFEST INPUTS supplied by the caller:
                 # intake can re-cluster a deck to a corrected region on a resume (reference/
@@ -346,6 +432,7 @@ def prepare(path: Path, region: str, country: str, out_dir, dpi: int = 180,
                 entry["cluster_label_is_routing_only"] = True
                 entry.pop("region", None)   # a REUSED entry may still carry the legacy key (B51)
                 entry["country"] = country
+                entry["visual_aids"] = _visual_aids(entry)   # refreshed, never trusted from cache
                 return entry
     except Exception:
         cur = None
@@ -359,6 +446,29 @@ def prepare(path: Path, region: str, country: str, out_dir, dpi: int = 180,
 
     if mode == "text":
         entry = _text_deck_entry(path, region, country, page_texts, st, out_dir)
+        entry["visual_aids"] = _visual_aids(entry)
+        # HONEST ADMISSION. Producing an entry with no visual aids is a legitimate outcome on a
+        # host that cannot render - but it must SAY so on the entry, because the agent reading
+        # that manifest is being asked to pick __meta.plan_page / image_pages from text alone and
+        # nothing else downstream can tell that from "this deck holds no images". It is the entry
+        # itself that carries the admission, so it travels with the manifest into the agent's
+        # own context. (Two shapes: nothing to look at at all, or pages without renders.)
+        degraded = []
+        aids = entry["visual_aids"]
+        if aids["pages"] and aids["renders"] == 0:
+            degraded.append(
+                "no page RENDER was produced for any page - this agent cannot SEE any page, so "
+                "__meta.plan_page cannot be judged visually here"
+                + ("" if _can_render(path) else
+                   " (this host cannot rasterise this deck: "
+                   + ("Pillow is unavailable" if IMG.Image is None else "the engine has no renderer")
+                   + ")"))
+        if aids["pages"] and aids["candidates"] == 0:
+            degraded.append(
+                "no candidate image thumbnail was produced for any page - either the deck holds "
+                "no hero-size embedded raster, or the image layer could not decode one")
+        if degraded:
+            entry["aids_degraded"] = degraded
         if cur is not None:
             try:
                 stamp.write_text(json.dumps({"key": cur, "entry": entry}, ensure_ascii=False),

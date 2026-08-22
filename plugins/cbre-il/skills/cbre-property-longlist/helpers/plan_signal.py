@@ -15,6 +15,12 @@ Three roles, all feeding images._plan_page_eligible:
     kind=='plan' visual path is unaffected (it needs no marker).
   * looks_like_spec_page(text): DISQUALIFY a property SPEC/availability page (>=2 own-line spec
     labels) from ever binding the plan slot, via the authoritative extract_pdf label matcher.
+  * plan_furniture_score(text): CORROBORATE the vector route only - how many DISTINCT annotations a
+    site-layout DRAWING carries ON it (dock doors, yard depth, parking bays, gatehouse, access gates,
+    site boundary, the accommodation schedule). A vector LOCATION MAP is just as vector-dense as a
+    masterplan but carries none of them, so this is the discriminator that lets a full-page vector
+    drawing bind at all. It can never rescue a page on its own (no vector body -> the count is
+    ignored), which is why admitting amenity vocabulary HERE does not weaken plan_titles.
 
 ADDITIVE-ONLY: a page with no extractable text (a vector plan whose labels are drawn strokes, or a
 raster deck) scores 0 / False and falls through to the pure-visual detector unchanged - text never
@@ -65,13 +71,16 @@ def _load():
         d = json.loads(_LEX_PATH.read_text(encoding="utf-8"))
         titles = [t for t in d.get("plan_titles", []) if isinstance(t, str)]
         markers = [m for m in d.get("drawing_markers", []) if isinstance(m, str)]
+        furniture = [f for f in d.get("plan_furniture", []) if isinstance(f, str)]
     except Exception:
-        titles, markers = [], []  # missing/corrupt lexicon -> a silent no-op (score 0), never a crash
+        # missing/corrupt lexicon -> a silent no-op (score 0), never a crash
+        titles, markers, furniture = [], [], []
     return ([f for f in (_fold(t) for t in titles) if f],
-            [f for f in (_fold(m) for m in markers) if f])
+            [f for f in (_fold(m) for m in markers) if f],
+            sorted({f for f in (_fold(x) for x in furniture) if f}))
 
 
-_TITLES, _MARKERS = _load()
+_TITLES, _MARKERS, _FURNITURE = _load()
 
 
 # A to-scale DRAWING scale ratio ("scale 1:500", "Maßstab 1:2 500") = a site/plot/floor-plan sheet.
@@ -162,6 +171,27 @@ def plan_title_score(text) -> float:
         return 0.0
     title_hits = sum(1 for t in _TITLES if _word_present(folded, t))
     return 1.0 * title_hits + (0.5 if _markers_present(folded) else 0.0)
+
+
+def plan_furniture_score(text) -> int:
+    """How many DISTINCT site-plan DRAWING ANNOTATIONS the page text carries - the things a site
+    layout draws and then labels: dock / level-access doors, the service yard and its depth,
+    car / HGV / trailer parking bays, the gatehouse, the access gates and main entrance, the site
+    boundary / area / coverage, the accommodation schedule beside the drawing.
+
+    Its ONE job is to CORROBORATE the vector route in images._plan_page_eligible: a page whose whole
+    body is vector line-art is a site plan only if it is a LABELLED site plan. This is what separates
+    a MASTERPLAN from a vector LOCATION MAP - a regional road map is just as vector-dense (measured:
+    2,900 drawing objects on a real one) but carries no dock doors, no yard depth and no parking bays.
+
+    It is NOT a plan title and can never rescue a page by itself: with no vector body the count is
+    ignored entirely, so the deliberate exclusion of amenity words from `plan_titles` is untouched.
+    Whole-word, accent/case/apostrophe-insensitive (folded both sides). 0 on empty text or a
+    missing/corrupt lexicon."""
+    folded = _fold(text)
+    if not folded:
+        return 0
+    return sum(1 for t in _FURNITURE if _word_present(folded, t))
 
 
 def looks_like_spec_page(text) -> bool:
