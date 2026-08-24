@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
-"""handoff_commands_test.py - the exit-0 QA-window hand-off gives the orchestrator FULL,
-copy-paste-ready deliver.py/final_gate.py commands, never an ellipsis or a bare word.
+"""handoff_commands_test.py - the QA window's hand-offs are complete and loop-driven.
 
-THE DEFECT: the hand-off message printed at "spine done" told the orchestrator to
-"deliver" (no command) and run `final_gate.py ... --qa-state {work}` (a literal ellipsis).
-Every value needed to build the real command - --canonical, --html, --ledger, --out-dir,
---slug, --filename for deliver.py; --canonical, --html, --deliverables, --reviews,
---qa-state for final_gate.py - is already a local variable a few lines above in the SAME
-function (run.py's own internal deliver.py call at line ~3332 proves it). An orchestrator
-without those flags memorised had to discover them by triggering argparse's "required
-arguments" error on both scripts before finding the right invocation - avoidable friction on
-every future run, not just this one.
+HISTORY. This eval originally pinned the exit-0 "spine done" hand-off to carry FULL
+copy-paste deliver.py/final_gate.py commands (an earlier version printed a bare
+"deliver" and a literal `final_gate.py ...` ellipsis, forcing the orchestrator to
+discover the flags via argparse errors). Workstream 1 item 1.2 made that defect
+STRUCTURALLY impossible: the spine now runs qa-round record, deliver and final_gate
+ITSELF, and the QA window is exit-code driven (14 = reviews missing, 15 = blocking
+findings unresolved, 0 = final_gate green). What this eval pins is therefore the NEW
+contract - and that no trace of the old prose-ordered hand-off survives to contradict
+it.
 
-Source-text pin (matching this suite's convention for pipeline-wiring checks, e.g.
-gate1_automation_test.py): the hand-off string must contain the actual flag names for
-BOTH scripts, and must not contain a literal ellipsis standing in for arguments. Offline."""
+Source-text pin (this suite's convention for pipeline-wiring checks). Offline."""
 from __future__ import annotations
-import re
 import sys
 from pathlib import Path
 
@@ -32,27 +28,44 @@ def ck(ok, msg):
 
 def main() -> int:
     src = (ROOT / "helpers" / "run.py").read_text(encoding="utf-8")
-    start = src.find('"(orchestrator: spine done')
-    ck(start != -1, "run.py has the exit-0 QA-window hand-off message")
-    # isolate just the _say_orchestrator(...) call so a match elsewhere in the file
-    # (e.g. a different hand-off for a different exit code) cannot satisfy the pin
-    end = src.find('return\n', start) if start != -1 else -1
-    block = src[start:end] if start != -1 and end != -1 else ""
 
-    ck("deliver.py --canonical" in block,
-       "the hand-off gives the full deliver.py command, not the bare word 'deliver'")
-    for flag in ("--canonical", "--html", "--ledger", "--out-dir", "--slug", "--filename"):
-        ck(flag in block.split("deliver.py", 1)[-1].split("final_gate.py", 1)[0],
-           f"deliver.py's hand-off command includes {flag}")
+    # the old prose-ordered hand-off is GONE - two contradictory contracts must not coexist
+    ck('"(orchestrator: spine done' not in src,
+       "the old 'spine done' prose hand-off is gone from run.py")
 
-    ck("final_gate.py --canonical" in block,
-       "the hand-off gives the full final_gate.py command, starting with --canonical")
-    fg_part = block.split("final_gate.py", 1)[-1] if "final_gate.py" in block else ""
-    for flag in ("--canonical", "--html", "--deliverables", "--reviews", "--qa-state"):
-        ck(flag in fg_part, f"final_gate.py's hand-off command includes {flag}")
+    # exit 14: names the rendered prompts and demands verbatim dispatch
+    i14 = src.find("independent QA review needed (exit 14)")
+    ck(i14 != -1, "run.py has the exit-14 hand-off")
+    b14 = src[i14:i14 + 900]
+    ck("VERBATIM" in b14 and "prompts" in b14,
+       "exit-14 hand-off points at the rendered prompts, dispatched verbatim")
+    ck("_exit_round_trip(work, 14" in src,
+       "exit 14 goes through the round-trip guard (pending diagnosis + streak detection)")
 
-    ck("final_gate.py ..." not in block,
-       "the old ellipsis placeholder for final_gate.py's arguments is gone")
+    # exit 15: carries the FULL qa-round resolve command, never a bare word
+    i15 = src.find("(exit 15)")
+    ck(i15 != -1, "run.py has the exit-15 hand-off")
+    b15 = src[i15:i15 + 900]
+    ck("resolve --work" in b15 and "--id <id> --because" in b15,
+       "exit-15 hand-off gives the full qa-round resolve command (with --id/--because)")
+    ck("_exit_round_trip(work, 15" in src,
+       "exit 15 goes through the round-trip guard")
+
+    # the spine RUNS the tail itself - deliver re-folds advisories, final_gate is the
+    # backstop, and its reasons survive quiet mode via the report file
+    tail = src[src.find("QA WINDOW, LOOP-DRIVEN"):]
+    ck("QA WINDOW, LOOP-DRIVEN" in src, "the loop-driven QA tail exists")
+    ck('call(gate_runner, "qa-round", "record"' in tail,
+       "the spine records the QA round itself")
+    ck("qa_round_number(work) == 0" in tail,
+       "record is guarded against round inflation (self-opening record)")
+    ck('call(deliver, "--canonical"' in tail,
+       "the spine re-delivers itself (advisories folded)")
+    ck("run_gate(_final_gate_mod" in tail,
+       "the spine runs final_gate itself, captured via run_gate")
+    ck("final_gate_report.md" in tail,
+       "a red final gate names work/final_gate_report.md (quiet mode cannot swallow it)")
+    ck("sys.exit(7)" in tail, "a red final gate is exit 7")
 
     print()
     if FAILS:

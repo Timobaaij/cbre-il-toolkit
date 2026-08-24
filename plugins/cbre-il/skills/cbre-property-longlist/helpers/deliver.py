@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 
@@ -348,10 +349,34 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
                      "these options were left OFF. They were found and read normally - nothing "
                      "failed. If any of them should be on the list, re-run and answer the "
                      "source-authority question with 'the union of both'.")
+        def _hfmt(hl: dict) -> str:
+            v = (hl or {}).get("warehouseArea")
+            if v is None:
+                return ""
+            s = f"{v:,.0f}" if isinstance(v, (int, float)) else str(v)
+            u = (hl or {}).get("areaUnit") or ""
+            return f"{s} {u}".strip()
+
         for e in excluded:
             srcs = ", ".join(e.get("source_files") or []) or "?"
             lines.append(f"- **{e.get('name', '(unnamed option)')}** - {e.get('why', '')} "
                          f"(found in: {srcs})")
+            # RECORD-LEVEL CONFLICT: this excluded record plausibly IS a shipped card
+            # (a forbidden/grey pair kept them from merging). Print the actual figures
+            # side by side - suppressing a conflicting figure for a shipped property
+            # must never read as a distinct option quietly disappearing.
+            ls = e.get("likely_same_as") or {}
+            if ls:
+                mine = _hfmt(e.get("headline"))
+                theirs = _hfmt(ls.get("kept_headline"))
+                why_apart = ("a >15% size conflict kept them from being treated as one "
+                             "property" if ls.get("tier") == "forbidden"
+                             else "they were judged distinct, but the match was borderline")
+                cmp_txt = (f": the excluded record states {mine}, the shipped card states "
+                           f"{theirs}" if mine and theirs else "")
+                lines.append(f"  - LOOKS LIKE SHIPPED OPTION **{ls.get('name')}** "
+                             f"({why_apart}){cmp_txt}. Confirm which figure is right - "
+                             f"the card currently shows only its own source's value.")
         lines.append("")
 
     ov = meta.get("overrides", {}) or {}
@@ -571,7 +596,29 @@ def longlist_xlsx(canonical: dict, out_path: Path) -> None:
     meta = canonical.get("meta", {}) or {}
     units = meta.get("units", {}) or {}
     default_ru = units.get("rent") or "€/sq m/yr"
-    headers = [h for _, h in LONGLIST_COLUMNS]
+    # OPEN COLUMNS (read everything; display selectively): any scalar field present
+    # on at least one property that has no fixed column ships as an extra column at
+    # the right-hand end, header prettified from its camelCase key. The card grid
+    # stays curated; this flat workbook is the COMPLETE view - a field that reached
+    # canonical.json must never be absent from the broker's own table.
+    _fixed = {k for k, _ in LONGLIST_COLUMNS}
+    _open_deny = {"photo", "gallery", "plan", "preBaked", "id",
+                  "warehouseAreaSqm", "officeAreaVal", "warehouseRentVal",
+                  "officeRentVal", "expansionParkVal", "rentUnitAssumed",
+                  "regionCode", "coordsApprox",
+                  # merge stamps this display string on every property; the fixed
+                  # "Warehouse rent (annual)" column already shows it
+                  "warehouseRent"}
+    extras = sorted({k for p in props for k, v in p.items()
+                     if k not in _fixed and k not in _open_deny
+                     and not k.startswith("_")
+                     and isinstance(v, (str, int, float, bool))})
+
+    def _pretty(k: str) -> str:
+        words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", k).replace("_", " ")
+        return (words[:1].upper() + words[1:].lower()) if words else k
+
+    headers = [h for _, h in LONGLIST_COLUMNS] + [_pretty(k) for k in extras]
     # ASSUMED UNITS ARE DISCLOSED IN THE WORKBOOK, not only in the Gaps Report. (B38)
     #
     # This is the artefact the broker actually forwards, and an "Area unit" of a bare "sq ft"
@@ -597,7 +644,8 @@ def longlist_xlsx(canonical: dict, out_path: Path) -> None:
             return f"{p['areaUnit']} (assumed - source stated none)"
         return _cell(p.get(key))
 
-    rows = [[value_for(p, key) for key, _ in LONGLIST_COLUMNS] for p in props]
+    rows = [[value_for(p, key) for key, _ in LONGLIST_COLUMNS]
+            + [_cell(p.get(k)) for k in extras] for p in props]
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -617,7 +665,7 @@ def longlist_xlsx(canonical: dict, out_path: Path) -> None:
             ws.append(r)
         ws.freeze_panes = "B2"  # freeze the header row + the ID column
         ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(rows) + 1}"
-        for i, (key, _h) in enumerate(LONGLIST_COLUMNS, start=1):
+        for i, key in enumerate([k for k, _ in LONGLIST_COLUMNS] + extras, start=1):
             ws.column_dimensions[get_column_letter(i)].width = (
                 30 if key in _WIDE else 8 if key == "id" else 16)
         tmp = out.with_suffix(out.suffix + ".tmp")

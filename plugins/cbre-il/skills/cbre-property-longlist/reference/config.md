@@ -84,7 +84,59 @@ For low-confidence clusters the orchestrator judges the likely city/region from 
 **Absence of the cache IS the regex opt-out** - no `.SKIP` sentinel is needed (unlike the tracker map, there is no exit/dispatch to decline). A no-LLM / non-interactive / offline run simply never writes `work/intake_clusters.json`, so the deterministic regex stands and the offline evals are byte-identical. The LLM sets ONLY `inputs.clusters` (a routing/scaffold label + the `market.countries` seed); the card's displayed region/city are read from the brochure body at extraction, so a wrong cluster label can never fabricate a displayed field - the existing coverage gate (a hallucinated region maps zero brochures -> an empty cluster -> blocked) and the broker confirmation are the backstops.
 
 ## Stage-0 setup prompt (ONE consolidated widget form)
-At intake the orchestrator presents ONE consolidated `visualize` widget form with ALL FIVE setup questions at once (client name, enrichment extras, the optional openrouteservice key as an inline field, the email scope - **a named Outlook mail folder** via the `outlook_email_search` sub-agent with `folderName`, **across all of Outlook**, or **none** - and the dashboard language). The verbatim form and its submission parsing are in `reference/setup-form.md`; the mandate (single widget, all five together, one submit, plain-text fallback only when the widget tool is genuinely unavailable) is SKILL.md "The broker setup prompt". (A Windows `.msg`/`.eml` folder is a no-MCP fallback only.) The answers are written to `client:`, `enrichment:`, `inputs.emails:` and `output.language` so subsequent re-runs are non-interactive.
+At intake the orchestrator presents ONE consolidated `visualize` widget form with ALL SIX setup questions at once (client name, enrichment extras, the optional openrouteservice key as an inline field, the email scope - **a named Outlook mail folder** via the `outlook_email_search` sub-agent with `folderName`, **across all of Outlook**, or **none** - the dashboard language, and the ask mode). The verbatim form and its submission parsing are in `reference/setup-form.md`; the mandate (single widget, all six together, one submit, plain-text fallback only when the widget tool is genuinely unavailable) is SKILL.md "The broker setup prompt". (A Windows `.msg`/`.eml` folder is a no-MCP fallback only.) The answers are written to `client:`, `enrichment:`, `inputs.emails:`, `output.language` and `clarify.mode` so subsequent re-runs are non-interactive.
+
+## clarify: - the ask mode (workstream 3; INTERACTIVE IS THE STANDARD)
+```yaml
+clarify:
+  mode: interactive   # the STANDARD: judgement calls the files cannot settle become
+                      # exit-13 broker questions (unsure match/pick verdicts, photo
+                      # confirmations, reader doubts, excluded-figure conflicts).
+                      # "headless": decide-sensibly-and-disclose - every new kind
+                      # resolves to today's safe default, attributed in its reason.
+  # assume_defaults: true   # also forces headless (as does work/clarify.SKIP_ALL)
+```
+`clarify_mode()` resolves it: an explicit `mode` wins; `assume_defaults: true` or the
+`work/clarify.SKIP_ALL` sentinel force headless; absent = interactive. Headless behaviour
+is unchanged from before the mode existed.
 
 ## Empty-string handling
 Blank `project.yaml` strings fall back to defaults (today's date, a generated lede, a generic eyebrow) - the build never emits empty hero text.
+
+## Correcting a datum - `work/overrides.json` (the full contract)
+
+The ONE durable way to correct extracted data. Re-applied after extraction on **every** run,
+so it survives re-extraction. A JSON **list**, so it is diffable and append-only:
+
+```json
+[
+  {
+    "id": "ov-001",
+    "where": { "source_file": "Warehouse Availability.xlsx", "sheet": "Longlist", "row": 13 },
+    "set": { "city": "Corby" },
+    "expect": { "city": "Northamptonshire" },
+    "why": "the county sat in the city column; the city is Corby (tracker Longlist!r13)",
+    "verified_by": "you@cbre.com"
+  }
+]
+```
+
+- **`where`** targets an EXISTING record: `source_file` (basename, case-insensitive) plus ONE
+  discriminator - `sheet` + `row` for a spreadsheet (**1-based, exactly as you read it in
+  Excel**), or `page_no` for a brochure. Zero matches applies NOTHING and reports **STALE**;
+  more than one applies NOTHING and reports **AMBIGUOUS** (it fails closed - a
+  `source_file`-only entry must never quietly rewrite 12 tracker rows). Add **`"multi":
+  "all"`** only if every match really should change - the one sanctioned multi-row correction.
+- **`expect`** is optional but strongly recommended: if the current value no longer matches,
+  the entry applies nothing and reports **SUPERSEDED** - the guard against a row being
+  inserted upstream so `row 13` is now a different property.
+- **`why`** is REQUIRED and non-empty - it ships in the Source Ledger and the Gaps Report.
+- It can never create a property, a record or a new field, and **`areaUnit` / `rentUnit` are
+  DENIED** (applied before the dataset unit vote, they could silently relabel every figure -
+  the 10.76x class). Correct the area/rent figures themselves instead; the ONE sanctioned way
+  a unit is set by a human is an exit-13 ANSWER (attributed - an override is silent).
+- Every applied correction is DISCLOSED, not laundered: an `override` row in the Source Ledger
+  (`grep ,override, source_ledger.csv` lists every manual touch), the field's own ledger row
+  gains `(manual override ov-001: ...)`, and the Gaps Report gets a **"Manual corrections
+  applied"** line with old -> new + why. A stale entry is named at startup, after merge, and
+  in the Gaps Report - it cannot rot silently.

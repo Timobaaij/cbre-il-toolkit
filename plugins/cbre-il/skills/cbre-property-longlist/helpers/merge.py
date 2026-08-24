@@ -1027,6 +1027,121 @@ def authority_extras(clusters: list[list[dict]]) -> dict:
     return {k: v for k, v in out.items() if v}
 
 
+def _cluster_headline(cluster: list[dict]) -> dict:
+    """A cluster's own headline figures, for the Gaps disclosure of an excluded
+    record - the broker must see WHAT was excluded, not just that something was.
+    A figure and its unit come from the SAME record: a sibling's unit must never
+    label another record's magnitude (that would be a possible 10.76x mislabel
+    inside the very line meant to settle the figure)."""
+    h = {}
+    for r in cluster or []:
+        v = r.get("warehouseArea")
+        if "warehouseArea" not in h and v not in (None, "") and not N.looks_unknown(v):
+            h["warehouseArea"] = v
+            u = r.get("areaUnit")
+            if u and not N.looks_unknown(u):
+                h["areaUnit"] = u
+        rv = r.get("warehouseRent")
+        if "warehouseRent" not in h and rv not in (None, "") and not N.looks_unknown(rv):
+            h["warehouseRent"] = rv
+            ru = r.get("rentUnit")
+            if ru and not N.looks_unknown(ru):
+                h["rentUnit"] = ru
+        c = r.get("city")
+        if "city" not in h and c not in (None, "") and not N.looks_unknown(c):
+            h["city"] = c
+    return h
+
+
+def _forbidden_identity(a: dict, b: dict) -> bool:
+    """Does a FORBIDDEN pair also share IDENTITY (it would have matched were it not
+    for the size conflict)? The bare size test fires for any cross-source pair, so
+    forbidden alone means nothing; with identity it means 'plausibly one building,
+    two conflicting descriptions'."""
+    return (match.match_key(a) == match.match_key(b)
+            or match._cross_source_grey(a, b))
+
+
+def shipped_forbidden_conflicts(clusters: list[list[dict]]) -> list[str]:
+    """Both-shipped forbidden pairs WITH identity: two cards that are plausibly one
+    building, kept apart by the >15% size rule, BOTH shipping. The LLM never saw
+    the pair (forbidden is a hard veto), the dedupe gate sees two distinct keys,
+    and nothing else compares the figures - this is the channel that names it.
+    Cross-source only: a same-file forbidden pair is two units of one scheme,
+    distinct phases BY DESIGN, and flagging every multi-unit deck would be noise."""
+    def _fmt(h: dict) -> str:
+        v = h.get("warehouseArea")
+        if v is None:
+            return "size unstated"
+        s = f"{v:,.0f}" if isinstance(v, (int, float)) else str(v)
+        return f"{s} {h.get('areaUnit') or ''}".strip()
+
+    out = []
+    for i, ca in enumerate(clusters or []):
+        for cb in clusters[i + 1:]:
+            hit = False
+            for a in ca:
+                for b in cb:
+                    if (a.get("__meta") or {}).get("source_file") == \
+                            (b.get("__meta") or {}).get("source_file"):
+                        continue
+                    if match.pair_class(a, b) == "forbidden" \
+                            and _forbidden_identity(a, b):
+                        hit = True
+                        break
+                if hit:
+                    break
+            if not hit:
+                continue
+            # one line per CLUSTER PAIR, never deduped by label: two clusters of one
+            # multi-unit park share a label, and collapsing them hid distinct conflicts
+            la, lb = cluster_label(ca), cluster_label(cb)
+            out.append(f"'{la}' and '{lb}' are plausibly the SAME building described "
+                       f"twice (shared identity, but a >15% size conflict kept them "
+                       f"from merging: {_fmt(_cluster_headline(ca))} vs "
+                       f"{_fmt(_cluster_headline(cb))}); both ship as separate cards - "
+                       f"confirm with the agent that they are genuinely distinct")
+    return out
+
+
+def _likely_same_kept(dropped_cluster: list[dict], kept: list[list[dict]]):
+    """The kept cluster this dropped one plausibly IS - a forbidden/grey pair kept
+    them from clustering, so the 'excluded option' is really a CONFLICTING RECORD
+    for a shipped card. Without this linkage a suppressed figure for a shipped
+    property reads as a distinct option disappearing, and the conflict (230,000 vs
+    356,202 for the same plot, on a live run) surfaces nowhere. Deterministic:
+    first forbidden match wins; a grey match is kept only if no forbidden exists."""
+    best = None
+    for _ki, kcl in enumerate(kept or []):
+        for dr in dropped_cluster or []:
+            for kr in kcl or []:
+                # same-file pairs are distinct BY DESIGN (two units of one scheme) -
+                # never assert "plausibly one building" across them
+                if (dr.get("__meta") or {}).get("source_file") == \
+                        (kr.get("__meta") or {}).get("source_file"):
+                    continue
+                tier = match.pair_class(dr, kr)
+                # 'forbidden' fires on the SIZE test alone, for any cross-source
+                # pair - as a linkage signal it needs IDENTITY too: the pair must
+                # be one that would have matched (equal keys, or the grey identity
+                # pre-filter) were it not for the size conflict.
+                if tier == "forbidden":
+                    if not _forbidden_identity(dr, kr):
+                        continue
+                elif tier != "grey":
+                    continue
+                # kept_index = the kept cluster's position, which IS its eventual
+                # property id minus 1 (ids are assigned by enumerating this same
+                # list) - the exit-13 excluded-figure question keys on it
+                cand = {"name": cluster_label(kcl), "tier": tier,
+                        "kept_index": _ki,
+                        "kept_headline": _cluster_headline(kcl)}
+                if tier == "forbidden":
+                    return cand
+                best = best or cand
+    return best
+
+
 def apply_source_authority(clusters: list[list[dict]], authority: str) -> tuple:
     """Split settled clusters into (kept, dropped) per the broker's source-authority answer.
 
@@ -1053,19 +1168,38 @@ def apply_source_authority(clusters: list[list[dict]], authority: str) -> tuple:
         if fam in fams or not fams:
             kept.append(cl)
         else:
-            dropped.append({
+            dropped.append(({
                 "name": cluster_label(cl),
                 "evidenced_by": sorted(fams),
                 "source_files": sorted({str((r.get("__meta") or {}).get("source_file") or "")
                                         for r in cl if (r.get("__meta") or {}).get("source_file")}),
                 "why": (f"not evidenced by the {fam}, which you set as the guiding source for "
                         f"what belongs on this longlist"),
-            })
+            }, cl))
     if not kept:
         # fail OPEN: an authority that matches nothing is far more likely a mis-detection than
         # a client with zero properties. Ship the union and let the Gaps Report say so.
         return list(clusters or []), []
-    return kept, dropped
+    # RECORD-LEVEL DISCLOSURE: carry each dropped cluster's own headline figures,
+    # and - when a forbidden/grey pair links it to a KEPT cluster - name the shipped
+    # card it plausibly IS, so the Gaps Report prints the actual figure conflict
+    # instead of a bare option name.
+    entries = []
+    for entry, dcl in dropped:
+        # the enrichment must NEVER cancel the exclusion itself: a failure here,
+        # inside the caller's authority try/except, would silently ship the union
+        # the broker excluded. Per-entry, best-effort, error disclosed on the entry.
+        try:
+            hl = _cluster_headline(dcl)
+            if hl:
+                entry["headline"] = hl
+            link = _likely_same_kept(dcl, kept)
+            if link:
+                entry["likely_same_as"] = link
+        except Exception as e:
+            entry["headline_error"] = f"{type(e).__name__}: {e}"
+        entries.append(entry)
+    return kept, entries
 
 
 def conflict_candidates(clusters: list[list[dict]]) -> list[dict]:
@@ -3031,6 +3165,11 @@ def main() -> None:
         return v is None or str(v).strip().lower() in {"tbd", "—", "", "none", "??"}
 
     properties, ledger_rows, all_conflicts = [], [], []
+    # Both-shipped forbidden-with-identity pairs: two cards plausibly ONE building,
+    # kept apart by the >15% size rule and BOTH shipping. Disclosed in the Gaps
+    # 'Source conflicts' section - the LLM never sees a forbidden pair and the
+    # dedupe gate sees two distinct keys, so nothing else compares their figures.
+    all_conflicts.extend(shipped_forbidden_conflicts(clusters))
     all_variants: list = []   # I10: meta.notationVariants - same value, stated differently
     override_rows: list = []   # P1-4: explicit `override` ledger rows, appended after the loop
                                # so the property rows keep their existing order and bytes
@@ -3073,10 +3212,19 @@ def main() -> None:
     # say what was dropped rather than assert the sources were silent about it.
     unparseable_areas: dict = {}
     stated_totals: dict = {}       # P1-1: id -> the SOURCE's own stated total area (arithmetic gate)
+    open_capture_by_id: dict = {}  # id -> the extractor's __meta.open_capture entries (commentary/
+    #                                denied/CJK columns): READ but never client-shown; __meta is
+    #                                popped at merge, so this is how they reach the per-property view
     for i, cl in enumerate(clusters, start=1):
         variants: dict = {}   # I10: same fact, different notation - reported, not adjudicated
         merged, prov, conflicts = merge_cluster(cl, FIELD_DECISIONS or None, variants)
         merged["id"] = i
+        _oc = [dict(e, source_file=(r.get("__meta") or {}).get("source_file", ""))
+               for r in cl
+               for e in ((r.get("__meta") or {}).get("open_capture") or [])
+               if isinstance(e, dict)]
+        if _oc:
+            open_capture_by_id[str(i)] = _oc
         merged = canonicalize(merged)
         # regionCode auto-derivation: the workforce block keys on regionCode, but no
         # extractor sets it - a real run shipped an EMPTY workforce block because
@@ -3529,6 +3677,8 @@ def main() -> None:
         meta["unitAssumptions"] = unit_assumptions
     if stated_totals:  # P1-1: input to `gate_runner arithmetic`; absent when no source states one
         meta["statedTotals"] = stated_totals
+    if open_capture_by_id:  # read-but-not-shown captures, for the per-property view
+        meta["openCapture"] = open_capture_by_id
     # B47: options EXCLUDED by the broker's source-authority answer. CONDITIONAL, exactly like
     # meta["overrides"] above, so a run without an authority answer stays byte-identical. A
     # property removed from a client's own longlist must be visible, so this rides into the

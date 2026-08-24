@@ -382,6 +382,14 @@ records matching `templates/record_schema.json`:
   Google Maps link shipped three town-centre pins, one of them a marker in the middle of a
   village, because the reader honestly refused to convert and nothing else owned it. The
   `coord-provenance` gate now blocks that, but the cheap fix is to hand the string over.
+- **A GENUINE doubt is recorded, never silently resolved (`__meta.doubts`, optional).**
+  When a page leaves you genuinely torn about a stated value (two printed figures could
+  each be the warehouse area; a page might belong to the neighbouring unit), record
+  `{subject, question, options?, default?, why_it_matters?}` in the record's
+  `__meta.doubts` instead of picking silently. An interactive run batches these to the
+  BROKER (capped per round, shipped-field impact first); a headless run ships them in the
+  Gaps Report. `tbd` stays the answer for a value the source does not state - a doubt is
+  for a value the source DOES state ambiguously, and never an excuse to skip reading.
 - **If the text is unusable/garbled** (mojibake, column-shuffled spec tables you
   cannot trust, a text layer that is clearly an OCR mess), do NOT force a record.
   Set `"needs_raster": true` on that deck's output (e.g. one stub record `{"__meta":

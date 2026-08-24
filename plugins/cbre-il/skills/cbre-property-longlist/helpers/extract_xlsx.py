@@ -88,6 +88,13 @@ COLUMN_MAP = {
     # the geocoder. English first so UK/IE byte-stability holds.
     "country": ["country", "pais", "país", "pays", "paese", "kraj"],
     "region": ["region", "county", "province"],
+    "address": ["address", "street address", "full address", "site address"],
+    "postcode": ["postcode", "post code", "zip code", "zip", "eircode"],
+    # new / second-hand / BTS is a core longlist attribute; unread it let a
+    # second-hand unit ship described as a BTS on a live run
+    "buildType": ["type of build", "build type", "building type",
+                  "new or second hand", "new build or second hand"],
+    "description": ["description"],
     "warehouseArea": ["warehouse area", "gla", "gia", "warehouse sqm", "size",
                       "area sqm", "total area", "floor area", "building size", "total size"],
     "plotArea": ["site area", "plot area", "land area", "plot size", "site size"],
@@ -123,7 +130,8 @@ COLUMN_MAP = {
                       "brochure link", "brochure url", "particulars",
                       "marketing brochure", "listing link", "listing url"],
     "latlng": ["latitude, longitude", "lat, long", "lat/long", "coordinates",
-               "lat lng", "latlong"],
+               "lat lng", "latlong", "lat long", "long lat", "lat & long",
+               "lat lon", "gps"],
     "lat": ["latitude", "lat"],
     "lng": ["longitude", "lng", "long", "lon"],
 }
@@ -139,6 +147,7 @@ NEGATIVE = {
         r"rent\s*free|free\s*rent|service\s*charge|incentive|deposit"
         r"|historic|achieved|per\s+annum|p\.?a\.?\b|review|deal", re.I),
     "city": re.compile(r"note|comment|remark|description", re.I),
+    "address": re.compile(r"e-?mail|web|url", re.I),
     "warehouseArea": re.compile(r"plot|land|office|unit\b|ratio", re.I),
     "plotArea": re.compile(r"ratio", re.I),
     "clearHeight": re.compile(r"or above|above\?|ratio", re.I),
@@ -179,6 +188,84 @@ _ZERO_IS_UNKNOWN = {"clearHeight", "floorLoad", "loadingDocks", "overheadDoors",
                     "plotArea"}
 
 _LL_SPLIT = re.compile(r"(-?\d{1,2}\.\d{3,})\s*[,;/ ]\s*(-?\d{1,3}\.\d{3,})")
+
+# the LOOSE pair shape for a column already BOUND to coordinates: hand-typed pins
+# legitimately carry 1-2 decimals, which the strict _LL_SPLIT (built to scan free
+# text, where '12.50, 14.25' could be money) refuses. A comma counts as a pair
+# separator only when NOT directly followed by a digit, so a European decimal
+# comma ('52,480401') is never split into a false pair.
+_LL_PAIR_BOUND = re.compile(
+    r"(-?\d{1,3}(?:\.\d+)?)\s*(?:[;/]|,(?![0-9]))\s*(-?\d{1,3}(?:\.\d+)?)")
+
+
+def _split_bound_pair(raw):
+    """(g1, g2) floats when a coord-bound cell holds a two-number pair, else None."""
+    s = str(raw)
+    m = _LL_SPLIT.search(s) or _LL_PAIR_BOUND.search(s)
+    return (float(m.group(1)), float(m.group(2))) if m else None
+
+
+def _resolve_coord_pair(g1: float, g2: float, header_norm: str):
+    """(lat, lng) from a split pair, or None when no valid assignment exists.
+
+    Header token order decides when the header names both tokens (a 'Long Lat'
+    column is lng-first - assigning group1 to lat there invented a Gulf-of-Guinea
+    pin for a UK site). Otherwise lat-first is the default and the swap is taken
+    only when lat-first is invalid and the swap is valid (magnitude
+    disambiguation: a |value| > 90 can only be the longitude)."""
+    def _ok(la, ln):
+        return (-90 <= la <= 90 and -180 <= ln <= 180
+                and (abs(la) > 0.01 or abs(ln) > 0.01))
+    mlat = _LAT_TOKEN_RX.search(header_norm or "")
+    mlng = _LNG_TOKEN_RX.search(header_norm or "")
+    order = ((g2, g1), (g1, g2)) if (mlat and mlng and mlng.start() < mlat.start()) \
+        else ((g1, g2), (g2, g1))
+    for la, ln in order:
+        if _ok(la, ln):
+            return la, ln
+    return None
+
+# a header naming BOTH a latitude and a longitude token is the combined coordinate
+# column, whatever its punctuation - the single-field 'lat'/'lng' aliases must never
+# outrank that reading (word boundaries match _header_candidates' whole-word rule)
+_LAT_TOKEN_RX = re.compile(r"(?<![a-z0-9])(?:lat|latitude)(?![a-z0-9])")
+_LNG_TOKEN_RX = re.compile(r"(?<![a-z0-9])(?:lng|lon|long|longitude)(?![a-z0-9])")
+
+# OPEN CAPTURE - read everything; display selectively. A populated column the
+# dictionary/LLM map leaves unbound is still DATA the source states: it is read
+# into the record (a top-level scalar auto-shows on the dashboard's detail view;
+# commentary goes to __meta only, never client-shown), instead of being dropped
+# with a yield-report line as its only trace. Ordinal/row-number columns and
+# bare link-text stubs ('Map' cells whose hyperlink is captured separately via
+# map_candidates / linked_sources) are the ONLY columns not read, and each is
+# named in the header_report's skipped bucket so nothing vanishes silently.
+_OPEN_SKIP_RX = re.compile(r"^(?:no\.?|nr\.?|#|s/?n|sr\.? ?no\.?|item|index|maps?)$")
+# commentary in the languages this skill ships trackers in - an internal-notes
+# column must never become a client-visible field whatever language the sheet
+# is written in (NL/DE/PL/FR/ES/PT/IT/CS/SK/HU/DA/SV/FI + CJK remarks labels)
+_COMMENTARY_RX = re.compile(
+    r"comment|notes?(?![a-z])|remark|internal|opmerking|notitie|bemerkung|"
+    r"anmerkung|hinweis|uwagi|uwaga|remarque|observa|osservazion|poznamk|"
+    r"poznámk|megjegyz|bemærk|anteckning|huomautu|备注|注释|備考")
+# keys an open column may NEVER claim top-level: media/identity slots and the
+# unit-governing / derived-value twins (silently relabelling a unit is the
+# 10.76x error class). A colliding column is captured to __meta instead.
+_OPEN_DENY = {"id", "photo", "gallery", "plan", "preBaked", "lat", "lng",
+              "areaUnit", "rentUnit", "warehouseRentVal", "officeRentVal",
+              "officeAreaVal", "expansionParkVal", "warehouseAreaSqm"}
+
+
+def _open_key(header) -> str:
+    """camelCase key for an unmapped column, from the header's ASCII words.
+    '' when the header carries no ASCII word (a CJK-only label)."""
+    ascii_h = str(header or "").encode("ascii", "ignore").decode().lower()
+    words = re.findall(r"[a-z0-9]+", ascii_h)
+    if not words:
+        return ""
+    key = words[0] + "".join(w.capitalize() for w in words[1:])
+    if key[0].isdigit():
+        key = "c" + key
+    return key[:48]
 
 # the skill's OWN Source-Ledger column signature - a sheet carrying all of these is a
 # prior deliverable, not a client tracker (P2-1 defensive guard; see ledger.py columns)
@@ -240,6 +327,13 @@ def _header_candidates(header) -> list[tuple[str, tuple]]:
     h = _norm(header)
     if not h:
         return []
+    # combined-coordinate guard: 'Lat Long' (no comma) matched no latlng alias
+    # exactly or whole-word, so the bare 'long' alias won at the whole-word tier,
+    # the whole column bound to lng alone, and the pair cell shipped its FIRST
+    # float - the latitude - as the longitude (every pin at ~52 degrees E on a
+    # live UK run). Both tokens present = the combined column, before any tiering.
+    if _LAT_TOKEN_RX.search(h) and _LNG_TOKEN_RX.search(h):
+        return [("latlng", (3, 1.0, 0))]
     out = []
     for field, aliases in COLUMN_MAP.items():
         neg = NEGATIVE.get(field)
@@ -553,7 +647,52 @@ def detect_and_extract(path: Path, region: str = "", country: str = "",
             gia_unit_col = llm_size_basis if llm_size_basis is not None else next(
                 (ci for ci, cell in enumerate(rows[best_hdr])
                  if _UNIT_COL_RX.search(_norm(cell))), None)
+            # OPEN-CAPTURE classification, once per sheet (header-dependent only):
+            # every populated-but-unbound column is read - as a top-level scalar
+            # (data), or to __meta.open_capture (commentary / a denied or colliding
+            # key / a CJK-only header) - or is a NAMED skip (ordinal / link stub).
+            _hdr_cells = list(rows[best_hdr])
+            _claimed_cols = {ci for cols in best_map.values() for ci, _h, _o in cols}
+            # columns that actually HOLD data (buckets must never claim a read that
+            # never happened - a headed but empty column is not "read")
+            _data_cols = {ci for dr in rows[best_hdr + 1:]
+                          for ci, c in enumerate(dr) if c not in (None, "")}
+            _open_cols, _meta_cols, _skip_cols = {}, {}, {}
+            # 'region'/'country' are seeded onto every record, so an open key may
+            # never claim them either
+            _keys_taken = set(best_map.keys()) | {"region", "country"}
+            _max_w = max([len(_hdr_cells)] + [len(dr) for dr in rows[best_hdr + 1:]] or [0])
+            for _ci in range(_max_w):
+                _hc = _hdr_cells[_ci] if _ci < len(_hdr_cells) else None
+                if _ci in _claimed_cols or _ci not in _data_cols:
+                    continue
+                if _hc in (None, ""):
+                    # a HEADERLESS column with data: read it to __meta under the
+                    # sheet's own column letter - a name cannot be trusted from data
+                    try:
+                        from openpyxl.utils import get_column_letter as _gcl
+                        _lbl = f"(column {_gcl(_ci + 1)} - no header)"
+                    except Exception:
+                        _lbl = f"(column {_ci + 1} - no header)"
+                    _meta_cols[_ci] = _lbl
+                    continue
+                _hn = _norm(_hc)
+                _hflat = " ".join(str(_hc).split())
+                # test the skip pattern on the ASCII fold too, so a bilingual
+                # 'Map<CJK>' link-stub header still skips
+                _hna = " ".join(_hn.encode("ascii", "ignore").decode().split())
+                if _OPEN_SKIP_RX.fullmatch(_hn) or (_hna and _OPEN_SKIP_RX.fullmatch(_hna)):
+                    _skip_cols[_ci] = _hflat
+                    continue
+                _k = _open_key(_hc)
+                if (not _k or _k in _OPEN_DENY or _k in _keys_taken
+                        or _COMMENTARY_RX.search(_hn)):
+                    _meta_cols[_ci] = _hflat
+                else:
+                    _keys_taken.add(_k)
+                    _open_cols[_ci] = (_k, _hflat, str(_hc))
             rent_unit_silent = False  # any row shipped with an ASSUMED (defaulted) rent unit
+            coord_unparsed = []       # coordinate cells refused (not split safely) - DISCLOSED
             area_out_of_band = []     # (park, value, unit) of any area outside its plausibility band
             area_unit_suspect = []    # (park, value, unit) of any sq-ft-vs-sq-m magnitude smell
             for roff, r in enumerate(rows[best_hdr + 1:]):
@@ -572,15 +711,34 @@ def detect_and_extract(path: Path, region: str = "", country: str = "",
                         continue  # bulk exports zero-fill unknowns - honest absence
                     loc = f"{ws_title}!r{rownum}"
                     if field == "latlng":
-                        m = _LL_SPLIT.search(str(raw))
-                        if m:
-                            lat, lng = float(m.group(1)), float(m.group(2))
-                            if -90 <= lat <= 90 and -180 <= lng <= 180 \
-                                    and (abs(lat) > 0.01 or abs(lng) > 0.01):
-                                rec["lat"], rec["lng"] = lat, lng
-                                prov["lat"] = prov["lng"] = f"{loc} (split from '{hdr}')"
+                        g = _split_bound_pair(raw)
+                        pair = _resolve_coord_pair(g[0], g[1], hdr) if g else None
+                        if pair:
+                            rec["lat"], rec["lng"] = pair
+                            prov["lat"] = prov["lng"] = f"{loc} (split from '{hdr}')"
+                        elif str(raw).strip():
+                            # a coordinate cell that could not be split SAFELY is a
+                            # DISCLOSED refusal, never a silent drop
+                            coord_unparsed.append({"locator": loc,
+                                                   "value": str(raw)[:60],
+                                                   "header": hdr})
                         continue
                     if field in ("lat", "lng"):
+                        g = _split_bound_pair(raw)
+                        if g:
+                            # a coordinate PAIR landed in a single coord field
+                            # (misbound header): split it - never truncate a pair
+                            # to its first number
+                            pair = _resolve_coord_pair(g[0], g[1], hdr)
+                            if pair:
+                                rec["lat"], rec["lng"] = pair
+                                prov["lat"] = prov["lng"] = \
+                                    f"{loc} (pair split from '{hdr}')"
+                            else:
+                                coord_unparsed.append({"locator": loc,
+                                                       "value": str(raw)[:60],
+                                                       "header": hdr})
+                            continue
                         num = N.normalize_number(raw)
                         lo, hi = (-90, 90) if field == "lat" else (-180, 180)
                         if num is not None and lo <= num <= hi and num != 0:
@@ -642,6 +800,11 @@ def detect_and_extract(path: Path, region: str = "", country: str = "",
                         if MONTHLY_HDR.search(hdr) or N.MONTHLY_RX.search(str(raw)):
                             num = round(num * 12, 2)
                             loc += f" ({N.normalize_number(raw):g}/mo x12 -> annual)"
+                        # a formula-computed cell carries float noise (102.257192986233);
+                        # the SOURCE displays the formatted value, and validate-data
+                        # rightly demands warehouseRentVal match its own display. Rents
+                        # are currency rates: 2 decimals, same as the monthly x12 path.
+                        num = round(num, 2)
                         lo, hi = N.rent_unit_band(unit)
                         if not (lo <= num <= hi):
                             continue  # zero-filled / implausible quoting rent
@@ -690,6 +853,32 @@ def detect_and_extract(path: Path, region: str = "", country: str = "",
                             val = f"{val}{suffix}"
                     rec[field] = val
                     prov[field] = loc
+                # OPEN CAPTURE (per row): read the unbound columns classified above.
+                # Values get the same date/clean/suffix treatment as mapped string
+                # fields; a top-level key is never overwritten.
+                import datetime as _dt
+                _meta_cap = []
+                for _ci, (_k, _hflat, _horig) in _open_cols.items():
+                    if _ci >= len(r) or r[_ci] in (None, "") or _k in rec:
+                        continue
+                    _rawv = r[_ci]
+                    if isinstance(_rawv, _dt.datetime):
+                        _val = _rawv.date().isoformat()
+                    elif isinstance(_rawv, _dt.date):
+                        _val = _rawv.isoformat()
+                    else:
+                        _val = N.clean_value(_rawv)
+                        _sfx = N.header_value_suffix(_horig)
+                        if _sfx and re.fullmatch(r"-?\d[\d .,]*", _val):
+                            _val = f"{_val}{_sfx}"
+                    rec[_k] = _val
+                    prov[_k] = (f"{ws_title}!r{rownum} (open capture from unmapped "
+                                f"column '{_hflat}')")
+                for _ci, _hflat in _meta_cols.items():
+                    if _ci < len(r) and r[_ci] not in (None, ""):
+                        _meta_cap.append({"column": _hflat,
+                                          "value": N.clean_value(r[_ci]),
+                                          "locator": f"{ws_title}!r{rownum}"})
                 # GIA / gross-total size: when the size that fed warehouseArea is a GROSS
                 # total (the 'Size Unit'/'Area basis' column says GIA/GEA/GLA, or the size
                 # header itself does), it is NOT the warehouse area - warehouse = GIA -
@@ -738,6 +927,11 @@ def detect_and_extract(path: Path, region: str = "", country: str = "",
                     rec["__meta"] = {"source_file": path.name, "source_type": "xlsx",
                                      "locator_base": ws_title, "prov": prov,
                                      "tracker_rich": tracker_rich}
+                    # commentary / denied-key / CJK-only columns: READ, kept off the
+                    # client-facing record surface (a top-level scalar prints on the
+                    # card modal), traceable in the record file + per-property view
+                    if _meta_cap:
+                        rec["__meta"]["open_capture"] = _meta_cap
                     # P1-1: OPTIONAL, and in __meta NOT at the record top level. `_normalise_offspec`
                     # keeps brand-new top-level SCALARS where they are and the v21 modal renders
                     # every non-denied key, so a top-level statedTotalArea would PRINT ON THE
@@ -772,7 +966,15 @@ def detect_and_extract(path: Path, region: str = "", country: str = "",
                 "populated_columns": len(populated),
                 "mapped_columns": sum(1 for ci, _ in populated if ci in mapped_cols),
                 "tracker_rich": tracker_rich,
-                "unmapped_headers": [h for ci, h in populated if ci not in mapped_cols],
+                # open capture: 'unmapped' now means NOT READ AT ALL (residual only -
+                # should be empty); the read-but-unbound columns are named per bucket
+                "open_captured_headers": [h for _ci, (_k, h, _ho)
+                                          in sorted(_open_cols.items())],
+                "meta_captured_headers": [h for _ci, h in sorted(_meta_cols.items())],
+                "skipped_headers": [h for _ci, h in sorted(_skip_cols.items())],
+                "unmapped_headers": [h for ci, h in populated
+                                     if ci not in mapped_cols and ci not in _open_cols
+                                     and ci not in _meta_cols and ci not in _skip_cols],
             }
             if rent_unit_silent:  # a rent shipped with a DEFAULTED unit (no currency/unit
                 # stated in header or cell) - surfaced so the yield/Gaps pipeline asks the
@@ -785,6 +987,9 @@ def detect_and_extract(path: Path, region: str = "", country: str = "",
             if area_unit_suspect:  # a sq-ft-vs-sq-m magnitude smell - value KEPT, NOT converted
                 hr_entry["area_unit_suspect"] = [
                     {"park": p, "value": v, "unit": u} for p, v, u in area_unit_suspect]
+            if coord_unparsed:  # a coordinate cell refused (no safe split) - no pin shipped,
+                # and the refusal is DISCLOSED for the broker to settle
+                hr_entry["coord_unparsed"] = coord_unparsed
             if llm_report is not None:
                 # the LLM mapped this sheet: record the source + any dictionary
                 # disagreements / NEGATIVE vetoes for the reviewer (a thinner LLM parse than

@@ -7,6 +7,47 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.9.0] — 2026-08-24
+
+Marketplace 1.9.0: **CBRE I&L Toolkit 1.6.0** — the property longlist's broker-in-the-loop
+release. UK I&L Toolkit unchanged at 1.3.0. Marketplace and plugin names are unchanged.
+
+### Added
+- **Open capture in the spreadsheet extractor — read everything, display selectively.**
+  Populated columns that no canonical field claims now land as top-level scalars or under
+  `__meta.open_capture` rather than being dropped, with new first-class homes for address,
+  postcode, buildType and description. `unmapped_headers` is redefined to mean *not read at
+  all* and must be empty, and the Longlist workbook appends the surplus as dynamic columns
+  (deterministic: sorted keys, mechanical header prettify, media/derived/internal keys denied).
+- **Eleven new evals**, including a conformance simulator, an interactive-mode test,
+  open-capture coverage for both the view and the workbook, combined `Lat Long` header
+  misbinding, formula-rent rounding, excluded-conflict disclosure, QA-review ingest, and a
+  **`no_client_data_test`** guard.
+- **`prompts/cluster-labels.md`**, plus `reference/agentic-steps.md` and
+  `reference/environment.md` — content moved verbatim out of `SKILL.md` so the orchestrator
+  card carries only the loop, and `docs/MAINTENANCE.md` for whoever edits the skill rather
+  than runs it.
+### Fixed
+- `repairs_projection_test` passes: a media repair resolves its file relative to the work dir.
+- **The skill's `.gitignore` was restored.** A harness step had overwritten it with three
+  lines (`printf >` instead of a merge), dropping the `state/`, `evals/_out/` and
+  `.pytest_cache/` protections; all are back, plus a new `.regression/` rule, and the
+  documented keep-list explaining what ships is retained.
+### Security
+- **Client data no longer ships with the skill.** A regression fixture had copied a live
+  project's 16 inputs (~100 MB) into a `.regression/` directory *inside* the skill folder. Git
+  history was verified clean — no client file was ever committed — but the folder is how
+  teammates install the skill, so `.gitignore` protected nothing they receive. The data is
+  deleted and a `no_client_data_test` guard now fails the suite if input-type files or project
+  directories reappear. Verified passing before this release was pushed.
+
+### Known issues
+Two, both unchanged and still failing identically on an untouched copy of the upload:
+`open_field_scalar_test` (3 assertions) and `plan_reject_test` (2, the POSIX/Windows path
+case). With Pillow, PyMuPDF and openpyxl available the suite runs 118 passed / 3 failed; the
+third, `extract_test`, is a real failure that only becomes visible once `openpyxl` is
+installed, so it had previously been masked as a missing dependency.
+
 ## [1.8.0] — 2026-08-22
 
 Marketplace 1.8.0: **CBRE I&L Toolkit 1.5.0** — two skills updated. UK I&L Toolkit unchanged
@@ -632,6 +673,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.9.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.9.0
 [1.8.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.8.0
 [1.7.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.7.0
 [1.6.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.6.0

@@ -13,7 +13,7 @@ brochure, never return a workforce figure, and never invent a code.
 5. You may NOT spawn further agents.
 
 ## Your contract
-Read this file FIRST - the "Region label resolution" section:
+THIS FILE is your complete operating contract. The reference below is the ANNEX - consult it only when a specific case leaves you unsure (the Region label resolution section):
 {{SKILL_DIR}}/reference/interpretation.md
 
 ## Your job

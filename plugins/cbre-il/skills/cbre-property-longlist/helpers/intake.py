@@ -390,6 +390,11 @@ enrichment:                      # broker opt-in; ask in plain language before r
                                  # (or set the ORS_API_KEY env var); blank = car routing, flagged
 qa:
   fill_threshold: 0.6
+clarify:
+  mode: interactive              # the STANDARD: ask the broker when a judgement call
+                                 # affects what a card shows. 'headless' (or
+                                 # assume_defaults: true / the SKIP_ALL sentinel) keeps
+                                 # the default-honestly-and-disclose contract instead
 """
 
 

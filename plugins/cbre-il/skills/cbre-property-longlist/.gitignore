@@ -1,11 +1,14 @@
-# transient run artefacts and caches - never commit
-evals/_out/
-**/__pycache__/
+# Restored 2026-08-24: the Phase-0 harness setup OVERWROTE the skill's original
+# .gitignore with three lines (printf > instead of merge), dropping the state/,
+# evals/_out/ and .pytest_cache/ protections. Rebuilt from the documented keep-list
+# the receiving toolkit repo preserved, plus this project's one new rule.
+__pycache__/
 *.pyc
 .pytest_cache/
-# the flywheel ledger is PER USER and grows every run (gate_runner creates the dir on
-# demand, so the folder itself is not committed either)
+evals/_out/
 state/
+.regression/
+
 # NOTE: reference/geocode_cache.json is NOT ignored, though it once was. enrich.py sets
 # SEED_DIR = <skill>/reference and MERGES all three reference/*.json caches into every
 # run as read-only seeds (work-dir copies win), so ignoring one of them contradicted the

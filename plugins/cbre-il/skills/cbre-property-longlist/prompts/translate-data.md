@@ -13,7 +13,7 @@ the translating.
 5. You may NOT spawn further agents.
 
 ## Your contract
-Read this file FIRST:
+THIS FILE is your complete operating contract. The reference below is the ANNEX - consult it only when a specific case leaves you unsure:
 {{SKILL_DIR}}/reference/localisation.md
 
 ## Your job

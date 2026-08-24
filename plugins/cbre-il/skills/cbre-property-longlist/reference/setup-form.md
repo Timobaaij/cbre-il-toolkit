@@ -1,6 +1,6 @@
-# The Stage-0 broker setup form (ONE `visualize` widget, all five questions)
+# The Stage-0 broker setup form (ONE `visualize` widget, all six questions)
 
-The broker setup is presented as **ONE `visualize` elicitation widget** — a single box with **all five
+The broker setup is presented as **ONE `visualize` elicitation widget** — a single box with **all six
 questions at once**, submitted together. **Do NOT use `AskUserQuestion`, and NEVER split the questions
 into a single-question / one-at-a-time flow or a follow-up.** This is a hard requirement: the broker
 answers everything in one form and the run proceeds with zero further setup prompts.
@@ -12,21 +12,22 @@ answers everything in one form and the run proceeds with zero further setup prom
    **inferred client name** into the two `{{CLIENT}}` spots (from the inputs folder / `project.yaml`
    `client:`; if genuinely unknown, use a best-guess label — the broker can still pick "Other").
    Title stays `Property longlist details`.
-3. Show ALL FIVE groups every time — even a field you could infer (e.g. the client name) is shown as a
+3. Show ALL SIX groups every time — even a field you could infer (e.g. the client name) is shown as a
    confirmable pill. No shortcuts, no omitted groups.
 4. SKIP the whole widget ONLY when `project.yaml` already carries the answers (a non-interactive
    re-run), OR when the `visualize` tool is genuinely unavailable in this environment — in that one
-   fallback case present all five in ONE consolidated plain-text message (a single elicitation), still
+   fallback case present all six in ONE consolidated plain-text message (a single elicitation), still
    never one question at a time.
 
 ## The submitted answer
 On submit the broker's answers arrive as your next message on one line, e.g.:
-`Property longlist details — Client: TEDi Spain · Extras: Drive-time maps, Logistics landmarks · Ors key: (blank) · Emails: Normal CEE · Language: English`
+`Property longlist details — Client: Acme Retail · Extras: Drive-time maps, Logistics landmarks · Ors key: (blank) · Emails: Normal CEE · Language: English · Ask mode: Ask me when unsure`
 (`(Skipped the form — proceed with defaults or ask me in plain text)` if they skip.) Parse it and
 record into `project.yaml` per the mapping in SKILL.md "The broker setup prompt": Client→`client:`,
 Extras→`enrichment:` flags, Ors key→`enrichment.ors_api_key`, Emails→`inputs.emails:`
 (folder name = the "(other)" text; "Across all of Outlook" = no `folderName`; "No" = skip), Language→
-`output.language`. Then proceed to extraction with no further setup questions.
+`output.language`, Ask mode→`clarify.mode` ("Ask me when unsure" = `interactive`, the STANDARD;
+"Decide sensibly" = `headless`). Then proceed to extraction with no further setup questions.
 
 ## The form (pass verbatim to `show_widget`; only `{{CLIENT}}` is substituted)
 ```html
@@ -86,6 +87,14 @@ Extras→`enrichment:` flags, Ors key→`enrichment.ors_api_key`, Emails→`inpu
         <button type="button" class="elicit-pill" data-value="Other" data-other>Another European language</button>
       </div>
       <input type="text" class="elicit-other" data-for="language" placeholder="Name it (e.g. German, Polish, Danish)" hidden>
+    </div>
+
+    <div class="elicit-group">
+      <label class="elicit-question">When the run hits a judgement call your files can't settle, should it ask you?</label>
+      <div class="elicit-pills" data-name="ask_mode" data-multi="false">
+        <button type="button" class="elicit-pill" data-value="Ask me when unsure" aria-pressed="true">Ask me when unsure (recommended)</button>
+        <button type="button" class="elicit-pill" data-value="Decide sensibly">Decide sensibly and list it in the Gaps Report</button>
+      </div>
     </div>
 
   </div>

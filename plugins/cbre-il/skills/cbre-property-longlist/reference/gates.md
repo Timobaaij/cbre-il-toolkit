@@ -4,15 +4,15 @@ Same principles as `cbre-il-account-briefing`: **author != reviewer** (judgement
 
 Each judgement reviewer writes **`reviews/round1/<gate>.md`** listing its findings. (A flat `reviews/<gate>.md` is honoured as round 0.) There is ONE review pass.
 
-Paths below: `<W>` is the **work dir** (`2. Work Files` in the three-folder project layout, so `reviews/` and every scorecard live there), and `final_gate.py --deliverables` points at the **output** folder (`3. Output`, or `<W>/deliverables` on a legacy `--folder`/`--work` run). `run.py` prints both, fully quoted, in its exit-0 hand-off - copy them rather than reconstructing them.
+Paths below: `<W>` is the **work dir** (`2. Work Files` in the three-folder project layout, so `reviews/` and every scorecard live there), and `final_gate.py --deliverables` points at the **output** folder (`3. Output`, or `<W>/deliverables` on a legacy `--folder`/`--work` run). The spine runs `qa-round record`, `deliver` and `final_gate` ITSELF in the loop-driven QA tail - you never construct these paths or order these steps.
 
-## The QA window: reviewers PROPOSE, the orchestrator IMPLEMENTS, then deliver
+## The QA window: reviewers PROPOSE, the orchestrator IMPLEMENTS, the SPINE drives
 
-Three steps, and that is the whole shape:
+Loop-driven (SKILL.md exits 14/15), and that is the whole shape:
 
-1. **Reviewers propose.** The isolated, blind gate batch runs concurrently - one gate, one fresh agent - and each returns FINDINGS.
-2. **The orchestrator implements.** It fixes what the reviewers found and records what it changed.
-3. **Deliver.**
+1. **Reviewers propose (exit 14).** The isolated, blind gate batch runs concurrently - one gate, one fresh agent, one rendered `work/prompts/g-*.md` prompt dispatched verbatim - and each returns FINDINGS.
+2. **The orchestrator implements (exit 15).** It fixes what the reviewers found and records each repair with `qa-round resolve`.
+3. **The spine records, re-delivers and runs `final_gate` itself.** Exit 0 means the gate went green.
 
 There is no second review pass, no adjudication round, no round budget, and **no verdict-word gating**. The previous design (`record -> fix -> adjudicate -> resolve -> deliver -> final_gate`, gated on per-gate verdict words with a two-round budget) produced three ship-blockages on one live run that were all mechanism failures rather than data problems: the `PASS-WITH-REMEDIATION` escape hatch read blocking findings from a round that is empty by construction, so a fully repaired and source-verified pack still printed `BLOCKED`; `qa-round resolve` refused unless the artefact had moved since a fingerprint stamped *after* the repairs, so it was unreachable in the documented order and a Gaps Report shipped a "Known limitations" line asserting a defect the pack no longer had. The data work - five genuine findings, all fixed - was the small part.
 
@@ -32,7 +32,7 @@ There is no second review pass, no adjudication round, no round budget, and **no
 - every expected reviewer produced a **parseable findings file** — so the review cannot be skipped;
 - **every `blocking:` finding has a recorded resolution**, else BLOCK, naming each one. This is the one safety property carried over from verdict gating, and it is why the restructure is not simply "stop checking": a `blocking:` finding is by the reviewer's own rubric a FALSE CLAIM, and a knowingly false claim may not ship because the review pass is over. What changed is what counts as *addressed* — the orchestrator RECORDING what it changed (`qa-round resolve --id <id> --because "…"`, a written reason in the audit trail), not a second reviewer re-blessing it;
 - **advisory findings are CARRIED** into the Gaps Report's "Known limitations (reviewed and accepted at QA)" and never block. An advisory is closed by being written into the report, not by being fixed;
-- the mechanical gates, the freeze, the four deliverables, and the Known-limitations currency check, all unchanged. **Run `deliver` BEFORE `final_gate`:** the gate BLOCKS when the delivered "Known limitations" is not the recorded pass's carried list, because a report written before the last change is a false statement in the honesty document. The remedy is ONE `deliver.py` re-run, printed with the slug, filename, `--out-dir` and `--marker-dir` already derived.
+- the mechanical gates, the freeze, the four deliverables, and the Known-limitations currency check, all unchanged. `deliver` runs BEFORE `final_gate` - the SPINE orders this itself: the gate BLOCKS when the delivered "Known limitations" is not the recorded pass's carried list, because a report written before the last change is a false statement in the honesty document. The remedy is simply re-running the same command.
 
 `qa-round` has exactly three modes: `record` (read the reviewers' labels), `status`, and `resolve` (record a repair). `record` is idempotent and never refuses; `resolve` requires the id to name a finding actually raised and a reason of at least 20 characters, and does **not** require the artefact to have moved.
 

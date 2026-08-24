@@ -13,7 +13,7 @@ is the entire point of this job.
 5. You may NOT spawn further agents.
 
 ## Your contract
-Read this file FIRST - the "Tracker mode" section AND its "Verification pass" subsection:
+THIS FILE is your complete operating contract. The reference below is the ANNEX - consult it only when a specific case leaves you unsure (Tracker mode -> Verification pass):
 {{SKILL_DIR}}/reference/interpretation.md
 
 ## Your job

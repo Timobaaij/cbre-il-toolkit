@@ -12,7 +12,7 @@ are deliberately NOT re-listed).
 5. You may NOT spawn further agents.
 
 ## Your contract
-Read this file FIRST - the field/value conflict section:
+THIS FILE is your complete operating contract. The reference below is the ANNEX - consult it only when a specific case leaves you unsure (the field/value conflict section):
 {{SKILL_DIR}}/reference/matching.md
 
 ## Your job

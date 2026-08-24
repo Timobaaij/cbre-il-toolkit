@@ -99,7 +99,7 @@ the pair comes to you instead. Python converts or abstains; it never decides sam
   may be corroborated by a name that sits in DIFFERENT fields on the two records - a park
   name against an address fragment, a landlord against a developer. That is a real signal,
   not a bug in the file. It is also only a *candidate* signal: the pre-filter's job is
-  recall, yours is the judgement, and "DEFAULT TO 'different' WHEN UNSURE" below is
+  recall, yours is the judgement, and "LEAN 'different' ON THIN EVIDENCE" below is
   unchanged.
 - **no** - definitely distinct; never shown to you.
 
@@ -152,12 +152,14 @@ is preferred because the reason lands in the audit trail.)
   name, the address, the size, the specification, the pin) and treat the party names as one
   more field that may disagree. Equally: two records sharing only a party name and nothing
   else are `different` - a developer builds many sheds in one town.
-- **DEFAULT TO 'different' WHEN UNSURE.** This is the honest, safe choice: an over-SPLIT
-  is caught and force-fixed by the coverage dedupe gate (two cards with the same
-  park+city+developer+area BLOCK the build until merged); an over-MERGE silently
-  destroys a property - it is invisible and unrecoverable. The whole skill's principle is
-  "a thin-but-honest record beats a confident-but-wrong one": splitting is the honest
-  default.
+- **LEAN 'different' ON THIN EVIDENCE; GENUINELY TORN IS `"unsure"`.** Splitting is the
+  safe lean: an over-SPLIT is caught and force-fixed by the coverage dedupe gate (two
+  cards with the same park+city+developer+area BLOCK the build until merged); an
+  over-MERGE silently destroys a property - invisible and unrecoverable. But when you are
+  GENUINELY torn after real effort, `"verdict": "unsure"` is a first-class answer: an
+  interactive run puts the pair to the BROKER (who knows the market); a headless run
+  ships 'different', disclosed. Never use it to avoid the work - most pairs are decidable
+  from the records. (The blind VERIFY pass stays binary: same/different only.)
 - **NEVER invent a property, a field, or a fact** to justify a verdict. Read only the two
   records you were given; if the evidence does not show they are the same, they are
   `"different"`.
@@ -220,9 +222,13 @@ FIXED source PRECEDENCE (commercials: newest email > excel > brochure; specs/geo
 brochure > excel > email; a rich tracker leads the structured specs). When two+ sources
 in a cluster hold DIFFERENT non-unknown values for one field, that is a genuine
 cross-source value conflict. The fixed precedence already picks a winner - the
-`default` - and that default is shipped offline and whenever you are unsure. Your job is
+`default` - and that default is shipped offline and on an explicit decline. Your job is
 narrow: for each conflict, decide whether one of the candidate values is clearly the
-RIGHT one and the default is clearly WRONG; if so, pick it; otherwise keep the default.
+RIGHT one and the default is clearly WRONG; if so, pick it; if the default plainly holds,
+keep it. When you are GENUINELY torn after real effort, `"pick": "unsure"` is a
+first-class answer: an interactive run puts the choice to the broker (who can only pick
+among the stated candidates); a headless run keeps the default, disclosed. Never use
+"unsure" to avoid the work - most conflicts are decidable from the records.
 
 ## Input: `field_conflicts` in `work/match_candidates.json`
 
@@ -272,8 +278,10 @@ the reason lands in the audit trail.)
   free-text value field; you select, you do not author. A value neither source carries
   cannot be chosen (it would have no source to trace, breaking the "tbd, never invented"
   contract).
-- **When unsure, pick the default** (or omit the override - an absent/default pick keeps
-  precedence). Picking the default is always safe.
+- **Leaning-default is safe; GENUINELY torn is `"unsure"`.** When the default plainly
+  holds (or nothing moves the needle), pick it. When you are genuinely torn after real
+  effort, `"pick": "unsure"` hands the choice to the broker (interactive) or keeps the
+  default disclosed (headless) - never a silent coin-flip either way.
 - You are resolving ONE field's value. Do not edit any other field, do not merge, do not
   re-transcribe - the spine applies your pick.
 

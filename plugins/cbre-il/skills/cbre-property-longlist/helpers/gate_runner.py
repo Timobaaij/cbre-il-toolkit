@@ -274,10 +274,28 @@ def _accounting_buckets(work: Path, canonical: Path) -> dict:
                 for _k in ("pdf", "pptx", "file"):
                     if isinstance(it.get(_k), str) and it[_k]:
                         files.append(it[_k])
+    # sources whose only records the BROKER'S source-authority answer excluded
+    # (meta.excluded, the B47 disclosure). A legitimate exclusion leaves ZERO
+    # ledger rows, so without this bucket the gate BLOCKED the disclosed decision -
+    # which is exactly what cornered a live orchestrator into filing the brochure
+    # into _originals, hiding it from inventory (and this gate) entirely. Excluded
+    # = accounted AND disclosed, never a block.
+    excluded_src = set()
+    try:
+        for e in (C.load_canonical(Path(canonical)).get("meta", {}) or {}).get(
+                "excluded") or []:
+            for sf in (e.get("source_files") or []) if isinstance(e, dict) else []:
+                if sf:
+                    excluded_src.add(Path(str(sf)).name.lower())
+    except Exception:
+        excluded_src = set()
+    out["excluded"] = []
     for rel in sorted(set(files)):
         nm = Path(rel).name.lower()
         if nm in led_src:
             out["records"].append(rel)
+        elif nm in excluded_src:
+            out["excluded"].append(rel)
         elif nm in unread:
             out["unreadable"].append(rel)
         elif nm in photo_bound:
@@ -436,7 +454,13 @@ def cmd_input_accounting(args) -> int:
     total = sum(len(v) for v in b.values())
     _ok(f"{total} input(s): {len(b['records'])} contributed fields, "
         f"{len(b['photo'])} contributed a photo only, {len(b['unreadable'])} unreadable/skipped, "
+        f"{len(b.get('excluded') or [])} excluded by the broker's source-authority answer "
+        f"(disclosed in the Gaps Report), "
         f"{len(b['no_consumer'])} have no consumer in the spine")
+    for rel in b.get("excluded") or []:
+        print(f"  [note] {rel}: its only records were excluded by your source-authority "
+              f"answer - named in the Gaps Report's 'Options excluded' section, so the "
+              f"exclusion is a disclosed decision, not a silent loss.")
     for rel in b["no_consumer"]:
         print(f"  [note] {rel}: loose image - no spine consumer reads it (extract_image.py "
               f"is not wired in). Not a defect in this run; it is simply not in the dashboard.")
@@ -569,6 +593,20 @@ def cmd_value_format(args) -> int:
     """
     data = C.load_canonical(Path(args.canonical))
     props = data.get("properties", [])
+    # broker WAIVERS (exit-13 declines): a (field, id) the broker explicitly chose
+    # to ship bare. Filtered out of the blocking findings, still noted - a waived
+    # value is a disclosed decision, not a silent pass.
+    waived = {}
+    wv_path = Path(getattr(args, "waivers", "") or "")
+    if getattr(args, "waivers", "") and wv_path.exists():
+        try:
+            for w in json.loads(wv_path.read_text(encoding="utf-8-sig")) or []:
+                if isinstance(w, dict):
+                    # expect_value guards a waiver against cluster renumbering: a
+                    # stale ordinal id must never waive a DIFFERENT property's value
+                    waived[(str(w.get("field")), str(w.get("id")))] = w.get("expect_value")
+        except Exception:
+            pass
     by_field: dict[str, dict] = {}
     for p in props:
         for k, v in p.items():
@@ -581,6 +619,15 @@ def cmd_value_format(args) -> int:
                 continue
             s = str(v).strip()
             if isinstance(v, (int, float)) or _BARE_NUMBER.match(s):
+                _wk = (k, str(p.get("id")))
+                if _wk in waived and (waived[_wk] is None or str(waived[_wk]) == s):
+                    print(f"  [note] `{k}` id={p.get('id')} ships as a bare '{s}' BY BROKER "
+                          f"DECISION (exit-13 decline; disclosed in the Gaps Report)")
+                    continue
+                if _wk in waived:
+                    print(f"  [note] waiver for `{k}` id={p.get('id')} expected "
+                          f"'{waived[_wk]}' but the value is now '{s}' - waiver NOT applied "
+                          f"(ids can renumber between passes; the question will re-fire)")
                 slot["bare"].append((p.get("id"), s))
                 continue
             unit = _unit_of(s)
@@ -598,6 +645,43 @@ def cmd_value_format(args) -> int:
         if units.count(top) * 2 < len(units):
             continue
         findings.append((field, slot["bare"], slot["measured"], top))
+    # An OPEN tracker column (not a canonical card field) is ADVISORY, never a block:
+    # repairs.load rejects non-canonical set keys, so a broker's unit answer for one
+    # could never be applied - blocking would be an unresolvable loop with the answer
+    # swallowed. The value ships in the detail view/Longlist as the source printed it.
+    try:
+        _canon = set(C.canonical_property_fields()) | {"lat", "lng"}
+    except Exception:
+        _canon = set()
+    if _canon:
+        for field, bare, measured, top in [f for f in findings if f[0] not in _canon]:
+            offenders = ", ".join(f"id={i} '{v}'" for i, v in bare[:6])
+            print(f"  [note] `{field}` (an open tracker column, not a card field): "
+                  f"{offenders} ship bare while {len(measured)} sibling(s) carry a unit - "
+                  f"advisory only, shown as printed in the source")
+        findings = [f for f in findings if f[0] in _canon]
+    # machine-readable findings for run.py's clarify bridge (the broker question).
+    # Written even when empty so the bridge never reads a stale file.
+    if getattr(args, "emit_json", ""):
+        def _printed_unit(measured, top):
+            for _, s, u in measured:
+                if u == top:
+                    m = _MEASURED.match(s)
+                    if m:
+                        return " ".join(m.group(1).split())
+            return top
+        payload = [{"field": field,
+                    "dominant_unit": top,
+                    "dominant_printed": _printed_unit(measured, top),
+                    "measured_count": len(measured),
+                    "examples": [s for _, s, _ in measured[:3]],
+                    "bare": [{"id": i, "value": v} for i, v in bare]}
+                   for field, bare, measured, top in findings]
+        try:
+            C.atomic_write_text(Path(args.emit_json),
+                                json.dumps(payload, ensure_ascii=False, indent=1))
+        except Exception as e:
+            print(f"  [note] could not write findings json: {e}")
     for field, bare, measured, top in findings:
         examples = ", ".join(f"'{v}'" for _, v, _ in measured[:3])
         offenders = ", ".join(f"id={i} '{v}'" for i, v in bare[:6])
@@ -1919,7 +2003,17 @@ def cmd_arithmetic(args) -> int:
 # blocking/advisory labels, the mechanical gates, the freeze, and the rule that a BLOCKING
 # finding cannot ship until the orchestrator records what it changed.
 QA_MAX_ROUNDS = 1
-_FINDING_RE = re.compile(r"^\s*-\s*\[?(blocking|advisory)\]?\s*:?\s*(.+)$", re.I | re.M)
+# The bullet is OPTIONAL: final_gate's labelled-line check (final_gate.py) accepts a
+# dashless `blocking: ...`, and SKILL.md/prompts tell reviewers only "every line
+# labelled". The first cut REQUIRED `- `, so a dashless blocking finding was never
+# ingested here while final_gate counted it "proposed" - an unaddressed blocking
+# finding shipped through an ALL-PASS (Phase-3 blind review, reproduced end-to-end).
+# Shape: a bulleted label keeps its colon optional (`- [blocking] x` stays valid);
+# a DASHLESS label requires the colon, so a prose line that merely begins with the
+# word "blocking" is never ingested as a finding.
+_FINDING_RE = re.compile(
+    r"^\s*(?:[-*]\s*\[?(?P<l1>blocking|advisory)\]?\s*:?"
+    r"|\[?(?P<l2>blocking|advisory)\]?\s*:)\s*(?P<body>.+)$", re.I | re.M)
 # The ESTABLISHED finding format (reference/gates.md has mandated `- [HIGH|MED|LOW] property=…`
 # for a long time). Accepting it means a reviewer that writes the format it already knows needs
 # NO correction and NO re-dispatch - the first cut only accepted the new `blocking:`/`advisory:`
@@ -2593,7 +2687,8 @@ def cmd_qa_round(args) -> int:
             cur["verdicts"][gate_name] = word
         seen_bodies: set = set()
         for m in _FINDING_RE.finditer(txt):
-            label, body = m.group(1).lower(), m.group(2).strip()
+            label = (m.group("l1") or m.group("l2")).lower()
+            body = m.group("body").strip()
             bucket = "blocking" if label == "blocking" else "advisory"
             entry = f"{gate_name}: {body}"
             seen_bodies.add(body)
@@ -2705,6 +2800,11 @@ def main() -> None:
     p.add_argument("canonical")
     p.add_argument("--min-siblings", type=int, default=2,
                    help="how many written siblings before a bare value is called out (default 2)")
+    p.add_argument("--emit-json", dest="emit_json", default="",
+                   help="write machine-readable findings here (run.py's clarify bridge)")
+    p.add_argument("--waivers", default="",
+                   help="JSON list of {field,id} the broker declined (exit 13) - shipped bare, "
+                        "noted, never blocked")
     p.set_defaults(fn=cmd_value_format)
     p = sub.add_parser("capture-symmetry",
                        help="ADVISORY: fields captured from one source deck but from none of "

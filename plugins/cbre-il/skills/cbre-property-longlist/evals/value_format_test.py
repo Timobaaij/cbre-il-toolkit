@@ -138,10 +138,15 @@ def main() -> int:
            "there is no dominant form to point at, and naming one would be the guess it bans")
 
     # The rule must be IN THE SKILL, not in an operator's head - this skill is shared.
+    # The ask is MECHANISED now (the spine bridges the gate to a blocking exit-13
+    # broker question; answers become attributed repairs) - SKILL.md must say so
+    # rather than instruct a manual ask the orchestrator can drop.
     skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
     ck("value-format" in skill, "SKILL.md names the gate in the exit-6 row")
-    ck("ASK THE BROKER" in skill,
-       "SKILL.md tells the orchestrator to ASK when the source does not settle the unit")
+    ck("asks the BROKER ITSELF" in skill and "exit-13" in skill,
+       "SKILL.md says the gate asks the broker ITSELF via exit 13 (no manual prose ask)")
+    ck("Never append the sibling's unit yourself" in skill,
+       "SKILL.md still bans guessing the unit")
     contract = (ROOT / "reference" / "interpretation.md").read_text(encoding="utf-8")
     ck("WRITE THE VALUE THE WAY THE SOURCE PRINTS IT" in contract,
        "the reader contract carries the format rule")

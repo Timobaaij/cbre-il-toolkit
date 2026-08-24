@@ -51,6 +51,13 @@ Read this file FIRST and follow it exactly (TEXT mode):
 - A value read from an IMAGE rather than the text layer carries `not in text layer` in its prov.
 - Coordinates: a decimal pair goes into `lat`/`lng`; a DMS string or any maps link is copied
   VERBATIM into `__meta.map_candidates` - never converted, never resolved by you.
+- OPTIONAL `__meta.doubts`: when a page leaves you GENUINELY torn about a stated value
+  (two printed figures could each be the warehouse area; a page might belong to a
+  different property), record it as `{subject, question, options?, default?,
+  why_it_matters?}` instead of silently picking - an interactive run puts it to the
+  BROKER; a headless run ships it in the Gaps Report. A doubt never replaces reading:
+  `"tbd"` stays the answer for a value the source does not state, and most pages are
+  decidable without one.
 - LOOK at each page's `candidates_sheet` (one call per page) to set `__meta.heroRef` (a real
   photo/aerial/render ONLY - a map, plan, icon or logo is never the hero; honest `null` is
   always safe), `planRef`, `plan_page` (from the page `render` thumbnails), `image_pages`

@@ -559,6 +559,33 @@ class Responder:
             self.log(f"      i18n: wrote {code}.SKIP (fall back to English)")
         return True
 
+    def exit_13(self, stderr: str) -> bool:
+        """Clarification round (interactive is the STANDARD mode): a headless/cron
+        orchestrator declines everything at once via the documented sentinel."""
+        skip = self.work / "clarify.SKIP_ALL"
+        if skip.exists():
+            return False  # already declined and the guard still re-asked: a livelock
+        skip.touch()
+        return True
+
+    def exit_14(self, stderr: str) -> bool:
+        """Loop-driven QA window: play one blind reviewer per rendered g-*.md prompt
+        by writing FINDINGS: none to the output path the prompt itself names."""
+        import re as _re
+        wrote = False
+        for pf in sorted((self.work / "prompts").glob("g-*.md")):
+            m = _re.search(r"WRITE your findings to:\s*\n(.+)",
+                           pf.read_text(encoding="utf-8"))
+            if not m:
+                continue
+            dest = Path(m.group(1).strip())
+            if dest.exists():
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text("FINDINGS: none\n", encoding="utf-8")
+            wrote = True
+        return wrote
+
     def exit_12(self, stderr: str) -> bool:
         self._touch("i18n/data_translate.SKIP")
         self.log("      data translation: wrote data_translate.SKIP")

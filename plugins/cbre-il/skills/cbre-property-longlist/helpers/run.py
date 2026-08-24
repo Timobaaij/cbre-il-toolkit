@@ -298,6 +298,283 @@ def call(module, *cmd, check=True) -> int:
 _GATE_LOG: list[str] = []  # scorecard fragments accumulated for the current gate phase
 
 
+def qa_reviews_changed(work: Path) -> bool:
+    """Have the review FILES changed since the last recorded round? (Phase-3 review B2.)
+
+    `qa-round record` self-opens a new round when the last is recorded, so the driver
+    must not re-run it every pass (round inflation) - but a record guarded ONLY by
+    qa_round_number==0 made every post-record review unrecordable: a garbled round-1
+    review re-dispatched per final_gate's own remedy wrote reviews/round2/*.md that no
+    pass ever recorded, and the run exited 0 over an unread blocking finding. The guard
+    is therefore a FINGERPRINT of the review files (relpath+size+mtime): record fires on
+    the first pass AND whenever the set changed. Stamped only after a successful record."""
+    root = Path(work) / "reviews"
+    cur = sorted(f"{q.relative_to(root)}|{q.stat().st_size}|{q.stat().st_mtime_ns}"
+                 for q in root.rglob("*.md")) if root.exists() else []
+    try:
+        prev = json.loads((Path(work) / "qa_reviews_fp.json")
+                          .read_text(encoding="utf-8-sig"))
+    except Exception:
+        prev = None
+    return cur != prev
+
+
+def qa_reviews_stamp(work: Path) -> None:
+    """Persist the current review-file fingerprint (after a successful record)."""
+    root = Path(work) / "reviews"
+    cur = sorted(f"{q.relative_to(root)}|{q.stat().st_size}|{q.stat().st_mtime_ns}"
+                 for q in root.rglob("*.md")) if root.exists() else []
+    try:
+        import _common as C
+        C.atomic_write_text(Path(work) / "qa_reviews_fp.json", json.dumps(cur))
+    except Exception:
+        pass
+
+
+def apply_photo_confirm_answers(work: Path, pm: dict, resolve=None) -> int:
+    """Item 3.4: apply answered photo confirmations to the parsed photo_map - 'yes'
+    moves uncertain -> confident, 'no' -> unrelated - BEFORE doubts are rebuilt, so
+    the photo lands THIS pass instead of after the end-of-run prompt. `resolve` maps a
+    raw property_key (often a park name) to the resolved match key the QUESTION was
+    keyed on - without it a raw-vs-resolved mismatch would orphan every answer."""
+    import clarify as _CQ
+    if not isinstance(pm, dict) or not pm.get("uncertain"):
+        return 0
+    answers = _CQ.ingest_answers(work)
+    if not answers:
+        return 0
+    moved, keep = 0, []
+    for e in pm.get("uncertain") or []:
+        br = str((e or {}).get("brochure") or "")
+        pk = str((e or {}).get("property_key") or (e or {}).get("key") or "")
+        if resolve is not None:
+            pk = str(resolve(pk) or pk)
+        raw = answers.get(_CQ.qid("photo_confirm", f"{br}|{pk}", "photo")) \
+            if br else None
+        a = _CQ._norm_answer(raw) if raw is not None else ""
+        if a == "yes":
+            pm.setdefault("confident", []).append(e)
+            moved += 1
+        elif a == "no":
+            pm.setdefault("unrelated", []).append(e)
+            moved += 1
+        else:
+            keep.append(e)
+    if moved:
+        pm["uncertain"] = keep
+    return moved
+
+
+def excluded_figure_questions(work: Path, cfg: dict, canonical_path: Path) -> list:
+    """Item 3.5: an excluded record whose figure conflicts with the shipped card it
+    plausibly IS becomes a NON-BLOCKING broker question ('the card shows X, the
+    excluded record states Y - which should it show?'). An answer picking the excluded
+    figure is applied as an ATTRIBUTED repairs.json entry (applied by the repairs stage
+    this same pass); unanswered ships the disclosed conflict exactly as before.
+    Same-unit only - offering a cross-unit repair would be the 10.76x class."""
+    import clarify as _CQ
+    import _common as C
+    from project_properties import repair_key as _repair_key
+    if _CQ.clarify_mode(work, cfg) != "interactive":
+        return []
+    try:
+        data = C.load_canonical(Path(canonical_path))
+    except Exception:
+        return []
+    excluded = (data.get("meta", {}) or {}).get("excluded") or []
+    if not excluded:
+        return []
+    by_id = {p.get("id"): p for p in data.get("properties") or []}
+    answers = _CQ.ingest_answers(work)
+    declined = _CQ.declined_ids(work)
+    rp_path = work / "repairs.json"
+    rep_ok, rep_list = True, []
+    if rp_path.exists():
+        try:
+            _loaded = json.loads(rp_path.read_text(encoding="utf-8-sig"))
+            if isinstance(_loaded, list):
+                rep_list = _loaded
+            else:
+                rep_ok = False
+        except Exception:
+            rep_ok = False
+    pending, n_rep = [], 0
+    for e in excluded:
+        ls = (e or {}).get("likely_same_as") or {}
+        hl = (e or {}).get("headline") or {}
+        ki = ls.get("kept_index")
+        prop = by_id.get(ki + 1) if isinstance(ki, int) else None
+        exc_v, exc_u = hl.get("warehouseArea"), hl.get("areaUnit")
+        if not prop or not isinstance(exc_v, (int, float)):
+            continue
+        card_v, card_u = prop.get("warehouseArea"), prop.get("areaUnit")
+        if not isinstance(card_v, (int, float)) or card_v == exc_v:
+            continue
+        if exc_u and card_u and exc_u != card_u:
+            continue  # cross-unit: disclosure only, never a repair offer
+        q_id = _CQ.qid("excluded_figure", f"{e.get('name')}|{prop.get('id')}",
+                       "warehouseArea")
+        opt_keep = f"keep {card_v:,.0f} (the shipped card's source)"
+        opt_use = f"use {exc_v:,.0f} (the excluded record's figure)"
+        raw = answers.get(q_id)
+        a = _CQ._norm_answer(raw) if raw is not None else ""
+        if a == _CQ._norm_answer(opt_use) or a.startswith("use"):
+            if not rep_ok:
+                # the broker's HAND-FILE is unreadable: refuse LOUDLY (the Phase-2
+                # standard) - never consume the answer while silently dropping the repair
+                print("(orchestrator: work/repairs.json exists but is NOT a valid JSON "
+                      "list - the broker's excluded-figure answer was NOT applied. Fix "
+                      "that file by hand and re-run.)")
+                continue
+            rid = "xf-" + str(q_id)[:10]
+            if not any(isinstance(r, dict) and r.get("id") == rid for r in rep_list):
+                rep_list.append({
+                    "id": rid,
+                    "property": {"key": _repair_key(prop), "id": prop.get("id")},
+                    "expect": {"warehouseArea": card_v},
+                    "set": {"warehouseArea": exc_v},
+                    "why": (f"broker answered the exit-13 excluded-figure question: "
+                            f"the excluded record '{e.get('name')}' states the right "
+                            f"figure"),
+                    "verified_by": "broker (exit-13 answer)"})
+                n_rep += 1
+            continue
+        if a == _CQ._norm_answer(opt_keep) or a.startswith("keep") or q_id in declined:
+            continue  # settled: the card keeps its own source's figure
+        # an unrecognised answer RE-ASKS with the rejection spelled out - it must never
+        # silently read as 'keep' (junk never counts)
+        rejected = (f" (Your previous answer '{raw}' matched neither option - answer "
+                    f"'keep ...' or 'use ...' exactly, or 'skip'.)") if a else ""
+        pending.append({
+            "id": q_id, "kind": "excluded_figure", "asked_of": "broker",
+            "blocking": False,
+            "subject": str(prop.get("park") or prop.get("id")),
+            "question": (f"'{e.get('name')}' was excluded by your longlist decision "
+                         f"but looks like shipped option '{prop.get('park')}' - the "
+                         f"card shows {card_v:,.0f} {card_u or ''} while the excluded "
+                         f"record states {exc_v:,.0f} {exc_u or ''}. Which figure "
+                         f"should the card show?{rejected}").replace("  ", " "),
+            "options": [opt_keep, opt_use],
+            "why_it_matters": ("the losing figure stays disclosed in the Gaps Report "
+                               "either way"),
+            "if_unanswered": ("the card keeps its own source's figure; the conflict "
+                              "stays disclosed"),
+        })
+    if n_rep:
+        C.atomic_write_text(rp_path, json.dumps(rep_list, ensure_ascii=False, indent=2))
+    return pending
+
+
+def value_format_clarify(work: Path, canonical: Path) -> tuple:
+    """Bridge the value-format gate's findings to the broker via clarify (B59 -> exit 13).
+
+    Returns (repairs_written, waivers_written, pending_questions). An ANSWERED unit
+    becomes an attributed work/repairs.json entry (property-keyed, applied before the
+    gates on the next pass); a DECLINE ('leave as is' / skip / SKIP_ALL) becomes a
+    waiver the gate ships-bare-but-notes; anything undecided is emitted as a BLOCKING
+    exit-13 question. Idempotent per pass: repairs are keyed vf-<qid>, waivers are a
+    set, and clarify's own state machinery owns ask-once/decline semantics."""
+    import clarify as _CQ
+    import _common as C
+    from project_properties import repair_key as _repair_key
+    try:
+        findings = json.loads((Path(work) / "value_format_findings.json")
+                              .read_text(encoding="utf-8-sig"))
+    except Exception:
+        return 0, 0, []
+    qs = _CQ.value_format_questions(findings)
+    if not qs:
+        return 0, 0, []
+    answers = _CQ.ingest_answers(work)
+    declined = _CQ.declined_ids(work)
+    data = C.load_canonical(Path(canonical))
+    by_id = {str(p.get("id")): p for p in data.get("properties") or []}
+    rp_path, wv_path = Path(work) / "repairs.json", Path(work) / "value_format_waivers.json"
+    # repairs.json is the BROKER'S HAND-FILE. A malformed or non-list file must never
+    # be replaced (a trailing comma would silently erase their hand-written entries):
+    # refuse to write and say so - the answer stays recorded in clarify state.
+    rep_list, rep_writable = [], True
+    if rp_path.exists():
+        try:
+            _loaded = json.loads(rp_path.read_text(encoding="utf-8-sig"))
+            if isinstance(_loaded, list):
+                rep_list = _loaded
+            else:
+                rep_writable = False
+        except Exception:
+            rep_writable = False
+    try:
+        wv_list = json.loads(wv_path.read_text(encoding="utf-8-sig")) or []
+        if not isinstance(wv_list, list):
+            wv_list = []
+    except Exception:
+        wv_list = []
+    wv_keys = {(str(w.get("field")), str(w.get("id"))) for w in wv_list
+               if isinstance(w, dict)}
+    n_rep = n_wv = 0
+    pend_extra = []
+    for q in qs:
+        fld, pid = str(q.get("field")), str(q.get("property_id"))
+        a = answers.get(q["id"])
+        a_norm = _CQ._norm_answer(a) if a is not None else ""
+        if q["id"] in declined or (a is not None and
+                                   (_CQ.is_decline(a)
+                                    or a_norm in ("leave as is", "leave it as is"))):
+            if (fld, pid) not in wv_keys:
+                wv_list.append({"field": fld, "id": q.get("property_id"),
+                                "expect_value": q.get("bare_value"),
+                                "why": "broker declined (exit-13 value-format question)"})
+                wv_keys.add((fld, pid))
+                n_wv += 1
+            continue
+        if a is None or not str(a).strip():
+            continue
+        # VALIDATE the answer before it touches a client-facing value: one of the
+        # question's options (normalised), or something unit-shaped (letter-led,
+        # digit-free, short). Anything else is re-asked, never concatenated.
+        _opts = {_CQ._norm_answer(o): o for o in (q.get("options") or [])
+                 if _CQ._norm_answer(o) not in ("leave as is",)}
+        unit = _opts.get(a_norm)
+        if unit is None and re.fullmatch(r"[a-z£€$][a-z.,/ %²]{0,11}", a_norm or ""):
+            unit = str(a).strip()
+        if unit is None:
+            qx = dict(q)
+            qx["question"] = (str(q.get("question") or "") +
+                              f" (Your previous answer '{a}' is neither one of the options "
+                              f"nor a plain unit - answer with one of the options, a unit "
+                              f"like 'sq. m', or 'leave as is'.)")
+            pend_extra.append(qx)
+            continue
+        rid = "vf-" + str(q["id"])[:10]
+        if any(isinstance(r, dict) and r.get("id") == rid for r in rep_list):
+            continue
+        prop = by_id.get(pid) or {}
+        cur = prop.get(fld)
+        rep_list.append({
+            "id": rid,
+            "property": {"key": _repair_key(prop), "id": prop.get("id")},
+            "expect": {fld: cur},
+            "set": {fld: f"{cur} {unit}".strip()},
+            "why": (f"broker answered the exit-13 value-format question: "
+                    f"'{cur}' is in {unit}"),
+            "verified_by": "broker (exit-13 answer)",
+        })
+        n_rep += 1
+    if n_rep and not rep_writable:
+        print("(orchestrator: work/repairs.json exists but is NOT a valid JSON list - the "
+              "broker's value-format answer(s) were NOT recorded as repairs. Fix that file "
+              "by hand (it is the broker's own file; nothing may overwrite it) and re-run.)")
+        n_rep = 0
+    elif n_rep:
+        C.atomic_write_text(rp_path, json.dumps(rep_list, ensure_ascii=False, indent=2))
+    if n_wv:
+        C.atomic_write_text(wv_path, json.dumps(wv_list, ensure_ascii=False, indent=2))
+    pend = _CQ.pending(work, qs) + pend_extra
+    if pend:
+        _CQ.emit(work, pend)
+    return n_rep, n_wv, pend
+
+
 def run_gate(module, *cmd) -> int:
     """Run a gate's mechanical half, ALWAYS capturing its scorecard fragment to
     _GATE_LOG so it can be flushed to gate{1,2}_scorecard.md (the freeze/ship
@@ -1059,6 +1336,165 @@ def _pair_answered(md, g) -> bool:
     v = md.get(g.get("pair_id"))
     return (v in ("same", "different")
             or (isinstance(v, dict) and v.get("verdict") in ("same", "different")))
+
+
+def _is_unsure(v) -> bool:
+    return (isinstance(v, str) and v.strip().lower() == "unsure") or \
+        (isinstance(v, dict) and str(v.get("verdict") or v.get("pick") or "")
+         .strip().lower() == "unsure")
+
+
+def _mutate_decisions_file(path: Path, updates: dict) -> None:
+    """Set entries in match_decisions.json / field_decisions.json, atomically,
+    preserving everything else. A malformed file is replaced by just the updates
+    (the guard re-asks anything it cannot read, so nothing is lost silently)."""
+    import _common as C
+    try:
+        cur = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        if not isinstance(cur, dict):
+            cur = {}
+    except Exception:
+        cur = {}
+    cur.update(updates)
+    C.atomic_write_text(Path(path), json.dumps(cur, ensure_ascii=False, indent=1))
+
+
+def _rec_brief(r: dict) -> str:
+    bits = [str(r.get("park") or r.get("address") or "?")]
+    if r.get("city"):
+        bits.append(str(r["city"]))
+    if r.get("warehouseArea") not in (None, ""):
+        bits.append(f"{r['warehouseArea']} {r.get('areaUnit') or ''}".strip())
+    src = (r.get("__meta") or {}).get("source_file")
+    if src:
+        bits.append(f"from {src}")
+    return ", ".join(bits)
+
+
+def unsure_pair_questions(work: Path, cfg: dict, grey: list) -> tuple:
+    """Workstream 3 item 3.3 (pairs): 'unsure' is a FIRST-CLASS author verdict.
+
+    The adjudicator used to be FORCED to 'different' when genuinely torn - the broker,
+    who knows the market, was never offered the call. Interactive (the standard): each
+    unsure pair becomes a BLOCKING exit-13 broker question; the answer is written back
+    into match_decisions.json as an attributed verdict (same order-independent pair_id,
+    so the re-run merges byte-deterministically). Headless: unsure resolves immediately
+    to 'different' (today's safe default - an over-split is caught by the dedupe gate),
+    attributed as a disclosed headless resolution. Returns (n_resolved, pending_qs)."""
+    import clarify as _CQ
+    md = _load_match_decisions(work)
+    unsure = [g for g in grey or [] if _is_unsure((md or {}).get(g.get("pair_id")))]
+    # a pair ALREADY SETTLED (possibly by the broker's own earlier answer) is never
+    # re-opened by a later agent writing 'unsure' - that silently flipped a settled
+    # 'same' to the headless default on a probe
+    try:
+        _settled = json.loads((Path(work) / "match_settled.json")
+                              .read_text(encoding="utf-8-sig"))
+    except Exception:
+        _settled = {}
+    unsure = [g for g in unsure if not _pair_answered(_settled, g)]
+    if not unsure:
+        return 0, []
+    mode = _CQ.clarify_mode(work, cfg)
+    answers = _CQ.ingest_answers(work)
+    declined = _CQ.declined_ids(work)
+    OPT_SAME, OPT_DIFF = "same property", "different properties"
+    updates, pending = {}, []
+    for g in unsure:
+        pid = g.get("pair_id")
+        q_id = _CQ.qid("match_unsure", str(pid), "match")
+        raw = answers.get(q_id)
+        a = _CQ._norm_answer(raw) if raw is not None else ""
+        rejected = ""
+        if a in (OPT_SAME, OPT_DIFF):
+            updates[pid] = {"verdict": "same" if a == OPT_SAME else "different",
+                            "reason": "broker decided (exit-13 match_unsure answer)"}
+            continue
+        if mode == "headless" or q_id in declined:
+            updates[pid] = {"verdict": "different",
+                            "reason": ("author was unsure; resolved to 'different' "
+                                       "(headless/declined default, disclosed - an "
+                                       "over-split is caught by the dedupe gate)")}
+            continue
+        if a:
+            # an unrecognised answer must RE-ASK with the rejection spelled out, never
+            # be swallowed (the repo standard: junk never counts) - swallowing it was a
+            # probe-verified adjudicator livelock
+            rejected = (f" (Your previous answer '{raw}' was not one of the options - "
+                        f"answer with one of them exactly, or 'skip'.)")
+        pending.append({
+            "id": q_id, "kind": "match_unsure", "asked_of": "broker",
+            "blocking": True, "subject": f"pair {pid}",
+            "question": (f"Are these the SAME property described twice? "
+                         f"(A) {_rec_brief(g.get('a') or {})} vs "
+                         f"(B) {_rec_brief(g.get('b') or {})}. The reading agent "
+                         f"was genuinely unsure.{rejected}"),
+            "options": [OPT_SAME, OPT_DIFF],
+            "why_it_matters": ("merged wrongly, one option silently disappears; "
+                               "split wrongly, one building ships as two cards"),
+            "if_unanswered": "they ship as two separate cards (disclosed)",
+        })
+    if updates:
+        _mutate_decisions_file(work / "match_decisions.json", updates)
+    return len(updates), pending
+
+
+def unsure_pick_questions(work: Path, cfg: dict, conflicts: list, fd) -> tuple:
+    """Item 3.3 (value conflicts): an 'unsure' pick becomes a broker question
+    (interactive) or keeps the precedence default, disclosed (headless/declined).
+    Options are the conflict's own candidate labels with their values - the broker
+    can only ever pick among stated values, never introduce one."""
+    import clarify as _CQ
+    unsure = [c for c in conflicts or []
+              if fd is not None and _is_unsure(fd.get(c.get("conflict_id")))]
+    if not unsure:
+        return 0, []
+    mode = _CQ.clarify_mode(work, cfg)
+    answers = _CQ.ingest_answers(work)
+    declined = _CQ.declined_ids(work)
+    updates, pending = {}, []
+    for c in unsure:
+        cid = c.get("conflict_id")
+        q_id = _CQ.qid("field_unsure", str(cid), str(c.get("field") or ""))
+        opts = {f"{k.get('label')}: {k.get('value')}": str(k.get("label"))
+                for k in (c.get("candidates") or []) if isinstance(k, dict)}
+        a_raw = answers.get(q_id)
+        a = _CQ._norm_answer(a_raw) if a_raw is not None else ""
+        picked = next((lbl for txt, lbl in opts.items()
+                       if _CQ._norm_answer(txt) == a), None)
+        # a bare-label answer ("b") or a bare-value answer ("15 m") is unambiguous too -
+        # accept it rather than discarding the broker's explicit choice
+        if picked is None and a:
+            by_label = {_CQ._norm_answer(lbl): lbl for lbl in opts.values()}
+            by_value = {_CQ._norm_answer(str(k.get("value"))): str(k.get("label"))
+                        for k in (c.get("candidates") or []) if isinstance(k, dict)}
+            picked = by_label.get(a) or by_value.get(a)
+        if picked:
+            updates[cid] = {"pick": picked,
+                            "reason": "broker decided (exit-13 field_unsure answer)"}
+        elif mode == "headless" or q_id in declined:
+            updates[cid] = {"pick": str(c.get("default")),
+                            "reason": ("adjudicator was unsure; precedence default kept "
+                                       "(headless/declined, disclosed)")}
+        else:
+            # an unrecognised answer RE-ASKS with the rejection spelled out - silently
+            # falling back to precedence discarded the broker's explicit choice
+            rejected = (f" (Your previous answer '{a_raw}' matched none of the options - "
+                        f"answer with one of them exactly, or 'skip'.)") if a else ""
+            pending.append({
+                "id": q_id, "kind": "field_unsure", "asked_of": "broker",
+                "blocking": True, "subject": f"`{c.get('field')}` conflict {cid}",
+                "question": (f"Two sources disagree on `{c.get('field')}` and the "
+                             f"adjudicator was genuinely unsure which is right. "
+                             f"Which value should the card show?{rejected}"),
+                "options": list(opts.keys()),
+                "why_it_matters": "the losing value is disclosed, the winner ships on the card",
+                "if_unanswered": (f"the precedence default "
+                                  f"('{c.get('default')}') ships, disclosed"),
+            })
+    if updates:
+        _mutate_decisions_file(work / "field_decisions.json", updates)
+    return len(updates), pending
 
 
 def _settled_clusters(clusters: list, grey: list, md, all_recs: list) -> list:
@@ -2020,12 +2456,24 @@ def main() -> None:
                     # NINE names were silently dropped. That also made the line contradict
                     # itself (it announced 11 unmapped, then named 3), which reads as a broken
                     # report rather than a truncated one. (QA round 2, adjudication 1f3f63dc97.)
-                    _unmapped = [" ".join(str(h).split())
-                                 for h in (hr.get("unmapped_headers") or [])]
+                    _flatl = lambda hs: [" ".join(str(h).split()) for h in (hs or [])]
+                    _unmapped = _flatl(hr.get("unmapped_headers"))
+                    _openh = _flatl(hr.get("open_captured_headers"))
+                    _metah = _flatl(hr.get("meta_captured_headers"))
+                    _skiph = _flatl(hr.get("skipped_headers"))
+                    _parts = [f"{hr.get('mapped_columns')}/{hr.get('populated_columns')} "
+                              f"populated columns mapped"]
+                    if _openh:
+                        _parts.append(f"read as open fields: {', '.join(_openh)}")
+                    if _metah:
+                        _parts.append("read to record notes (not client-shown): "
+                                      + ", ".join(_metah))
+                    if _skiph:
+                        _parts.append(f"skipped (ordinal/link-text): {', '.join(_skiph)}")
+                    if _unmapped:
+                        _parts.append(f"NOT READ: {', '.join(_unmapped)}")
                     yield_notes.append(
-                        f"{Path(xl).name} [{hr.get('sheet')}]{tag}: "
-                        f"{hr.get('mapped_columns')}/{hr.get('populated_columns')} populated "
-                        f"columns mapped; unmapped: {', '.join(_unmapped)}")
+                        f"{Path(xl).name} [{hr.get('sheet')}]{tag}: " + "; ".join(_parts))
                 # a rent column with NO currency/unit in the header or cells ships on the
                 # house default (EUR/sq m/yr) - surface it so the broker confirms the real
                 # convention (a bare UK GBP/sq ft figure must never pass as EUR/sq m silently)
@@ -2054,6 +2502,18 @@ def main() -> None:
                         f"{Path(xl).name} [{hr.get('sheet')}]: area value outside the "
                         f"plausibility band - kept for broker review (likely a unit/parse "
                         f"error), confirm before sending ({_bad})")
+                # a coordinate cell the extractor REFUSED to split (no assignment of the
+                # two numbers made a valid pin) - no coordinate shipped for that row, and
+                # the refusal is disclosed so the broker can supply the real pin
+                if hr.get("coord_unparsed"):
+                    _bad = "; ".join(
+                        f"{d.get('locator')}: '{' '.join(str(d.get('value')).split())}' "
+                        f"under '{' '.join(str(d.get('header')).split())}'"
+                        for d in hr.get("coord_unparsed", []))
+                    yield_notes.append(
+                        f"{Path(xl).name} [{hr.get('sheet')}]: coordinate cell(s) could not "
+                        f"be split safely - no pin shipped for those rows; confirm the "
+                        f"coordinates ({_bad})")
                 # SEMANTIC VERIFIER: two independent column-mapping passes DISAGREED on a
                 # field/basis. ADVISORY - the dashboard used the FIRST (primary) map; surface
                 # the disagreement so the broker confirms the correct basis/column with the
@@ -2374,6 +2834,15 @@ def main() -> None:
             k = k or ""
             return k if "|" in k else key_by_park.get(_m.norm(k), k)
 
+        # answered photo confirmations (workstream 3, item 3.4): applied BEFORE the
+        # doubts are rebuilt, so a broker 'yes' pulls the photo in THIS pass. The
+        # resolver makes the applied qid match the asked one (the question was keyed on
+        # the RESOLVED property key, the raw map entry may carry a park name).
+        if apply_photo_confirm_answers(work, pm, _resolve_key):
+            import _common as _C34
+            _C34.atomic_write_text(photo_map_f,
+                                   json.dumps(pm, ensure_ascii=False, indent=1))
+
         confident = {e.get("brochure"): _resolve_key(e.get("property_key")) for e in pm.get("confident", [])}
         uncertain = {e.get("brochure"): e for e in pm.get("uncertain", [])}
         # DESCRIPTION CACHE: collect the sub-agent's verbatim description picks (from
@@ -2679,6 +3148,29 @@ def main() -> None:
                 {"SOURCE_FILE": str(_j.get("source_file") or ""),
                  "MANIFEST_PATH": str(manifest),
                  "OUTPUT_PATH": str(_o) if _o else str(_j.get("output") or "")}))
+        # OPTIONAL job (workstream 1 item 1.4): low-confidence filename clusters ride the
+        # SAME exit-3 round as a rendered prompt instead of an SKILL.md-prose inline
+        # judgement task. Absence of the output keeps the deterministic regex - so this
+        # job never blocks and never gets a pending predicate.
+        try:
+            _inv3 = json.loads((work / "inventory.json").read_text(encoding="utf-8-sig"))
+            _lowc = sorted({str(s)
+                            for _cl in (_inv3.get("clusters") or {}).values()
+                            if isinstance(_cl, dict) and _cl.get("confidence") == "low"
+                            for s in (_cl.get("stems") or [])})
+            _cih = str(_inv3.get("cluster_input_hash") or _inv3.get("input_hash") or "")
+        except Exception:
+            _lowc, _cih = [], ""
+        if _lowc and _cih and not (work / "intake_clusters.json").exists():
+            _stems = ", ".join(_lowc[:40])
+            if len(_lowc) > 40:  # never a silent cap - name the remainder's location
+                _stems += (f" (+{len(_lowc) - 40} more low-confidence stems - read the "
+                           f"full list from inventory.json's clusters)")
+            _prompt_jobs.append(("cluster-labels", None,
+                                 {"STEMS": _stems,
+                                  "INVENTORY_PATH": str(work / "inventory.json"),
+                                  "OUTPUT_PATH": str(work / "intake_clusters.json"),
+                                  "CLUSTER_INPUT_HASH": _cih}))
         _pl = _render_dispatch_prompts(work, _prompt_jobs)
         msg = (f"{' and '.join(parts)} need INTERPRETATION. Manifest: {manifest}. Dispatch the "
                f"interpretation sub-agent (reference/interpretation.md) - structure brochure "
@@ -2798,6 +3290,12 @@ def main() -> None:
     # changes every card - which makes this the last moment it can be asked for free.
     _questions = _clarify.unit_questions(_recs_for_q) \
         + _clarify.dataset_unit_questions(_recs_for_q)
+    if _clarify.clarify_mode(work, cfg) == "interactive":
+        # workstream 3 (the STANDARD mode): photo confirmations at decision time
+        # (item 3.4) and the readers' recorded doubts (item 3.2) join this same
+        # batched first round - one interruption, never a drip
+        _questions += _clarify.photo_confirm_questions(photo_doubts)
+        _questions += _clarify.agent_doubt_questions(_recs_for_q)
     def _ask_and_exit(questions, quiet_intro, reason, extra=""):
         """The ONE emit site - questions are BATCHED here, never dripped.
 
@@ -2900,6 +3398,12 @@ def main() -> None:
         # Merged over work/match_settled.json, so a round-2 agent that empties
         # match_decisions.json cannot destroy a settled verdict and force a third round (B20).
         md = _load_match_decisions(work)
+        # UNSURE verdicts (workstream 3, item 3.3): resolve answered/headless ones into
+        # match_decisions.json BEFORE clustering (a verdict changes cluster membership);
+        # anything still pending becomes a blocking exit-13 broker question below.
+        _n_up, _unsure_pair_qs = unsure_pair_questions(work, cfg, grey)
+        if _n_up:
+            md = _load_match_decisions(work)
         # GREY-PAIR coverage: the decisions file must COVER every current grey pair with a
         # recognised verdict; an uncovered pair (inputs changed) or a bad shape re-emits +
         # exits 10 - never a silent guess.
@@ -3017,6 +3521,36 @@ def main() -> None:
             if isinstance(v, dict):
                 return isinstance(v.get("pick"), str)
             return False
+        # UNSURE picks (item 3.3): same treatment for value conflicts, then re-load.
+        _n_uf, _unsure_pick_qs = unsure_pick_questions(work, cfg, conflicts, fd)
+        if _n_uf and field_decisions_f.exists():
+            try:
+                parsed_f = json.loads(field_decisions_f.read_text(encoding="utf-8-sig"))
+                fd = _index_decisions(parsed_f, ("conflict_id", "field", "property_id"))
+            except Exception:
+                fd = None
+        _unsure_qs = _unsure_pair_qs + _unsure_pick_qs
+        if _unsure_qs:
+            import clarify as _CQ13
+            _pend13 = _CQ13.pending(work, _unsure_qs)
+            if _pend13:
+                _CQ13.emit(work, _pend13)
+                if QUIET:
+                    print("Two of your sources might describe the same option, or disagree "
+                          "on a value, and the files alone can't settle it - I need your "
+                          "call before I merge.")
+                _say_orchestrator(
+                    f"(orchestrator: {len(_pend13)} unsure-adjudication question(s) for the "
+                    f"BROKER (exit 13) - the reading agent was genuinely torn. Put them to "
+                    f"the user in ONE plain message from {work / 'questions.json'}, write "
+                    f"work/answers.json, re-run. Their answer becomes the recorded verdict; "
+                    f"'skip' ships the safe default, disclosed.)")
+                _exit_round_trip(work, 13, _attempts, "unsure match/value adjudication",
+                                 diagnosis=[f"question '{q['id']}' (asked_of: broker) "
+                                            f"pending: no answer or decline in "
+                                            f"work/answers.json" for q in _pend13])
+        # an unsure pick may have JUST resolved (headless/decline path above), so
+        # recompute coverage against the mutated files
         field_uncovered = bool(conflicts) and not (fd is not None and all(
             _pick_ok(fd.get(c["conflict_id"])) for c in conflicts))
         if grey_uncovered or field_uncovered:
@@ -3055,15 +3589,21 @@ def main() -> None:
                     "4XD' = same) or two distinct ones ('Alpha Park' vs 'Beta Park', same developer "
                     "and city = different). Decide, for EACH pair, by MEANING whether `a` and `b` "
                     "describe the SAME physical property. Write work/match_decisions.json: {\"<pair_id>"
-                    "\": {\"verdict\": \"same\"|\"different\", \"reason\": \"...\"}, ...} covering EVERY "
-                    "pair_id; default \"different\" when unsure. (2) `field_conflicts` - GENUINE "
+                    "\": {\"verdict\": \"same\"|\"different\"|\"unsure\", \"reason\": \"...\"}, ...} "
+                    "covering EVERY pair_id. Lean \"different\" when the evidence is thin (an "
+                    "over-split is caught by the dedupe gate); \"unsure\" is for a pair you are "
+                    "GENUINELY torn on after real effort - it goes to the broker on an interactive "
+                    "run (headless ships 'different', disclosed). Never use it to avoid the work. "
+                    "(2) `field_conflicts` - GENUINE "
                     "VALUE DISAGREEMENTS within a merged property: a field where two+ sources state "
                     "DIFFERENT values. The fixed source precedence already chose a `default`; KEEP "
                     "the default unless a candidate is clearly right and the default clearly wrong (a "
                     "typo in a newer email, a mislabelled tracker column, an ask-price vs a "
                     "negotiated rate). NEVER invent a value - pick only among the given candidate "
-                    "labels; when unsure, pick the default. Write work/field_decisions.json: "
-                    "{\"<conflict_id>\": {\"pick\": \"<label>\", \"reason\": \"...\"}, ...} covering "
+                    "labels; lean the default when the evidence is thin, and pick \"unsure\" ONLY "
+                    "when genuinely torn (it goes to the broker on an interactive run; headless "
+                    "keeps the default, disclosed). Write work/field_decisions.json: "
+                    "{\"<conflict_id>\": {\"pick\": \"<label>\"|\"unsure\", \"reason\": \"...\"}, ...} covering "
                     "EVERY conflict_id. Python re-verifies each pick against the field's plausibility "
                     "gate and falls back to precedence if it fails. See reference/matching.md. Then "
                     "re-run the same command - it resumes and merges."),
@@ -3368,6 +3908,29 @@ def main() -> None:
                 if not QUIET:
                     print(f"(image pre-warm skipped: {e})", file=sys.stderr)
         call(merge, *merge_args)
+
+    # workstream 3, item 3.5 (interactive): an excluded record's figure conflicting with
+    # the shipped card it plausibly IS becomes ONE non-blocking broker question; an
+    # answer picking the excluded figure was just written as an attributed repair (the
+    # repairs stage applies it before the gates, this same pass on the re-run)
+    _xf_pend = excluded_figure_questions(work, cfg, canonical)
+    if _xf_pend:
+        import clarify as _CQ35
+        _xf_pend = _CQ35.pending(work, _xf_pend)
+        if _xf_pend:
+            _CQ35.emit(work, _xf_pend)
+            if QUIET:
+                print("One of your excluded sources disagrees with a shipped option's "
+                      "size - your call which figure the card shows.")
+            _say_orchestrator(
+                f"(orchestrator: {len(_xf_pend)} excluded-figure question(s) for the "
+                f"BROKER (exit 13) in {work / 'questions.json'} - put them to the user "
+                f"in ONE plain message, write work/answers.json, re-run. Unanswered "
+                f"ships the disclosed conflict as before.)")
+            _exit_round_trip(work, 13, _attempts, "excluded-figure confirmation",
+                             diagnosis=[f"question '{q['id']}' pending: asked once; "
+                                        f"any answer or silence settles it next pass"
+                                        for q in _xf_pend])
 
     # P1-4: re-surface the override OUTCOMES. merge printed them, but call() swallows child stdout
     # under --quiet - and a correction that matched NOTHING is precisely what must not be silent.
@@ -3819,7 +4382,10 @@ def main() -> None:
     # arithmetic because both police how a NUMBER reaches the client - arithmetic checks the
     # magnitude, this checks that the magnitude is legible. Live defect: divisibleFrom shipped
     # '10,000 sq. m' on twelve cards and a bare '5000' on the thirteenth.
-    g1.append(run_gate(gate_runner, "value-format", canonical))
+    vf_rc = run_gate(gate_runner, "value-format", canonical,
+                     "--emit-json", work / "value_format_findings.json",
+                     "--waivers", work / "value_format_waivers.json")
+    g1.append(vf_rc)
     # B60: a town-centre pin while the property's OWN page carries the author's coordinates or a
     # maps link. Runs post-enrich because it judges the FINAL coordinate, not the extracted one.
     g1.append(run_gate(gate_runner, "coord-provenance", canonical,
@@ -3867,6 +4433,31 @@ def main() -> None:
             print("\nBLOCKED: validate-data failed (schema/consistency defect). Not building - "
                   "fix the inputs/data and re-run (gate1_scorecard.md has the specifics).")
         sys.exit(5)
+    # B59 -> exit 13: the value-format gate's remedy used to be SKILL.md prose telling
+    # the orchestrator to ask the broker - the one documented prose ask. Bridge it:
+    # answers become attributed repairs (applied before the gates next pass), declines
+    # become waivers the gate notes, anything undecided is a BLOCKING broker question.
+    if vf_rc != 0:
+        vf_rep, vf_wv, vf_pend = value_format_clarify(work, canonical)
+        if vf_pend:
+            n_q = len(vf_pend)
+            if QUIET:
+                print("One of your files writes a value differently from its siblings - I need "
+                      "you to confirm its unit before I can finish.")
+            _say_orchestrator(
+                f"(orchestrator: {n_q} value-format clarification(s) needed (exit 13) - the "
+                f"questions are in {work / 'questions.json'}; put the broker questions to the "
+                f"user in ONE plain message, write work/answers.json, re-run. An answer becomes "
+                f"an attributed repair; 'leave as is' ships the bare value disclosed.)")
+            _exit_round_trip(work, 13, _attempts, "value-format clarification",
+                             diagnosis=[f"question '{q.get('id')}' (asked_of: broker) pending: "
+                                        f"no answer or decline for that exact id in "
+                                        f"work/answers.json" for q in vf_pend])
+        if vf_rep or vf_wv:
+            _say_orchestrator(
+                f"(orchestrator: value-format answers recorded - {vf_rep} repair(s) appended to "
+                f"work/repairs.json, {vf_wv} bare value(s) waived by broker decision. Re-run the "
+                f"same command: repairs apply before the gates.)")
     if any(rc != 0 for rc in g1):
         if QUIET:
             print("A quality check on the data needs sorting before I can finish the dashboard - "
@@ -3980,57 +4571,92 @@ def main() -> None:
     if bool((cfg.get("enrichment") or {}).get("regions") or args.regions):
         _gjobs.append(("g-enrich", None, dict(_gate_slots)))
     _pl_qa = _render_dispatch_prompts(work, _gjobs)
+    # -------- QA WINDOW, LOOP-DRIVEN (workstream 1 item 1.2) -------------------
+    # The one phase that was ordered by prose runs on exit codes like every other:
+    #   exit 14 - independent reviews missing: dispatch work/prompts/g-*.md, re-run
+    #   exit 15 - blocking findings unresolved: implement + qa-round resolve, re-run
+    #   exit 0  - recorded pass, advisories folded into the Gaps Report, final_gate
+    #             green: DONE-DONE. Nothing in this phase is orchestrator-remembered.
+    _esrc = ((cfg.get("inputs") or {}).get("emails") or {}).get("source", "none")
+    _extra_steps = []
+    if _esrc in ("outlook", "folder"):
+        _extra_steps.append("the configured email ingestion (Stage 1, prompts/outlook-ingest.md)"
+                            " if its records are not already in")
+
+    def _review_file(kind: str) -> str:
+        return ("G-" + kind[2:] if kind.startswith("g-") else kind) + ".md"
+
+    _missing = [k for (k, _n2, _s2) in _gjobs
+                if not list((work / "reviews").glob(f"round*/{_review_file(k)}"))]
+    if _missing:
+        if QUIET:
+            step("Final checks - independent review")
+            print("An independent check of the data runs before handover - one moment.")
+        _say_orchestrator(
+            f"(orchestrator: independent QA review needed (exit 14). Dispatch ONE isolated "
+            f"sub-agent per rendered prompt - {', '.join(sorted(k + '.md' for k in _missing))} "
+            f"in {work / 'prompts'} - each file is that agent's VERBATIM instruction and names "
+            f"its own output file; dispatch them CONCURRENTLY, then re-run the same command."
+            + (f" Also outstanding: {'; '.join(_extra_steps)}." if _extra_steps else "") + ")")
+        _exit_round_trip(work, 14, _attempts, "the independent QA review",
+                         diagnosis=[f"review '{k}' pending: no reviews/round*/"
+                                    f"{_review_file(k)} exists yet" for k in _missing])
+    if gate_runner.qa_round_number(work) == 0 or qa_reviews_changed(work):
+        # reviews are in - record them. Guarded by a FINGERPRINT of the review files,
+        # not by round count: `record` self-opens a new round when the last is recorded
+        # (so re-running it on unchanged files would inflate rounds), while a
+        # round-count-only guard made every post-record review unrecordable.
+        rc_rec = call(gate_runner, "qa-round", "record", "--work", work,
+                      "--reviews", work / "reviews", check=False)
+        if rc_rec == 0:
+            qa_reviews_stamp(work)
+    _open_findings = gate_runner.qa_blocking_open(work)
+    if _open_findings:
+        if QUIET:
+            print("The independent review found something I must fix before handover.")
+        _say_orchestrator(
+            f"(orchestrator: {len(_open_findings)} blocking QA finding(s) unresolved "
+            f"(exit 15). IMPLEMENT each fix, then record it: `gate_runner.py qa-round "
+            f"resolve --work \"{work}\" --id <id> --because \"<what you changed>\"`, then "
+            f"re-run the same command. Ids + findings: `gate_runner.py qa-round status "
+            f"--work \"{work}\"` (also in {work / 'qa_state.json'}). An ADVISORY finding "
+            f"is never fixed - it ships in the Gaps Report's Known limitations.)")
+        _exit_round_trip(work, 15, _attempts, "the QA improvement pass",
+                         diagnosis=[f"blocking finding '{e['id']}' pending: no qa-round "
+                                    f"resolve recorded for that exact id"
+                                    for e in _open_findings])
+    # recorded pass: RE-deliver so the Gaps Report carries the round's advisories as
+    # 'Known limitations', then the ship backstop - run inside the loop, so exit 0
+    # can only ever mean final_gate went green
+    call(deliver, "--canonical", canonical, "--html", built, "--ledger", ledger_csv,
+         "--out-dir", deliverables, "--slug", args.client, "--filename", filename,
+         "--marker-dir", work)
+    import final_gate as _final_gate_mod
+    rc_fg = run_gate(_final_gate_mod, "--canonical", canonical, "--html", built,
+                     "--deliverables", deliverables, "--reviews", work / "reviews",
+                     "--qa-state", work)
+    write_scorecard(work / "final_gate_report.md", "Ship gate (final_gate)")
+    if rc_fg != 0:
+        if QUIET:
+            print("A final check refused the handover - it needs sorting before the "
+                  "dashboard goes out.")
+        _say_orchestrator(
+            f"(orchestrator: final_gate BLOCKED (exit 7) - each reason is in "
+            f"{work / 'final_gate_report.md'}; fix and re-run the same command.)")
+        sys.exit(7)
+    _clear_attempts(work)  # done-done: no request is outstanding
     if QUIET:
         step("Done - dashboard ready")
         # P3-10: tell the broker WHERE the deliverable is, and flag the Gaps Report ONLY
-        # when there are REAL gaps to chase (not merely because the file always exists).
-        # Reuse deliver.py's own CORE + _is_tbd so this matches the Gaps Report exactly.
-        _clear_attempts(work)  # the spine got through: no request is outstanding
+        # when there are REAL gaps to chase (not merely because the file always exists);
+        # the helper mirrors every section deliver.gaps_report emits.
         print(f"Your dashboard and its files are ready in {deliverables}.")
-        # flag the Gaps Report ONLY when it has real content to chase (not merely
-        # because the file always exists); the helper mirrors every section
-        # deliver.gaps_report emits, so the note matches the report exactly.
         if _gaps_to_chase(canonical, failed_preps, photo_doubts, unreadable_inputs, yield_notes):
             print("Some details are still missing - see the Gaps Report in that folder "
                   "for what to chase with the landlord or agent.")
-        # P3-7: the 'Remaining agentic steps' reminder below is after this quiet return,
-        # so it would be suppressed. Mirror the exit-8 stderr precedent: emit an
-        # orchestrator-phrased reminder (final_gate.py is the backstop). STDOUT: it is a
-        # handoff instruction, and stderr is invisible through mcp__shell. (B27)
-        _say_orchestrator(
-              "(orchestrator: spine done - run the remaining AGENTIC steps per SKILL.md "
-              "(emails/region research as configured, then the isolated G-honesty / G-trace / "
-              "G-images / G-visual reviewers). The QA window is ONE review pass: the reviewers "
-              "PROPOSE findings, you IMPLEMENT them, then deliver. Dispatch the gate batch "
-              f"concurrently -> `gate_runner.py qa-round record --work \"{work}\" --reviews "
-              f"\"{work / 'reviews'}\"` -> implement each `blocking:` finding and record it with "
-              "`qa-round resolve --id <id> --because \"<what you changed>\"` -> deliver: "
-              f"`deliver.py --canonical \"{canonical}\" --html \"{built}\" "
-              f"--ledger \"{ledger_csv}\" --out-dir \"{deliverables}\" --marker-dir \"{work}\" "
-              f"--slug {args.client} --filename \"{filename}\"` -> "
-              f"`final_gate.py --canonical \"{canonical}\" --html \"{built}\" --deliverables "
-              f"\"{deliverables}\" --reviews \"{work / 'reviews'}\" --qa-state \"{work}\"`. "
-              "Advisory findings "
-              "Report's 'Known limitations', not fixed and not re-reviewed. There is no second "
-              "review pass and no adjudication round. final_gate.py is the ship backstop - it "
-              "blocks while any blocking finding has no recorded repair; do not declare done to "
-              f"the broker until it passes.{_pl_qa})")
-        return
-    print(f"\nDONE. Deliverables in {deliverables}")
-    esrc = ((cfg.get("inputs") or {}).get("emails") or {}).get("source", "none")
-    if esrc == "outlook":
-        email_step = "Outlook email extraction (outlook_email_search sub-agent)"
-    elif esrc == "folder":
-        efolder = ((cfg.get("inputs") or {}).get("emails") or {}).get("folder", "")
-        email_step = f"email extraction from the folder '{efolder}' (extract_email.py + offer-extraction), re-run merge"
     else:
-        email_step = None
-    regions_on = bool((cfg.get("enrichment") or {}).get("regions") or args.regions)
-    reviewer_step = ("the isolated G-honesty / G-trace / G-images"
-                     + (" / G-enrich" if regions_on else "")
-                     + " / G-visual reviewers")  # G-enrich is REQUIRED by final_gate when regions ran
-    steps = [s for s in (email_step, "region research" if regions_on else None, reviewer_step) if s]
-    print("Remaining agentic steps (see SKILL.md): " + "; ".join(steps) + "." + _pl_qa)
+        print(f"\nDONE. Deliverables in {deliverables} - QA round recorded, advisories "
+              f"folded into the Gaps Report, final gate green. Nothing left to run.")
 
 
 if __name__ == "__main__":

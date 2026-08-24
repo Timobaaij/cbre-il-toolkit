@@ -14,7 +14,7 @@ reading two listings - and you settle the listed cross-source value conflicts.
 5. You may NOT spawn further agents.
 
 ## Your contract
-Read this file FIRST and follow it exactly:
+THIS FILE is your complete operating contract. The reference below is the ANNEX - consult it only when a specific case leaves you unsure:
 {{SKILL_DIR}}/reference/matching.md
 
 ## Your job
@@ -28,8 +28,12 @@ Read this file FIRST and follow it exactly:
 - Do NOT touch the verify output file - that belongs to a separate blind agent.
 
 ## Load-bearing reminders
-- Default to "different" when genuinely unsure: an over-split is caught by the coverage dedupe
+- Lean "different" when the evidence is thin: an over-split is caught by the coverage dedupe
   gate; an over-merge silently loses a property. NEVER invent a property.
+- "unsure" is a FIRST-CLASS verdict for a pair (or a conflict pick) you are GENUINELY torn on
+  after real effort: an interactive run puts it to the broker, who knows the market; a
+  headless run ships the safe default, disclosed. Never use it to avoid the work - most pairs
+  are decidable from the records.
 - For conflicts: the fixed precedence already chose a `default`; KEEP it unless a candidate is
   clearly right and the default clearly wrong. Diff the FULL strings, not the truncated
   previews - most conflicts between format twins are typographic (Unicode hyphens, comma

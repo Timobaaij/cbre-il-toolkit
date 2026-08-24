@@ -3050,9 +3050,14 @@ def units_cases() -> None:
     check(r.get("__meta", {}).get("tracker_rich") is True,
           "xlsx: a >=8-field sheet is flagged as a RICH tracker")
     hr = (res.get("header_report") or [{}])[0]
+    # open capture: 'unmapped' now means NOT READ AT ALL and must be EMPTY - a
+    # populated column the dictionary leaves unbound ships as an open field
+    # (top-level scalar) or a __meta note, each named in its own bucket
     check(hr.get("mapped_columns", 0) < hr.get("populated_columns", 0)
-          and "Size Unit" in hr.get("unmapped_headers", []),
-          "xlsx: the yield report names every populated-but-unmapped column")
+          and hr.get("unmapped_headers") == []
+          and "Size Unit" in hr.get("open_captured_headers", []),
+          "xlsx: every populated column is READ - the NOT-READ residual is empty; "
+          "unbound columns ship as open fields")
     # GUARD: a plain 'Size' column with NO GIA/gross marker stays warehouse area - we
     # subtract office ONLY when the size is explicitly a gross total (the user's rule:
     # check the size unit BEFORE assuming warehouse; default to warehouse only after)
@@ -5418,21 +5423,24 @@ def deliver_resume_cases() -> None:
         rc2 = _spine_resume(folder, work)
         deliverables = work / "deliverables"
         dash = sorted(deliverables.glob("*.html")) if deliverables.exists() else []
-        if rc2 != 0 or not dash:
-            check(False, f"#25: second pass should deliver a dashboard (exit {rc2!r}, dash={bool(dash)})")
+        # loop-driven QA window: the spine now runs THROUGH delivery and exits 14
+        # (independent reviews pending) - exit 0 means final_gate already went green
+        if rc2 != 14 or not dash:
+            check(False, f"#25: second pass should deliver a dashboard and pause at the "
+                         f"QA review (exit 14; got exit {rc2!r}, dash={bool(dash)})")
             return
         dash = dash[0]
         m_after = dash.stat().st_mtime_ns
         # (a) a no-change resume SKIPS deliver -> dashboard mtime unchanged
         rc3 = _spine_resume(folder, work)
-        check(rc3 == 0 and dash.stat().st_mtime_ns == m_after,
+        check(rc3 == 14 and dash.stat().st_mtime_ns == m_after,
               "#25a: a no-change resume SKIPS deliver (dashboard mtime unchanged)")
         # (b) canonical changes -> build + deliver RE-FIRE (dashboard re-delivered, mtime advances)
         canonical = work / "canonical.json"
         fut = canonical.stat().st_mtime + 100
         _os.utime(canonical, (fut, fut))
         rc4 = _spine_resume(folder, work)
-        check(rc4 == 0 and dash.stat().st_mtime_ns > m_after,
+        check(rc4 == 14 and dash.stat().st_mtime_ns > m_after,
               "#25b: after canonical changes, deliver RE-FIRES (never a stale skip; mtime advances)")
 
 

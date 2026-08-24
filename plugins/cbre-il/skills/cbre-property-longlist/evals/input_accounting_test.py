@@ -147,6 +147,24 @@ def main() -> int:
     ck("Alpha.pdf" in b2["unaccounted"] and "Beta.pdf" in b2["unaccounted"],
        "a brochure that contributed NOTHING is now UNACCOUNTED (it used to be invisible)")
 
+    # --- excluded bucket: a broker's source-authority exclusion is accounted, ---
+    # --- disclosed and NON-blocking (blocking it cornered a live orchestrator ---
+    # --- into hiding the file from inventory via _originals) --------------------
+    d2 = _work(["a.pdf", "excluded_deck.pdf", "t.xlsx"], ["a.pdf", "t.xlsx"])
+    (d2 / "canonical.json").write_text(json.dumps({
+        "meta": {"client": "A", "excluded": [
+            {"name": "Some Park", "source_files": ["excluded_deck.pdf"],
+             "why": "not evidenced by the tracker"}]},
+        "properties": [{"id": 1, "park": "P"}]}), encoding="utf-8")
+    p = _run(d2)
+    ck(p.returncode == 0,
+       f"a source excluded by the broker's answer does NOT red the run {ascii(p.stdout[-70:])}")
+    ck("excluded_deck.pdf" in p.stdout and "source-authority" in p.stdout,
+       "...and is named as a disclosed decision, not silently accounted")
+    b3 = GR._accounting_buckets(d2, d2 / "canonical.json")
+    ck("excluded_deck.pdf" in b3.get("excluded", []),
+       "...in its own 'excluded' bucket")
+
     if fails:
         print(f"\nINPUT ACCOUNTING TEST: FAIL ({len(fails)})")
         return 1

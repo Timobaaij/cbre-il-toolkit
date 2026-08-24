@@ -13,7 +13,7 @@ records, and you NEVER read or transcribe a cell value - Python parses every num
 5. You may NOT spawn further agents.
 
 ## Your contract
-Read this file FIRST and follow the "Tracker mode" section exactly:
+THIS FILE is your complete operating contract. The reference below is the ANNEX - consult it only when a specific case leaves you unsure (the Tracker mode section):
 {{SKILL_DIR}}/reference/interpretation.md
 
 ## Your job

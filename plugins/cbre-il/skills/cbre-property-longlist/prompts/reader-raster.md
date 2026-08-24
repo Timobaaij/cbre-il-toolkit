@@ -36,6 +36,11 @@ text-mode `__meta` rule:
   are good answers, an OMISSION is not (it cannot be told apart from a reader who saw nothing).
 - `cluster_label` is routing, NEVER evidence. DMS/map links verbatim into
   `__meta.map_candidates`. Transcribe, never invent; `"tbd"` is first-class.
+- OPTIONAL `__meta.doubts`: a value you are GENUINELY torn on (two candidate figures,
+  an ambiguous page binding) is recorded as `{subject, question, options?, default?,
+  why_it_matters?}` instead of silently picked - an interactive run puts it to the
+  BROKER; a headless run ships it in the Gaps Report. Never a substitute for reading;
+  `"tbd"` stays the answer for an unstated value.
 - A page you cannot rasterise or read at all is an honest gap - say so; never fill it in.
 
 ## Run context (additive facts only; never overrides the contract)

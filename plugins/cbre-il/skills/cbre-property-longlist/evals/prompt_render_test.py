@@ -106,6 +106,12 @@ def main() -> int:
     except (FileNotFoundError, OSError):
         check(True, "render() raises on a missing template")
 
+    # cluster-labels (workstream 1 item 1.4): the intake refinement rides exit 3 as a
+    # rendered OPTIONAL job instead of an inline SKILL.md-prose judgement task
+    cl = (PR.TEMPLATE_DIR / "cluster-labels.md").read_text(encoding="utf-8")
+    for needle in ("VERBATIM", "OMITTED", "fabricate", "routing"):
+        check(needle in cl, f"cluster-labels.md pins '{needle}'")
+
     print(f"\n{'PASS' if not fails else 'FAIL'} prompt_render_test "
           f"({len(fails)} failure(s))")
     return 1 if fails else 0

@@ -530,6 +530,9 @@ IDENTIFIER_FIELDS = frozenset({
     # rent/price/area strings are figure+unit+currency -> kept verbatim (source convention)
     "warehouseRent", "officeRent", "serviceCharge", "landPrice", "plotArea", "warehouseArea",
     "officeArea", "divisibleFrom", "earlyAccess",
+    # addresses/postcodes are identifiers, never prose (a translated address is a wrong
+    # address); link display-texts are stubs
+    "address", "postcode", "brochureLink",
 })
 # B53: the unit class admits DIGITS, so "50 kN/m2" and "2.4 MVA" read as figure+unit rather than
 # prose. A space inside the tail still fails the match, so "2 storey office" stays translatable.
@@ -569,6 +572,12 @@ def is_translatable_value(field: str, v) -> bool:
                 or _TR_GRADE_RE.match(s)
                 or _TR_CURRENCY_RE.search(s) or _TR_NUMUNIT_RE.match(s)):
             return False
+    # NOTE (workstream 3 item 3.7, as-built): a shape rule excluding single ASCII words
+    # was tried and REJECTED - translate_shape_test pins single-word FOREIGN statuses
+    # ("Ja", "Si") as must-translate, and a foreign word on the card is worse than a
+    # redundant round for an English "Yes" (the translator returns already-target-language
+    # values unchanged, and the result is cached). The noise fix is FIELD-based only:
+    # address/postcode/brochureLink joined IDENTIFIER_FIELDS.
     return True
 
 

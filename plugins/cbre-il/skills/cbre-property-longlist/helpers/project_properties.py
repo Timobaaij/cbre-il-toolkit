@@ -254,7 +254,7 @@ def _considered_for_property(out_dir: Path, entry: dict, written_media: dict,
 
 def write_property(prop: dict, out_dir: Path, ledger_rows: list, conflicts: list,
                    repairs: list, media: bool = True, considered: dict | None = None,
-                   source_dir=None, image_cache=None) -> dict:
+                   source_dir=None, image_cache=None, open_capture: list = ()) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     mdir = out_dir / "media"
     if mdir.exists():
@@ -335,6 +335,13 @@ def write_property(prop: dict, out_dir: Path, ledger_rows: list, conflicts: list
     lines += ([f"- `{k}`" for k in tbd] or ["- none"]) + [""]
     lines += [f"## Source conflicts ({len(conflicts)})", ""]
     lines += ([f"- {c}" for c in conflicts] or ["- none"]) + [""]
+    if open_capture:
+        # commentary / denied-key / CJK-only tracker columns: READ (and visible
+        # here + in the yield/Gaps chain) but deliberately never client-shown
+        lines += [f"## Read but not shown on the card ({len(open_capture)})", ""]
+        lines += [f"- `{e.get('column')}` = {e.get('value')}  "
+                  f"({e.get('source_file')}, {e.get('locator')})"
+                  for e in open_capture] + [""]
     lines += [f"## Repairs applied ({len(repairs)})", ""]
     lines += ([f"- `{r['id']}` {', '.join(r.get('changed', {}))} - {r.get('why','')}"
                for r in repairs] or ["- none"]) + [""]
@@ -397,7 +404,9 @@ def build(work: Path, canonical_path: Path | None = None, media: bool = True,
         made.append(write_property(p, root / name, by_id.get(pid, []),
                                    conf_by_id.get(pid, []), rep_by_id.get(pid, []), media,
                                    considered=considered_by_id.get(pid),
-                                   source_dir=source_dir, image_cache=image_cache))
+                                   source_dir=source_dir, image_cache=image_cache,
+                                   open_capture=(data.get("meta", {})
+                                                 .get("openCapture") or {}).get(pid, [])))
     n_orphan = _write_unassigned(root, unassigned, source_dir, image_cache) if media else 0
     # the considered-set render loop opens each deck through IMG's shared doc cache; release the
     # handles before returning (on Windows a held handle blocks an in-process caller's temp-dir

@@ -80,6 +80,13 @@ KINDS = {
     "record_count": "agent",      # a deck that may hold more properties than were emitted
     "source_authority": "broker",  # two sources disagree on HOW MANY properties exist
     "dataset_unit": "broker",     # the corpus states BOTH sq ft and sq m - which is displayed
+    "value_format": "broker",     # one bare number among unit-carrying siblings (gate B59)
+    # workstream 3 (interactive standard mode) kinds:
+    "match_unsure": "broker",     # the adjudicator was genuinely torn on a grey pair
+    "field_unsure": "broker",     # ...or on a value-conflict pick
+    "photo_confirm": "broker",    # an uncertain brochure->property photo pairing
+    "agent_doubt": "broker",      # a reader's recorded doubt (__meta.doubts)
+    "excluded_figure": "broker",  # an excluded record's figure conflicts with a shipped card
 }
 
 # The kinds whose DEFAULT IS THE DAMAGE, so silence must not resolve them (B49):
@@ -87,7 +94,10 @@ KINDS = {
 #   dataset_unit     - the default silently relabels half a mixed dataset, 10.76x out
 #   area_unit /      - an unlabelled figure inherits a unit it was never measured in, which
 #   rent_unit          is the 10.76x error class this whole skill exists to avoid
-BLOCKING_KINDS = {"source_authority", "dataset_unit", "area_unit", "rent_unit"}
+#   value_format     - appending the siblings' unit to a bare number is DECIDING the field
+#                      is an area; a wrong guess silently relabels a count or a power rating
+BLOCKING_KINDS = {"source_authority", "dataset_unit", "area_unit", "rent_unit",
+                  "value_format"}
 
 # An answer meaning "I am not going to answer this - proceed on the stated default, and record
 # that I chose to." Matched against the WHOLE answer, case- and punctuation-insensitively, so a
@@ -174,6 +184,26 @@ def is_decline(v) -> bool:
     brochures' is a real instruction and must not be swallowed as one. A decline is a recorded
     decision - it unblocks the run and is disclosed as a choice, not as an unread gap."""
     return _norm_answer(v) in DECLINE_TOKENS
+
+
+def clarify_mode(work, cfg: dict | None = None) -> str:
+    """'interactive' | 'headless' - how eagerly this run asks the broker.
+
+    INTERACTIVE IS THE STANDARD MODE (user-set, 2026-08-24): a judgement the pipeline
+    cannot settle that affects what a card shows is PUT TO THE BROKER during the run -
+    an unsure match verdict, a forbidden-pair figure conflict, an uncertain photo, a
+    sub-agent's recorded doubt. HEADLESS keeps the original contract (default honestly
+    + disclose in the Gaps Report) and is selected by `project.yaml clarify.mode:
+    headless`, `clarify.assume_defaults: true`, or the SKIP_ALL sentinel - so a
+    cron/eval run never blocks on a human. The pre-existing question kinds behave
+    identically in both modes; the mode only gates the interactive-era kinds."""
+    if skip_all(work):
+        return "headless"
+    c = (cfg or {}).get("clarify") or {}
+    if c.get("assume_defaults") is True:
+        return "headless"
+    m = str(c.get("mode") or "").strip().lower()
+    return "headless" if m == "headless" else "interactive"
 
 
 def skip_all(work) -> bool:
@@ -489,6 +519,121 @@ def unit_questions(records: list) -> list:
                                   "stated' - honest, but not comparable in the rent range"),
             })
     return out
+
+
+def value_format_questions(findings: list) -> list:
+    """The value-format gate's findings (one bare number among unit-carrying
+    siblings) as BLOCKING broker questions. The gate refuses to guess - appending
+    the siblings' unit means DECIDING the field is an area, and a wrong guess is
+    the 10.76x class - and the remedy used to be SKILL.md prose telling the
+    orchestrator to ask, the one documented prose ask and exactly the kind a
+    mid-tier orchestrator drops. run.py bridges an answer into an attributed
+    repairs.json entry; a decline ('leave as is' / skip) ships the bare value as
+    a disclosed decision via the gate's waivers file."""
+    out = []
+    for f in findings or []:
+        field = str(f.get("field") or "")
+        printed = str(f.get("dominant_printed") or f.get("dominant_unit") or "")
+        ex = ", ".join(f"'{s}'" for s in (f.get("examples") or [])[:3])
+        for b in f.get("bare") or []:
+            pid, val = b.get("id"), str(b.get("value"))
+            out.append({
+                "id": qid("value_format", f"{field}|{pid}", field),
+                "kind": "value_format", "asked_of": KINDS["value_format"],
+                "blocking": True,
+                "subject": f"property id {pid}",
+                "field": field, "property_id": pid, "bare_value": val,
+                "question": (f"Property id {pid}: `{field}` reads as a bare '{val}' while "
+                             f"{f.get('measured_count')} other propert(y/ies) write it with "
+                             f"a unit (e.g. {ex}). What unit is '{val}' in?"),
+                "options": [printed, "leave as is"],
+                "why_it_matters": ("appending the siblings' unit without asking would "
+                                   "silently decide what this figure measures - a count or "
+                                   "a power rating relabelled as an area is the 10.76x "
+                                   "error class"),
+                "if_unanswered": (f"'{val}' ships bare beside unit-carrying siblings, "
+                                  f"disclosed as a broker decision"),
+            })
+    return out
+
+
+def photo_confirm_questions(doubts: list) -> list:
+    """Item 3.4: an UNCERTAIN photo-brochure pairing is confirmed at DECISION time, not
+    after the dashboard is built (asking 'is this the right photo?' post-build was the
+    worst possible timing). Non-blocking: unanswered keeps the honest placeholder and
+    the end-of-run prompt, exactly today's behaviour."""
+    from pathlib import Path as _P
+    out = []
+    for d in doubts or []:
+        br, park = str(d.get("brochure") or ""), str(d.get("park") or "?")
+        if not br:
+            continue
+        out.append({
+            # keyed on (brochure, property) - a qid on the brochure alone let one 'yes'
+            # endorse it for EVERY uncertain candidate property, and auto-applied to a
+            # later photo_map pairing the brochure with a DIFFERENT property
+            "id": qid("photo_confirm", f"{br}|{d.get('key') or ''}", "photo"),
+            "kind": "photo_confirm", "asked_of": KINDS["photo_confirm"],
+            "blocking": False, "subject": park, "brochure": br,
+            "question": (f"Is '{_P(br).name}' a photo of {park}?"
+                         + (f" (match note: {d['note']})" if d.get("note") else "")),
+            "options": ["yes", "no"],
+            "why_it_matters": "a yes pulls the photo onto the card this pass",
+            "if_unanswered": ("the card keeps its placeholder and the prompt repeats "
+                              "at the end of the run"),
+        })
+    return out
+
+
+_CORE_DOUBT_TOKENS = ("area", "rent", "unit", "count", "properties", "size")
+
+
+def agent_doubt_questions(records: list) -> list:
+    """Item 3.2: a reading agent's RECORDED doubt (`__meta.doubts`: {subject, question,
+    options?, default?, why_it_matters?}) becomes a non-blocking broker question in the
+    same batched first round. Capped at 12, shipped-field impact first; the overflow
+    stays in the record and ships in the Gaps Report as today. The broker's answer is
+    DISCLOSED via the Clarifications section; acting on it (an override/repair) stays
+    an attributed human step - a doubt answer never mutates data silently."""
+    qs = []
+    for r in records or []:
+        if not isinstance(r, dict):
+            continue
+        m = r.get("__meta") or {}
+        subj_default = _subject(r)
+        for d in (m.get("doubts") or []):
+            if not isinstance(d, dict) or not str(d.get("question") or "").strip():
+                continue
+            subject = str(d.get("subject") or subj_default)
+            q = {
+                "id": qid("agent_doubt",
+                          f"{m.get('source_file', '')}|{subject}|"
+                          f"{str(d['question'])[:60]}", ""),
+                "kind": "agent_doubt", "asked_of": KINDS["agent_doubt"],
+                "blocking": False, "subject": subject,
+                "question": f"{subject}: {str(d['question']).strip()}",
+                "why_it_matters": str(d.get("why_it_matters")
+                                      or "the reading agent recorded this as a genuine doubt"),
+                "if_unanswered": (f"proceeds with: {d['default']}" if d.get("default")
+                                  else "the doubt ships in the Gaps Report"),
+            }
+            if isinstance(d.get("options"), list) and d.get("options"):
+                q["options"] = [str(o) for o in d["options"]][:6]
+            qs.append(q)
+    # dedupe by qid FIRST (two records sharing source_file+subject+question produce one
+    # question, not two slots of the cap), then core shipped-field doubts outrank the rest.
+    # The cap is per ROUND BY DESIGN: overflow doubts ship in the Gaps Report rather than
+    # queueing extra broker rounds - a doubt worth more than that belongs in a repair.
+    seen_ids, deduped = set(), []
+    for q in qs:
+        if q["id"] in seen_ids:
+            continue
+        seen_ids.add(q["id"])
+        deduped.append(q)
+    core = [q for q in deduped
+            if any(t in q["question"].lower() for t in _CORE_DOUBT_TOKENS)]
+    rest = [q for q in deduped if q not in core]
+    return (core + rest)[:12]
 
 
 DATASET_UNIT_QID = qid("dataset_unit", "dataset area unit")
