@@ -100,6 +100,14 @@ clarify:
 `work/clarify.SKIP_ALL` sentinel force headless; absent = interactive. Headless behaviour
 is unchanged from before the mode existed.
 
+**Interactive does not mean chatty.** A question is only put to the broker when its answer
+would change what the DASHBOARD SHOWS - a rendered value, photo or label, or how many options
+ship (`clarify.materiality()`, `reference/evidence-standard.md` rule 4). Everything else the
+run was unsure about is recorded and printed in the Gaps Report under "Noted, not put to
+you", with the value that shipped instead. There is no config for this: it is the standard in
+both modes, because a question that cannot change the deliverable is not worth an
+interruption in either.
+
 ## Empty-string handling
 Blank `project.yaml` strings fall back to defaults (today's date, a generated lede, a generic eyebrow) - the build never emits empty hero text.
 

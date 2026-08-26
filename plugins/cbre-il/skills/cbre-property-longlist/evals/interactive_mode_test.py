@@ -116,7 +116,9 @@ pm3 = {"confident": [], "uncertain": [{"brochure": "photos/alpha.pdf",
 check("photo-bound-to-property", RUN.apply_photo_confirm_answers(w7, pm3) == 0
       and len(pm3["uncertain"]) == 1)
 
-# 5) reader doubts (item 3.2): capped, core-field-first, non-blocking
+# 5) reader doubts (item 3.2): material-first, capped, non-blocking. Only a doubt that
+#    changes what the dashboard SHOWS is asked (B62) - the rest are carried for the Gaps
+#    Report. Full materiality coverage lives in clarify_materiality_test.py.
 recs = [{"park": f"P{i}", "city": "Corby",
          "__meta": {"source_file": "deck.pdf",
                     "doubts": [{"subject": f"P{i}",
@@ -126,10 +128,27 @@ recs = [{"park": f"P{i}", "city": "Corby",
                                 "default": "the larger figure"}]}}
         for i in range(15)]
 dq = CQ.agent_doubt_questions(recs)
-check("doubts-capped", len(dq) == 12)
+ask = [q for q in dq if CQ.is_material(q)]
+check("doubts-material-only-asked", len(ask) == 3)
+check("doubts-material-first", dq[:3] == ask)
 check("doubts-core-first", "area" in dq[0]["question"].lower())
+check("doubts-ledger-carried", len(dq) == 15
+      and all(q["materiality"] == "ledger" for q in dq[3:]))
 check("doubts-nonblocking", all(q["blocking"] is False and q["asked_of"] == "broker"
                                 for q in dq))
+# the cap applies to the MATERIAL ones - a ledger doubt never consumes a broker slot
+recs_all_material = [{"park": f"Q{i}", "city": "Corby",
+                      "__meta": {"source_file": "deck.pdf",
+                                 "doubts": [{"subject": f"Q{i}",
+                                             "question": "which printed warehouse area is "
+                                                         "the right one?"}]}}
+                     for i in range(15)]
+_all_mat = CQ.agent_doubt_questions(recs_all_material)
+check("doubts-capped", len([q for q in _all_mat if not q.get("over_cap")])
+      == CQ.MAX_DOUBT_QUESTIONS == 12)
+# the cap is on ASKING, not on knowing: the overflow is flagged and disclosed, never lost
+check("doubts-overflow-carried", len(_all_mat) == 15
+      and sum(1 for q in _all_mat if q.get("over_cap")) == 3)
 
 # 6) excluded-figure questions (item 3.5)
 w8 = pathlib.Path(tempfile.mkdtemp(prefix="cbre_xf_"))

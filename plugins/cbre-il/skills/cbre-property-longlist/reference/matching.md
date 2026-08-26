@@ -281,7 +281,12 @@ the reason lands in the audit trail.)
 - **Leaning-default is safe; GENUINELY torn is `"unsure"`.** When the default plainly
   holds (or nothing moves the needle), pick it. When you are genuinely torn after real
   effort, `"pick": "unsure"` hands the choice to the broker (interactive) or keeps the
-  default disclosed (headless) - never a silent coin-flip either way.
+  default disclosed (headless) - never a silent coin-flip either way. On an interactive
+  run it reaches the broker only where the FIELD is material (`clarify.field_is_material`:
+  the dashboard renders it, or the matcher reads it for identity). An `unsure` on an
+  open tracker column or another Excel-only field keeps the precedence default, recorded
+  as a disclosed decision in the Gaps Report - it is never left hanging, and the losing
+  value still appears under Source conflicts.
 - You are resolving ONE field's value. Do not edit any other field, do not merge, do not
   re-transcribe - the spine applies your pick.
 

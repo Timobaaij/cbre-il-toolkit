@@ -385,11 +385,17 @@ records matching `templates/record_schema.json`:
 - **A GENUINE doubt is recorded, never silently resolved (`__meta.doubts`, optional).**
   When a page leaves you genuinely torn about a stated value (two printed figures could
   each be the warehouse area; a page might belong to the neighbouring unit), record
-  `{subject, question, options?, default?, why_it_matters?}` in the record's
-  `__meta.doubts` instead of picking silently. An interactive run batches these to the
-  BROKER (capped per round, shipped-field impact first); a headless run ships them in the
-  Gaps Report. `tbd` stays the answer for a value the source does not state - a doubt is
-  for a value the source DOES state ambiguously, and never an excuse to skip reading.
+  `{subject, question, field?, affects?, options?, default?, why_it_matters?}` in the
+  record's `__meta.doubts` instead of picking silently. Only a doubt that moves a field the
+  dashboard RENDERS (or that the matcher reads for identity), or the number of properties,
+  is put to the broker - capped per round, material first, and the overflow is disclosed
+  rather than dropped. Everything else is printed in the Gaps Report, in BOTH modes.
+  DECLARE the classification where you can and it is exact instead of inferred from your
+  wording: `field` must be the canonical key spelled as the schema spells it (an
+  unrecognised name is ignored and the wording is read instead), or `affects` is one of
+  `count` / `display` / `ledger`. `tbd` stays the answer for a value the source does not
+  state - a doubt is for a value the source DOES state ambiguously, and never an excuse to
+  skip reading.
 - **If the text is unusable/garbled** (mojibake, column-shuffled spec tables you
   cannot trust, a text layer that is clearly an OCR mess), do NOT force a record.
   Set `"needs_raster": true` on that deck's output (e.g. one stub record `{"__meta":

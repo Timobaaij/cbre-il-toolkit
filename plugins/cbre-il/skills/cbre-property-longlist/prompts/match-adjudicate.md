@@ -33,7 +33,11 @@ THIS FILE is your complete operating contract. The reference below is the ANNEX 
 - "unsure" is a FIRST-CLASS verdict for a pair (or a conflict pick) you are GENUINELY torn on
   after real effort: an interactive run puts it to the broker, who knows the market; a
   headless run ships the safe default, disclosed. Never use it to avoid the work - most pairs
-  are decidable from the records.
+  are decidable from the records. One qualifier for CONFLICT PICKS: an "unsure" only reaches
+  the broker when the field can change what the client sees (the dashboard renders it, or the
+  matcher reads it for identity). On any other field - an open tracker column, an
+  Excel-only field - "unsure" keeps the precedence default and is disclosed in the Gaps
+  Report rather than asked, so do the work on the field in front of you either way.
 - For conflicts: the fixed precedence already chose a `default`; KEEP it unless a candidate is
   clearly right and the default clearly wrong. Diff the FULL strings, not the truncated
   previews - most conflicts between format twins are typographic (Unicode hyphens, comma

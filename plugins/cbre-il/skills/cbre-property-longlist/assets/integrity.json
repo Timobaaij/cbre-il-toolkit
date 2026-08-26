@@ -36,8 +36,8 @@
     "sha256": "ba1f074b4974f3e629158919deaedb8b30e5feed94c998868295d366d6044c31"
   },
   "helpers/clarify.py": {
-    "size": 46060,
-    "sha256": "30feed1029fd460c7fd5307136f872a88c096d44b4fa510b3fc5d80f10224649"
+    "size": 70053,
+    "sha256": "797ecdc8f23c50688b393bcb20884d8165ffa4fcfc2e057a24e3e8ff31ab0c19"
   },
   "helpers/contact_sheet.py": {
     "size": 15543,
@@ -48,8 +48,8 @@
     "sha256": "88f6566919ec6ec4c1c545d8e9462dd6d3f0b958f35b0563140e6b83e951523a"
   },
   "helpers/deliver.py": {
-    "size": 41691,
-    "sha256": "0f3698fb5504f6cd76edae2aeedf3df499a3759f9df7f328c3c4ee36c2833712"
+    "size": 46005,
+    "sha256": "d317b1842fb101ea5e4d1195ac453225145bea10adfd660ac2b86fa21b0806d4"
   },
   "helpers/enrich.py": {
     "size": 99476,
@@ -156,8 +156,8 @@
     "sha256": "0d346e9300fd90b1c83affb022f2d09403aa807e422f979d84390a52e83842ae"
   },
   "helpers/run.py": {
-    "size": 285622,
-    "sha256": "7016012614b00bd925a817cb6da70d9c0f71f2096c4d04c3a3cc5b2753f05215"
+    "size": 292254,
+    "sha256": "9a64431a70ba9e0086e3a97c6a14f250d0966c727929c3a599d5dadf333793ff"
   },
   "helpers/seed_geocode.py": {
     "size": 2442,
@@ -272,8 +272,8 @@
     "sha256": "6f33b61d2b1e45fb25368c4a68d8a456903f5b20d270533585514d0dd7498e42"
   },
   "prompts/match-adjudicate.md": {
-    "size": 2559,
-    "sha256": "cf61b3f278e8f2986aea7e25ea8405d3e223fc4dc212c2edcf83f35e58e06401"
+    "size": 2966,
+    "sha256": "2f444aa022938ef585ed53395a6ea06f744de4823a2d3ca281f53a991464a442"
   },
   "prompts/match-verify.md": {
     "size": 1508,
@@ -288,12 +288,12 @@
     "sha256": "daf86ecc3cf7d178667241b47e823077a03e862b4064d77ef1595d2e76b5236c"
   },
   "prompts/reader-raster.md": {
-    "size": 2906,
-    "sha256": "82bd972b5b16a72d77dc5343abf22ed16fdc8426a9cea5f9ffd377c59c34e9f0"
+    "size": 3285,
+    "sha256": "e3a931091dec6c2304ce37c99c92dbfef427f200c1ce01b964b36dd8cacb3891"
   },
   "prompts/reader-text.md": {
-    "size": 5686,
-    "sha256": "3bd31d054bd55d318241a4bc5bed9f3a1cf47255aeef835586c9557e0f4dbc59"
+    "size": 6191,
+    "sha256": "4e48cfc76c3dd502e27d1b9b1c1a821ccf3ee556f50732e3cf2c9b7fe864dab6"
   },
   "prompts/region-labels.md": {
     "size": 1944,
@@ -372,7 +372,7 @@
     "sha256": "2db1ad4b8c2090f571dcf71c4d437b7a22a252eae3ceddc50fdb0c3771216166"
   },
   "templates/record_schema.json": {
-    "size": 6961,
-    "sha256": "3f818e4aef3c0eb071a3012fc972ef40e68f457dfcc0d6bb592e69ca29084bac"
+    "size": 7544,
+    "sha256": "bca230bcc2fb7822de25bf778e9317807fdea7a2f271ba72ff61c33dd88be7a7"
   }
 }

@@ -32,3 +32,5 @@ That is deliberate, and it is bounded rather than open-ended - the escape is exp
 | the orchestrator just re-runs | nothing changes - the question returns, and after two passes the exit text spells out the decline path | nothing is built, which is the point |
 
 The one thing that no longer resolves a blocking question is silence. Every other clarification kind keeps the original contract: asked once, then it ships as the honest gap named in its `if_unanswered`.
+
+**A doubt that cannot change the dashboard is never a question at all.** Before any of the above, `clarify.pending()` drops every LEDGER-ONLY question - one whose answer would move nothing but a provenance note, a Source Ledger cell or an Excel-only column - and records it instead. It ships the value the source already gave and is named in the Gaps Report under "Noted, not put to you", so the broker still sees it; it just does not stop the run for it. Units, the dataset display unit, source authority, value format and unsure match verdicts are exempt and always asked: for those the default is the damage.

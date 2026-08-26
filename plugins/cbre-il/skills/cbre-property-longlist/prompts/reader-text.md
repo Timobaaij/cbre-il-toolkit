@@ -53,11 +53,16 @@ Read this file FIRST and follow it exactly (TEXT mode):
   VERBATIM into `__meta.map_candidates` - never converted, never resolved by you.
 - OPTIONAL `__meta.doubts`: when a page leaves you GENUINELY torn about a stated value
   (two printed figures could each be the warehouse area; a page might belong to a
-  different property), record it as `{subject, question, options?, default?,
-  why_it_matters?}` instead of silently picking - an interactive run puts it to the
-  BROKER; a headless run ships it in the Gaps Report. A doubt never replaces reading:
-  `"tbd"` stays the answer for a value the source does not state, and most pages are
-  decidable without one.
+  different property), record it as `{subject, question, field?, affects?, options?,
+  default?, why_it_matters?}` instead of silently picking. The run puts a doubt to the
+  BROKER only when it affects a field the dashboard shows or how many properties exist;
+  the rest are disclosed in the Gaps Report. SAY WHICH YOURS IS and it is exact rather
+  than inferred from your wording: `field` = the canonical key you are torn about,
+  spelled exactly as the schema spells it (`"warehouseArea"`, never `"area"` or
+  `"warehouse_area"` - an unrecognised name is ignored and your wording is read instead),
+  or `affects` = `"count"` (how many properties there are), `"display"` (a value on the
+  card) or `"ledger"` (cosmetic). A doubt never replaces reading: `"tbd"` stays the answer
+  for a value the source does not state, and most pages are decidable without one.
 - LOOK at each page's `candidates_sheet` (one call per page) to set `__meta.heroRef` (a real
   photo/aerial/render ONLY - a map, plan, icon or logo is never the hero; honest `null` is
   always safe), `planRef`, `plan_page` (from the page `render` thumbnails), `image_pages`

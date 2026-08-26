@@ -1439,11 +1439,59 @@ def unsure_pair_questions(work: Path, cfg: dict, grey: list) -> tuple:
     return len(updates), pending
 
 
+def _conflict_candidate(conflict: dict, label) -> dict:
+    """The candidate dict a conflict's label points at, or {}."""
+    for k in (conflict or {}).get("candidates") or []:
+        if isinstance(k, dict) and str(k.get("label")) == str(label):
+            return k
+    return {}
+
+
+def _conflict_default_value(conflict: dict) -> str:
+    """The VALUE the precedence default ships, not its 'a'/'b' label.
+
+    A Gaps line reading "the precedence default ('a') ships" is unreadable: the report
+    carries no options list to decode the letter, so the broker cannot see what shipped."""
+    v = _conflict_candidate(conflict, (conflict or {}).get("default")).get("value")
+    return "the source's own value" if v in (None, "") else f"'{v}'"
+
+
+def _conflict_values(conflict: dict) -> str:
+    """'12 m' vs '15 m' - the disagreement itself, in the broker's terms."""
+    vals = [str(k.get("value")) for k in (conflict or {}).get("candidates") or []
+            if isinstance(k, dict) and k.get("value") not in (None, "")]
+    return " vs ".join(f"'{v}'" for v in vals[:4]) or "two differing values"
+
+
+def _conflict_where(conflict: dict) -> str:
+    """Which option the conflict is on, named the way the broker knows it."""
+    for k in ("cluster_key", "cluster_anchor"):
+        v = str((conflict or {}).get(k) or "").strip()
+        if v:
+            return v.split("|")[0][:60] or "one option"
+    return "one option"
+
+
 def unsure_pick_questions(work: Path, cfg: dict, conflicts: list, fd) -> tuple:
     """Item 3.3 (value conflicts): an 'unsure' pick becomes a broker question
     (interactive) or keeps the precedence default, disclosed (headless/declined).
     Options are the conflict's own candidate labels with their values - the broker
-    can only ever pick among stated values, never introduce one."""
+    can only ever pick among stated values, never introduce one.
+
+    MATERIALITY (B62): only a conflict that can change what the client sees is worth the
+    broker's time. `clarify.field_is_material` is the test, and it is deliberately WIDER
+    than "the dashboard prints it": it also covers the fields the MATCHER reads for
+    identity (park, address, postcode, scheme, region...), because settling one of those
+    silently can re-cluster the dataset on a later pass and move the option count. A
+    disagreement on an open-captured tracker column, or any other Excel-and-ledger-only
+    field, takes the precedence default here and now, recorded as a disclosed decision -
+    the losing value still reaches meta.conflicts and the Gaps Report exactly as before.
+
+    This one has to be RESOLVED at the producer rather than filtered in clarify.pending: a
+    field_unsure question is `blocking:true`, so dropping it without writing a decision
+    would leave field_decisions.json holding 'unsure', field_uncovered would stay True, and
+    exit 10 would re-dispatch the adjudicator for ever. Suppression must always leave a
+    settled value behind it."""
     import clarify as _CQ
     unsure = [c for c in conflicts or []
               if fd is not None and _is_unsure(fd.get(c.get("conflict_id")))]
@@ -1452,9 +1500,10 @@ def unsure_pick_questions(work: Path, cfg: dict, conflicts: list, fd) -> tuple:
     mode = _CQ.clarify_mode(work, cfg)
     answers = _CQ.ingest_answers(work)
     declined = _CQ.declined_ids(work)
-    updates, pending = {}, []
+    updates, pending, suppressed = {}, [], []
     for c in unsure:
         cid = c.get("conflict_id")
+        shown = _CQ.field_is_material(c.get("field"))
         q_id = _CQ.qid("field_unsure", str(cid), str(c.get("field") or ""))
         opts = {f"{k.get('label')}: {k.get('value')}": str(k.get("label"))
                 for k in (c.get("candidates") or []) if isinstance(k, dict)}
@@ -1476,6 +1525,23 @@ def unsure_pick_questions(work: Path, cfg: dict, conflicts: list, fd) -> tuple:
             updates[cid] = {"pick": str(c.get("default")),
                             "reason": ("adjudicator was unsure; precedence default kept "
                                        "(headless/declined, disclosed)")}
+        elif not shown:
+            updates[cid] = {"pick": str(c.get("default")),
+                            "reason": (f"adjudicator was unsure; precedence default kept - "
+                                       f"`{c.get('field')}` is neither shown on the "
+                                       f"dashboard nor read by the matcher, so the answer "
+                                       f"could not change what the client sees (disclosed, "
+                                       f"not asked)")}
+            suppressed.append({
+                "id": q_id, "kind": "field_unsure", "materiality": "ledger",
+                "subject": f"`{c.get('field')}` on {_conflict_where(c)}",
+                "question": (f"Two sources disagree on `{c.get('field')}` "
+                             f"({_conflict_values(c)}) and the adjudicator was unsure which "
+                             f"is right"),
+                "if_unanswered": (f"{_conflict_default_value(c)}, the value the source "
+                                  f"precedence prefers; the losing value is listed under "
+                                  f"Source conflicts"),
+            })
         else:
             # an unrecognised answer RE-ASKS with the rejection spelled out - silently
             # falling back to precedence discarded the broker's explicit choice
@@ -1483,7 +1549,8 @@ def unsure_pick_questions(work: Path, cfg: dict, conflicts: list, fd) -> tuple:
                         f"answer with one of them exactly, or 'skip'.)") if a else ""
             pending.append({
                 "id": q_id, "kind": "field_unsure", "asked_of": "broker",
-                "blocking": True, "subject": f"`{c.get('field')}` conflict {cid}",
+                "blocking": True, "field": c.get("field"),
+                "subject": f"`{c.get('field')}` conflict {cid}",
                 "question": (f"Two sources disagree on `{c.get('field')}` and the "
                              f"adjudicator was genuinely unsure which is right. "
                              f"Which value should the card show?{rejected}"),
@@ -1494,6 +1561,12 @@ def unsure_pick_questions(work: Path, cfg: dict, conflicts: list, fd) -> tuple:
             })
     if updates:
         _mutate_decisions_file(work / "field_decisions.json", updates)
+    # REPLACE this kind's disclosures rather than appending: a conflict_id is derived from
+    # cluster membership and re-keys when clustering settles (a live run saw the set grow
+    # 44 -> 78 across two exit-10 rounds), so appending would leave the Gaps Report naming
+    # conflicts that no longer exist. Called even when nothing was suppressed this pass, so
+    # a round that resolves everything materially clears the stale entries too.
+    _CQ.note_suppressed(work, suppressed, replace_kind="field_unsure")
     return len(updates), pending
 
 
@@ -1617,14 +1690,27 @@ def _index_decisions(parsed, id_keys: tuple) -> dict | None:
     return flat or None
 
 
-def _gaps_to_chase(canonical_path, failed_preps, photo_doubts, unreadable_inputs, yield_notes) -> bool:
+def _gaps_to_chase(canonical_path, failed_preps, photo_doubts, unreadable_inputs, yield_notes,
+                   work=None) -> bool:
     """True when the Gaps Report has substantive content the broker should chase.
     Mirrors EVERY populated section deliver.gaps_report emits - per-property tbd CORE
     fields, enrichment gaps, source conflicts, unmapped tracker columns, unreadable
     inputs and photo-match doubts - so the quiet 'Done' note never steers the broker
-    away from a report that has real content (P3-10)."""
+    away from a report that has real content (P3-10).
+
+    Including the two clarify sections (B62): an accepted default and a doubt the run
+    decided not to stop for are exactly the kind of real content this predicate exists to
+    point at, and on a clean run they can be the ONLY content."""
     if failed_preps or photo_doubts or unreadable_inputs or yield_notes:
         return True
+    if work is not None:
+        try:
+            import clarify as _CQ
+            _st = _CQ.load_state(work)
+            if _st.get("suppressed") or _st.get("answers") or _st.get("declined"):
+                return True
+        except Exception:
+            pass
     try:
         cj = json.loads(Path(canonical_path).read_text(encoding="utf-8-sig"))
     except Exception:
@@ -3293,9 +3379,27 @@ def main() -> None:
     if _clarify.clarify_mode(work, cfg) == "interactive":
         # workstream 3 (the STANDARD mode): photo confirmations at decision time
         # (item 3.4) and the readers' recorded doubts (item 3.2) join this same
-        # batched first round - one interruption, never a drip
+        # batched first round - one interruption, never a drip. The ledger-only
+        # doubts ride along and are filtered out (and recorded) by clarify.pending,
+        # so they reach the Gaps Report without costing a round-trip. (B62)
         _questions += _clarify.photo_confirm_questions(photo_doubts)
         _questions += _clarify.agent_doubt_questions(_recs_for_q)
+    else:
+        # HEADLESS asks nothing, but a doubt a reader took the trouble to record must
+        # still reach the broker somewhere. record_schema.json has always promised
+        # "a headless run ships them in the Gaps Report" and nothing implemented it -
+        # the same disclosure channel now does. (B62)
+        #
+        # SPLIT BY MATERIALITY, because the two say different things to a broker. A doubt
+        # about which warehouse area is right is NOT "no effect on what the dashboard
+        # shows" just because this run was told not to ask: it goes under the heading that
+        # says so. Getting this wrong printed the opposite of the truth in a client-facing
+        # deliverable, which both blind reviews called out.
+        _hd = _clarify.agent_doubt_questions(_recs_for_q)
+        _clarify.note_suppressed(work, [q for q in _hd if not _clarify.is_material(q)],
+                                 why=_clarify.WHY_LEDGER)
+        _clarify.note_suppressed(work, [q for q in _hd if _clarify.is_material(q)],
+                                 why=_clarify.WHY_HEADLESS)
     def _ask_and_exit(questions, quiet_intro, reason, extra=""):
         """The ONE emit site - questions are BATCHED here, never dripped.
 
@@ -4526,6 +4630,12 @@ def main() -> None:
     _deliver_inputs = [built, canonical, ledger_csv,
                        work / "photo_doubts.json", work / "unreadable.json",
                        work / "yield_report.md", work / "qa_state.json",
+                       # clarify_state carries the Clarifications and "Noted, not put to
+                       # you" sections, and NOTHING else in the deliverables carries them:
+                       # __meta.doubts never reaches canonical.json, so a re-extraction that
+                       # changes only a reader's doubts leaves canonical byte-identical and
+                       # deliver would resume-skip the one file that discloses them. (B62)
+                       work / "clarify_state.json",
                        # deliver is seconds, so auto-invalidating on a code change is free (B42)
                        _code_stamp(work, "deliver", [
                            HERE / "deliver.py", HERE / "ledger.py", HERE / "normalize.py",
@@ -4651,7 +4761,8 @@ def main() -> None:
         # when there are REAL gaps to chase (not merely because the file always exists);
         # the helper mirrors every section deliver.gaps_report emits.
         print(f"Your dashboard and its files are ready in {deliverables}.")
-        if _gaps_to_chase(canonical, failed_preps, photo_doubts, unreadable_inputs, yield_notes):
+        if _gaps_to_chase(canonical, failed_preps, photo_doubts, unreadable_inputs,
+                          yield_notes, work):
             print("Some details are still missing - see the Gaps Report in that folder "
                   "for what to chase with the landlord or agent.")
     else:

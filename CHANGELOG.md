@@ -7,6 +7,24 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.9.1] — 2026-08-26
+
+Marketplace 1.9.1: **CBRE I&L Toolkit 1.6.1**. UK I&L Toolkit unchanged at 1.3.0.
+
+### Changed
+- **Property longlist — the run only stops for what the client will actually see.** A live
+  interactive run asked too often, so clarification questions now have to pass a
+  **materiality test**: a question reaches the user only when its answer would change a value
+  or photo shown on the dashboard, or the number of options that ship. Everything else is
+  **disclosed rather than asked**, landing in the Gaps Report's new "Noted, not put to you"
+  section. Because every surviving question has already passed that test, the orchestrator is
+  told to put it to the user rather than second-guess whether it matters. `blocking:false`
+  asks once then ships the honest gap; `blocking:true` returns each pass until answered or
+  declined, and "decide sensibly" maps to headless — default honestly and disclose.
+  Covered by a new `evals/clarify_materiality_test.py`, with updates to `helpers/clarify.py`,
+  `helpers/deliver.py`, `helpers/run.py`, three dispatch prompts, `templates/record_schema.json`
+  and six reference documents.
+
 ## [1.9.0] — 2026-08-24
 
 Marketplace 1.9.0: **CBRE I&L Toolkit 1.6.0** — the property longlist's broker-in-the-loop
@@ -673,6 +691,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.9.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.9.1
 [1.9.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.9.0
 [1.8.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.8.0
 [1.7.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.7.0

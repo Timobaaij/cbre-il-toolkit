@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -98,6 +99,348 @@ KINDS = {
 #                      is an area; a wrong guess silently relabels a count or a power rating
 BLOCKING_KINDS = {"source_authority", "dataset_unit", "area_unit", "rent_unit",
                   "value_format"}
+
+# --------------------------------------------------------------------------- #
+# MATERIALITY - does the ANSWER change what the CLIENT SEES? (B62)
+#
+# THE BROKER'S RULE, set 2026-08-26 after a live interactive run stopped too often: ASK
+# ONLY WHEN THE ANSWER CHANGES THE DASHBOARD. Exactly two things qualify:
+#   "display" - it changes a value, photo or label RENDERED on a card, in the detail
+#               modal, in the compare table or on the map;
+#   "count"   - it changes HOW MANY options ship (the 17-vs-41 class).
+# Everything else is "ledger": a doubt that moves only a provenance note, a Source Ledger
+# cell or an Excel-only column. A ledger question is NOT put to the broker. Stopping a run
+# for one buys nothing a client can see, and the cost is real - each round is an
+# interruption, and a channel that asks about trivia trains the reader to skim the
+# questions that are precise (the same reasoning that keeps record_count unwired).
+#
+# WHAT SUPPRESSION IS NOT. It is not silence and it is not a guess. An unasked question
+# ships its OWN STATED DEFAULT - the value the source already gave - and is recorded in
+# `clarify_state.suppressed`, which deliver.py prints in the Gaps Report under "Noted, not
+# put to you". That is precisely what a headless run has always done with these, so the
+# Data Honesty Standard is untouched: nothing is invented, nothing is dropped, and the
+# broker can still see every doubt the run had. What changes is only WHERE it is shown.
+#
+# THE SAFE DIRECTION IS TO ASK. An unrecognised kind, or a question whose materiality
+# cannot be read, defaults to material - so a producer added later keeps today's behaviour
+# until someone classifies it deliberately.
+
+# The canonical fields the dashboard template actually RENDERS (card, detail modal, compare
+# table, map popup). Derived from assets/dashboard_template.html - every `p.<field>` its
+# render JS reads - intersected with templates/canonical.schema.json's property fields.
+# Held as a literal because clarify must stay a pure module (no 800 KB template read on the
+# question path) and PINNED by evals/clarify_materiality_test.py, which re-derives it from
+# the template and fails on any drift.
+# DELIBERATELY ABSENT: `postcode`, `district`, `warehouseAreaSqm`, `expansionParkVal` - real
+# fields that ship in the Longlist workbook and the Source Ledger but appear nowhere on the
+# dashboard - and every open-captured tracker column, which by definition has no card slot.
+DISPLAY_FIELDS = frozenset({
+    "areaUnit", "breeam", "brochureLink", "carParking", "city", "clearHeight",
+    "coordsApprox", "country", "description", "developer", "districtProfile",
+    "divisibleFrom", "earlyAccess", "electricity", "epc", "expansionBuilding",
+    "expansionPark", "floorLoad", "gallery", "id", "incentives", "landPrice", "landlord",
+    "lat", "leaseTerm", "lng", "loadingDocks", "mapLink", "motorway", "officeArea",
+    "officeAreaVal", "officeRent", "officeRentVal", "overheadDoors", "park", "permitting",
+    "photo", "plan", "plotArea", "preBaked", "region", "regionCode", "reit", "rentFree",
+    "rentUnit", "serviceCharge", "sprinklers", "status", "truckParking", "warehouseArea",
+    "warehouseRent", "warehouseRentVal",
+})
+
+# Per-kind materiality. A producer may override it per question by stamping `materiality`.
+#   value_format is ALWAYS material and deliberately not field-tested: its gate already
+#   scopes blocking findings to canonical card fields, it BLOCKS the build (exit 6), and
+#   the only ways out are a broker answer or a broker decline - so suppressing one would
+#   wedge the run with no path forward, which is worse than one question.
+#   agent_doubt starts at "ledger" and is promoted per doubt by _doubt_materiality: a free-
+#   text doubt is only worth a round-trip when it names something the client will see.
+KIND_MATERIALITY = {
+    "source_authority": "count",     # which source decides what belongs (17 vs 41)
+    "record_count": "count",         # a deck that may hold more properties than it emitted
+    "match_unsure": "count",         # merged or split = one card or two
+    "dataset_unit": "display",       # relabels every area on the grid
+    "area_unit": "display",          # the figure on the card
+    "rent_unit": "display",          # the rent on the card
+    "value_format": "display",       # see above - never suppressed
+    "photo_confirm": "display",      # the hero image IS the card
+    "excluded_figure": "display",    # which figure the card shows
+    "field_unsure": "display",       # only DISPLAYED-field conflicts ever become a question
+    "agent_doubt": "ledger",         # promoted per doubt when it names a shown field/count
+}
+MATERIALITIES = ("count", "display", "ledger")
+
+
+def field_is_displayed(field) -> bool:
+    """Is this canonical field rendered anywhere on the dashboard? Open-captured tracker
+    columns and Excel-only fields answer False - that is the whole point."""
+    return str(field or "").strip() in DISPLAY_FIELDS
+
+
+def _phrase_rx(phrases) -> "re.Pattern":
+    """One word-boundary alternation over a phrase list. Boundaries matter: a bare `in`
+    test would match 'id' inside 'candidate' and mark half the doubts material."""
+    alts = sorted({str(p).strip().lower() for p in phrases if str(p).strip()},
+                  key=len, reverse=True)
+    return re.compile(r"(?<!\w)(?:" + "|".join(re.escape(a) for a in alts) + r")(?!\w)")
+
+
+def _split_camel(field: str) -> str:
+    """'warehouseArea' -> 'warehouse area'; a trailing 'val' (a derived numeric twin of a
+    displayed field) is dropped so 'office rent val' reads as the broker would say it."""
+    words = re.sub(r"(?<!^)(?=[A-Z])", " ", str(field or "")).lower().split()
+    if len(words) > 1 and words[-1] == "val":
+        words = words[:-1]
+    return " ".join(words)
+
+
+# CLUSTERING IS ALSO THE CLIENT'S VIEW. A field the dashboard never prints can still change
+# HOW MANY cards ship, because the matcher reads it to decide whether two records are one
+# property: `match._GREY_IDENT_FIELDS` (park, address, postcode, scheme, building, unit...)
+# and `match._PLACE_FIELDS_EXTRA` (region, district, country) feed the grey-tier identity and
+# place bags. Settling `postcode` silently is therefore NOT free - it can move the option
+# count on the next pass, which rule 4 calls material. Read from `match` so the two cannot
+# drift apart, with a literal fallback so an import failure cannot make this MORE permissive.
+_MATCH_FIELDS_FALLBACK = frozenset({
+    "park", "address", "addressLine", "addressLine1", "street", "postcode", "postalCode",
+    "name", "propertyName", "scheme", "schemeName", "estate", "site", "siteName",
+    "building", "buildingName", "unit", "unitName", "region", "district", "country",
+    "city", "developer", "landlord",
+})
+_MATCH_FIELDS_CACHE = None
+
+
+def match_sensitive_fields() -> frozenset:
+    """Fields the MATCHER reads to decide identity, so a silent pick can move the count."""
+    global _MATCH_FIELDS_CACHE
+    if _MATCH_FIELDS_CACHE is None:
+        got = set(_MATCH_FIELDS_FALLBACK)
+        try:
+            import match as _M
+            for attr in ("_GREY_IDENT_FIELDS", "_PLACE_FIELDS_EXTRA", "_PARTY_FIELDS"):
+                got |= {str(f) for f in (getattr(_M, attr, ()) or ())}
+        except Exception:
+            pass
+        _MATCH_FIELDS_CACHE = frozenset(got)
+    return _MATCH_FIELDS_CACHE
+
+
+def field_is_material(field) -> bool:
+    """Could settling this field change what the client sees - either because the dashboard
+    RENDERS it, or because the MATCHER reads it and could re-cluster on it?"""
+    f = str(field or "").strip()
+    return bool(f) and (f in DISPLAY_FIELDS or f in match_sensitive_fields())
+
+
+def known_field(field) -> bool:
+    """Is this the name of a field the pipeline actually knows?
+
+    Used to decide whether a reader's `field` DECLARATION can be trusted. It must not be a
+    membership test against DISPLAY_FIELDS alone: that returns False both for "a real field
+    that is not rendered" and for "not a field name at all", and treating the second as the
+    first is how a declared "area" or "warehouse_area" silently demoted a doubt about the
+    figure on the card. An unrecognised name means UNDECLARED, so the text is read instead."""
+    f = str(field or "").strip()
+    if not f:
+        return False
+    if f in DISPLAY_FIELDS or f in match_sensitive_fields():
+        return True
+    try:
+        return f in C.canonical_property_fields()
+    except Exception:
+        return False
+
+
+# The words a reading agent actually uses when its doubt is about something the client will
+# SEE. Part of it is derived from DISPLAY_FIELDS so the lexicon cannot silently fall behind
+# the template; the rest is the plain-English vocabulary of a brochure ("eaves", "thousands",
+# "vacant") that no field name carries. GENEROUS ON PURPOSE - two blind reviews found the
+# first, tighter version demoting real doubts about currency, thousands separators, hero
+# photos and whether a hall was let, all of which a client sees.
+_EXTRA_DISPLAY_TOKENS = (
+    # magnitude and units
+    "area", "areas", "size", "sizes", "sq m", "sqm", "sq ft", "sqft", "m2", "square metre",
+    "square metres", "square meter", "square meters", "square foot", "square feet",
+    "hectare", "hectares", "acre", "acres", "gla", "figure", "figures", "number",
+    "thousand", "thousands", "million", "millions", "decimal", "magnitude",
+    # money
+    "rent", "rents", "rental", "price", "prices", "pricing", "quote", "quoted", "quoting",
+    "currency", "eur", "euro", "euros", "gbp", "pound", "pounds", "sterling", "pln",
+    "zloty", "czk", "koruna", "forint", "monthly", "yearly", "annual", "annually",
+    "per year", "per month", "headline",
+    # the building itself
+    "warehouse", "warehouses", "building", "buildings", "hall", "halls", "office",
+    "offices", "mezzanine", "plot", "plots", "yard", "unit", "units", "height", "eaves",
+    "haunch", "clearance", "dock", "docks", "door", "doors", "ramp", "sprinkler",
+    "sprinklered", "loading", "parking", "power", "mva", "kva", "amps", "electricity",
+    "specification", "specifications", "spec", "certification", "rating", "grade",
+    # commercial state
+    "tenant", "tenanted", "vacant", "occupied", "available", "availability", "let",
+    "lease", "leased", "completion", "handover", "practical completion", "ready",
+    "incentive", "incentives", "term", "terms",
+    # what the card LOOKS like
+    "photo", "photos", "photograph", "image", "images", "picture", "shot", "render",
+    "aerial", "asset", "site plan", "floorplan", "floor plan", "elevation",
+    # where it is
+    "map", "coordinate", "coordinates", "latitude", "longitude", "location", "address",
+    "estate", "junction", "distance", "drive time",
+)
+# "date" and "cover" are deliberately NOT here. The one displayed date (`earlyAccess`) is
+# reached by its own split phrase "early access" plus "completion"/"handover"/"available",
+# and a bare "date" promoted every doubt about a FILE's date format; "cover" would promote
+# the canonical cosmetic example ("the brochure cover tint looks unusual").
+
+# ...and the words it uses when the doubt is about HOW MANY options exist. Both reviews
+# found the first version, restricted to fixed phrases, missing every paraphrase of "is this
+# one property or two", so the paraphrases are enumerated here.
+_COUNT_TOKENS = (
+    "how many", "number of properties", "number of options", "more than one property",
+    "more than one", "same property", "same building", "same site", "same option",
+    "same scheme", "same listing", "one property", "two properties", "two options",
+    "two buildings", "two schemes", "two records", "two listings", "or two", "or three",
+    "second building", "second phase", "second scheme", "another building",
+    "another scheme", "separate property", "separate properties", "separate record",
+    "separate records", "separate option", "separate options", "separate listing",
+    "separate listings", "different property", "different properties", "different scheme",
+    "different address", "different asset", "another property", "adjacent", "adjoining",
+    "neighbouring", "neighboring", "next door", "belongs to", "belong to", "portfolio of",
+    "let together", "individually", "one listing", "one record", "page binding",
+    "which property", "wrong property", "wrong plot", "split into", "duplicate",
+    "duplicated", "phase",
+)
+# The doubt classes that genuinely change NOTHING a client sees: cosmetics, file hygiene,
+# notation. These OVERRIDE the display lexicon, because an explicitly cosmetic doubt should
+# not be promoted by a stray building word ("the cover tint on the warehouse brochure looks
+# unusual"). They do NOT override the count lexicon: how many options ship is the
+# highest-stakes class and no cosmetic phrasing should be able to bury it.
+# "date format" is deliberately absent: an ambiguous availability date DOES move a card, and
+# a page's date notation reaches "ledger" anyway by matching nothing at all.
+_LEDGER_TOKENS = (
+    "tint", "colour", "color", "font", "typeface", "layout", "margin", "logo", "watermark",
+    "typo", "spelling", "file name", "filename", "encoding", "mojibake", "garbled",
+    "header row", "footer", "page number", "metadata", "capitalisation", "capitalization",
+    "punctuation", "language of the file", "translation",
+)
+_DISPLAY_RX = _phrase_rx({_split_camel(f) for f in DISPLAY_FIELDS} | set(_EXTRA_DISPLAY_TOKENS))
+_COUNT_RX = _phrase_rx(_COUNT_TOKENS)
+_LEDGER_RX = _phrase_rx(_LEDGER_TOKENS)
+
+
+def _doubt_context(doubt: dict) -> str:
+    """`why_it_matters` + `options`, which is where a reader legitimately puts the substance
+    when the `question` itself is terse ("which one is right?").
+
+    `subject` is deliberately EXCLUDED: it is nearly always a park or city name, and names
+    like "Eastgate Park" or "Unit 4, Riverside" carry lexicon words ("park", "unit"), so
+    reading it would promote every doubt ever recorded and the filter would do nothing."""
+    d = doubt if isinstance(doubt, dict) else {}
+    bits = [str(d.get("why_it_matters") or "")]
+    opts = d.get("options")
+    if isinstance(opts, (list, tuple)):
+        bits += [str(o) for o in opts[:6]]
+    return " ".join(b for b in bits if b)
+
+
+def _doubt_materiality(doubt: dict, text: str = "") -> str:
+    """Classify ONE reader doubt. A declaration beats a guess, always.
+
+    Order: an explicit `materiality`/`affects` wins; then a declared `field`/`fields`, but
+    ONLY where the name is one the pipeline knows (`known_field`) - an unrecognised name is
+    treated as no declaration at all and the text is read instead, because "area" and
+    "warehouse_area" are near-misses a reading model writes and demoting on them would hide
+    a doubt about the figure on the card.
+
+    Then the free text (question + `why_it_matters` + `options`). That half is a HEURISTIC
+    and is treated as one: a doubt is demoted only on positive cosmetic/hygiene evidence, or
+    when nothing in it names anything the client could see. Both directions are bounded - a
+    false promotion costs one line in an already-batched round, and a false demotion ships
+    the source's own value and is printed in the Gaps Report, where the broker can still act
+    on it. A reader that wants certainty declares the field."""
+    d = doubt if isinstance(doubt, dict) else {}
+    m = str(d.get("materiality") or d.get("affects") or "").strip().lower()
+    if m in MATERIALITIES:
+        return m
+    fields = list(d.get("fields") or []) if isinstance(d.get("fields"), (list, tuple)) else []
+    if d.get("field"):
+        fields.append(d.get("field"))
+    declared = [f for f in fields if known_field(f)]
+    if declared:
+        return "display" if any(field_is_material(f) for f in declared) else "ledger"
+    t = (str(text or "") + " " + _doubt_context(d)).lower()
+    if _COUNT_RX.search(t):
+        return "count"
+    if _LEDGER_RX.search(t):
+        return "ledger"
+    if _DISPLAY_RX.search(t):
+        return "display"
+    return "ledger"
+
+
+def materiality(q) -> str:
+    """'count' | 'display' | 'ledger' for one question. An unknown KIND -> 'display' (ask)."""
+    if not isinstance(q, dict):
+        return "display"
+    m = str(q.get("materiality") or "").strip().lower()
+    if m in MATERIALITIES:
+        return m
+    kind = str(q.get("kind") or "")
+    if kind == "field_unsure" and q.get("field") is not None:
+        return "display" if field_is_material(q.get("field")) else "ledger"
+    return KIND_MATERIALITY.get(kind, "display")
+
+
+def is_material(q) -> bool:
+    """Would the answer change a figure, a photo or the option count on the dashboard?"""
+    return materiality(q) != "ledger"
+
+
+WHY_LEDGER = "ledger"        # the answer cannot change anything the client sees
+WHY_CAP = "over the cap"     # material, but past the per-round question cap
+WHY_HEADLESS = "headless"    # material, but this run was told to decide rather than ask
+
+
+def note_suppressed(work, questions: list, why: str = WHY_LEDGER,
+                    replace_kind: str = "") -> int:
+    """Record a question that was NOT put to the broker, so the GAPS REPORT discloses it.
+
+    This is the half that keeps suppression honest, and `why` is what keeps the disclosure
+    honest: the report must not tell a broker that a doubt about a warehouse area has "no
+    effect on what the dashboard shows" merely because nobody asked them about it. Three
+    reasons, and deliver.py prints them under two DIFFERENT headings:
+      WHY_LEDGER   - immaterial: it genuinely cannot change the dashboard.
+      WHY_CAP      - material, but more doubts arrived than one round can carry.
+      WHY_HEADLESS - material, but this run was set to decide sensibly and disclose.
+    Nothing here answers anything: the source's own value ships either way.
+
+    Recorded ONCE per id (the file is a merge resume input, so re-writing it every pass
+    would re-fire merge -> build -> deliver for nothing). `replace_kind` drops the existing
+    entries of one kind first, for a producer whose ids are re-keyed by later clustering
+    (field_unsure ids move when a cluster settles, and a stale entry would have the report
+    naming a conflict that no longer exists)."""
+    st = load_state(work)
+    sup = st.setdefault("suppressed", {})
+    before = json.dumps(sup, sort_keys=True)
+    if replace_kind:
+        for i in [k for k, v in sup.items()
+                  if str((v or {}).get("kind") or "") == str(replace_kind)]:
+            sup.pop(i, None)
+    n = 0
+    for q in questions or []:
+        i = (q or {}).get("id")
+        if not i or i in sup:
+            continue
+        sup[str(i)] = {
+            "kind": str(q.get("kind") or ""),
+            "subject": str(q.get("subject") or ""),
+            "question": str(q.get("question") or "")[:400],
+            "materiality": materiality(q),
+            "why_not_asked": str(why or WHY_LEDGER),
+            "source_file": str(q.get("source_file") or ""),
+            "if_unanswered": str(q.get("if_unanswered") or "")[:300],
+        }
+        n += 1
+    if json.dumps(sup, sort_keys=True) != before:
+        save_state(work, st)
+    return n
+
 
 # An answer meaning "I am not going to answer this - proceed on the stated default, and record
 # that I chose to." Matched against the WHOLE answer, case- and punctuation-insensitively, so a
@@ -142,6 +485,7 @@ def load_state(work) -> dict:
     st.setdefault("declined", [])   # blocking questions the answerer explicitly waved through
     st.setdefault("offers", {})     # id -> how many times it has been PUT (blocking escalation)
     st.setdefault("titles", {})     # id -> {kind, subject, question} for the Gaps disclosure
+    st.setdefault("suppressed", {})  # id -> ledger-only question, NOT asked but DISCLOSED
     if not isinstance(st["asked"], list):
         st["asked"] = []
     if not isinstance(st["answers"], dict):
@@ -152,6 +496,8 @@ def load_state(work) -> dict:
         st["offers"] = {}
     if not isinstance(st["titles"], dict):
         st["titles"] = {}
+    if not isinstance(st["suppressed"], dict):
+        st["suppressed"] = {}
     return st
 
 
@@ -163,6 +509,12 @@ def save_state(work, st: dict) -> Path:
     build -> deliver all re-fire on a no-change resume. `ingest_answers` runs on EVERY pass, so
     the churn was guaranteed. Same rule, and the same reason, as run._write_if_changed."""
     p = _state_path(work)
+    # An EMPTY `suppressed` is not written. load_state setdefaults the key, and ingest_answers
+    # saves on every pass, so persisting it would rewrite every pre-existing work dir's state
+    # exactly once - and because this file is a merge input, that one rewrite re-fires
+    # merge -> build -> deliver on an already-delivered project for a key holding nothing.
+    if isinstance(st.get("suppressed"), dict) and not st["suppressed"]:
+        st = {k: v for k, v in st.items() if k != "suppressed"}
     body = json.dumps(st, ensure_ascii=False, indent=2)
     try:
         if p.exists() and p.read_text(encoding="utf-8-sig") == body:
@@ -296,12 +648,28 @@ def pending(work, questions: list) -> list:
       BLOCKING - excluded only once ANSWERED or explicitly DECLINED. Silence keeps it
       outstanding, because for these kinds the fall-through default IS the damage (the live
       41-vs-17 run). It still cannot loop forever: `is_decline` and `skip_all` are both a
-      one-step, always-available exit, and both are recorded as a decision."""
+      one-step, always-available exit, and both are recorded as a decision.
+
+    AND ONE FILTER, applied last (B62): a LEDGER-ONLY question never leaves this function.
+    This is the door nearly every producer's output passes through, which is why the
+    materiality rule lives here rather than in five separate producers. Two exceptions,
+    both deliberate: `run.unsure_pick_questions` must RESOLVE an immaterial conflict to its
+    default at the producer (a dropped blocking question would leave field_decisions.json
+    holding 'unsure' and exit 10 would never converge), and `run.value_format_clarify`
+    appends a re-ask AFTER this call, which is safe only because value_format is material
+    by kind. Suppressed questions are recorded (note_suppressed) so the Gaps Report
+    discloses them; they are never answered, and the source's own value ships.
+
+    A BLOCKING question is never suppressed here, whatever its materiality says. Nothing in
+    the tree currently produces a blocking ledger question, but the invariant that
+    suppression always leaves a settled value behind it is asserted in three docstrings and
+    was enforced in none - so it is enforced here, where dropping one would strand it with
+    no decision, no escalation count and no way out."""
     st = load_state(work)
     asked = set(st.get("asked") or [])
     answered = set(st.get("answers") or {})
     declined = declined_ids(work)
-    seen, out = set(), []
+    seen, out, ledger = set(), [], []
     for q in questions:
         i = q.get("id")
         if not i or i in seen:
@@ -311,7 +679,15 @@ def pending(work, questions: list) -> list:
         if i in asked and not is_blocking(q):
             continue
         seen.add(i)
-        out.append(q)
+        if is_blocking(q) or (is_material(q) and not q.get("over_cap")):
+            out.append(q)
+        else:
+            ledger.append(q)
+    for _why in (WHY_LEDGER, WHY_CAP):
+        _batch = [q for q in ledger
+                  if (WHY_CAP if q.get("over_cap") else WHY_LEDGER) == _why]
+        if _batch:
+            note_suppressed(work, _batch, why=_why)
     return out
 
 
@@ -585,16 +961,37 @@ def photo_confirm_questions(doubts: list) -> list:
     return out
 
 
-_CORE_DOUBT_TOKENS = ("area", "rent", "unit", "count", "properties", "size")
+MAX_DOUBT_QUESTIONS = 12   # material doubts PUT to the broker in one round
+MAX_DOUBT_CARRIED = 200    # doubts carried at all, asked or merely disclosed
 
 
 def agent_doubt_questions(records: list) -> list:
     """Item 3.2: a reading agent's RECORDED doubt (`__meta.doubts`: {subject, question,
-    options?, default?, why_it_matters?}) becomes a non-blocking broker question in the
-    same batched first round. Capped at 12, shipped-field impact first; the overflow
-    stays in the record and ships in the Gaps Report as today. The broker's answer is
-    DISCLOSED via the Clarifications section; acting on it (an override/repair) stays
-    an attributed human step - a doubt answer never mutates data silently."""
+    field?/fields?, materiality?, options?, default?, why_it_matters?}) becomes a
+    non-blocking broker question in the same batched first round.
+
+    MATERIALITY IS THE GATE (B62). Only a doubt that names something the client will SEE
+    - a displayed field, or how many options exist - is worth stopping a run for. Every
+    other doubt is stamped 'ledger', which `pending` filters out and records, and it
+    ships in the Gaps Report under "Noted, not put to you" with its stated default. This
+    is where the volume was: a reader's doubt about a date format or a page's tint cost a
+    round-trip and changed nothing on the dashboard.
+
+    A reader may DECLARE the classification (`field`/`fields`, or `materiality`) and that
+    always beats the free-text reading.
+
+    THE CAP IS ON ASKING, NOT ON KNOWING. Only MAX_DOUBT_QUESTIONS material doubts are put
+    to the broker in one round, but the overflow is not dropped: it is stamped `over_cap`
+    and returned, so `pending` records it for the Gaps Report instead of asking about it.
+    The first version of this capped the material list and returned the rest to nobody -
+    which lost the MOST material doubts on a big corpus (20 properties with one area doubt
+    each lost 8 of them) while still disclosing the cosmetic ones, and both blind reviews
+    caught it. Nothing else in the tree reads `__meta.doubts`, so a doubt that leaves here
+    unrecorded is gone for good.
+
+    The broker's answer is DISCLOSED via the Clarifications section; acting on it (an
+    override/repair) stays an attributed human step - a doubt answer never mutates data
+    silently."""
     qs = []
     for r in records or []:
         if not isinstance(r, dict):
@@ -616,24 +1013,44 @@ def agent_doubt_questions(records: list) -> list:
                                       or "the reading agent recorded this as a genuine doubt"),
                 "if_unanswered": (f"proceeds with: {d['default']}" if d.get("default")
                                   else "the doubt ships in the Gaps Report"),
+                # classified from the DOUBT (a declared field/materiality) plus its own
+                # text, not from the wrapper - the reader knows what it was torn about
+                "materiality": _doubt_materiality(d, str(d["question"])),
             }
             if isinstance(d.get("options"), list) and d.get("options"):
                 q["options"] = [str(o) for o in d["options"]][:6]
             qs.append(q)
     # dedupe by qid FIRST (two records sharing source_file+subject+question produce one
-    # question, not two slots of the cap), then core shipped-field doubts outrank the rest.
-    # The cap is per ROUND BY DESIGN: overflow doubts ship in the Gaps Report rather than
-    # queueing extra broker rounds - a doubt worth more than that belongs in a repair.
+    # question, not two slots of the cap), then MATERIAL doubts first.
     seen_ids, deduped = set(), []
     for q in qs:
         if q["id"] in seen_ids:
             continue
         seen_ids.add(q["id"])
         deduped.append(q)
-    core = [q for q in deduped
-            if any(t in q["question"].lower() for t in _CORE_DOUBT_TOKENS)]
-    rest = [q for q in deduped if q not in core]
-    return (core + rest)[:12]
+    mat = [q for q in deduped if is_material(q)]
+    for q in mat[MAX_DOUBT_QUESTIONS:]:
+        q["over_cap"] = True     # material, but disclosed rather than asked this round
+    rest = [q for q in deduped if not is_material(q)]
+    # everything travels: `pending` asks the first MAX_DOUBT_QUESTIONS and records the rest
+    # for the Gaps Report, so a doubt costs the broker nothing and is lost to nobody
+    out = (mat + rest)[:MAX_DOUBT_CARRIED]
+    if len(mat) + len(rest) > MAX_DOUBT_CARRIED:
+        # NO SILENT TRUNCATION. A corpus with this many recorded doubts is pathological, but
+        # the count itself is then the finding, and it says so in the Gaps Report.
+        n_more = len(mat) + len(rest) - MAX_DOUBT_CARRIED
+        out.append({
+            "id": qid("agent_doubt", "overflow", "count"),
+            "kind": "agent_doubt", "asked_of": KINDS["agent_doubt"],
+            "blocking": False, "materiality": "ledger", "over_cap": True,
+            "subject": "reader doubts",
+            "question": (f"{n_more} further reading doubt(s) were recorded across the "
+                         f"sources and are not listed individually here"),
+            "if_unanswered": ("each of those kept the source's own value; the full set is "
+                              "in the extraction records under work/extract/ "
+                              "(`__meta.doubts`)"),
+        })
+    return out
 
 
 DATASET_UNIT_QID = qid("dataset_unit", "dataset area unit")

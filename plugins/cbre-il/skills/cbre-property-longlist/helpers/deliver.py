@@ -342,6 +342,75 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
                          + (f" ({_t.get('question', '')})" if _t.get("question") else ""))
         lines.append("")
 
+    # NOT ASKED (B62). The run only stops for a question whose answer would change what the
+    # client SEES - a figure, a photo or a label on the dashboard, or how many options ship.
+    # Everything else it noticed is written down HERE instead of costing an interruption.
+    # This is what makes that trade honest: the doubt is not resolved, not guessed at and not
+    # lost, only disclosed rather than asked. It is also the channel through which a reader's
+    # doubt reaches the broker on a HEADLESS run, which the record schema has always promised
+    # and nothing previously delivered.
+    #
+    # TWO SECTIONS, SPLIT ON WHY IT WAS NOT ASKED, because they say different things to a
+    # broker. Printing a doubt about which warehouse area is right under "no effect on what
+    # the dashboard shows" asserts the opposite of what the run concluded, in a client-facing
+    # document - so the material ones get their own heading and their own wording.
+    _sup = _st.get("suppressed") or {}
+    if isinstance(_sup, dict) and _sup:
+        # an entry that has since been answered or declined belongs in Clarifications above,
+        # not here - it would otherwise appear in both
+        _settled = set(_answers) | set(_declined)
+        _rows = [(_i, _e if isinstance(_e, dict) else {}) for _i, _e in sorted(
+            _sup.items(), key=lambda kv: (str((kv[1] or {}).get("kind")),
+                                          str((kv[1] or {}).get("subject"))))
+            if _i not in _settled]
+
+        def _fmt_row(_i, _e) -> str:
+            _subj = str(_e.get("subject") or _e.get("kind") or _i).strip()
+            _q = str(_e.get("question") or "").strip().rstrip(".")
+            # the question already opens with the subject on some kinds; do not say it twice
+            if _q.lower().startswith(_subj.lower() + ":"):
+                _q = _q[len(_subj) + 1:].strip()
+            _d = str(_e.get("if_unanswered") or "").strip().rstrip(".")
+            for _p in ("proceeds with:", "proceeds with"):
+                if _d.lower().startswith(_p):
+                    _d = _d[len(_p):].strip()
+                    break
+            _src = str(_e.get("source_file") or "").strip()
+            out = f"- **{_subj}**" + (f": {_q}." if _q else ".")
+            if _d:
+                out += f" What shipped: {_d}."
+            if _src:
+                out += f" (from {_src})"
+            return out
+
+        _mat = [r for r in _rows if str(r[1].get("materiality") or "") != "ledger"]
+        _led = [r for r in _rows if str(r[1].get("materiality") or "") == "ledger"]
+        if _mat:
+            lines.append("## Noticed but not asked about (worth a look)")
+            _hl = any(str(e.get("why_not_asked") or "") == "headless" for _, e in _mat)
+            lines.append(
+                "Each of these COULD change something on the dashboard, and the run did not "
+                "stop to ask you about it"
+                + (" because it was set to decide sensibly rather than ask (the 'Decide "
+                   "sensibly' option at the start)." if _hl else
+                   " because more of them came up than one round of questions can carry.")
+                + " Every one kept the value the source itself gave - nothing was invented. "
+                  "If any of them matters, tell the run and re-run it: put your answer to "
+                  "the question in `work/answers.json`, or correct the value directly in "
+                  "`work/overrides.json`.")
+            lines += [_fmt_row(_i, _e) for _i, _e in _mat]
+            lines.append("")
+        if _led:
+            lines.append("## Noted, not put to you (no effect on what the dashboard shows)")
+            lines.append("The run asks you about anything that would change a figure, a photo "
+                         "or an option on the dashboard. These are the things it noticed that "
+                         "would NOT, so it recorded them here and carried on with the value "
+                         "the source already gave. Nothing was invented and nothing was "
+                         "dropped. If one of them matters to you after all, correct the value "
+                         "in `work/overrides.json` and re-run.")
+            lines += [_fmt_row(_i, _e) for _i, _e in _led]
+            lines.append("")
+
     excluded = meta.get("excluded") or []
     if excluded:
         lines.append("## Options excluded (not evidenced by your guiding source)")

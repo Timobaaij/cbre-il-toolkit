@@ -29,6 +29,11 @@ Extras→`enrichment:` flags, Ors key→`enrichment.ors_api_key`, Emails→`inpu
 `output.language`, Ask mode→`clarify.mode` ("Ask me when unsure" = `interactive`, the STANDARD;
 "Decide sensibly" = `headless`). Then proceed to extraction with no further setup questions.
 
+"Ask me when unsure" is not "ask me about everything": a question reaches the broker only when
+the answer would change a value, photo or label the dashboard RENDERS, or how many options ship
+(`reference/evidence-standard.md` rule 4). Everything else is disclosed in the Gaps Report under
+"Noted, not put to you". Do not soften the pill labels to promise more than that.
+
 ## The form (pass verbatim to `show_widget`; only `{{CLIENT}}` is substituted)
 ```html
 <form class="elicit">
@@ -90,7 +95,7 @@ Extras→`enrichment:` flags, Ors key→`enrichment.ors_api_key`, Emails→`inpu
     </div>
 
     <div class="elicit-group">
-      <label class="elicit-question">When the run hits a judgement call your files can't settle, should it ask you?</label>
+      <label class="elicit-question">When the run hits a judgement call your files can't settle, should it ask you? It only asks when the answer would change what the dashboard shows, or how many options are on it.</label>
       <div class="elicit-pills" data-name="ask_mode" data-multi="false">
         <button type="button" class="elicit-pill" data-value="Ask me when unsure" aria-pressed="true">Ask me when unsure (recommended)</button>
         <button type="button" class="elicit-pill" data-value="Decide sensibly">Decide sensibly and list it in the Gaps Report</button>

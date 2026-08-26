@@ -280,3 +280,117 @@ the eval-evidence logs (pure PASS lists, verified free of client strings) moved 
 docs/eval-runs/. Guard added: evals/no_client_data_test.py fails on any property-input
 file type or project folder anywhere in the tree, so this class cannot recur silently.
 Rule recorded in docs/MAINTENANCE.md; ship copies exclude .git (git archive).
+
+## B62 (2026-08-26): MATERIALITY - the run only stops for what the client will see
+Broker feedback after living with interactive mode: it asked too often, and stopping the
+run is the expensive part. The rule they set is narrow and testable - ask ONLY when the
+answer would change (a) a value, photo or label RENDERED on the dashboard, or (b) HOW MANY
+options ship. A doubt that moves nothing but a provenance note, a Source Ledger cell or an
+Excel-only column is not worth an interruption.
+
+- `clarify.DISPLAY_FIELDS` - the 52 canonical fields the template actually renders, derived
+  from `p.<field>` in assets/dashboard_template.html intersected with the canonical schema.
+  Held as a literal (clarify stays pure) and drift-pinned by the new eval, which re-derives
+  it from the template and fails on any mismatch. NOT displayed: postcode, district,
+  warehouseAreaSqm, expansionParkVal and every open-captured tracker column.
+- `clarify.materiality(q)` -> "count" | "display" | "ledger", with `KIND_MATERIALITY`
+  per kind and a per-question `materiality` stamp overriding it. An unknown kind, or one
+  that cannot be classified, is MATERIAL: the failure direction is asking too much.
+- NEVER suppressed: area_unit, rent_unit, dataset_unit, source_authority, value_format,
+  match_unsure. For those the default is itself the damage. value_format additionally
+  BLOCKS the build, so suppressing one would wedge the run with no way out.
+- `clarify.pending()` is the chokepoint (every producer already passed through it): a
+  ledger-only question never leaves it, and `note_suppressed` records id/kind/subject/
+  question/default in `clarify_state.suppressed`.
+- ONE producer-side exception, and the reason is a livelock: an immaterial `field_unsure`
+  is RESOLVED to the precedence default inside `run.unsure_pick_questions`. Merely
+  filtering it would leave field_decisions.json holding 'unsure', so field_uncovered would
+  stay True and exit 10 would re-dispatch the adjudicator for ever. Suppression must always
+  leave a settled value behind it.
+- Reader doubts (`__meta.doubts`) gain an optional `field`/`fields`/`materiality`
+  declaration, which beats the free-text classifier; the per-round cap now applies to the
+  MATERIAL ones only, so a cosmetic doubt no longer consumes a broker slot.
+- DISCLOSURE, which is what makes suppression honest: deliver.py prints "Noted, not put to
+  you (no effect on what the dashboard shows)" in the Gaps Report, naming each unasked
+  question and the value that shipped instead. This also fixes a pre-existing hole -
+  record_schema.json has always promised that a HEADLESS run ships reader doubts in the
+  Gaps Report, and nothing implemented it; run.py now records them in headless too.
+- Eval: `evals/clarify_materiality_test.py` (47 checks: template drift, the never-suppress
+  set, declaration-beats-text, the pending chokepoint + resume-safety, the exit-10 livelock
+  case, and the Gaps disclosure). interactive_mode_test's doubt block updated to the new
+  contract (material-first, cap on the material ones) - the behaviour change was verified
+  before the eval was edited.
+- Docs: evidence-standard rule 4 (the doctrine), SKILL.md exit-13 row + setup-form Q6,
+  config.md, failure-modes.md, interpretation.md, both reader prompts, record_schema.json.
+
+### B62 blind review (2 fresh-context Opus reviewers, correctness + data-honesty)
+Both reviewed the same uncommitted diff blind, and independently found the same two worst
+defects. 5 blocking, 9 advisory; every one below was fixed, and each fix landed with its eval.
+
+BLOCKING
+1. A declared `field` that was not an EXACT canonical key demoted the doubt to ledger and
+   never read the text - so the very declaration the new reader prompts ask for ("area",
+   "warehouse_area", "gla") HID a doubt about the figure on the card. `known_field()` now
+   separates "a real field" from "not a field name": an unrecognised name means UNDECLARED
+   and the wording is read instead. Pinned over 10 near-miss names.
+2. Headless runs recorded MATERIAL doubts and deliver printed them under "no effect on what
+   the dashboard shows" - the opposite of what the run concluded, in a client-facing
+   document. `note_suppressed` now records WHY it was not asked (ledger / over the cap /
+   headless) and the Gaps Report splits into two headings: "Noticed but not asked about
+   (worth a look)" for anything that could have moved the dashboard, and "Noted, not put to
+   you" only for what could not.
+3. Material doubts past the per-round cap were returned to nobody: not asked, not recorded,
+   and nothing else in the tree reads `__meta.doubts`. On 20 properties with one area doubt
+   each, 8 vanished while the cosmetic ones were disclosed. The cap is now on ASKING: the
+   overflow is flagged `over_cap`, disclosed, and asked+disclosed == total is pinned. Past
+   MAX_DOUBT_CARRIED the COUNT itself is disclosed rather than the run going quiet.
+4. The text classifier demoted ~28 realistic doubts a reader would actually write (currency
+   vs header, "may be in thousands", the aerial showing the wrong plot, "tenant named but
+   sheet says vacant", every paraphrase of "one property or two", and the reader prompt's
+   OWN worked example "an ambiguous page binding"). The lexicons are much broader, they are
+   read over question + `why_it_matters` + `options` (not `subject` - it is a park name and
+   would promote everything), and an explicit cosmetic/hygiene signal now demotes a doubt
+   that a stray building word would otherwise promote. 20 must-ask cases pinned.
+5. `prompts/match-adjudicate.md` and `reference/matching.md` still told the adjudicator its
+   `unsure` pick reaches a human. On a non-material field it no longer does. Both updated.
+
+ADVISORY (all fixed)
+6. `pending()` could drop a BLOCKING ledger question with no decision written - unreachable
+   today, but the invariant was asserted in three docstrings and enforced nowhere. A
+   blocking question is now never suppressed, whatever its materiality.
+7. Matcher-identity fields (postcode, park, address, scheme, region, district...) are NOT
+   rendered but DO decide whether two records are one card, so settling one silently can
+   move the option count. `field_is_material` = displayed OR match-sensitive, read from
+   `match.py` so the two cannot drift.
+8. The Gaps line named the candidate LABEL ('a'), which the report gives a broker no way to
+   decode. It now names the value, the two values in conflict, and the option.
+9. `clarify_state.json` was a merge input but not a DELIVER input, and `__meta.doubts` never
+   reaches canonical.json - so a re-extraction changing only doubts could resume-skip the
+   one file that discloses them. Added to `_deliver_inputs`.
+10. `_gaps_to_chase` ignored both clarify sections, so a clean run whose only real content
+    was a suppressed doubt printed a bare "DONE." and never pointed at the report.
+11. Suppressions were append-only, and a `field_unsure` id re-keys when clustering settles
+    (a live run saw 44 -> 78 conflicts across two rounds), so the report could name a
+    conflict that no longer existed. `note_suppressed(..., replace_kind=)` replaces that
+    kind's entries each pass; an entry since answered is printed in Clarifications only.
+12. An empty `suppressed` key is no longer persisted: `load_state` setdefaults it and
+    `ingest_answers` saves every pass, which would have rewritten every pre-existing work
+    dir's state once and re-fired merge -> build -> deliver for a key holding nothing.
+13. Broker-facing wording: doubled subject ("**P0**: P0: ..."), "What shipped instead:
+    proceeds with:" stutter, sentences running together, no source file, and no "how to
+    change it" line - every other Gaps section carries one. Fixed; both sections now name
+    `work/answers.json` / `work/overrides.json`.
+14. `split_material` was dead wiring (defined, never called) - removed.
+15. Eval gaps closed: the vacuous `"cf_ledger" not in json.dumps({})` check (it would have
+    passed even if the material conflict HAD been silently resolved), the source-grep stand
+    -ins, the entirely unexercised headless branch, the overflow accounting, the
+    declared-unknown-field demotion, and 20 must-ask text cases. The drift guard now also
+    asserts the template has no destructuring or literal bracket read of a property field,
+    scanned over the app script only - without that it was blind to a future `p['postcode']`.
+    47 checks -> 119.
+
+NOT CHANGED, deliberately: `value_format` stays material by kind with no field test. It
+BLOCKS the build at exit 6 and only a broker answer or an explicit decline clears it, so
+suppressing one would wedge the run; its own gate already demotes non-canonical open columns
+to advisory before any question is produced. Both reviewers independently confirmed this is
+the right call and that no other blocking gate has a question as its only remedy.

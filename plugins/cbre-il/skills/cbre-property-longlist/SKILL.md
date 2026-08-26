@@ -75,7 +75,7 @@ the work directory; the exit-3 manifest's `work/` prefix is a convention resolve
 | 10 | **match adjudication** needed | dispatch the rendered match prompt -> `work/match_decisions.json` + `work/field_decisions.json`, PLUS the SEPARATE blind verifier -> `work/match_verify.json` (`reference/matching.md`) |
 | 11 | dashboard-language translation | dispatch the rendered translate-chrome prompt -> `work/i18n/<code>.json` (or `<code>.SKIP` for English). 13 languages are bundled and render instantly (`reference/localisation.md`) |
 | 12 | free-text DATA translation | dispatch the rendered translate-data prompt -> merge the map into `work/i18n/data_translations.<code>.json` (or drop `work/i18n/data_translate.SKIP` to decline) |
-| 13 | **clarification** needed | read `work/questions.json`. `asked_of:"agent"` = dispatch an isolated sub-agent with the named source; `asked_of:"broker"` = put ALL of them to the user in ONE plain message. Write `work/answers.json` `{"<id>": "<answer>"}` (ids verbatim; where `options` is given, one of those exact strings). `blocking:false` is asked ONCE, then ships the honest gap; `blocking:true` comes back every pass until ANSWERED or DECLINED (`"skip"` = the default ships as a disclosed decision; headless: `work/clarify.SKIP_ALL`). **Never answer a blocking broker question from your own context** |
+| 13 | **clarification** needed | read `work/questions.json`. `asked_of:"agent"` = dispatch an isolated sub-agent with the named source; `asked_of:"broker"` = put ALL of them to the user in ONE plain message. Write `work/answers.json` `{"<id>": "<answer>"}` (ids verbatim; where `options` is given, one of those exact strings). `blocking:false` is asked ONCE, then ships the honest gap; `blocking:true` comes back every pass until ANSWERED or DECLINED (`"skip"` = the default ships as a disclosed decision; headless: `work/clarify.SKIP_ALL`). **Never answer a blocking broker question from your own context**. Every question here already PASSED the materiality test - it changes a value/photo shown on the dashboard or the number of options - so put it to the user rather than second-guessing whether it matters; what did not pass is in the Gaps Report's "Noted, not put to you" |
 | 14 | **independent QA review** needed | dispatch ONE isolated sub-agent per rendered `work/prompts/g-*.md` file (CONCURRENTLY; each file is that agent's VERBATIM prompt and names its own output file), plus any outstanding email ingestion the handoff names -> re-run |
 | 15 | **blocking QA finding(s)** unresolved | IMPLEMENT each fix, record it with `gate_runner.py qa-round resolve --work <work> --id <id> --because "<what you changed>"` (ids: `qa-round status`), re-run. Advisory findings are never fixed - they ship in the Gaps Report's Known limitations |
 
@@ -189,7 +189,9 @@ It asks ALL SIX questions at once - client name (it names every deliverable), ex
 bundled including Simplified Chinese; any other European Latin-script language translates
 once via exit 11 and is cached), and ask mode ("Ask me when unsure" = `clarify.mode:
 interactive`, the STANDARD - judgement calls the files cannot settle become exit-13
-questions; "Decide sensibly" = `headless`, default-honestly-and-disclose).
+questions, but ONLY where the answer changes what the dashboard shows or how many options
+ship; everything else is disclosed, not asked - "Decide sensibly" = `headless`,
+default-honestly-and-disclose).
 **Never `AskUserQuestion`, never one-question-at-a-time.**
 Parse the single submission line and persist every answer in `project.yaml` (`client:`,
 `enrichment:`, `enrichment.ors_api_key`, `inputs.emails:`, `output.language`,
