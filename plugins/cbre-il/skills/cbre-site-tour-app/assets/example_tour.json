@@ -1,0 +1,567 @@
+{
+  "meta": {
+    "title": "Normal Bratislava Tour",
+    "titleEm": "Bratislava",
+    "appTitle": "Normal Tour",
+    "subtitle": "Slovakia, Bratislava and Zitny ostrov",
+    "dateRange": "26 August 2026",
+    "wordmark": "CBRE",
+    "lang": "en",
+    "compiled": "2026-09-01",
+    "copyright": "(c) 2026 CBRE",
+    "disclaimer": "All information provided by CBRE in this document is subject to change without notice. Rent levels, availability, technical specifications, coordinates and timing are indicative, based on landlord-provided data, and subject to negotiation. Not for public distribution."
+  },
+  "labels": {
+    "tbc": "To be confirmed"
+  },
+  "map": {
+    "style": "osm"
+  },
+  "markets": {
+    "sk": {
+      "name": "Slovakia",
+      "code": "sk",
+      "sub": "Bratislava, Trnava and Žitný ostrov",
+      "pack": "Normal Options, Bratislava"
+    }
+  },
+  "properties": [
+    {
+      "id": "sk3",
+      "market": "sk",
+      "name": "P3 Bratislava Airport",
+      "no": 3,
+      "tour": true,
+      "city": "Ivanka pri Dunaji",
+      "dev": "P3",
+      "lat": 48.184884,
+      "lng": 17.227191,
+      "desc": "The park sits on the city bypass at the D4 exit and the D1 motorway, and suits logistics, retail, e-commerce, light manufacturing and showrooms. It is close to the largest Slovak retail centre and only 1 km from Bratislava Airport, easy to reach from the centre and the suburbs, with strong visibility from the motorway. Occupiers already in the park include Action Logistics, No Limit Logistika, PALK, Ševt, Terno and XLSK Nábytok, part of XXXLutz.",
+      "size": "75,000 sq m",
+      "facts": [
+        [
+          "Status",
+          "Build to suit, lease"
+        ],
+        [
+          "Permitting",
+          "EIA"
+        ],
+        [
+          "Early access",
+          "Q4 2027 to Q1 2028"
+        ],
+        [
+          "Plot area",
+          "190,000 sq m"
+        ],
+        [
+          "Warehouse area",
+          "75,000 sq m"
+        ],
+        [
+          "Divisible from",
+          null
+        ],
+        [
+          "Office area",
+          null
+        ],
+        [
+          "Expansion",
+          "80,000 sq m"
+        ],
+        [
+          "Clear height",
+          "10 m"
+        ],
+        [
+          "Floor load",
+          "5 tonnes per sq m"
+        ],
+        [
+          "Sprinklers",
+          "Yes"
+        ],
+        [
+          "Loading docks",
+          null
+        ],
+        [
+          "Overhead doors",
+          null
+        ],
+        [
+          "Car parking",
+          null
+        ],
+        [
+          "Truck parking",
+          null
+        ],
+        [
+          "BREEAM",
+          null
+        ]
+      ],
+      "terms": [
+        [
+          "Warehouse rent",
+          null
+        ],
+        [
+          "Office rent",
+          null
+        ],
+        [
+          "Land price",
+          "Not charged"
+        ]
+      ]
+    },
+    {
+      "id": "sk4",
+      "market": "sk",
+      "name": "Blueprint Triblavina",
+      "no": 4,
+      "tour": true,
+      "city": "Triblavina, Greater Bratislava",
+      "dev": "Blueprint",
+      "lat": 48.213046,
+      "lng": 17.253445,
+      "desc": "Positioned at the D1 Triblavina junction, this development offers strong visibility and immediate access to Bratislava. The site carries a 73,700 sq m facility with extensive motorway frontage, which suits a flagship location for a major logistics operator or an e-commerce fulfilment operation. Blueprint offers flexible acquisition structures to fit the occupier: direct sale of the land, development management, a turnkey build to own solution, or a competitive developer tender.",
+      "size": "73,702 sq m",
+      "rent": "EUR 78 / sq m",
+      "facts": [
+        [
+          "Status",
+          "Build to suit lease, build to own, or developer tender"
+        ],
+        [
+          "Permitting",
+          "Zoning permit"
+        ],
+        [
+          "Early access",
+          "Q3 to Q4 2027"
+        ],
+        [
+          "Plot area",
+          "173,446 sq m"
+        ],
+        [
+          "Warehouse area",
+          "73,702 sq m"
+        ],
+        [
+          "Divisible from",
+          "10,000 sq m"
+        ],
+        [
+          "Office area",
+          null
+        ],
+        [
+          "Expansion",
+          null
+        ],
+        [
+          "Clear height",
+          "10 m"
+        ],
+        [
+          "Floor load",
+          "5 tonnes per sq m and above"
+        ],
+        [
+          "Sprinklers",
+          "Yes"
+        ],
+        [
+          "Loading docks",
+          null
+        ],
+        [
+          "Overhead doors",
+          null
+        ],
+        [
+          "Car parking",
+          null
+        ],
+        [
+          "Truck parking",
+          null
+        ],
+        [
+          "BREEAM",
+          "Excellent"
+        ]
+      ],
+      "terms": [
+        [
+          "Warehouse rent",
+          "EUR 78 per sq m per annum"
+        ],
+        [
+          "Office rent",
+          "EUR 132 per sq m per annum"
+        ],
+        [
+          "Land price if sold",
+          "EUR 150 per sq m"
+        ]
+      ]
+    },
+    {
+      "id": "sk5",
+      "market": "sk",
+      "name": "VGP Park Chorvátsky Grob",
+      "no": 5,
+      "tour": true,
+      "city": "Chorvátsky Grob, Triblavina",
+      "dev": "VGP",
+      "lat": 48.207251,
+      "lng": 17.250871,
+      "desc": "The park lies in the Triblavina area of Chorvátsky Grob, a few minutes from Bratislava, and offers premises for logistics, industrial and business use. Up to 400,000 sq m of semi industrial space will be developed across an area of 950,000 sq m. The site adjoins the D1 motorway on both sides in the direction of Trnava and connects well to Bratislava.",
+      "size": "60,409 sq m",
+      "rent": "EUR 67.20 / sq m",
+      "facts": [
+        [
+          "Status",
+          "Build to suit, lease"
+        ],
+        [
+          "Permitting",
+          "Building permit, to be changed"
+        ],
+        [
+          "Early access",
+          "Q4 2027"
+        ],
+        [
+          "Plot area",
+          null
+        ],
+        [
+          "Warehouse area",
+          "60,409 sq m"
+        ],
+        [
+          "Divisible from",
+          null
+        ],
+        [
+          "Office area",
+          null
+        ],
+        [
+          "Expansion",
+          "Yes"
+        ],
+        [
+          "Clear height",
+          "10 m"
+        ],
+        [
+          "Floor load",
+          "5 tonnes per sq m"
+        ],
+        [
+          "Sprinklers",
+          "Yes"
+        ],
+        [
+          "Loading docks",
+          null
+        ],
+        [
+          "Overhead doors",
+          null
+        ],
+        [
+          "Car parking",
+          null
+        ],
+        [
+          "Truck parking",
+          null
+        ],
+        [
+          "BREEAM",
+          null
+        ]
+      ],
+      "terms": [
+        [
+          "Warehouse rent",
+          "EUR 67.20 per sq m per annum"
+        ],
+        [
+          "Office rent",
+          "EUR 126 per sq m per annum"
+        ],
+        [
+          "Rent free",
+          "4 months"
+        ],
+        [
+          "Land price",
+          "Not charged"
+        ]
+      ]
+    },
+    {
+      "id": "sk7",
+      "market": "sk",
+      "name": "BHM Park Dunajská Streda",
+      "no": 7,
+      "tour": true,
+      "city": "Kostolné Kračany, Dunajská Streda",
+      "dev": "BHM",
+      "lat": 47.990144,
+      "lng": 17.574837,
+      "desc": "BHM Park Dunajská Streda sits in the Kostolné Kračany industrial park in the Dunajská Streda district. Its position near the R7 highway keeps transport costs down and connects it to the main industrial hubs. The nearby Metrans intermodal terminal allows road and rail to work together, and the proximity to Bratislava gives access to a skilled workforce and good infrastructure. This is the new build option.",
+      "size": "60,000 sq m",
+      "rent": "EUR 52.80 / sq m",
+      "facts": [
+        [
+          "Status",
+          "Build to suit, lease"
+        ],
+        [
+          "Permitting",
+          "Building permit"
+        ],
+        [
+          "Early access",
+          "Q4 2027"
+        ],
+        [
+          "Plot area",
+          "140,000 sq m"
+        ],
+        [
+          "Warehouse area",
+          "60,000 sq m"
+        ],
+        [
+          "Divisible from",
+          null
+        ],
+        [
+          "Office area",
+          "391 sq m"
+        ],
+        [
+          "Expansion",
+          "15,000 sq m"
+        ],
+        [
+          "Clear height",
+          "12 m"
+        ],
+        [
+          "Floor load",
+          "7 tonnes per sq m"
+        ],
+        [
+          "Sprinklers",
+          "Yes"
+        ],
+        [
+          "Loading docks",
+          "80"
+        ],
+        [
+          "Overhead doors",
+          "8"
+        ],
+        [
+          "Car parking",
+          null
+        ],
+        [
+          "Truck parking",
+          null
+        ],
+        [
+          "BREEAM",
+          null
+        ]
+      ],
+      "terms": [
+        [
+          "Warehouse rent",
+          "EUR 52.80 per sq m per annum"
+        ],
+        [
+          "Office rent",
+          "EUR 124.80 per sq m per annum"
+        ],
+        [
+          "Rent free",
+          "9 months"
+        ],
+        [
+          "Land price",
+          "Not charged"
+        ]
+      ]
+    },
+    {
+      "id": "sk8",
+      "market": "sk",
+      "name": "LOGspot Kostolné Kračany",
+      "no": 8,
+      "tour": true,
+      "city": "Dunajská Streda",
+      "dev": "Atrios",
+      "lat": 47.981505,
+      "lng": 17.562516,
+      "desc": "The land sits south of Bratislava with good access from the R7 and D4 highways. The plot allows alternatives on the shape of the building and leaves room for the occupier to grow later.",
+      "size": "59,000 sq m",
+      "rent": "EUR 57.60 / sq m",
+      "facts": [
+        [
+          "Status",
+          "Build to suit, lease"
+        ],
+        [
+          "Permitting",
+          "Master plan"
+        ],
+        [
+          "Early access",
+          "Q1 to Q2 2027"
+        ],
+        [
+          "Plot area",
+          "167,000 sq m"
+        ],
+        [
+          "Warehouse area",
+          "59,000 sq m"
+        ],
+        [
+          "Divisible from",
+          "5,000 sq m"
+        ],
+        [
+          "Office area",
+          null
+        ],
+        [
+          "Expansion",
+          "21,000 sq m"
+        ],
+        [
+          "Clear height",
+          "12.5 m"
+        ],
+        [
+          "Floor load",
+          "7 to 10 tonnes per sq m"
+        ],
+        [
+          "Sprinklers",
+          "Yes"
+        ],
+        [
+          "Loading docks",
+          "1 per 1,000 sq m"
+        ],
+        [
+          "Overhead doors",
+          null
+        ],
+        [
+          "Car parking",
+          null
+        ],
+        [
+          "Truck parking",
+          null
+        ],
+        [
+          "BREEAM",
+          "Very Good"
+        ]
+      ],
+      "terms": [
+        [
+          "Warehouse rent",
+          "EUR 57.60 per sq m per annum"
+        ],
+        [
+          "Office rent",
+          "EUR 132 per sq m per annum"
+        ],
+        [
+          "Land price",
+          "Not charged"
+        ]
+      ]
+    }
+  ],
+  "days": [
+    {
+      "id": "d3",
+      "n": 1,
+      "date": "2026-08-26",
+      "dow": "Wednesday",
+      "label": "Wed 26 Aug",
+      "region": "Slovakia, Bratislava and Žitný ostrov",
+      "market": "sk",
+      "note": "The day opens at Triblavina, runs east to the Žitný ostrov stops around Dunajská Streda, then comes back west to the airport scheme before a late lunch in Bratislava. Three of the five viewings have the developer present and two are short ten minute stops.",
+      "stops": [
+        {
+          "t": "09:40 – 09:50",
+          "name": "Blueprint Triblavina",
+          "kind": "view",
+          "prop": "sk4",
+          "note": "Short stop, 10 minutes."
+        },
+        {
+          "t": "09:50 – 10:30",
+          "name": "VGP Park Triblavina",
+          "kind": "view",
+          "prop": "sk5",
+          "note": "Developer attending. Listed in the pack as VGP Park Chorvátsky Grob.",
+          "attend": true
+        },
+        {
+          "t": "11:20 – 12:00",
+          "name": "BHM Dunajská Streda",
+          "kind": "view",
+          "prop": "sk7",
+          "note": "Developer attending.",
+          "attend": true
+        },
+        {
+          "t": "12:10 – 12:20",
+          "name": "LOGspot Kostolné Kračany",
+          "kind": "view",
+          "prop": "sk8",
+          "note": "Short stop, 10 minutes."
+        },
+        {
+          "t": "13:00 – 13:30",
+          "name": "P3 Bratislava Airport",
+          "kind": "view",
+          "prop": "sk3",
+          "note": "Developer attending.",
+          "attend": true
+        },
+        {
+          "t": "14:00 – 15:30",
+          "name": "Lunch and debrief",
+          "kind": "meal",
+          "note": "Lunch in Bratislava. Venue still to be confirmed.",
+          "query": "Bratislava, Slovakia"
+        }
+      ],
+      "title": "Wed 26 Aug"
+    }
+  ]
+}

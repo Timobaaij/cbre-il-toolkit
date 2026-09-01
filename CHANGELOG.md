@@ -7,6 +7,25 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.10.0] — 2026-08-26
+
+Marketplace 1.10.0: **CBRE I&L Toolkit 1.7.0** gains a seventh skill. UK I&L Toolkit
+unchanged at 1.3.0.
+
+### Added
+- **`cbre-site-tour-app` — a site-tour itinerary web app for the field.** Turns tour inputs
+  (an agenda or schedule, coordinates, Google Maps links, and optionally availability sheets,
+  brochures or emails) into ONE portable, self-contained `.html`: a day-by-day timeline where
+  each day opens on an embedded Leaflet map with the stops numbered in running order, plus
+  tap-through property detail, Google Maps deep links, copyable coordinates and an
+  all-options list. Mobile-first for use on site, with a true desktop layout — sticky map
+  beside the timeline — on a laptop. Handles one-day and multi-day tours.
+
+  It is styled to match the property longlist dashboard, which is why it lives in this
+  plugin: Financier Display, Calibre and Space Mono ship with it as embedded fonts, alongside
+  CBRE green and the 2px radius, and Leaflet is vendored so the output has no external
+  dependencies at all. Includes a legacy-tour importer and the shared update notifier.
+
 ## [1.9.1] — 2026-08-26
 
 Marketplace 1.9.1: **CBRE I&L Toolkit 1.6.1**. UK I&L Toolkit unchanged at 1.3.0.
@@ -691,6 +710,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.10.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.10.0
 [1.9.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.9.1
 [1.9.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.9.0
 [1.8.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.8.0
