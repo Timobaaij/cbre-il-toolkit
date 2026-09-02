@@ -86,6 +86,19 @@ For low-confidence clusters the orchestrator judges the likely city/region from 
 ## Stage-0 setup prompt (ONE consolidated widget form)
 At intake the orchestrator presents ONE consolidated `visualize` widget form with ALL SIX setup questions at once (client name, enrichment extras, the optional openrouteservice key as an inline field, the email scope - **a named Outlook mail folder** via the `outlook_email_search` sub-agent with `folderName`, **across all of Outlook**, or **none** - the dashboard language, and the ask mode). The verbatim form and its submission parsing are in `reference/setup-form.md`; the mandate (single widget, all six together, one submit, plain-text fallback only when the widget tool is genuinely unavailable) is SKILL.md "The broker setup prompt". (A Windows `.msg`/`.eml` folder is a no-MCP fallback only.) The answers are written to `client:`, `enrichment:`, `inputs.emails:`, `output.language` and `clarify.mode` so subsequent re-runs are non-interactive.
 
+## setup: - did a HUMAN answer the Stage-0 form? (B63)
+```yaml
+setup:
+  confirmed: false   # intake writes false; the orchestrator sets true after the form
+```
+The one flag that separates "the scaffold guessed these six values" from "the broker chose
+them". `intake.scaffold_yaml` fills every Stage-0 key with a default on the first pass, so
+the presence of values proves nothing: the old rule ("skip the widget when project.yaml
+carries the answers") was therefore true on every run, and the form was skipped every time.
+While `confirmed` is not true, `run.py` leads every hand-off with the setup instruction and,
+on a pass with no other hand-off, stops at exit 13 (`setup_form`, blocking). The headless
+escapes clear it as a recorded decision: `work/clarify.SKIP_ALL` or `clarify.assume_defaults`.
+
 ## clarify: - the ask mode (workstream 3; INTERACTIVE IS THE STANDARD)
 ```yaml
 clarify:

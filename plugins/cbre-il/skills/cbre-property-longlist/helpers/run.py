@@ -1690,6 +1690,76 @@ def _index_decisions(parsed, id_keys: tuple) -> dict | None:
     return flat or None
 
 
+SETUP_QID_SUBJECT = "stage-0 setup"
+
+
+def setup_pending(cfg: dict, work: Path) -> bool:
+    """Has the broker actually ANSWERED the Stage-0 form? (B63)
+
+    THE DEFECT THIS EXISTS FOR. `intake` scaffolds a COMPLETE project.yaml on the first
+    pass - client name from --client, `output.language: English`, `inputs.emails.source:
+    none`, the enrichment flags, `clarify.mode: interactive` - i.e. all six Stage-0 answers,
+    pre-filled with guesses, written BEFORE anything tells the orchestrator to ask. SKILL.md
+    then said to skip the form when "project.yaml already carries the answers". It always
+    did. So the correct, compliant behaviour was to never ask the broker anything, and runs
+    shipped English dashboards with no email ingestion and car drive-times because nobody
+    was ever offered the choice. Verified on a clean probe run, and present in the shipped
+    2026-08-24 build.
+
+    So the test is no longer "are there values in the file" but "did a human confirm them":
+    one explicit `setup.confirmed` flag that only the orchestrator sets, after the form.
+
+    Declining still works and is still recorded: the headless escapes (work/clarify.SKIP_ALL
+    or clarify.assume_defaults) mean "decide sensibly and disclose", which is exactly the
+    scaffold's defaults, so they clear this too."""
+    import clarify as _CQ
+    if _CQ.skip_all(work):
+        return False
+    c = (cfg or {}).get("clarify") or {}
+    if c.get("assume_defaults") is True:
+        return False
+    s = (cfg or {}).get("setup") or {}
+    if isinstance(s, dict) and s.get("confirmed") is True:
+        return False
+    return True
+
+
+def setup_handoff_text(work: Path, proj: Path) -> str:
+    """The Stage-0 instruction, as an IMPERATIVE and at the FRONT of whatever carries it.
+
+    It used to be one clause at the tail of the exit-3 interpretation paragraph, phrased as
+    a question ("FIRST PASS? Present the Stage-0 setup form...") and immediately undercut by
+    "no form answer feeds this round" - about 85% of the way through 1,400 characters of
+    other instructions. It is now the first thing in the message, and it names the one thing
+    that clears it."""
+    return (
+        "SETUP FIRST (Stage 0): the broker has NOT yet answered the six setup questions - "
+        f"`setup.confirmed` is not true in {proj}. Present the ONE consolidated "
+        "`mcp__visualize__show_widget` form from reference/setup-form.md VERBATIM (client "
+        "name, enrichment extras, openrouteservice key, Outlook emails, dashboard language, "
+        "ask mode) as a single elicitation - never AskUserQuestion, never one question at a "
+        "time; if the visualize tool is genuinely unavailable, put all six in ONE plain-text "
+        "message instead. Then write their answers into that project.yaml (`client:`, "
+        "`enrichment:`, `enrichment.ors_api_key`, `inputs.emails:`, `output.language`, "
+        "`clarify.mode`) AND set `setup.confirmed: true`. Every value already in that file "
+        "is a GUESS this scaffold wrote, not an answer - do not read it as one. Nothing but "
+        "`setup.confirmed: true` (or work/clarify.SKIP_ALL for a headless run with no "
+        "broker to ask, which accepts the defaults as a recorded decision) clears this.")
+
+
+def setup_prefix(cfg: dict, work: Path, proj: Path, connector: str = "THEN, IN THE SAME "
+                 "MESSAGE: ") -> str:
+    """The setup instruction as a PREFIX for whatever hand-off is going out anyway.
+
+    Applied at EVERY exit-3 site, not just the interpretation one: a run can reach a vision
+    correction round or a region-label round on its first pass, and those exit before the
+    standalone setup stop further down. While the form is unanswered, every hand-off leads
+    with it, so no ordering of handoffs can produce a pass that never mentions it."""
+    if not setup_pending(cfg, work):
+        return ""
+    return setup_handoff_text(work, proj) + "\n\n" + connector
+
+
 def _gaps_to_chase(canonical_path, failed_preps, photo_doubts, unreadable_inputs, yield_notes,
                    work=None) -> bool:
     """True when the Gaps Report has substantive content the broker should chase.
@@ -2725,6 +2795,10 @@ def main() -> None:
             print("Some transcribed pages need a correction before I can continue." if QUIET
                   else "\nVISION TRANSCRIPTION INVALID - fix these records and re-run "
                        "(same exit-3 contract as the manifest):")
+            _sp = setup_prefix(cfg, work, proj, connector="THEN, IN THE SAME MESSAGE, fix "
+                               "these transcription errors: ")
+            if _sp:
+                _say_orchestrator(_sp)
             for e in v_errors:
                 _say_orchestrator(f"  [FAIL] {e}" if not QUIET else f"  {e}")
             _exit_round_trip(work, 3, _attempts, "brochure/tracker interpretation",
@@ -3258,7 +3332,12 @@ def main() -> None:
                                   "OUTPUT_PATH": str(work / "intake_clusters.json"),
                                   "CLUSTER_INPUT_HASH": _cih}))
         _pl = _render_dispatch_prompts(work, _prompt_jobs)
-        msg = (f"{' and '.join(parts)} need INTERPRETATION. Manifest: {manifest}. Dispatch the "
+        # SETUP RIDES THE FRONT OF THIS MESSAGE (B63). No form answer feeds this round, so
+        # bundling costs nothing and saves a round-trip - but it goes FIRST and as an
+        # imperative, because as a trailing question it was simply not acted on.
+        _setup_first = setup_prefix(cfg, work, proj)
+        msg = (_setup_first
+               + f"{' and '.join(parts)} need INTERPRETATION. Manifest: {manifest}. Dispatch the "
                f"interpretation sub-agent (reference/interpretation.md) - structure brochure "
                f"decks into EACH DECK'S OWN `output` path (copy it verbatim from the deck entry - "
                f"never derive a filename from the cluster label, which two decks can share) and "
@@ -3270,11 +3349,11 @@ def main() -> None:
                f"`region` only from text you can point at on a page. A value read from an IMAGE "
                f"rather than the text layer must carry `not in text layer` in its prov (the "
                f"prov-containment gate checks page-cited values). Set `__meta.source_lang` to the "
-               f"ISO-639-1 code of the language each deck is written in. FIRST PASS? Present the "
-               f"Stage-0 setup form in the SAME message as this dispatch - no form answer feeds "
-               f"this round.{_pl}")
+               f"ISO-639-1 code of the language each deck is written in.{_pl}")
         if QUIET:
-            print("Some of your files still need reading into the dashboard - I'll structure "
+            print("A few setup questions first, then I'll read your files into the dashboard."
+                  if setup_pending(cfg, work) else
+                  "Some of your files still need reading into the dashboard - I'll structure "
                   "them before I build.")
             _say_orchestrator(msg)
         else:
@@ -3322,6 +3401,54 @@ def main() -> None:
                   f"trackers, .msg/.eml emails and images. If one of those holds the property "
                   f"data, paste it into an email or a tracker sheet and run again.")
         sys.exit(2)
+
+    # SETUP IS A FIRST-PASS INVARIANT (B63). Reaching here means no exit-3 round carried the
+    # Stage-0 form this pass - an email-only or image-only corpus, or a work dir whose
+    # interpretation outputs are all cached or .SKIP-declined. That used to mean the six
+    # questions were never printed AT ALL, because the only site that mentioned them was the
+    # interpretation hand-off. So it stops here instead, on its own, and the run cannot get
+    # to a client-facing dashboard on six guessed answers without either the broker's
+    # answers or a recorded decline.
+    if setup_pending(cfg, work):
+        import clarify as _CQ0
+        # THE ONLY TWO THINGS THAT CLEAR THIS are `setup.confirmed: true` (read by
+        # setup_pending, above) and an explicit DECLINE. An ordinary answers.json entry
+        # deliberately does not: the six answers have to land in project.yaml, where every
+        # later stage reads them, and letting a stray answer clear the stop would put back
+        # exactly the silent-skip this exists to close.
+        _CQ0.ingest_answers(work)
+        _setup_qid = _CQ0.qid("setup_form", SETUP_QID_SUBJECT)
+        _setup_declined = _setup_qid in _CQ0.declined_ids(work)
+        _stray = _CQ0.load_state(work).get("answers", {}).get(_setup_qid)
+        _sq = [{
+            "id": _setup_qid,
+            "kind": "setup_form", "asked_of": "broker", "blocking": True,
+            "subject": "Stage-0 setup", "question": setup_handoff_text(work, proj),
+            "why_it_matters": ("the client name names every deliverable, the language sets "
+                               "every label on the dashboard, and the email scope decides "
+                               "which options are on it at all"),
+            "if_unanswered": ("nothing is built. Answer 'skip' (or create "
+                              "work/clarify.SKIP_ALL) to accept the scaffold's defaults - "
+                              "English, no email ingestion, car drive-times - as your "
+                              "recorded decision rather than an assumption"),
+        }]
+        if not _setup_declined:
+            _CQ0.emit(work, _sq)
+            if QUIET:
+                print("Before I build, I need to ask you a few setup questions.")
+            _stray_note = (
+                f" NOTE: work/answers.json carries '{_stray}' for this question, and that "
+                f"does NOT clear it - the six answers have to be written into project.yaml "
+                f"with `setup.confirmed: true`, because that is where every later stage "
+                f"reads them." if _stray else "")
+            _say_orchestrator(
+                f"(orchestrator: exit 13 - {setup_handoff_text(work, proj)} The question is "
+                f"also written to {work / 'questions.json'}. Re-running alone will NOT clear "
+                f"it.{_stray_note})")
+            _exit_round_trip(work, 13, _attempts, "Stage-0 setup",
+                             diagnosis=[f"`setup.confirmed` is not true in {proj}, and "
+                                        f"neither work/{_CQ0.SKIP_ALL_FILE} nor "
+                                        f"clarify.assume_defaults declines it"])
 
     # CROSS-SOURCE MATCH ADJUDICATION (exit 10) - mirrors photo-match (exit 9). The
     # deterministic matcher (match.py) auto-merges the confident pairs and HARD-BLOCKS

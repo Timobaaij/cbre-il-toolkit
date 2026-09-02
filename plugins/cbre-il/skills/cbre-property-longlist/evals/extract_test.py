@@ -140,6 +140,12 @@ def _run_spine(folder: Path, work: Path):
     # would for a source-language dashboard, so the offline spine reaches delivery.
     (work / "i18n").mkdir(parents=True, exist_ok=True)
     (work / "i18n" / "data_translate.SKIP").write_text("", encoding="utf-8")
+    # ...and decline the Stage-0 setup form the same way (B63). An automated run has no
+    # broker to ask, and the six answers now have to be either given or explicitly declined
+    # before the spine will build - the sentinel is the documented headless escape, and
+    # without it every fixture below stops at exit 13 instead of reaching its own stage.
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "clarify.SKIP_ALL").write_text("", encoding="utf-8")
     saved = sys.argv
     sys.argv = ["run.py", "--folder", str(folder), "--work", str(work),
                 "--client", "TEDi", "--no-resume", "--quiet"]
@@ -5379,6 +5385,7 @@ def deliver_resume_cases() -> None:
         return f
 
     def _spine_resume(folder, work):
+        (work / "clarify.SKIP_ALL").write_text("", encoding="utf-8")  # headless (B63)
         saved = sys.argv
         sys.argv = ["run.py", "--folder", str(folder), "--work", str(work),
                     "--client", "TEDi", "--quiet"]   # resume ON (NO --no-resume)

@@ -27,7 +27,16 @@ record into `project.yaml` per the mapping in SKILL.md "The broker setup prompt"
 Extras→`enrichment:` flags, Ors key→`enrichment.ors_api_key`, Emails→`inputs.emails:`
 (folder name = the "(other)" text; "Across all of Outlook" = no `folderName`; "No" = skip), Language→
 `output.language`, Ask mode→`clarify.mode` ("Ask me when unsure" = `interactive`, the STANDARD;
-"Decide sensibly" = `headless`). Then proceed to extraction with no further setup questions.
+"Decide sensibly" = `headless`). **Then set `setup.confirmed: true` in the same file** - that
+flag, and nothing else, is what tells the spine a human answered; without it every hand-off
+keeps leading with this form and a pass with no other hand-off stops at exit 13. Then proceed
+to extraction with no further setup questions.
+
+Do NOT read the scaffolded `project.yaml` as evidence that the form was answered. Intake
+writes it on the first pass with all six values pre-filled (the client name from `--client`,
+`output.language: English`, `inputs.emails.source: none`, the enrichment flags,
+`clarify.mode: interactive`), so it always looks answered. That is exactly how live runs
+shipped English dashboards with no email ingestion to brokers who were never asked (B63).
 
 "Ask me when unsure" is not "ask me about everything": a question reaches the broker only when
 the answer would change a value, photo or label the dashboard RENDERS, or how many options ship

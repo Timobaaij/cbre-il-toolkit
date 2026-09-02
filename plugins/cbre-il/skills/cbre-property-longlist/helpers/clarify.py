@@ -88,6 +88,7 @@ KINDS = {
     "photo_confirm": "broker",    # an uncertain brochure->property photo pairing
     "agent_doubt": "broker",      # a reader's recorded doubt (__meta.doubts)
     "excluded_figure": "broker",  # an excluded record's figure conflicts with a shipped card
+    "setup_form": "broker",       # the Stage-0 six-question form has not been answered (B63)
 }
 
 # The kinds whose DEFAULT IS THE DAMAGE, so silence must not resolve them (B49):
@@ -97,8 +98,11 @@ KINDS = {
 #   rent_unit          is the 10.76x error class this whole skill exists to avoid
 #   value_format     - appending the siblings' unit to a bare number is DECIDING the field
 #                      is an area; a wrong guess silently relabels a count or a power rating
+#   setup_form       - the scaffold's six guessed answers ARE the damage: they shipped
+#                      English dashboards with no email ingestion to brokers who were never
+#                      offered the choice (B63)
 BLOCKING_KINDS = {"source_authority", "dataset_unit", "area_unit", "rent_unit",
-                  "value_format"}
+                  "value_format", "setup_form"}
 
 # --------------------------------------------------------------------------- #
 # MATERIALITY - does the ANSWER change what the CLIENT SEES? (B62)
@@ -165,6 +169,8 @@ KIND_MATERIALITY = {
     "excluded_figure": "display",    # which figure the card shows
     "field_unsure": "display",       # only DISPLAYED-field conflicts ever become a question
     "agent_doubt": "ledger",         # promoted per doubt when it names a shown field/count
+    "setup_form": "display",         # the language relabels the whole dashboard, and the
+                                     # email scope changes which options are on it (B63)
 }
 MATERIALITIES = ("count", "display", "ledger")
 
@@ -566,13 +572,23 @@ def skip_all(work) -> bool:
     still names every default it took."""
     if (Path(work) / SKIP_ALL_FILE).exists():
         return True
+    # PROJECT.YAML LIVES IN THE WORK DIR. run.py resolves it as `work / "project.yaml"`
+    # (run.py "Stage 0 - intake") and intake writes the scaffold there. This function read
+    # `work.parent` only, so `clarify.assume_defaults: true` in the real file was DEAD - the
+    # sentinel was the only working headless escape, while failure-modes.md documented both.
+    # The parent is still tried second, for a hand-placed file beside a legacy work dir.
     try:
         import yaml  # optional dependency; absent -> the file is the only escape
-        cfg = yaml.safe_load((Path(work).parent / "project.yaml").read_text(
-            encoding="utf-8-sig")) or {}
-        return bool((cfg.get("clarify") or {}).get("assume_defaults"))
     except Exception:
         return False
+    for _p in (Path(work) / "project.yaml", Path(work).parent / "project.yaml"):
+        try:
+            cfg = yaml.safe_load(_p.read_text(encoding="utf-8-sig")) or {}
+        except Exception:
+            continue
+        if bool((cfg.get("clarify") or {}).get("assume_defaults")):
+            return True
+    return False
 
 
 def ingest_answers(work) -> dict:

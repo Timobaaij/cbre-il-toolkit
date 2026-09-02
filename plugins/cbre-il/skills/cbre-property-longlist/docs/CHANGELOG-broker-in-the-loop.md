@@ -394,3 +394,51 @@ BLOCKS the build at exit 6 and only a broker answer or an explicit decline clear
 suppressing one would wedge the run; its own gate already demotes non-canonical open columns
 to advisory before any question is produced. Both reviewers independently confirmed this is
 the right call and that no other blocking gate has a question as its only remedy.
+
+## B63 (2026-08-26): the Stage-0 form was never asked, and the cause was an instruction
+Reported live: a run on a colleague's up-to-date install asked nothing at the opening. It was
+not the model and not a version drift. Two defects, both reproduced on a clean probe run.
+
+1. THE SCAFFOLD LOOKED LIKE CONSENT. `intake.scaffold_yaml` writes a COMPLETE project.yaml on
+   the first pass: client name from `--client`, `output.language: English`,
+   `inputs.emails.source: none`, the enrichment flags, `clarify.mode: interactive`. That is
+   all six Stage-0 answers, pre-filled with guesses, written BEFORE anything tells the
+   orchestrator to ask. SKILL.md said to "SKIP the widget only when project.yaml already
+   carries the answers" - which was true on every run from the first pass onward. Skipping the
+   form was therefore the COMPLIANT reading, and runs shipped English dashboards with no email
+   ingestion and car drive-times to brokers who were never offered the choice.
+   Fix: `setup.confirmed` (intake writes false; only the orchestrator sets true) is now the
+   test, and `run.setup_pending` reads it. Presence of values proves nothing and the scaffold
+   header, SKILL.md, reference/setup-form.md and reference/config.md all say so.
+2. THE INSTRUCTION EXISTED IN ONE PLACE, AND IT WAS A TRAILING QUESTION. The only site that
+   mentioned the form was the exit-3 interpretation hand-off, ~85% of the way through a
+   1,400-character paragraph, as "FIRST PASS? Present the Stage-0 setup form... - no form
+   answer feeds this round", which reads as optional. A corpus with no decks and no tracker to
+   map (email-only, image-only, or a work dir whose interpretation is cached or .SKIP-declined)
+   never printed it AT ALL.
+   Fix: `run.setup_prefix` LEADS every exit-3 hand-off with an imperative while the form is
+   unanswered (still the same message, so no round-trip is added), and a pass with no other
+   hand-off stops on its own at exit 13 with a blocking `setup_form` question in
+   work/questions.json. The broker-facing quiet line now says "A few setup questions first".
+   Ordering: the stop sits AFTER the no-usable-inputs exit, so an empty folder is reported as
+   such rather than after six questions.
+
+Also fixed here, found while tracing it: `clarify.skip_all` read project.yaml from
+`work.parent`, but run.py resolves it as `work / "project.yaml"` (intake writes it there). So
+`clarify.assume_defaults: true` in the real file was DEAD WIRING and the SKIP_ALL sentinel was
+the only working headless escape, while reference/failure-modes.md documented both. It now
+reads the work dir first and the parent second.
+
+Clearing the gate, and nothing else does: `setup.confirmed: true` in project.yaml, an explicit
+decline ("skip"), or work/clarify.SKIP_ALL / clarify.assume_defaults for a headless run - each
+a recorded decision. An ordinary answers.json entry deliberately does NOT clear it (the six
+answers have to land in project.yaml, where every later stage reads them) and the hand-off
+says so when it sees one.
+
+Eval: `evals/setup_gate_test.py` (37 checks: the scaffold is not consent, every escape,
+the prefix wording and its absence once confirmed, the exit-3 site count as a tripwire for a
+future site added without the prefix, the stop's ordering against the no-inputs exit, the
+question's kind/blocking/materiality, the answers.json-does-not-clear-it rule, and the three
+docs). conformance_sim_test and cowork_sim both still pass unchanged, which is the real
+proof: a scripted orchestrator that knows nothing but the exit table clears the new stop with
+the exit-13 rule it already had.

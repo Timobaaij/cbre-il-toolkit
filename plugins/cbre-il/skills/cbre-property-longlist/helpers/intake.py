@@ -356,6 +356,15 @@ def scaffold_yaml(inv: dict, client: str, inputs_folder: str = ".") -> str:
                          sort_keys=False).rstrip("\n") if _clusters else "{}"
     clusters_block = "\n".join("    " + ln for ln in _cl.splitlines())
     return f"""# project.yaml - one per client project. Confirm before running.
+#
+# EVERY VALUE BELOW IS A DEFAULT THIS SCAFFOLD GUESSED, not an answer the broker gave.
+# `setup.confirmed` is the ONLY thing that says otherwise, and it stays false until the
+# orchestrator has put the Stage-0 form to the broker and written their answers in here.
+# It exists because "does project.yaml carry the answers?" used to be the test for whether
+# to ask - and this file always carried them, so a compliant orchestrator correctly skipped
+# the form and every run silently shipped English, no emails and car drive-times. (B63)
+setup:
+  confirmed: false               # set true ONLY after the broker has answered the Stage-0 form
 client:
   name: {client}
   confidential: true

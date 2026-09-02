@@ -65,7 +65,7 @@ the work directory; the exit-3 manifest's `work/` prefix is a convention resolve
 |---|---|---|
 | 0 | **DONE-DONE** | nothing. The spine itself recorded the QA round, folded the advisories into the Gaps Report, re-delivered, and `final_gate` went GREEN - tell the broker where the deliverables are |
 | 2 | no usable inputs | check the folder / `project.yaml`, fix, re-run |
-| 3 | **interpretation** needed | dispatch each rendered `work/prompts/*.md` file VERBATIM as an isolated sub-agent - deck readers (text/raster per the manifest `mode`; write each deck's own `output` path copied verbatim - never derive a filename from the cluster label), tracker map PLUS its SEPARATE blind `tracker_verify` agent (or decline a map with `<output>.SKIP`), optional cluster labels. FIRST PASS: present the Stage-0 setup form in the SAME message. (`reference/interpretation.md`) |
+| 3 | **interpretation** needed | dispatch each rendered `work/prompts/*.md` file VERBATIM as an isolated sub-agent - deck readers (text/raster per the manifest `mode`; write each deck's own `output` path copied verbatim - never derive a filename from the cluster label), tracker map PLUS its SEPARATE blind `tracker_verify` agent (or decline a map with `<output>.SKIP`), optional cluster labels. When the hand-off LEADS with `SETUP FIRST`, present the Stage-0 form in the SAME message as these dispatches and write `setup.confirmed: true` with the answers. (`reference/interpretation.md`) |
 | 4 | skill files truncated | restart the session, then re-run |
 | 5 | `validate-data` blocked | read `gate1_scorecard.md`; record the correction in **`work/overrides.json`** (below), NEVER by editing `work/extract/` (derived - your edit is discarded) |
 | 6 | another pre-build gate blocked | read `gate1_scorecard.md`, fix the named gate, re-run. A DATUM fix goes in `work/overrides.json`. **`value-format`** (a bare `5000` beside `10,000 sq. m`) asks the BROKER ITSELF via blocking exit-13 questions - answers become attributed repairs, "leave as is" ships the bare value disclosed; **Never append the sibling's unit yourself** (the 10.76x class). A sign-off-key gate (`images`, `arithmetic`, `media-harvest`) is acked with `gate_runner.py ack --work <work> --add <key>=<v1,v2>`, NEVER by writing `placeholder_audit_ack.json` yourself (ack merges; hand-writing drops a concurrent agent's key) |
@@ -75,7 +75,7 @@ the work directory; the exit-3 manifest's `work/` prefix is a convention resolve
 | 10 | **match adjudication** needed | dispatch the rendered match prompt -> `work/match_decisions.json` + `work/field_decisions.json`, PLUS the SEPARATE blind verifier -> `work/match_verify.json` (`reference/matching.md`) |
 | 11 | dashboard-language translation | dispatch the rendered translate-chrome prompt -> `work/i18n/<code>.json` (or `<code>.SKIP` for English). 13 languages are bundled and render instantly (`reference/localisation.md`) |
 | 12 | free-text DATA translation | dispatch the rendered translate-data prompt -> merge the map into `work/i18n/data_translations.<code>.json` (or drop `work/i18n/data_translate.SKIP` to decline) |
-| 13 | **clarification** needed | read `work/questions.json`. `asked_of:"agent"` = dispatch an isolated sub-agent with the named source; `asked_of:"broker"` = put ALL of them to the user in ONE plain message. Write `work/answers.json` `{"<id>": "<answer>"}` (ids verbatim; where `options` is given, one of those exact strings). `blocking:false` is asked ONCE, then ships the honest gap; `blocking:true` comes back every pass until ANSWERED or DECLINED (`"skip"` = the default ships as a disclosed decision; headless: `work/clarify.SKIP_ALL`). **Never answer a blocking broker question from your own context**. Every question here already PASSED the materiality test - it changes a value/photo shown on the dashboard or the number of options - so put it to the user rather than second-guessing whether it matters; what did not pass is in the Gaps Report's "Noted, not put to you" |
+| 13 | **clarification** needed | read `work/questions.json`. A `setup_form` question means the Stage-0 form has not been answered: present it (`reference/setup-form.md`) and write the answers plus `setup.confirmed: true` into `project.yaml` - an `answers.json` entry does NOT clear that one. `asked_of:"agent"` = dispatch an isolated sub-agent with the named source; `asked_of:"broker"` = put ALL of them to the user in ONE plain message. Write `work/answers.json` `{"<id>": "<answer>"}` (ids verbatim; where `options` is given, one of those exact strings). `blocking:false` is asked ONCE, then ships the honest gap; `blocking:true` comes back every pass until ANSWERED or DECLINED (`"skip"` = the default ships as a disclosed decision; headless: `work/clarify.SKIP_ALL`). **Never answer a blocking broker question from your own context**. Every question here already PASSED the materiality test - it changes a value/photo shown on the dashboard or the number of options - so put it to the user rather than second-guessing whether it matters; what did not pass is in the Gaps Report's "Noted, not put to you" |
 | 14 | **independent QA review** needed | dispatch ONE isolated sub-agent per rendered `work/prompts/g-*.md` file (CONCURRENTLY; each file is that agent's VERBATIM prompt and names its own output file), plus any outstanding email ingestion the handoff names -> re-run |
 | 15 | **blocking QA finding(s)** unresolved | IMPLEMENT each fix, record it with `gate_runner.py qa-round resolve --work <work> --id <id> --because "<what you changed>"` (ids: `qa-round status`), re-run. Advisory findings are never fixed - they ship in the Gaps Report's Known limitations |
 
@@ -195,11 +195,17 @@ default-honestly-and-disclose).
 **Never `AskUserQuestion`, never one-question-at-a-time.**
 Parse the single submission line and persist every answer in `project.yaml` (`client:`,
 `enrichment:`, `enrichment.ors_api_key`, `inputs.emails:`, `output.language`,
-`clarify.mode` - `reference/config.md`) so re-runs are non-interactive; SKIP the widget only when
-`project.yaml` already carries the answers. FALLBACK (only if `visualize` is genuinely
-unavailable): all six in ONE plain-text message. Email answers map to the Stage-1
-`outlook_email_search` sub-agent via `prompts/outlook-ingest.md`
-(`reference/agentic-steps.md`).
+`clarify.mode` - `reference/config.md`) **AND set `setup.confirmed: true`** so re-runs are
+non-interactive. SKIP the widget ONLY when `setup.confirmed` is already true. **Values being
+present in `project.yaml` is NOT the test and never was** (B63): intake SCAFFOLDS that file
+on the first pass with all six pre-filled - client from `--client`, English, no emails, car
+times - so "it already carries the answers" was true on every run and the form was correctly
+skipped every time, shipping six guesses the broker never saw. `setup.confirmed` is the only
+signal that a human answered. The spine enforces this: while it is false, every hand-off
+leads with the form, and a pass with no other hand-off stops at exit 13 for it.
+FALLBACK (only if `visualize` is genuinely unavailable): all six in ONE plain-text message.
+Email answers map to the Stage-1 `outlook_email_search` sub-agent via
+`prompts/outlook-ingest.md` (`reference/agentic-steps.md`).
 
 ## The QA window - the reviewers PROPOSE, you IMPLEMENT; the SPINE drives the rest
 

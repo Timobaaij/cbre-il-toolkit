@@ -7,6 +7,55 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.10.1] — 2026-09-02
+
+Marketplace 1.10.1: **CBRE I&L Toolkit 1.7.1**. UK I&L Toolkit unchanged at 1.3.0.
+
+### Fixed
+- **Property longlist — the setup questions were never actually asked.** Reported from a live
+  run on an up-to-date install: the skill opened without asking anything, then shipped an
+  English dashboard with no email ingestion and car drive-times, because nobody was offered
+  the choice. Neither the model nor a version drift — two defects, both reproduced on a clean
+  probe run.
+
+  First, **the scaffold looked like consent.** Intake writes a complete `project.yaml` on the
+  very first pass — client name from `--client`, `output.language: English`,
+  `inputs.emails.source: none`, the enrichment flags, `clarify.mode: interactive` — i.e. all
+  six Stage-0 answers, pre-filled with guesses, before anything asks the broker. The skill's
+  own instruction was to skip the form "when `project.yaml` already carries the answers", and
+  it always did, so **skipping the form was the compliant reading.** The test is now a single
+  explicit `setup.confirmed` flag: intake writes `false`, only the orchestrator sets `true`,
+  and the presence of values proves nothing — the scaffold header, SKILL.md,
+  `reference/setup-form.md` and `reference/config.md` all now say so.
+
+  Second, **the instruction existed in exactly one place, phrased as a question** — a trailing
+  clause about 85% of the way through the interpretation hand-off ("FIRST PASS? Present the
+  Stage-0 setup form…"), which reads as optional, and which a corpus with no decks and no
+  tracker to map never printed at all. Now every hand-off **leads** with the form as an
+  imperative while it is unanswered (same message, so no extra round-trip), and a pass with no
+  other hand-off stops on its own at exit 13 with a blocking `setup_form` question. That stop
+  sits *after* the no-usable-inputs exit, so an empty folder is still reported as an empty
+  folder rather than after six questions. The broker-facing line is now "A few setup questions
+  first". Clearing the gate takes `setup.confirmed: true`, an explicit decline, or a headless
+  escape — each a recorded decision; a stray `answers.json` entry deliberately does not, and
+  the hand-off says so when it sees one.
+
+- **Property longlist — `clarify.assume_defaults` was dead wiring.** `clarify.skip_all` read
+  `project.yaml` from the work dir's *parent*, but `run.py` resolves it as
+  `work / "project.yaml"`, which is where intake writes it. So the documented
+  `assume_defaults: true` config never took effect and the `clarify.SKIP_ALL` sentinel was the
+  only working headless escape. It now reads the work dir first and the parent second.
+
+### Added
+- Property longlist: `evals/setup_gate_test.py` — 37 checks covering the scaffold-is-not-consent
+  rule, every escape, the prefix wording and its absence once confirmed, a tripwire on the
+  exit-3 site count so a future hand-off can't be added without the prefix, the stop's ordering
+  against the no-inputs exit, the question's kind/blocking/materiality, the
+  answers.json-does-not-clear-it rule, and the three docs. The scripted-orchestrator sims
+  (`conformance_sim_test`, `cowork_sim`) still pass unchanged, which is the real proof: an
+  orchestrator that knows nothing but the exit table clears the new stop using the exit-13 rule
+  it already had.
+
 ## [1.10.0] — 2026-08-26
 
 Marketplace 1.10.0: **CBRE I&L Toolkit 1.7.0** gains a seventh skill. UK I&L Toolkit
@@ -710,6 +759,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.10.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.10.1
 [1.10.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.10.0
 [1.9.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.9.1
 [1.9.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.9.0
