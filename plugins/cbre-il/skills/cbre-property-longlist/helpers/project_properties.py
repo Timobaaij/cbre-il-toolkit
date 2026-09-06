@@ -33,7 +33,38 @@ design, not an omission - two writable copies of one dataset drift, and the drif
 repair entry needs, so the view that shows you the problem also hands you what you need to
 fix it.
 
-CLI:  python project_properties.py --work <dir> [--canonical <path>] [--no-media]
+TWO HALVES, ONE OF THEM EXPENSIVE (F20, contract C4). `property.json`, `sources.csv`,
+`notes.md` and `index.json` cost under a second for a whole run. `media/`, `media/considered/`,
+`media_decisions.json` and `_unassigned/` are page renders and decoded images: on a measured
+pass they were 84% of the ENTIRE run (42 s of 50 s; the dashboard build itself took 0.15 s) and
+82 MB across 352 files, rewritten every pass into a folder a sync client then re-uploads, for a
+view nothing reads back. `--media-view` splits the halves: `always` writes both, `never` writes
+the cheap half only, `auto` (the CLI default) is `never`. The spine asks for `always` exactly
+when a pre-build gate has BLOCKED, because that is when a human is about to open this folder.
+The in-process default (`build(work)` with nothing said) stays `always`, so every caller
+written before the flag gets what it asked for; the spine passes `media_view=` explicitly.
+
+A skipped media half must never look like an EMPTY one: a `media/` that is silently absent is
+indistinguishable from a harvest that found nothing, which is a documented failure class of
+this skill. So when it is skipped, `property.json["__media"]` and `notes.md` say so on every
+property, `index.json` records the mode, and `MEDIA_VIEW_SKIPPED.md` at the root carries the
+exact command that writes the full view. The repair key is in the cheap half and never skipped.
+
+PRUNED, NOT ACCUMULATED (F27). A property directory is named `<id>-<slug>`, so a run whose
+count DROPS (a broker collapsing records, an exclusion, a re-read producing fewer) leaves
+numbered directories that match nothing; a blind reviewer of one live run counted eleven
+folders against nine shipped records and could not close the question. The previous
+`rmtree(root, ignore_errors=True)` did try to clear everything, and silently left two empty
+husks behind because a cloud-synced folder was holding the entries. Now every numbered
+directory no property claims is removed one by one, with a retry, and whatever STILL survives
+is named in `index.json["could_not_prune"]` and on stderr rather than left as a quiet eleventh
+folder. `_unassigned/` is cleared and rebuilt with the media half, never mistaken for an
+orphan; anything unrecognised is left alone and listed. `index.json` is removed FIRST and
+written LAST, atomically, so a projection that crashed mid-write leaves a folder with no index
+rather than a stale one claiming completeness.
+
+CLI:  python project_properties.py --work <dir> [--canonical <path>]
+                                    [--media-view {auto,always,never}] [--no-media]
                                     [--source-dir <input folder>] [--image-cache <dir>]
 """
 from __future__ import annotations
@@ -42,9 +73,12 @@ import argparse
 import base64
 import csv
 import json
+import os
 import re
 import shutil
+import stat
 import sys
+import time
 from pathlib import Path
 
 # a genuinely long field (e.g. an accumulated conflict_note spanning many
@@ -58,6 +92,12 @@ try:
     import match as _match
 except Exception:                                    # pragma: no cover
     _match = None
+
+# THE shared unknown predicate (contract C5). Until 2026-09-05 the notes.md "Unknown" list read
+# its own four-member tuple, so a field holding `??`, `TBA` or `n/a` was listed as KNOWN here
+# while the card showed `tbd` for it. Unguarded on purpose: a fallback literal would be a ninth
+# private sentinel set, which evals/f05_no_private_sentinel_sets_test.py exists to refuse.
+import normalize as _N  # noqa: E402  (helpers/ is on path by the line above)
 
 MEDIA_FIELDS = ("photo", "plan")
 _SLUG_RX = re.compile(r"[^a-z0-9]+")
@@ -73,6 +113,141 @@ _EXT = {"/9j/": "jpg", "iVBOR": "png", "R0lGO": "gif", "UklGR": "webp"}
 CONSIDERED_DPI = 110          # page-render dpi: legible on screen, cheap; not a delivery asset
 CONSIDERED_MAX_EDGE = 1400    # downscale cap for both renders and candidate images
 CONSIDERED_MAX_PAGES = 60     # per property: a defensive cap, never reached by a real brochure
+
+# --- THE MEDIA VIEW FLAG (contract C4) ---------------------------------------------------- #
+MEDIA_VIEW_CHOICES = ("auto", "always", "never")
+MEDIA_VIEW_MARKER = "MEDIA_VIEW_SKIPPED.md"   # at the root of properties/, present ONLY when skipped
+# a property directory is `<id zero-padded>-<slug>`. This is what "numbered" means below and the
+# ONLY shape pruning ever removes as an orphan; `_unassigned/` starts with an underscore for it.
+_NUMBERED_DIR_RX = re.compile(r"^\d+-")
+# the root-level files this module owns: removed before a pass writes, so a crash mid-write
+# leaves no index claiming the folder is complete, and re-created last
+_OWNED_ROOT_FILES = ("index.json", "index.json.tmp", MEDIA_VIEW_MARKER)
+
+
+def _want_media(media_view, media: bool = True) -> bool:
+    """The one place the flag is read. `media_view` wins when given; None keeps the older
+    `media` boolean, so an in-process caller written before the flag (the evals, a hand
+    script) still gets the full view it always got. Only the CLI defaults to `auto`."""
+    if media_view is None:
+        return bool(media)
+    if media_view not in MEDIA_VIEW_CHOICES:
+        raise ValueError(f"media_view must be one of {MEDIA_VIEW_CHOICES}, got {media_view!r}")
+    return media_view == "always"
+
+
+def rebuild_command(work, source_dir=None, image_cache=None) -> str:
+    """The exact command that writes the FULL view for this work dir. Printed wherever the
+    media half was skipped, so the reader who needs the pixels is never left to reconstruct
+    the invocation from a docstring."""
+    parts = [f'python "{Path(__file__).resolve()}"', f'--work "{Path(work)}"',
+             "--media-view always",
+             (f'--source-dir "{Path(source_dir)}"' if source_dir
+              else "--source-dir \"<the run's input folder>\"")]
+    if image_cache:
+        parts.append(f'--image-cache "{Path(image_cache)}"')
+    return " ".join(parts)
+
+
+def _shown(v) -> str:
+    """A value for notes.md prose: the honest `tbd` for any unknown form, else as stated."""
+    return "tbd" if _N.looks_unknown(v) else str(v)
+
+
+def _rmtree(path: Path, retries: int = 2, pause: float = 0.4) -> list:
+    """Remove one tree and REPORT what survived, never raise.
+
+    `shutil.rmtree(..., ignore_errors=True)` is how the F27 orphans came to exist: it returns
+    without a word when a sync client or an open viewer holds a handle, and the directory entry
+    outlives the run. So: clear a read-only bit an errant sync can leave, retry after a pause
+    (a handle is released in well under a second), then LIST whatever is still on disk so the
+    caller can say so instead of assuming."""
+    def _on_err(fn, p, _exc):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            fn(p)
+        except Exception:
+            pass
+    kw = {"onexc": _on_err} if sys.version_info >= (3, 12) else {"onerror": _on_err}
+    for attempt in range(retries + 1):
+        try:
+            shutil.rmtree(path, **kw)
+        except Exception:
+            pass
+        if not path.exists():
+            return []
+        if attempt < retries:
+            time.sleep(pause)
+    try:
+        left = sorted(str(p.relative_to(path.parent)) for p in path.rglob("*"))
+    except Exception:
+        left = []
+    return [path.name] + left
+
+
+def _prune_root(root: Path, keep: set) -> dict:
+    """Bring `properties/` to the state this pass will overwrite, BEFORE anything is written.
+
+    Every entry is handled BY NAME; there is no blanket rmtree of the root any more:
+      numbered `<id>-<slug>`, in `keep`   left alone; write_property rewrites every file in it
+      numbered, NOT in `keep`             an ORPHAN (its property is gone, or its slug moved with a
+                                          park rename): removed, and named under `pruned`
+      `_unassigned/`                      the media half's once-per-run folder: cleared here and
+                                          rebuilt later only when media is written, so a skipped
+                                          pass never leaves a stale render behind
+      the files this module owns          removed here, written LAST (see _OWNED_ROOT_FILES)
+      anything else                       not ours: left alone and named under `unrecognised`
+    A removal that fails is named under `could_not_prune` and on stderr. That is the whole
+    fix: the old code could not tell the operator it had left something behind."""
+    out = {"pruned": [], "could_not_prune": [], "unrecognised": []}
+    if not root.exists():
+        return out
+    for child in sorted(root.iterdir(), key=lambda p: p.name):
+        n = child.name
+        if child.is_dir() and n in keep:
+            continue
+        if child.is_dir() and (_NUMBERED_DIR_RX.match(n) or n == "_unassigned"):
+            left = _rmtree(child)
+            if left:
+                out["could_not_prune"].append(n)
+                print(f"WARN per-property view: could not remove {child} ({len(left)} entr(y/ies) "
+                      f"still on disk; something is holding them). It is NOT a property of this "
+                      f"run; delete it by hand once whatever holds it lets go.", file=sys.stderr)
+            elif n != "_unassigned":
+                out["pruned"].append(n)
+            continue
+        if child.is_file() and n in _OWNED_ROOT_FILES:
+            try:
+                child.unlink()
+            except Exception:
+                out["could_not_prune"].append(n)
+            continue
+        out["unrecognised"].append(n)
+    return out
+
+
+def _write_json_atomic(path: Path, obj, indent: int = 1) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=indent) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _write_skip_marker(root: Path, cmd: str) -> None:
+    (root / MEDIA_VIEW_MARKER).write_text(
+        "# The media half of this view was NOT written on this pass\n\n"
+        "`--media-view never` (or `auto`, the default) writes `property.json`, `sources.csv`, "
+        "`notes.md` and `index.json` for every property and SKIPS the expensive half: `media/`, "
+        "`media/considered/`, `media_decisions.json` and `_unassigned/`. Their absence here means "
+        "*not asked for*, NOT *nothing was found*. A harvest that found nothing is reported "
+        "inside `property.json[\"__media\"]` on a full pass, and every `property.json` on this "
+        "pass says `\"skipped\": true` instead.\n\n"
+        "Why: those files are page renders and decoded images, about 84% of an entire run's "
+        "wall-clock on a measured pass and tens of MB rewritten into a folder a sync client then "
+        "re-uploads, for a view that nothing reads back. The repair path is untouched: every "
+        "`notes.md` still carries its property's repair key, and corrections go in "
+        "`work/repairs.json` either way.\n\n"
+        "To write the full view (the spine does this by itself whenever a pre-build gate blocks):"
+        "\n\n    " + cmd + "\n", encoding="utf-8")
 
 
 def slug(text: str, cap: int = 60) -> str:
@@ -254,11 +429,20 @@ def _considered_for_property(out_dir: Path, entry: dict, written_media: dict,
 
 def write_property(prop: dict, out_dir: Path, ledger_rows: list, conflicts: list,
                    repairs: list, media: bool = True, considered: dict | None = None,
-                   source_dir=None, image_cache=None, open_capture: list = ()) -> dict:
+                   source_dir=None, image_cache=None, open_capture: list = (),
+                   rebuild_cmd: str = "") -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
+    # the media half of THIS directory from a previous pass goes first, whatever this pass
+    # writes: a stale media_decisions.json describing files that are no longer there is the same
+    # silent lie as a stale numbered folder, only one level down
     mdir = out_dir / "media"
-    if mdir.exists():
-        shutil.rmtree(mdir, ignore_errors=True)
+    media_left = _rmtree(mdir) if mdir.exists() else []
+    try:
+        (out_dir / "media_decisions.json").unlink()
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        media_left.append(f"media_decisions.json ({type(e).__name__})")
 
     view = {k: v for k, v in prop.items() if k not in ("photo", "plan", "gallery")}
     written = {}
@@ -284,7 +468,19 @@ def write_property(prop: dict, out_dir: Path, ledger_rows: list, conflicts: list
             names.append(name)
         if names:
             written["gallery"] = names
-    view["__media"] = written or {"note": "no image data on this property"}
+    if media:
+        view["__media"] = written or {"note": "no image data on this property"}
+    else:
+        # NOT the "no image data" note above: that one means a full pass looked and found
+        # nothing. This pass did not look, and the two must never read the same.
+        view["__media"] = {
+            "skipped": True,
+            "note": ("media view NOT written on this pass (--media-view never): no media/, "
+                     "media/considered/ or media_decisions.json exists for this property "
+                     "because none was asked for, not because nothing was found"),
+            "rebuild": rebuild_cmd or rebuild_command(out_dir.parent.parent)}
+    if media_left:
+        view["__media_could_not_clear"] = media_left
     # THE CONSIDERED SET: written only when merge recorded one for this property AND media files
     # are being written at all (--no-media means "no pixels", and that covers the discard pile).
     n_considered = 0
@@ -310,12 +506,19 @@ def write_property(prop: dict, out_dir: Path, ledger_rows: list, conflicts: list
         for r in ledger_rows:
             w.writerow(r)
 
+    # the shared predicate (contract C5): a string in any unknown form, or a key holding None
+    # (a plausibility gate struck it; the card reads `tbd`). Numbers, lists and dicts are data.
     tbd = sorted(k for k, v in prop.items()
-                 if isinstance(v, str) and v.strip().lower() in ("tbd", "tbc", "—", "-"))
+                 if (v is None or isinstance(v, str)) and _N.looks_unknown(v))
     lines = [f"# {prop.get('park') or 'Property'}  (id {prop.get('id')})", ""]
     lines += [f"- **repair key**: `{view['__repair_key']}`",
-              f"- **city**: {prop.get('city') or 'tbd'}    **region**: {prop.get('region') or 'tbd'}",
+              f"- **city**: {_shown(prop.get('city'))}    **region**: {_shown(prop.get('region'))}",
               ""]
+    if not media:
+        lines += ["- **media**: NOT written on this pass (`--media-view never`). No `media/`, "
+                  "`media/considered/` or `media_decisions.json` here means none was asked for, "
+                  "not that the harvest found nothing. For the full view run:", "",
+                  "```", view["__media"]["rebuild"], "```", ""]
     if n_considered:
         lines += [f"- **media considered**: {n_considered} file(s) in `media/considered/` - every "
                   f"page render and candidate image this property had to choose from. "
@@ -351,8 +554,11 @@ def write_property(prop: dict, out_dir: Path, ledger_rows: list, conflicts: list
 
 
 def build(work: Path, canonical_path: Path | None = None, media: bool = True,
-          source_dir=None, image_cache=None) -> dict:
+          source_dir=None, image_cache=None, media_view: str | None = None) -> dict:
+    """`media_view` is contract C4's flag ("auto" | "always" | "never"); it wins over the older
+    `media` boolean when given. The spine passes it explicitly; see _want_media for the default."""
     work = Path(work)
+    media = _want_media(media_view, media)
     cpath = Path(canonical_path) if canonical_path else work / "canonical.json"
     data = json.loads(cpath.read_text(encoding="utf-8-sig"))
     props = data.get("properties") or []
@@ -393,21 +599,29 @@ def build(work: Path, canonical_path: Path | None = None, media: bool = True,
             pass
 
     root = work / "properties"
-    if root.exists():
-        shutil.rmtree(root, ignore_errors=True)
+    # the directory each property WILL occupy, decided up front so pruning knows what to keep.
+    # Names are deterministic (`<id>-<slug>`), which is also why a crashed previous pass heals:
+    # every file in every kept directory is rewritten below, whatever state it was left in.
+    names = {str(p.get("id")): f"{str(p.get('id')).zfill(2)}-"
+                               f"{slug(p.get('park') or p.get('city') or 'property')}"
+             for p in props}
+    prune = _prune_root(root, set(names.values()))
     root.mkdir(parents=True, exist_ok=True)
+    cmd = rebuild_command(work, source_dir, image_cache)
 
     made = []
     for p in props:
         pid = str(p.get("id"))
-        name = f"{pid.zfill(2)}-{slug(p.get('park') or p.get('city') or 'property')}"
-        made.append(write_property(p, root / name, by_id.get(pid, []),
+        made.append(write_property(p, root / names[pid], by_id.get(pid, []),
                                    conf_by_id.get(pid, []), rep_by_id.get(pid, []), media,
                                    considered=considered_by_id.get(pid),
                                    source_dir=source_dir, image_cache=image_cache,
                                    open_capture=(data.get("meta", {})
-                                                 .get("openCapture") or {}).get(pid, [])))
+                                                 .get("openCapture") or {}).get(pid, []),
+                                   rebuild_cmd=cmd))
     n_orphan = _write_unassigned(root, unassigned, source_dir, image_cache) if media else 0
+    if not media:
+        _write_skip_marker(root, cmd)
     # the considered-set render loop opens each deck through IMG's shared doc cache; release the
     # handles before returning (on Windows a held handle blocks an in-process caller's temp-dir
     # cleanup, and this projection owns no later image work).
@@ -416,11 +630,25 @@ def build(work: Path, canonical_path: Path | None = None, media: bool = True,
         _IMG.close_doc_cache()
     except Exception:
         pass
-    (root / "index.json").write_text(
-        json.dumps({"count": len(made), "properties": made,
-                    "unassigned_pages": n_orphan}, ensure_ascii=False, indent=1) + "\n",
-        encoding="utf-8")
-    return {"count": len(made), "root": str(root), "unassigned": n_orphan}
+    index = {"count": len(made), "properties": made,
+             # None, not 0, when the media half was skipped: "no unclaimed pages" is a finding,
+             # "did not look" is not one, and the two must not share a value
+             "unassigned_pages": (n_orphan if media else None),
+             "media_view": ("always" if media else "never"),
+             "pruned": prune["pruned"], "could_not_prune": prune["could_not_prune"],
+             "unrecognised": prune["unrecognised"]}
+    if not media:
+        index["media_note"] = (f"media/, media/considered/, media_decisions.json and _unassigned/ "
+                               f"were deliberately not written; see {MEDIA_VIEW_MARKER}")
+        index["rebuild"] = cmd
+    if prune["pruned"]:
+        print(f"(per-property view: removed {len(prune['pruned'])} orphaned folder(s) no property "
+              f"of this run owns: {', '.join(prune['pruned'])})", file=sys.stderr)
+    # LAST, and atomically: a folder with no index.json is a projection that did not finish
+    _write_json_atomic(root / "index.json", index)
+    return {"count": len(made), "root": str(root), "unassigned": n_orphan,
+            "media_view": index["media_view"], "pruned": prune["pruned"],
+            "could_not_prune": prune["could_not_prune"]}
 
 
 def _write_unassigned(root: Path, unassigned: list, source_dir=None, image_cache=None) -> int:
@@ -473,21 +701,39 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--work", required=True)
     ap.add_argument("--canonical")
-    ap.add_argument("--no-media", action="store_true")
+    ap.add_argument("--media-view", dest="media_view", choices=MEDIA_VIEW_CHOICES, default="auto",
+                    help="always: media/, media/considered/, media_decisions.json and _unassigned/ "
+                         "as well as the cheap files; never: the cheap files only, with "
+                         f"{MEDIA_VIEW_MARKER} saying so and giving the command for the rest; "
+                         "auto (default) is never. The spine passes always only when a pre-build "
+                         "gate has blocked, which is when a human is about to open the folder")
+    ap.add_argument("--no-media", action="store_true",
+                    help="the older spelling of --media-view never; an explicit no wins if both are given")
     ap.add_argument("--source-dir", dest="source_dir", default="",
                     help="the run's INPUT folder - enables media/considered/ (every page render "
                          "and candidate image each property had to choose from) and _unassigned/")
     ap.add_argument("--image-cache", dest="image_cache", default="",
                     help="the run's image cache dir (only used to reuse a PPTX->PDF conversion)")
     a = ap.parse_args()
-    r = build(Path(a.work), Path(a.canonical) if a.canonical else None, media=not a.no_media,
+    mv = "never" if a.no_media else a.media_view
+    r = build(Path(a.work), Path(a.canonical) if a.canonical else None, media_view=mv,
               source_dir=(Path(a.source_dir) if a.source_dir else None),
               image_cache=(Path(a.image_cache) if a.image_cache else None))
     print(f"OK per-property projection: {r['count']} property folder(s) -> {r['root']}"
           + (f"; {r['unassigned']} unclaimed deck page(s) -> {r['root']}/_unassigned"
-             if r.get("unassigned") else ""))
+             if r.get("unassigned") else "")
+          + (f"; media view skipped (--media-view {mv}), see {r['root']}/{MEDIA_VIEW_MARKER}"
+             if r.get("media_view") == "never" else "")
+          + (f"; pruned {len(r['pruned'])} orphaned folder(s)" if r.get("pruned") else "")
+          + (f"; COULD NOT REMOVE {len(r['could_not_prune'])} stale entr(y/ies), see index.json"
+             if r.get("could_not_prune") else ""))
     return 0
 
 
 if __name__ == "__main__":
+    try:                     # D16: UTF-8 console. Guarded and locally imported so a
+        import _common as _C  # bootstrap tool is never stopped by this call itself.
+        _C.force_utf8_stdout()
+    except Exception:
+        pass
     raise SystemExit(main())

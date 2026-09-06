@@ -156,15 +156,20 @@ records matching `templates/record_schema.json`:
 - **Fill EVERY field the page states. The manifest's `fields` array is the canonical
   registry and it is NOT a limit** - it is generated at run time from
   `_common.canonical_property_fields()`, so it is always the live set the pipeline
-  carries (43 reader-fillable names: `areaUnit, breeam, carParking, city,
-  clearHeight, country, description, developer, district, divisibleFrom,
-  earlyAccess, electricity, epc, expansionBuilding, expansionPark, floorLoad,
-  incentives, landPrice, landlord, lat, leaseTerm, lng, loadingDocks, mapLink,
-  motorway, officeArea, officeRent, overheadDoors, park, permitting, plotArea,
-  postcode, region, reit, rentFree, rentUnit, serviceCharge, sprinklers, status,
-  truckParking, warehouseArea, warehouseRent, warehouseRentVal`). Read `fields` from
-  the manifest rather than trusting this copy. `description` may carry the brochure's
-  own prose.
+  carries (47 reader-fillable names: `areaUnit, breeam, brochureLink, carParking,
+  city, clearHeight, country, description, developer, district, districtProfile,
+  divisibleFrom, earlyAccess, electricity, epc, expansionBuilding, expansionPark,
+  floorLoad, incentives, landPrice, landlord, lat, leaseTerm, lng, loadingDocks,
+  mapLink, motorway, officeArea, officeRent, overheadDoors, park, permitting,
+  plotArea, postcode, region, reit, rentFree, rentUnit, serviceCharge, sprinklers,
+  status, truckParking, unit, warehouseArea, warehouseAreaSqm, warehouseRent,
+  warehouseRentVal`). Read `fields` from
+  the manifest rather than trusting this copy. Each entry is an OBJECT `{name, type,
+  fills, format?}` (an older manifest carries bare names): `type` is the JSON shape the
+  pipeline validates the value against, `format` says how to write it where the type
+  alone is not enough, and the rendered reader prompt prints the same registry for you.
+  Fields the pipeline fills itself (`fills: "orchestrator"`) are not in the list handed
+  to you. `description` may carry the brochure's own prose.
   Three rules govern capture, all three learned from a live failure:
   - **A STATED NEGATIVE IS DATA, NEVER AN ABSENCE.** "Land price: Not charged",
     "Sprinklers: No", "None", "N/A" are positive commercial statements - ship them as
@@ -214,6 +219,20 @@ records matching `templates/record_schema.json`:
   field list into a sub-agent prompt. A list in the prompt reads as the specification
   and overrides this contract. Point the reader at the manifest's `fields` array, or
   pass that array verbatim.
+- **`unit` IS THE OPTION'S OWN DESIGNATOR, AND IT IS WHAT MAKES ONE CARD DIFFERENT FROM THE
+  NEXT.** When a page names a specific unit, phase, block or plot within a park - `Unit 3`,
+  `Phase 2`, `Block A`, `Unit B2` - put that designator in **`unit`**, written EXACTLY as the
+  page prints it (keep the word: `"Unit 3"`, not `"3"`; keep `"Phase 2"`, not `"2"`). `park`
+  stays the park / scheme / estate name. Do **not** fold the designator into `park` yourself,
+  and do not invent one: a park marketing a single building has no unit, and `unit` is then
+  simply absent. Why this matters more than it looks: the dashboard composes every title from
+  park + unit (card, map popup, map list, modal, compare column head, both compare chip sets,
+  Flyover slide and tooltip), and before this field existed two genuinely different units on one
+  park rendered as two IDENTICAL-looking cards - including in the comparison chips, at the exact
+  moment the broker is being asked to choose between them. The chrome suppresses the designator
+  when the park name already carries it, so a `park` of `"Kestrel Reach Unit 3"` beside a `unit`
+  of `"Unit 3"` renders once and not twice; you do not need to second-guess that, and you should
+  never strip a designator out of `park` to make room for it.
 - **BREEAM and EPC are DIFFERENT fields - never fold one into the other.** `breeam` takes a
   BREEAM sustainability grade ONLY (Pass / Good / Very Good / Excellent / Outstanding, a
   `Target ...` prefix kept as printed). An EPC rating - a letter band like `A+`, `A`, `B` -
@@ -258,11 +277,20 @@ records matching `templates/record_schema.json`:
   with an `index` and a thumbnail `image` path) and `candidates_sheet` - the SAME
   candidates tiled into one image, each captioned with its `index`.
   **Read `candidates_sheet` once per page rather than opening each `candidates[].image`
-  in turn.** The tiles are those exact thumbnails at their native size, so you lose no
-  detail, and it costs one tool call instead of one per candidate. Open an individual
-  `candidates[].image` only when a tile is genuinely ambiguous, and when you need several
-  at once, request them in a single message. A page with fewer than two candidates has
-  no sheet (`null`) - use `candidates[].image` there. LOOK at them. For each property
+  in turn, and request EVERY page's sheet and `render` thumbnail in ONE message, opening
+  NO image before that message.** The tiles are those exact thumbnails at their native
+  size, so you lose no detail, and it costs one tool call instead of one per candidate;
+  the set of sheets is known in full the moment you have read your deck's entry, so there
+  is nothing to learn between one page's read and the next, and the reader prompt lifts
+  its per-message tool-call cap for exactly this batch. This is an OBLIGATION, not a
+  permission: measured on a live run, the one-page-per-message loop cost 7 to 23 round
+  trips per deck at roughly 17 s each, the reader agents were about 80% of the run's
+  wall-clock and the round is gated by its slowest deck, and the loop persisted while
+  this rule was on the page worded as a permission (D1). Open an individual
+  `candidates[].image` only when a tile is genuinely ambiguous, and then request every
+  one you still need in ONE follow-up message, never one at a time. A page with fewer
+  than two candidates has no sheet (`null`) - use `candidates[].image` there. LOOK at
+  them. For each property
   record set `__meta.heroRef` = the `index` of the genuine marketing HERO (a real
   photo, aerial or render), or `null` if NONE of the candidates is a real photo - a
   road MAP, a location screenshot, a floor/site PLAN, an icon or a logo is NEVER the
@@ -271,6 +299,18 @@ records matching `templates/record_schema.json`:
   `planRef`. The classifier + the G-images gate VERIFY your pick: a `heroRef` that
   points to a non-photo is blocked for sign-off, and a `null`/absent `heroRef` falls
   back to the deterministic hero ladder, so an honest `null` is always safe.
+  **When one deck yields MORE THAN ONE record, the records do not share a hero where the
+  deck offers a distinct photo per record.** Before you write the output, compare every
+  record's (`page_no`, `heroRef`) pair with its siblings'; where two coincide, move one
+  record to a real photo on a page already in its own `image_pages` (and set its
+  `page_no` to that page: the hero-page rule above is unchanged). The honest fallback
+  stands: a deck with ONE usable photo shares it, and `null` is always safe; never invent
+  a distinction to satisfy this rule. Why: on a live run a 5-page deck yielded UNIT 06
+  and UNIT 07, both at `page_no` 1 / `heroRef` 0, so both cards shipped the same
+  masterplan CGI, which was also each card's first gallery slide (one image four times
+  across two cards), while the cover page the reader had already assigned to UNIT 07
+  carried an aerial photograph of the finished buildings. The images gate blocked on the
+  duplicate hash, so it cost a correction round rather than shipping (D6).
 - **Mark decorative candidates for exclusion (`__meta.exclude_refs`).** While you are already
   LOOKING at each page's candidate thumbnails, flag any candidate that is a DECORATIVE or abstract
   graphic - brand art, a gradient or geometric-pattern (e.g. isometric-cube) background, a
@@ -370,14 +410,64 @@ records matching `templates/record_schema.json`:
   Omit the key when the page is consistent (the normal case).
 - **Transcribe, never invent.** A value you cannot read clearly → omit it or set
   `"tbd"`/`null`. Never guess a number, a rent, or coordinates.
-- **COORDINATES: transcribe whatever form the page prints, and never convert.** `lat`/`lng`
-  are numbers, so a DECIMAL pair goes straight in. If the page prints **DMS**
-  (`48°29'51.0"N 17°01'39.7"E`), do NOT convert it and do NOT drop it - copy the printed
-  string into `__meta.map_candidates` (a list of raw strings). Python converts it exactly
-  (`coords.dms_from_text`: deg + min/60 + sec/3600), the same way it converts acres and
-  annualises a monthly rent. Likewise copy any **maps link or 'click for location'
-  hyperlink** verbatim into `__meta.map_candidates` - the resolver follows a shortener to
-  the author's own pin. Never set `lat`/`lng`/`mapLink` from a link yourself.
+- **COORDINATES AND LOCATION HANDLES: transcribe whatever form the page prints, never
+  convert, and put each form where the pipeline can use it.** Two destinations exist and
+  they mean different things. `lat`/`lng` are the pin itself. `__meta.map_candidates` (a
+  list of raw strings) is the in-tray of `coords.coords_and_link_from_text`, which the
+  pipeline runs on every string there: it parses a decimal pair (with a coordinate label
+  in front of it), a maps URL carrying a pin and a DMS pair, and it follows a shortener
+  to the author's own pin. It does NOTHING with any other string, silently, so a handle
+  it cannot parse, dropped there, reads to the ledger as "the reader handed over a
+  coordinate" while the card still gets a town-centre geocode. That is why the cases
+  below are decided one by one: isolated readers cannot converge on an unnamed case, and
+  on one live run three of five readers put the same three-word handle in
+  `map_candidates` and two kept it out, both sides reading this section correctly,
+  because it named only three forms.
+  - **A DECIMAL pair** (`48.4976, 17.0277`) -> `lat`/`lng` as numbers, in the order the
+    page prints. When you are not certain which number is which, or the decimal mark is
+    a comma (`48,4976`), ALSO copy the raw printed string into `map_candidates` WITH the
+    page's own label in front of it (`Coordinates: 48.4976, 17.0277`): the resolver
+    deliberately ignores an unlabelled bare pair (a period-thousands size list looks
+    identical), bounds-checks a labelled one, and the `coord-provenance` gate reconciles.
+    If the page prints no label and you are torn about the order, record a
+    `__meta.doubts` entry with `field: "lat"` rather than inventing a label.
+  - **A DMS string** (`48°29'51.0"N 17°01'39.7"E`) or **a decimal pair with hemisphere
+    letters** (`48.4976 N, 17.0277 E`) -> copied VERBATIM into `map_candidates`, never
+    converted. Python converts exactly (`coords.dms_from_text`: deg + min/60 + sec/3600)
+    and reads the sign off the hemisphere letter, the same way it converts acres and
+    annualises a monthly rent.
+  - **Any maps link or 'click for location' hyperlink** -> VERBATIM into
+    `map_candidates`; the resolver follows a shortener to the author's own pin. Never set
+    `lat`/`lng`/`mapLink` from a link yourself. A hyperlink whose URL is not visible in
+    the text is still recovered (the resolver re-opens the PDF's link annotations
+    itself), so just say in `__meta.notes` that the page carries one.
+  - **A three-word address handle** (`///word.word.word`, or three words joined by dots)
+    -> NOT `map_candidates`. It is resolvable only through a third-party service the
+    pipeline does not call, so there it is a silent no-op that reads as a coordinate
+    claim. Ship it as DATA under the open key `threeWordAddress`, written exactly as
+    printed, with its own `prov`; it then reaches the card and the ledger and a human
+    can resolve it.
+  - **A plus code** (`8FVC9G8F+6X`, or a short form beside a locality) -> NOT
+    `map_candidates`; the pipeline carries no decoder, and a short code needs its
+    locality anyway. Ship it as DATA under `plusCode`, exactly as printed.
+  - **A national grid reference** (`TQ 3000 8000`, `X 123456 / Y 654321`) -> NOT
+    `map_candidates`; turning a projected grid into WGS84 needs a projection library the
+    pipeline does not carry. Ship it as DATA under `gridReference`, exactly as printed
+    (keep the letters and the spacing: they are the datum and the precision).
+  - **A postal code that is the only location anchor** -> `postcode` (a first-class
+    field), never `map_candidates` and never a coordinate you look up. The geocode stage
+    may derive an approximate pin from it and flags it `coordsApprox`; you do not.
+  - **A street address, a town, a junction** -> the address-shaped fields (`city`,
+    `district`, `postcode`, `motorway`, `park`), never a coordinate. Geocoding is
+    Python's.
+  - **A pin on an embedded map image, or a QR code** -> no coordinate exists in the text
+    and you cannot read one off a picture; say so in `__meta.notes` and leave `lat`/`lng`
+    absent. A coordinate printed as TEXT inside a map screenshot is different: transcribe
+    it with `not in text layer` in its prov, like any other value read from an image.
+  The rule behind every line: a form the pipeline can turn into a pin itself (decimal,
+  DMS, a maps URL) goes to `map_candidates`; a handle that needs a service or a library
+  the pipeline does not have is DATA, shipped under its own name, so nothing is claimed
+  that nobody resolved.
   This is why it matters: a run where two pages printed DMS and a third carried only a
   Google Maps link shipped three town-centre pins, one of them a marker in the middle of a
   village, because the reader honestly refused to convert and nothing else owned it. The
@@ -390,12 +480,36 @@ records matching `templates/record_schema.json`:
   dashboard RENDERS (or that the matcher reads for identity), or the number of properties,
   is put to the broker - capped per round, material first, and the overflow is disclosed
   rather than dropped. Everything else is printed in the Gaps Report, in BOTH modes.
-  DECLARE the classification where you can and it is exact instead of inferred from your
-  wording: `field` must be the canonical key spelled as the schema spells it (an
-  unrecognised name is ignored and the wording is read instead), or `affects` is one of
-  `count` / `display` / `ledger`. `tbd` stays the answer for a value the source does not
-  state - a doubt is for a value the source DOES state ambiguously, and never an excuse to
-  skip reading.
+  `tbd` stays the answer for a value the source does not state - a doubt is for a value the
+  source DOES state ambiguously, and never an excuse to skip reading.
+  **A doubt you want ACTED ON (the broker's answer written to the card) carries exactly two
+  things, and the pipeline checks both mechanically (`helpers/clarify.py` stamps the
+  question landable only when both hold):**
+  1. **`field`**: ONE canonical key, spelled exactly as the schema spells it
+     (`"warehouseArea"`, `"officeArea"`; never `"area"`, `"warehouse_area"`, and never two
+     keys). An unrecognised name is ignored and your wording is read only to decide whether
+     to ASK. A doubt about no field declares `affects` = `count` / `display` / `ledger`
+     instead, so its materiality is exact rather than inferred.
+  2. **`options`**: the candidate VALUES the broker chooses between, each written so it can
+     be written INTO the field as it stands. On a field the dashboard does arithmetic on (an
+     area, a rent, a count: anything with a numeric companion such as `officeAreaVal`) EVERY
+     option LEADS WITH THE FIGURE AND ITS UNIT exactly as the source prints it, then any
+     qualifier in brackets: `"24,230 sq ft (all three office lines combined)"` is valid;
+     `"all three office lines combined"` is refused. The chosen option is written into the
+     field verbatim and the companion number is derived from it, so a prose option lands a
+     sentence in the field and a null in the companion.
+  **Never offer a total you did not read.** If the source prints no combined figure, offer
+  the individual PRINTED figures as options and say in `question` that they may need
+  combining. Python owns all arithmetic; a reader summing three lines in its head is
+  inventing a number the source never printed, which is the one thing this skill exists to
+  prevent.
+  **A doubt lacking either part is still disclosed in the Gaps Report, but the broker's
+  answer is recorded and dropped**: the question is asked, the answer cannot be applied, and
+  the broker's attention was spent for nothing. On the measured run five of eight answers
+  went that way (D13). Where options WERE offered they were prose, so the auto-repair wrote
+  `"set": {"officeArea": "all three office lines combined", "officeAreaVal": null}`, an
+  entry the run's own validator refuses, and the bare figures then tripped the value-format
+  gate into two more blocking questions about a fault the pipeline had made itself (D4).
 - **If the text is unusable/garbled** (mojibake, column-shuffled spec tables you
   cannot trust, a text layer that is clearly an OCR mess), do NOT force a record.
   Set `"needs_raster": true` on that deck's output (e.g. one stub record `{"__meta":
@@ -438,7 +552,25 @@ Omit or `[]` when unsure. This ALSO includes `__meta.plan_page`: in raster mode 
 already see each page's full render, so when a page IS the site plan (a full page of
 vector line-art / a site-plan diagram), set `plan_page` = that 0-based `page_no` on
 the property it belongs to, else `null`/omit. It binds the PLAN SLOT only (never the
-hero); `null` is always safe (the deterministic detector is the fallback).
+hero); `null` is always safe (the deterministic detector is the fallback). The
+multi-record hero rule (D6) applies to `page_no` here, since a raster page has no
+`candidates` and so no `heroRef`: two records from one deck do not share a `page_no`
+where the deck offers each its own photo page; one usable photo in the whole deck is
+shared honestly, and nothing is invented to tell them apart.
+
+One text-mode `__meta` rule does NOT carry over: **`exclude_refs` is unavailable in raster
+mode.** It takes candidate INDICES (`{"<page>": [<index>, ...]}`), and a raster page
+carries a page `image` only - no `candidates`, no `candidates_sheet`, no index space - so
+there is nothing valid to put in it; OMIT the key. This is not hypothetical: a raster
+reader correctly identified a decorative graphic filling half a page and correctly
+reported it had no way to exclude it, so it could surface in the carousel. The fallback
+that IS available: put one line per graphic in `__meta.notes` beginning
+`decorative graphic:` naming the 0-based page and what it is (your output file keeps it,
+where the G-images reviewer and a later repair can read it; nothing mechanical acts on it
+yet), and leave a page that holds NOTHING but decoration out of `image_pages`. Never drop
+a page that also carries a real photo, and never move `page_no` to dodge a graphic. The
+complete fix is for the prep stage to attach `candidates` and a `candidates_sheet` to
+raster pages too, which would give raster mode the same index space as text mode.
 
 ## Tracker mode (`kind:"tracker"` job - a MAP, never records)
 A tracker is a STRUCTURED source, so unlike a brochure the deterministic dictionary

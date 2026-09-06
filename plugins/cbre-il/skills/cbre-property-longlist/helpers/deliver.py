@@ -30,6 +30,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 MARKER_NAME = ".delivery_complete.json"  # written LAST by main(); see B01 at the write site
 
+# F14: the client name is FREE TEXT from the Stage-0 form and the spine hands it straight in as
+# --slug, so a name carrying a full stop produced `<Name>._Gaps_Report.md` and a name with spaces
+# produced spaced filenames in the broker's output folder. Only the FILENAME component is
+# sanitised here; the report title, the ledger and the marker keep the broker's exact text,
+# because the client's name on the page is data and a filename is not.
+_SLUG_JUNK = re.compile(r"[^A-Za-z0-9]+")
+SLUG_FALLBACK = "Longlist"
+
+
+def safe_slug(raw) -> str:
+    """One filename component from a free-text client name: runs of anything that is not an
+    ASCII letter or digit collapse to ONE underscore, leading/trailing underscores go, and an
+    empty result falls back to SLUG_FALLBACK so a filename can never start with the suffix.
+
+    IDEMPOTENT by construction (safe_slug(safe_slug(x)) == safe_slug(x)), which matters because
+    final_gate derives the slug BACK out of the Gaps Report filename (it strips
+    `_Gaps_Report.md`) and feeds it to this script again as --slug; a non-idempotent sanitiser
+    would write a second report beside the first. Every name it produces still matches
+    intake._OWN_OUTPUT (which keys on the SUFFIXES), so a re-run in the same folder still
+    refuses to ingest its own deliverables."""
+    s = _SLUG_JUNK.sub("_", str(raw or "")).strip("_")
+    return s or SLUG_FALLBACK
+
 
 def delivery_complete(out_dir, marker_dir=None) -> bool:
     """True only when a delivery finished AND everything it vouched for is still present.
@@ -93,16 +116,17 @@ NOT_CHASEABLE = {
 
 
 def _is_tbd(v):
-    """Unknown for Gaps-Report purposes.
+    """Unknown for Gaps-Report purposes: the ONE shared predicate, nothing added.
 
-    Delegates to the shared sentinel set and ADDS `"??"` locally. `"??"` is what
-    _common.REQUIRED_TEXT_SENTINELS writes for an unresolved country and what the chrome's
-    own `isAbsent` treats as absent - but normalize.looks_unknown carries `"?"`, NOT `"??"`.
-    The widening is deliberately LOCAL: looks_unknown has ~24 call sites and feeds
-    _common.core_fill -> record_is_poor -> run.py's vision-routing probe, so widening it
-    there would change WHICH INPUT FILES THE LLM IS ASKED TO READ as a side effect of a
-    Gaps-Report wording change. Documented divergence, not an oversight."""
-    return C._N.looks_unknown(v) or str(v).strip() == "??"
+    Until v41 this ADDED `"??"` locally because normalize.looks_unknown did not carry it, and
+    its docstring defended the local widening by the blast radius of the shared set (it feeds
+    _common.core_fill -> record_is_poor -> run.py's vision-routing probe). Fix plan contract C5
+    measured that radius and moved `"??"` into the shared family on purpose: the only field
+    the pipeline writes `"??"` into is `country`, which no core_fill field reads, so the routing
+    probe is unchanged by it; and a record whose city or status a reader shipped as `TBA` IS
+    thinner, so re-reading it is the right routing. Kept as a named wrapper because run.py's
+    ship-readiness probe imports it by this name."""
+    return C._N.looks_unknown(v)
 
 
 def _chaseable_fields(props: list[dict]) -> list[str]:
@@ -127,13 +151,62 @@ def _chaseable_fields(props: list[dict]) -> list[str]:
     return [f for f in sorted(pool - NOT_CHASEABLE - set(CORE)) if not f.endswith("Val")]
 
 
-def _close_note(field: str) -> str:
+def _struck_map(meta: dict) -> dict:
+    """(property id as a string, field) -> its `meta.struck` row. (A11)
+
+    The strike ledger records a field a source DID state and the plausibility band then
+    rejected, per property and per field. Read here so the honesty report can tell the two
+    kinds of unknown apart: a field nothing stated, and a field something stated that did
+    not survive the band. They need opposite advice, and until this map existed the report
+    gave the absent-field advice to both.
+
+    ABSENT-TOLERANT on purpose, exactly like `meta.enrichmentGaps` and `meta.conflicts`
+    below: a canonical written before merge recorded the ledger (an older work directory, a
+    re-delivery of an archived run) simply yields an empty map and every consumer below
+    behaves as it did before. Malformed rows are skipped rather than raising - this function
+    runs while a client deliverable is being written, and no shape of one meta key may cost
+    the whole Gaps Report."""
+    out: dict = {}
+    for e in (meta.get("struck") or []):
+        if not isinstance(e, dict):
+            continue
+        f = str(e.get("field") or "").strip()
+        if not f or e.get("id") is None:
+            continue
+        out[(str(e.get("id")).strip(), f)] = e
+    return out
+
+
+def _close_note(field: str, struck: dict | None = None) -> str:
     """How to close a gap.
 
     Bespoke, party-naming advice lives ONLY in CLOSE. Everything else gets a
     PROVENANCE-shaped note, never a party-shaped one: which counterparty holds a given
     figure is a fact about the deal that Python is not entitled to assert (a standing
-    second-hand building's counterparty is a landlord, not a developer)."""
+    second-hand building's counterparty is a landlord, not a developer).
+
+    `struck` is this property's `meta.struck` row for this field, when there is one. It
+    takes precedence over BOTH the CLOSE advice and the default, because a struck field is
+    unknown for the OPPOSITE reason to an absent one and the default text asserted the
+    absence outright: "not stated in any source supplied for this property", printed against
+    a field whose source file and parsed figure this same document names a few sections lower
+    under Source conflicts. A live G-honesty review read that contradiction straight back off
+    a delivered report (four properties, the struck field quoted verbatim from the deck). It
+    beats CLOSE too: sending the reader to chase a figure that is already in the pack, in the
+    extract and in the ledger is a wrong action, not merely a redundant one. (A11)"""
+    if struck:
+        # Kept SHORT and pointed at the ledger row rather than restating it: this note is
+        # printed once per struck field per property, and one live run struck seven genuinely
+        # printed values across six properties. The Source conflicts row carries merge's full
+        # reasoning and the figure as it was parsed, so repeating either here would only crowd
+        # out the two things the reader needs on this line - that a source does state it, and
+        # what to do about it.
+        src = str(struck.get("source_file") or "").strip()
+        return ((f"{src} DOES state a value" if src else "a source DOES state a value")
+                + " for this field and the parsed figure fell outside the plausibility band, "
+                  "so the card ships the honest unknown - see Source conflicts below for the "
+                  "value as it was read, then either restore it via `work/repairs.json` if the "
+                  "source genuinely prints it or confirm the real figure with the agent")
     return CLOSE.get(field, "not stated in any source supplied for this property - ask the "
                             "sender if it is decision-relevant")
 
@@ -171,7 +244,26 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
     #       rule and bury the real gaps under phantoms.
     chase = _chaseable_fields(props)
     carried = {f for f in chase if any(not _is_tbd(p.get(f)) for p in props)}
-    never = [f for f in chase if f not in carried]
+    # A11: A STRUCK FIELD IS NOT AN ABSENT ONE, and both lists below used to say it was.
+    # `carried` asks only whether some property still HOLDS a real value, so a field a source
+    # stated and the plausibility band struck to the unknown sentinel on every property landed
+    # in `never` - printed under a heading asserting that no input carried it for any option
+    # and that this market does not quote it, in the same document whose Source conflicts
+    # section names the file and quotes the parsed figure. The two halves of one deliverable
+    # contradicting each other is the worst failure this report can have: it is read precisely
+    # to learn what is missing, and it was asserting an absence it elsewhere disproved.
+    #
+    # So the struck fields are subtracted from `never` AND added to the per-property chase
+    # list. Subtracting alone would be a half-fix that turns a false statement into silence:
+    # a field struck on every property would then appear in no section at all, while the
+    # dashboard's own FIELD_PRESENT rule hides it from the cards, so the ONLY trace left would
+    # be a ledger row the reader has no reason to look for. It belongs in the actionable half
+    # by the same test that section already applies - a source quoted this attribute, so the
+    # market quotes it - and each property's line then reads on its own merit: struck here,
+    # genuinely absent there (`_close_note` decides per property, per field).
+    struck = _struck_map(meta)
+    struck_fields = {f for _i, f in struck} & set(chase)
+    never = [f for f in chase if f not in carried and f not in struck_fields]
 
     reqs = meta.get("requirements") or {}
     lines.append("## Other missing fields by property")
@@ -182,13 +274,20 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
         lines.append("No client requirements were supplied, so this list is the full set of "
                      "attributes the market quoted for at least one option - it is not "
                      "scoped to a brief.")
-    _req_first = sorted(carried, key=lambda f: (f not in reqs, f))
+    _req_first = sorted(carried | struck_fields, key=lambda f: (f not in reqs, f))
     any_other = False
     for p in props:
         tbd = [f for f in _req_first if _is_tbd(p.get(f))]
         if tbd:
             any_other = True
-            notes = "; ".join(f"`{f}` ({_close_note(f)})" for f in tbd)
+            # THE PARTIAL CASE, which is the common one: a band strikes a field on some
+            # properties and no source ever stated it on the rest. The strike row is keyed to
+            # (id, field), so the note is decided per property and the same field reads
+            # correctly on every line it appears on. A field whose strike was later repaired
+            # (or overridden, or won by another source) now holds a real value and never
+            # reaches this list at all, so a stale strike row cannot resurrect a closed gap.
+            _pid = str(p.get("id")).strip()
+            notes = "; ".join(f"`{f}` ({_close_note(f, struck.get((_pid, f)))})" for f in tbd)
             lines.append(f"- **{p.get('park','?')}** ({p.get('city','?')}, "
                          f"id {p.get('id')}): {notes}")
     if not any_other:
@@ -297,12 +396,28 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
     # silent and large - a metric figure labelled sq ft is out by 10.76x, and the magnitude
     # cross-check is blind across the whole realistic warehouse range. Chase the source.
     ua = meta.get("unitAssumptions", [])
-    if ua:
+    # D11: the list now also carries ONE dataset-level entry (field "rentUnit", id "dataset")
+    # when no source states a rent unit and merge derived the display basis from the dominant
+    # area unit and country. It is a different kind of assumption - a label convention, with no
+    # figure behind it to convert - so it gets its own heading and its own wording rather than
+    # the area sentence, which would tell the broker to convert a number that does not exist.
+    ua_area = [e for e in ua if isinstance(e, dict) and e.get("field") != "rentUnit"]
+    ua_rent = [e for e in ua if isinstance(e, dict) and e.get("field") == "rentUnit"]
+    if ua_area:
         lines.append("## Area units assumed (source did not state one)")
-        for e in ua:
+        for e in ua_area:
             lines.append(f"- **{e.get('property', '?')}**: {e.get('field', 'areaUnit')} assumed "
                          f"**{e.get('assumed', '?')}** - {e.get('why', '')}. Confirm the source's "
                          f"own unit; if it differs, the figure needs converting, not relabelling.")
+        lines.append("")
+    if ua_rent:
+        lines.append("## Rent basis assumed (no source states a rent unit)")
+        for e in ua_rent:
+            lines.append(f"- **{e.get('property', 'whole longlist')}**: the rent basis shown on "
+                         f"the dashboard (hero KPI sub-label and card footers) is "
+                         f"**{e.get('assumed', '?')}** - {e.get('why', '')}. If the market quotes "
+                         f"on a different basis, state a rent unit in a source or confirm the "
+                         f"convention with the agent; no rent figure was relabelled with it.")
         lines.append("")
 
     # MANUAL CORRECTIONS (P1-4). Disclosed in the DELIVERABLE, not just in work/: a value a human
@@ -507,10 +622,26 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
     _rp_rot = [(k, e) for k in ("stale", "ambiguous", "superseded", "invalid")
                for e in (rp_rep.get(k) or [])]
     if _rp_rot:
-        lines.append("## Manual corrections that matched NOTHING (stale - fix or delete)")
-        lines.append("These `work/repairs.json` entries were NOT applied, so the property still "
-                     "holds whatever matching/merge produced. Either correct the entry's "
-                     "`property` block or delete it.")
+        # ONE HEADING, TWO OUTCOMES, AND THEY NEED OPPOSITE ACTIONS. This used to read
+        # "matched NOTHING (stale - fix or delete)", which is the right instruction for an
+        # entry that never found its target and the WRONG one for a CLEARING entry that
+        # already landed: `repairs.py` reports an `unset`/`strike` whose field is now gone as
+        # `stale` on every run AFTER the one that worked (deliberately - see the note above
+        # `struck` there, and the already-absent branch that says "a correct entry, doing
+        # nothing"), because a clear cannot be re-applied to a field that is no longer there.
+        # Telling the reader to fix or delete that entry is telling them to undo a working
+        # correction, so the heading no longer asserts staleness and the framing sends the two
+        # cases in their two directions. The per-entry reason strings already distinguish
+        # them; only this heading was mis-instructing.
+        lines.append("## Manual corrections that applied NOTHING (property-level repairs)")
+        lines.append("These `work/repairs.json` entries changed nothing on this run, and the "
+                     "reason beside each one says which of two things that means. An entry that "
+                     "matched NOTHING is stale and needs attention: the property still holds "
+                     "whatever matching/merge produced, so correct the entry's `property` block "
+                     "or delete it. An entry whose reason says the work ALREADY LANDED on an "
+                     "earlier run - a clear whose field is now gone - is correct and is meant to "
+                     "do nothing: it reports here on every later run precisely because it "
+                     "worked, and it needs no action.")
         for k, e in _rp_rot:
             if isinstance(e, str):
                 lines.append(f"- **{k}**: {e}")
@@ -564,8 +695,18 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
             items = []
         if items:
             lines.append("## Unreadable / skipped input files")
-            lines += [f"- **{it.get('file')}**: {it.get('reason')} "
-                      f"(re-save or unlock it and re-run to include it)" for it in items]
+            # The per-file REASON already carries its own remedy when one exists, so the
+            # generic tail is appended only when it does not. An unsupported TYPE cannot be
+            # fixed by re-saving the file (the file is fine; there is no reader for it), and
+            # its reason already says to paste the data into an email or a tracker instead -
+            # so the old unconditional tail contradicted the reason on the same line, in the
+            # CLIENT-FACING report. Keyed on the reason already naming a re-run rather than
+            # on a type list, so a new reason that carries its own remedy is handled too.
+            for it in items:
+                _r = str(it.get("reason") or "")
+                _tail = "" if "re-run" in _r.lower() else (
+                    " (re-save or unlock it and re-run to include it)")
+                lines.append(f"- **{it.get('file')}**: {_r}{_tail}")
             lines.append("")
 
     # extraction yield (run.py writes <work>/yield_report.md when a field-rich
@@ -627,13 +768,22 @@ def _cell(v):
     return v
 
 
-def _rent_monthly(p: dict, default_ru: str = "€/sq m/yr") -> str:
+def _rent_monthly(p: dict, default_ru: str | None = None) -> str:
     """Monthly headline rent = annual warehouseRentVal / 12, KEPT in its own currency
-    and per-area convention. 'tbd' when there is no numeric annual rate to divide."""
+    and per-area convention. 'tbd' when there is no numeric annual rate to divide.
+
+    D11: a figure whose source states NO rent unit is printed with "(unit not stated)", the
+    same words `normalize.rent_display` puts in the annual column (B06), never in a default
+    currency and basis. This function used to fall back to "€/sq m/yr" (or the dataset default
+    passed in), so a unit-silent UK figure shipped "€ 0.71 / sq m / mo" in the workbook beside
+    an annual column that honestly said "8.5 (unit not stated)". `default_ru` is kept in the
+    signature for any caller that still passes it; it is no longer read."""
     v = p.get("warehouseRentVal")
     if not isinstance(v, (int, float)) or isinstance(v, bool) or v <= 0:
         return "tbd"
-    ru = (p.get("rentUnit") or default_ru).split("/")
+    if not p.get("rentUnit"):
+        return f"{v / 12:.2f} / mo (unit not stated)"
+    ru = str(p["rentUnit"]).split("/")
     cur = (ru[0].strip() if ru and ru[0].strip() else "€")
     per = (ru[1].strip() if len(ru) > 1 and ru[1].strip() else "sq m")
     return f"{cur} {v / 12:.2f} / {per} / mo"
@@ -655,7 +805,12 @@ def _total_rent(p: dict, monthly: bool = False) -> str:
     orr = orr if isinstance(orr, (int, float)) and not isinstance(orr, bool) and orr > 0 else None
     annual = (wa * wr + oa * orr) if (orr is not None and oa > 0) else ((wa + oa) * wr)
     v = annual / 12 if monthly else annual
-    cur = ((p.get("rentUnit") or "€/x/yr").split("/")[0] or "€").strip()
+    # D11: the currency is the property's OWN stated one or it is not named at all. The old
+    # `or "€/x/yr"` fallback printed a euro sign in front of a total computed from a rate whose
+    # source named no currency - FX-grade invention in the artefact the broker forwards.
+    cur = (str(p.get("rentUnit") or "").split("/")[0] or "").strip()
+    if not cur:
+        return f"{round(v):,} / {'mo' if monthly else 'yr'} (currency not stated)"
     return f"{cur} {round(v):,} / {'mo' if monthly else 'yr'}"
 
 
@@ -663,8 +818,9 @@ def longlist_xlsx(canonical: dict, out_path: Path) -> None:
     """Write the flat one-property-per-row workbook (CSV fallback if no openpyxl)."""
     props = canonical.get("properties", [])
     meta = canonical.get("meta", {}) or {}
-    units = meta.get("units", {}) or {}
-    default_ru = units.get("rent") or "€/sq m/yr"
+    # D11: no dataset-level rent default is read here any more. Every rent cell prints its own
+    # property's stated unit or says the unit is not stated (`_rent_monthly`, `_total_rent`);
+    # the dataset basis is a LABEL convention for the dashboard, never a currency for a number.
     # OPEN COLUMNS (read everything; display selectively): any scalar field present
     # on at least one property that has no fixed column ships as an extra column at
     # the right-hand end, header prettified from its camelCase key. The card grid
@@ -704,7 +860,7 @@ def longlist_xlsx(canonical: dict, out_path: Path) -> None:
         if key == "__rent_annual":
             return _cell(p.get("warehouseRent"))
         if key == "__rent_monthly":
-            return _rent_monthly(p, default_ru)
+            return _rent_monthly(p)
         if key == "__total_annual":
             return _total_rent(p, False)
         if key == "__total_monthly":
@@ -778,8 +934,14 @@ def main() -> None:
         mark_dir = out
     canonical = json.loads(Path(args.canonical).read_text(encoding="utf-8-sig"))
 
+    # F14: `slug` names FILES, `args.slug` is what the broker typed. An explicit --filename is
+    # honoured byte-for-byte because the spine resolves it before calling here and later looks
+    # the dashboard up under exactly that name (run.py composes it; sanitising it HERE would
+    # break that lookup, so the spine applies safe_slug() itself at the point it composes).
+    slug = safe_slug(args.slug)
+
     # 1. html
-    fname = args.filename or f"CBRE_Property_Dashboard_{args.slug}.html"
+    fname = args.filename or f"CBRE_Property_Dashboard_{slug}.html"
     dst = out / fname
     tmp = dst.with_suffix(dst.suffix + ".tmp")
     shutil.copyfile(args.html, tmp)
@@ -794,13 +956,13 @@ def main() -> None:
         import ledger
         try:
             ledger.cmd_export(argparse.Namespace(
-                ledger=args.ledger, out=str(out / f"{args.slug}_Source_Ledger.xlsx")))
+                ledger=args.ledger, out=str(out / f"{slug}_Source_Ledger.xlsx")))
         except Exception as e:
             print(f"WARNING: Source Ledger export failed: {e}", file=sys.stderr)
 
     # 3. gaps report (the work dir = the canonical's folder; yield_report.md lives there)
-    gaps = out / f"{args.slug}_Gaps_Report.md"
-    C.atomic_write_text(gaps, gaps_report(canonical, args.slug,
+    gaps = out / f"{slug}_Gaps_Report.md"
+    C.atomic_write_text(gaps, gaps_report(canonical, args.slug,      # the TITLE keeps the raw name
                                           work_dir=Path(args.canonical).resolve().parent))
     print(f"OK gaps report -> {gaps}")
 
@@ -808,7 +970,7 @@ def main() -> None:
     # broker-facing data view alongside the field-level Source Ledger. Guarded so a
     # workbook hiccup can never block the dashboard hand-off.
     try:
-        longlist_xlsx(canonical, out / f"{args.slug}_Longlist.xlsx")
+        longlist_xlsx(canonical, out / f"{slug}_Longlist.xlsx")
     except Exception as e:
         print(f"WARNING: Longlist export failed: {e}", file=sys.stderr)
 
@@ -826,12 +988,14 @@ def main() -> None:
     # a predicate that demanded it would be unsatisfiable on a box where openpyxl is broken -
     # deliver would then re-run on every single pass forever while final_gate still blocked.
     # That would trade one unbounded loop for another. (B01)
-    _vouched = [fname, f"{args.slug}_Gaps_Report.md"]
+    _vouched = [fname, f"{slug}_Gaps_Report.md"]
     if args.ledger and Path(args.ledger).exists():
-        _led = out / f"{args.slug}_Source_Ledger.xlsx"
-        _vouched.append(_led.name if _led.exists() else f"{args.slug}_Source_Ledger.csv")
+        _led = out / f"{slug}_Source_Ledger.xlsx"
+        _vouched.append(_led.name if _led.exists() else f"{slug}_Source_Ledger.csv")
+    # `slug` is the filename component the artefacts were built from; `client` is the broker's
+    # exact text (F14). Nothing reads either key today; they are here so a human can see both.
     C.atomic_write_text(mark_dir / MARKER_NAME, json.dumps(
-        {"schema_version": 1, "slug": args.slug, "artefacts": _vouched,
+        {"schema_version": 1, "slug": slug, "client": args.slug, "artefacts": _vouched,
          "out_dir": str(out)},
         ensure_ascii=False, indent=2))
     # A marker left in the OUT dir by a pre-split run would keep asserting an older
@@ -845,4 +1009,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    C.force_utf8_stdout()   # D16: a non-ASCII value in printed output must not
+    #                        crash the print on a cp1252 Windows console
     main()

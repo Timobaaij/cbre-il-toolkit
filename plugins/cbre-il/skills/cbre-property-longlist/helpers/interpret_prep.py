@@ -122,6 +122,158 @@ def _decide_mode(page_texts: list[str]) -> str:
     return "text" if with_text >= TEXT_DECK_MIN_RATIO * len(page_texts) else "raster"
 
 
+# --- the READER FIELD REGISTRY (contract C1: this module writes it, run.py hands it over in the
+# exit-3 manifest's `fields`, the reader prompts render it) -----------------------------------
+#
+# The manifest used to hand every reader a FLAT LIST OF 47 BARE NAMES and nothing else: no type,
+# no format, no note of who fills a field. Measured on a live run, validate-data failed 12 times
+# and NOT ONE failure was an open-schema problem - every one was a DECLARED canonical field filled
+# with the wrong type. Ten were `warehouseAreaSqm: <integer>` (six readers, independently, wrote
+# the raw integer the deck printed - which is exactly what "write the value the way the source
+# prints it" asks for when nothing states otherwise). Two were a prose paragraph in
+# `districtProfile`, whose schema type is `object` and whose own description says the spine never
+# populates it: that collision class was diagnosed once already (v38 renamed the object away from
+# `district` because readers kept filling it) and the renamed orchestrator-only key was simply
+# left in the list handed to readers. Four more names (lat, lng, warehouseArea, warehouseRentVal)
+# only got away with it because the reader prompt spelled each out in prose - a workaround for
+# the missing types that does not scale to 47 fields.
+#
+# So each registry entry now carries what a reader needs to produce a TYPE-VALID value:
+#
+#     {"name": "warehouseAreaSqm", "type": ["string", "null"], "fills": "reader",
+#      "format": "the square-metre figure as a display string, e.g. '21,891 sq m'"}
+#
+#   * `type`   is READ OFF A SCHEMA, never restated here. Which schema matters (SEAM-18): a reader
+#              writes the PRE-MERGE record shape (templates/record_schema.json), and merge converts
+#              it into the POST-MERGE shape (canonical.schema.json). The two disagree exactly where
+#              a reader is most likely to be got wrong: canonical declares `warehouseArea` a bare
+#              `number`, but the reader contract says WRITE IT THE WAY THE SOURCE PRINTS IT (a
+#              dimensioned string carrying its unit) and merge turns that into the number; the
+#              record schema correctly says `number|string`. Rendering the canonical type told a
+#              reader something the contract contradicts, on a headline field. So `type` comes from
+#              record_schema.json's `properties.<name>.type` WHERE THAT FILE DECLARES THE FIELD, and
+#              from canonical.schema.json only for a field it does not (the record schema is
+#              illustrative and open, so most names fall through). A name neither declares (a
+#              template-only `p.<field>`) gets canonical's own open-field scalar union.
+#   * `fills`  is "orchestrator" when the schema description carries ORCHESTRATOR_MARK, else
+#              "reader". An orchestrator-filled entry is EXCLUDED from what readers are handed -
+#              a reader cannot fill it correctly, so offering it only invites the wrong type.
+#   * `format` is present ONLY where the type alone is not enough. It is read from the schema
+#              node's `x-reader-format` (a reader-facing hint; JSON Schema's own `format` keyword
+#              is deliberately not reused because validators give it semantics) or, when the node
+#              declares an `enum`, derived from that enum so the two can never disagree.
+#
+# Deterministic and pure: sorted by name, JSON-serialisable, ASCII-only (see F8 below), and it
+# never raises - an unreadable schema degrades every entry to the open-field type rather than
+# crashing the exit-3 handoff. evals/f19_typed_field_registry_test.py pins the shape.
+ORCHESTRATOR_MARK = "ORCHESTRATOR-FILLED"
+READER_FORMAT_KEY = "x-reader-format"
+# the PRE-MERGE record shape a reader actually writes; the type source of first resort (SEAM-18)
+RECORD_SCHEMA_FILE = C.TEMPLATES / "record_schema.json"
+# what the canonical schema admits for an undeclared (open) scalar field; the fallback when the
+# schema's own `additionalProperties` cannot be read
+_OPEN_FIELD_TYPE = ["string", "number", "boolean", "null"]
+
+
+def _property_schema() -> dict:
+    """`$defs.property` of canonical.schema.json, or {} when it cannot be read. Read with
+    utf-8-sig like every other helper, so a BOM on either platform is tolerated."""
+    try:
+        schema = json.loads(Path(C.SCHEMA_FILE).read_text(encoding="utf-8-sig"))
+        return ((schema.get("$defs") or {}).get("property") or {})
+    except Exception:
+        return {}
+
+
+def _record_schema_properties() -> dict:
+    """`properties` of record_schema.json (the pre-merge record a reader writes), or {} when it
+    cannot be read - the registry then types every field off canonical alone, which is what it did
+    before SEAM-18, so an unreadable record schema degrades rather than crashing the handoff."""
+    try:
+        schema = json.loads(Path(RECORD_SCHEMA_FILE).read_text(encoding="utf-8-sig"))
+        props = schema.get("properties") or {}
+        return props if isinstance(props, dict) else {}
+    except Exception:
+        return {}
+
+
+def _enum_format(enum: list) -> str:
+    """A reader-facing hint derived from a schema `enum`, so the hint and the validator can
+    never disagree about the admitted values."""
+    return "exactly one of " + ", ".join(repr(str(v)) for v in enum)
+
+
+def reader_field_registry(names, include_orchestrator: bool = False) -> list[dict]:
+    """Type each canonical field NAME and return the typed registry
+    `[{name, type, fills, format?}, ...]`, sorted by name.
+
+    `type` is record_schema.json's where that file declares the name (the PRE-MERGE shape a reader
+    writes), else canonical.schema.json's (SEAM-18; see the block comment above). `fills` is always
+    judged off canonical, the only schema that carries the orchestrator marker. `format` is the
+    declaring node's `x-reader-format` (record first, canonical second) or an enum-derived hint.
+
+    `names` is the caller's field set (run.py's `_reader_field_list()`: the canonical registry
+    minus the pipeline-assigned fields). This function owns only WHAT A READER NEEDS TO KNOW about
+    each name, never which names exist. Orchestrator-filled entries are dropped unless
+    `include_orchestrator` is set (a caller that wants the full typed picture, never a reader)."""
+    prop = _property_schema()
+    declared = prop.get("properties") or {}
+    record = _record_schema_properties()
+    open_type = (prop.get("additionalProperties") or {}).get("type") or _OPEN_FIELD_TYPE
+    out: list[dict] = []
+    for name in sorted({str(n) for n in (names or ()) if str(n)}):
+        node = declared.get(name)
+        node = node if isinstance(node, dict) else {}
+        rnode = record.get(name)
+        rnode = rnode if isinstance(rnode, dict) else {}
+        desc = str(node.get("description") or "")
+        fills = "orchestrator" if ORCHESTRATOR_MARK in desc else "reader"
+        if fills == "orchestrator" and not include_orchestrator:
+            continue
+        if rnode.get("type") is not None:
+            ftype = rnode["type"]           # the shape the reader WRITES (pre-merge)
+        elif node.get("type") is not None:
+            ftype = node["type"]            # not in the record schema: canonical's is all there is
+        else:
+            ftype = open_type
+        entry = {"name": name, "type": ftype, "fills": fills}
+        fmt = rnode.get(READER_FORMAT_KEY) or node.get(READER_FORMAT_KEY)
+        enum = rnode.get("enum") if isinstance(rnode.get("enum"), list) else node.get("enum")
+        if not fmt and isinstance(enum, list) and enum:
+            fmt = _enum_format(enum)
+        if fmt:
+            entry["format"] = str(fmt)
+        out.append(entry)
+    return out
+
+
+def reader_field_names(registry) -> list[str]:
+    """The bare names of a typed registry, in registry order - for any code path that wants the
+    pre-C1 flat list (there is deliberately NO parallel bare-name list in the manifest itself:
+    a reader offered both would read the untyped one and reproduce the defect)."""
+    return [str(e.get("name")) for e in (registry or ()) if isinstance(e, dict) and e.get("name")]
+
+
+def _country_kv(country) -> dict:
+    """`{"country": <code>}` when the caller KNOWS the deck's country, `{}` when it does not.
+
+    The deck entry used to carry `"country": "??"` whenever intake could not resolve the cluster's
+    country (run.py hands `cl.get("country") or "??"`). Five of seven readers on a live run said,
+    unprompted, that the manifest gave `??` and derived the country from the page themselves - and
+    across seven decks that produced three different spellings and cost one broker question.
+    Passing a sentinel where ABSENCE is meant makes every agent recognise and reason about it;
+    omitting the key is unambiguous and needs no rule. Never `null` either: a present key is read
+    as a value. (F7, manifest half.)
+
+    The rule has ONE implementation, vision_prep.country_kv, and this is a thin alias to it: run.py
+    calls vision_prep.prepare DIRECTLY for a raster deck (bypassing the router below), so the rule
+    had to live in the lower module or a raster deck kept its sentinel (SEAM-9). It strips the
+    sentinel character rather than delegating to the shared predicate (normalize.looks_unknown,
+    contract C5) on purpose: that family carries two-letter tokens that are also assigned ISO
+    country codes, so a known country would be lost. See country_kv for the full reasoning."""
+    return VP.country_kv(country)
+
+
 # PREP SCHEMA VERSION - bumped whenever this helper changes WHAT it prepares or how it decides a
 # cached entry is still good. It is folded into the stamp KEY, which was otherwise bytes-only
 # (source size + mtime): a deck that has not changed matches the key for ever, so an entry
@@ -367,15 +519,18 @@ def _text_deck_entry(path: Path, region: str, country: str, page_texts: list[str
     # intake's clustering; it exists so the sub-agent's output file lands in the right slot. It
     # is not evidence, and `region` is also a real displayed field - handing an agent a
     # pre-filled field of that name invited three of eleven to ship it as sourced data.
+    # `country` is present ONLY when known (F7): see _country_kv for why a sentinel is worse
+    # than an absent key on an agent-facing handoff.
     return {"source_file": path.name, "source_type": source_type,
             "cluster_label": region, "cluster_label_is_routing_only": True,
-            "country": country, "mode": "text", "pages": pages}
+            **_country_kv(country), "mode": "text", "pages": pages}
 
 
 def prepare(path: Path, region: str, country: str, out_dir, dpi: int = 180,
             force: bool = True, resume: bool = True) -> dict:
     """Prepare ONE brochure deck for interpretation and return a manifest deck entry
-    {source_file, source_type, region, country, mode, pages:[...]}.
+    {source_file, source_type, cluster_label, country?, mode, pages:[...]} - `country` only
+    when the caller knows it (F7; see _country_kv).
 
     mode "text":   pages carry {page_no, locator, text} - the sub-agent reads text.
     mode "raster": delegates to vision_prep.prepare() (reused unchanged) for the page
@@ -431,7 +586,10 @@ def prepare(path: Path, region: str, country: str, out_dir, dpi: int = 180,
                 entry["cluster_label"] = region
                 entry["cluster_label_is_routing_only"] = True
                 entry.pop("region", None)   # a REUSED entry may still carry the legacy key (B51)
-                entry["country"] = country
+                # a warm work dir's cached entry may still carry the pre-F7 `"country": "??"`;
+                # drop it and re-state the country only when the caller knows it
+                entry.pop("country", None)
+                entry.update(_country_kv(country))
                 entry["visual_aids"] = _visual_aids(entry)   # refreshed, never trusted from cache
                 return entry
     except Exception:
@@ -480,6 +638,12 @@ def prepare(path: Path, region: str, country: str, out_dir, dpi: int = 180,
     # RASTER: reuse vision_prep.prepare() verbatim for the page PNGs, then tag mode.
     entry = VP.prepare(path, region, country, out_dir, dpi=dpi, force=force)
     entry["mode"] = "raster"
+    # vision_prep applies the absence rule itself now (SEAM-9: run.py also calls it directly, so
+    # the rule lives there). Re-applying it here is deliberate belt-and-braces: the router must hold
+    # the F7 guarantee for a raster entry no matter what the delegate returned (a stubbed or older
+    # vision_prep still hands back `"country": "??"`), and evals/f07 pins exactly that.
+    entry.pop("country", None)
+    entry.update(_country_kv(country))
     return entry
 
 
@@ -497,7 +661,15 @@ def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8")
     ent = prepare(Path(args.file), args.region, args.country, args.out_dir, args.dpi,
                   force=args.force)
-    print(json.dumps(ent, ensure_ascii=False, indent=2))
+    # F8: AGENT-FACING JSON IS WRITTEN ASCII-ONLY. Page text legitimately carries non-ASCII, and
+    # with ensure_ascii=False those bytes reach whoever captures this output; on a host whose
+    # default text encoding is not UTF-8 (Windows cp1252 is the common case) the idiomatic
+    # `json.load(open(path))` then raises UnicodeDecodeError - reproduced on a live run against
+    # the manifest, where an agent told to "load the JSON in a small script" crashed and burned
+    # tool calls. Escaping costs nothing on a machine-to-agent file and removes the failure mode
+    # on every platform; json.loads restores the exact same strings. The manifest writer itself
+    # lives in run.py (`_write_manifest`) and needs the same one-word change.
+    print(json.dumps(ent, ensure_ascii=True, indent=2))
     if ent.get("mode") == "text":
         print(f"OK mode=text: {len(ent['pages'])} page(s) of text -> interpret per "
               f"reference/interpretation.md")

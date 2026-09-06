@@ -158,6 +158,49 @@ def atomic_save_image(im, path, fmt: str = "PNG", **kw):
     os.replace(tmp, p)
     return p
 
+
+# --- Console encoding -----------------------------------------------------------
+def force_utf8_stdout() -> None:
+    """Make stdout and stderr UTF-8 for the rest of this process, and never raise. (D16)
+
+    WHY THIS EXISTS. On a Windows console the default text encoding is the locale code page
+    (cp1252 here), and Python raises UnicodeEncodeError on the FIRST character outside it. On
+    the measured run `gate_runner.py qa-round status` died on U+2265 partway through printing
+    the advisory list, so the operator saw a traceback where the findings should have been -
+    and the glyph was not even ours: it sat inside a reviewer's finding text, which this skill
+    prints verbatim because the findings are the operator's reading material. Scrubbing the
+    source would not have fixed it; only the stream's encoding can. The workaround was to
+    prefix every later helper invocation with PYTHONIOENCODING=utf-8, i.e. the operator paid
+    for a default the helper should have set itself.
+
+    Twenty helpers already carried a bare `sys.stdout.reconfigure(encoding="utf-8")` in their
+    entry point; the rest, gate_runner included, did not. This is the ONE shared version so an
+    entry point adds a single call rather than rediscovering the same crash. It is defensive
+    on purpose, because the bare call is not universally safe:
+      * `reconfigure` exists only on `io.TextIOWrapper`. A redirected stream (run.py's
+        `_Buf` and final_gate's shim expose a no-op `reconfigure`; a plain `io.StringIO`
+        exposes none) must not turn a print into an AttributeError;
+      * `sys.stdout` can be None under some launchers (pythonw, a detached service);
+      * a stream that refuses to reconfigure (already detached, closed, a custom wrapper that
+        raises) must not become the thing that stops a run.
+    stderr is reconfigured too: a traceback that mentions a non-ASCII value must not itself
+    crash while being printed. Idempotent, so calling it from an entry point that run.py has
+    already set up in-process is harmless.
+
+    Call it from an ENTRY POINT (`main()` or the `__main__` block), never at import time: a
+    module imported in-process by another program has no business changing that program's
+    streams behind its back."""
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
+
 # --- Ownership / provenance mark (see NOTICE) --------------------------------
 # Authored by Timo Baaij. OWNER_NOTICE is the human copyright line (carries the ©
 # glyph - keep it OUT of any console print on cp1252 hosts). OWNER_MARK is the ASCII,
@@ -340,7 +383,35 @@ def schema_degraded(reason: str | None = None) -> str:
 #: type floor at all. A sentinel string ('tbd'/'??') is NOT an error - it is the honest unknown.
 _NUMERIC_FIELDS = ("id", "lat", "lng", "warehouseArea", "plotArea", "officeAreaVal",
                    "warehouseRentVal", "officeRentVal", "expansionParkVal")
-_STRING_FIELDS_STRUCT = ("country", "park", "developer", "city", "status", "photo")
+#: string fields whose TYPE the degraded checker enforces. THE FULL SET, not a hand-picked six.
+#: It listed only ("country","park","developer","city","status","photo") - the schema-required
+#: handful - so on a jsonschema-less host a wrongly-typed value in ANY other string field
+#: (clearHeight, loadingDocks, warehouseRent, divisibleFrom, description, ...) shipped silently:
+#: the exact crash-to-pass the numeric floor beside it exists to close, left open for two thirds
+#: of the string fields. A DEGRADED HOST MUST NOT BE A ROUTE AROUND THE SCHEMA - "the validator
+#: is missing" is a reason to check what we still can, never a licence to check less.
+#: A FUNCTION, not a constant, purely because STRING_FIELDS is defined further down this module
+#: and reusing that ONE list is the point: a second copy here would drift the moment a field is
+#: added, which is how the narrow set came to be narrow. Widened, never narrowed - the original
+#: six are all still covered (REQUIRED_TEXT_SENTINELS carries five of them, plus `photo`).
+_STRING_FIELDS_STRUCT: tuple | None = None
+
+
+def _string_fields_struct() -> tuple:
+    # MEMOISED at module level, exactly like `canonical_property_fields` above, and for the
+    # same reason: `_structural_errors` calls this INSIDE its per-property loop, so a set
+    # union of two field lists plus a sort ran once per property on the degraded path -
+    # the path a jsonschema-less host takes for EVERY validate-data call, on a dataset that
+    # can be several hundred properties. The result cannot change within a process (both
+    # source lists are module constants), so recomputing it per property bought nothing.
+    # A module global rather than functools.lru_cache because the two source lists are
+    # defined further DOWN this module: the laziness is load-order-critical, and this is
+    # the pattern the file already uses for the other load-order-deferred field set.
+    global _STRING_FIELDS_STRUCT
+    if _STRING_FIELDS_STRUCT is None:
+        _STRING_FIELDS_STRUCT = tuple(sorted(set(STRING_FIELDS)
+                                             | set(REQUIRED_TEXT_SENTINELS) | {"photo"}))
+    return _STRING_FIELDS_STRUCT
 
 
 def _structural_errors(data: dict) -> list[str]:
@@ -375,7 +446,7 @@ def _structural_errors(data: dict) -> list[str]:
                 if isinstance(v, bool) or not isinstance(v, (int, float)):
                     errors.append(f"property id={pid} field {f} must be a number, "
                                   f"got {type(v).__name__} ({str(v)[:24]!r})")
-            for f in _STRING_FIELDS_STRUCT:
+            for f in _string_fields_struct():
                 v = p.get(f)
                 if f in p and v is not None and not isinstance(v, str):
                     errors.append(f"property id={pid} field {f} must be a string, "
@@ -459,6 +530,17 @@ STRING_FIELDS = [
     # unknown landlord is the honest 'tbd' sentinel, and FIELD_PRESENT hides the modal
     # /compare landlord row dataset-wide when no input ever carried one.
     "landlord",
+    # v40: `unit` - the unit / phase / block designator the source itself PRINTS for this
+    # option within its park ('Unit 3', 'Phase 2', 'Block A'). It belongs on this list, not
+    # merely in the schema, for three concrete reasons: fill_render_sentinels() then writes the
+    # honest 'tbd' for an unstated one (and the chrome's titleStr() renders nothing for a
+    # sentinel, so an absent unit costs no glyph); _COERCE_STR below then coerces a tracker's
+    # bare numeric '3' to "3" instead of hard-failing validate-data; and the untraceable-field
+    # gate then requires a populated `unit` to carry a ledger row, which is right - it is
+    # source data that now shows in the largest string on the card. Before v40 there was no
+    # canonical home for it at all, so two genuinely different units on one park rendered as
+    # two identical-looking cards, in the grid and in both sets of compare chips.
+    "unit",
 ]
 
 
@@ -537,8 +619,8 @@ IDENTIFIER_FIELDS = frozenset({
 # B53: the unit class admits DIGITS, so "50 kN/m2" and "2.4 MVA" read as figure+unit rather than
 # prose. A space inside the tail still fails the match, so "2 storey office" stays translatable.
 _TR_NUMUNIT_RE = re.compile(r"^[\s\d.,]+(?:\s?[a-zA-Z0-9%²³/.\-]{0,8})?$")  # "12", "12 m", "50 kN/m2"
-# B53: one optional space-separated group, so a two-part alphanumeric code is caught - "DN11 8DB",
-# "MK16 0QE", "1234 AB". Without it the internal space made every UK postcode look like prose and
+# B53: one optional space-separated group, so a two-part alphanumeric code is caught - "QX11 8DB",
+# "QX16 0QE", "1234 AB". Without it the internal space made every such postcode look like prose and
 # it was queued for translation.
 _TR_CODE_RE = re.compile(r"^[A-Za-z]{0,4}[\-\s]?[\d][\w.\-/]*(?:\s[\w.\-/]+)?$")
 # B53: a bare grade ("A", "A+", "B2"). UPPER-CASE only, and deliberately so - a lower-case one- or
@@ -559,7 +641,10 @@ def is_translatable_value(field: str, v) -> bool:
     if field in IDENTIFIER_FIELDS:
         return False
     s = v.strip()
-    if not s or s.lower() in {"tbd", "tbc", "—", "-", "??", "n/a", "none"}:
+    # The shared unknown family (normalize.UNKNOWN_FORMS, contract C5), not a private list: the
+    # private one here deleted a stated "None", which the extraction contract names as DATA. A
+    # stated negative is a real word and translates like any other ("Keine", "Geen").
+    if _N.looks_unknown(s):
         return False
     if looks_like_locator(s):
         return False
@@ -625,13 +710,32 @@ def record_is_poor(rec: dict) -> bool:
     return False
 
 
+# Fields whose VALUE IS A CODE rather than prose, so the unknown family is read through
+# `normalize.looks_unknown_code`. Kept equal to `gate_runner.CODE_FIELDS` by
+# `evals/f05_sentinel_parity_test.py`; see normalize.CODE_LIKE_EXEMPT for why the exemption
+# exists and what it deliberately does not cover.
+CODE_FIELDS = frozenset({"country"})
+
+
 def fill_render_sentinels(p: dict) -> dict:
     """Fill every chrome-read key with its sentinel (honest unknown, never invented)."""
     for f in STRING_FIELDS:
         if _N.looks_unknown(p.get(f)):
             p[f] = "tbd"
     for f, sentinel in REQUIRED_TEXT_SENTINELS.items():
-        if _N.looks_unknown(p.get(f)):
+        # CODE-SCOPED for a field holding a CODE. `country` holds an ISO alpha-2 code after
+        # merge, and three members of the shared unknown family are also ASSIGNED alpha-2 codes
+        # (they earn their place as ordinary value abbreviations: the "n/a" family, and the
+        # French and Spanish on-request forms). Read value-scoped, this loop overwrote a real
+        # country with the unknown sentinel at the RENDER boundary, which is the last place it
+        # could be caught: the card then showed no country and the KPI did not count it.
+        # `looks_unknown_code` is that same family minus a stated three-member exemption, so
+        # every other unknown form still fills its sentinel here exactly as before. The same
+        # reading is applied by `enrich._is_unknown_cc`, the country KPI filter and
+        # `gate_runner.CODE_FIELDS`; normalize.looks_unknown_code is the single definition.
+        unknown = (_N.looks_unknown_code(p.get(f)) if f in CODE_FIELDS
+                   else _N.looks_unknown(p.get(f)))
+        if unknown:
             p[f] = sentinel
     if _N.looks_unknown(p.get("landPrice")):
         p["landPrice"] = "—"

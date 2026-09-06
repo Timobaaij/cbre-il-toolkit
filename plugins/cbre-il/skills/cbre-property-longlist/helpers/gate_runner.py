@@ -5,7 +5,9 @@ Subcommands (judgement halves run as isolated reviewer sub-agents, not here):
   PRE-BUILD:
     validate-data   G-schema     : canonical.json valid against the schema + pair-consistency
     self-check      G-selfcheck  : schema field set == tokens/markers the template/build use
-    coverage        G-coverage   : no dup (park+city+dev+area); per-record core-field fill or explicit tbd
+    coverage        G-coverage   : no dup (park+city+dev+area); no over-merge (one property whose
+                                   contributing records state two different postal codes); per-record
+                                   core-field fill or explicit tbd
                                    (it does NOT reconcile inputs to outputs - that is input-accounting)
     input-accounting G-inputs    : every discovered input contributed fields, contributed a photo, was
                                    recorded unreadable, or has no spine consumer - nothing vanishes
@@ -37,6 +39,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _common as C
 import build_dashboard
 import normalize as N
+# the SAME fuzzy scorer match.py and extract_xlsx.py use, so the shadow-key pairing below (D15)
+# scores names the way the tracker column-map does; the shim is the documented offline fallback
+try:
+    from rapidfuzz import fuzz as _fuzz
+except Exception:                                   # sandbox without rapidfuzz
+    from rapidfuzz_shim import fuzz as _fuzz
 
 # a genuinely long field (e.g. an accumulated conflict_note spanning many
 # contributing sources) can exceed Python's defensive default (131072) - this
@@ -166,11 +174,35 @@ def cmd_self_check(args) -> int:
 
 
 # --------------------------------------------------------------------------- #
-def _cov_filled(v) -> bool:
-    """A field counts as populated for coverage: present and not a sentinel.
-    Includes negative numbers (western/southern lat/lng) and zero - only
-    'tbd'/'—'/''/None are empty. Matches the original populated-field test."""
-    return v is not None and str(v).strip().lower() not in {"tbd", "—", "none", ""}
+# THE UNKNOWN-VALUE PREDICATE, DELEGATED (F5/F6, SEAM-13). This module carried THREE private
+# sentinel sets: `_cov_filled` (four members), `_absent` (seven) and trace-coverage's inner
+# `is_sentinel` (six), each a different subset of the family, none carrying `tba`/`tbs`, and
+# two of them reading a stated "none" as ABSENCE. The extraction contract says the opposite:
+# "Sprinklers: None" is a stated negative, DATA, and it must trace to a source like any other
+# value. All three now read `normalize.UNKNOWN_FORMS` through the shared readers, so a form
+# added there is seen here the same day and the guard eval sees no literal in this file.
+#
+# TWO READERS, NOT ONE, because of what KIND of value a site judges. Three family members
+# ("na", "nc", "sc") are also assigned ISO alpha-2 country codes, and the v41 consolidation
+# measured what blanket delegation does to a code-valued field: `enrich._is_unknown_cc` moved
+# False -> True for all three and dropped real countries from the map and the KPI. So a field
+# in CODE_FIELDS is judged by `looks_unknown_code` (the same family minus that stated
+# exemption) and everything else by `looks_unknown`. Callers pass the field name when they
+# have one; a call without it gets the prose reading, which is right for every field this
+# module judges except `country`.
+CODE_FIELDS = frozenset({"country"})
+
+
+def _unknown(v, field=None) -> bool:
+    """True when `v` is an effective unknown for `field`; the ONE predicate this module uses."""
+    return N.looks_unknown_code(v) if field in CODE_FIELDS else N.looks_unknown(v)
+
+
+def _cov_filled(v, field=None) -> bool:
+    """A field counts as populated for coverage: present and not an unknown form.
+    Includes negative numbers (western/southern lat/lng), zero, and a stated "none" (a
+    negative the source printed is data); only the shared unknown family is empty."""
+    return v is not None and not _unknown(v, field)
 
 
 def _is_land_record(p: dict) -> bool:
@@ -179,7 +211,8 @@ def _is_land_record(p: dict) -> bool:
     Such a site has no warehouse rent/specs by nature, so coverage scores it on
     land-appropriate fields instead of failing it for missing warehouse data."""
     has_wh = isinstance(p.get("warehouseArea"), (int, float)) and p["warehouseArea"] > 0
-    has_land = _cov_filled(p.get("plotArea")) or _cov_filled(p.get("landPrice"))
+    has_land = (_cov_filled(p.get("plotArea"), "plotArea")
+                or _cov_filled(p.get("landPrice"), "landPrice"))
     return (not has_wh) and has_land
 
 
@@ -327,25 +360,110 @@ PROV_ADVISE_FIELDS = frozenset({"city", "district", "park", "address", "postcode
 PROV_CHECK_FIELDS = PROV_BLOCK_FIELDS | PROV_ADVISE_FIELDS
 PROV_NOT_IN_TEXT = "not in text layer"      # the agent's DECLARED escape hatch
 _PROV_PAGE_RE = re.compile(r"\bpage\s+(\d+)", re.IGNORECASE)
-_PROV_TOKEN_RE = re.compile(r"[A-Za-z]{4,}")
+_PROV_TOKEN_RE = re.compile(r"[a-z]{4,}")
 _PROV_STRIP_RE = re.compile(r"[^a-z0-9]+")
+# F9: a token that may be UTF-8 bytes decoded as cp1252 (the "Ã©" / "â€™" family - the
+# commonest mojibake a design tool's broken ToUnicode map produces). Only a token carrying one
+# of these three lead bytes is even TRIED; the round trip itself decides, and a genuine
+# "château" fails it and is kept as written.
+_PROV_MOJIBAKE_RE = re.compile("[\u00c2\u00c3\u00e2]")
+#: a `seen_as` claim shorter than this, once flattened, is too short to be evidence either way
+PROV_SEEN_AS_MIN = 4
+#: the closed reason class of `__meta.not_in_text_layer` (templates/record_schema.json)
+PROV_MARKER_REASONS = frozenset({"image", "glyph", "spacing", "composed", "other"})
+
+
+def _prov_norm(s) -> str:
+    """One text, as the gate compares it, applied to BOTH sides (F9): U+FFFD dropped, mojibake
+    decoded back, compatibility-folded (a U+FB01 'fi' ligature becomes its two letters),
+    diacritics stripped, case-folded, every whitespace run collapsed to one space.
+
+    THE DEFECT, measured on 3 of 7 live decks: one set its display type letter-spaced, so the
+    text layer held spaced-out digits and words on every headline value; three rendered a
+    currency symbol as the replacement character. Readers transcribed correctly, disclosed the
+    divergence in the field's own prov in prose, and still could not satisfy a raw comparison.
+    The gate asks "did the reader invent this string", not "did the reader reproduce the
+    kerning or the font's broken glyph map", so both sides are normalised the same way before
+    they meet. Nothing here can turn a value the page does not carry into one it does: every
+    fold maps a garbled spelling onto its clean one, never one word onto another."""
+    import unicodedata
+    t = str(s or "").replace("\ufffd", "")
+    if _PROV_MOJIBAKE_RE.search(t):
+        parts = []
+        for w in t.split(" "):
+            if _PROV_MOJIBAKE_RE.search(w):
+                try:
+                    w = w.encode("cp1252").decode("utf-8")
+                except (UnicodeEncodeError, UnicodeDecodeError):
+                    pass
+            parts.append(w)
+        t = " ".join(parts)
+    t = unicodedata.normalize("NFKD", t)
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    return " ".join(t.casefold().split())
 
 
 def _prov_tokens(s) -> set:
-    """Distinctive lowercase tokens. Short tokens and pure numbers collide far too easily to be
-    evidence, so only alphabetic runs of 4+ characters count."""
-    return {t.lower() for t in _PROV_TOKEN_RE.findall(str(s or ""))}
+    """Distinctive lowercase tokens of the NORMALISED value. Short tokens and pure numbers
+    collide far too easily to be evidence, so only alphabetic runs of 4+ characters count.
+    Normalising first means an accented name yields its whole word as one token rather than
+    the fragment after the accent."""
+    return set(_PROV_TOKEN_RE.findall(_prov_norm(s)))
 
 
 def _prov_flat(s) -> str:
-    """Lowercase, alphanumerics only - EVERY separator removed.
+    """The normalised text with EVERY separator removed: alphanumerics only.
 
     Marketing PDFs letter-space their headings, so the extractor legitimately returns
     'UNI T 1 WOR K S O P LI NK' and 'ULTRA BOX'. Comparing word-for-word flagged both as
     fabrications on a real run. Flattening both sides makes 'worksop' and 'ultrabox' match the
     text that genuinely contains them, while a value that is simply NOT in the document still
     fails to appear."""
-    return _PROV_STRIP_RE.sub("", str(s or "").lower())
+    return _PROV_STRIP_RE.sub("", _prov_norm(s))
+
+
+def _prov_markers(work) -> dict:
+    """{(source_file.lower(), field): [(record value, marker)]} from the PRE-MERGE records. (F10)
+
+    `__meta.not_in_text_layer` (templates/record_schema.json) is the machine-readable form of
+    the prose escape hatch: per field, {reason, note?, seen_as?}. `__meta` never survives
+    merge, so it is read here from work/extract/*.json and joined to a ledger row on
+    (source_file, field), disambiguated by value on a multi-property deck. A marker whose
+    `reason` is missing or outside the schema's closed list is ignored, not honoured."""
+    out: dict = {}
+    for path in sorted((Path(work) / "extract").glob("*.json")):
+        try:
+            recs = json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            continue
+        if not isinstance(recs, list):
+            continue
+        for rec in recs:
+            if not isinstance(rec, dict):
+                continue
+            meta = rec.get("__meta") or {}
+            marks = meta.get("not_in_text_layer") if isinstance(meta, dict) else None
+            if not isinstance(marks, dict) or not marks:
+                continue
+            src = Path(str(meta.get("source_file") or path.name)).name.lower()
+            for field, mk in marks.items():
+                if not isinstance(mk, dict) or str(mk.get("reason") or "") not in PROV_MARKER_REASONS:
+                    continue
+                out.setdefault((src, str(field)), []).append((rec.get(field), mk))
+    return out
+
+
+def _prov_marker_for(markers: dict, src: str, field: str, value):
+    """The one marker for (src, field), or None. On a multi-property deck several records may
+    mark the same field, so the ledger row's value picks between them; an ambiguity that the
+    value cannot settle honours NONE of them, because a marker is an admission about one
+    specific reading and guessing which one would make it a bypass."""
+    cands = markers.get((src, field)) or []
+    if len(cands) == 1:
+        return cands[0][1]
+    want = _prov_flat(value)
+    hit = [mk for rv, mk in cands if _prov_flat(rv) == want]
+    return hit[0] if len(hit) == 1 else None
 
 
 def _prov_page_text(work) -> dict:
@@ -386,21 +504,50 @@ def cmd_prov_containment(args) -> int:
 
     FAILS SAFE: a missing or corrupt manifest, a raster deck, a non-page locator, an override row,
     an unknown source file, or a value with no distinctive token all SKIP. Absent evidence is
-    never a block."""
+    never a block.
+
+    TWO ESCAPE HATCHES, one of them checkable (F10). The prose marker (PROV_NOT_IN_TEXT inside
+    the locator) skips the row outright, as it always has. The structured marker
+    (`__meta.not_in_text_layer` on the pre-merge record, see `_prov_markers`) is consulted only
+    when the normalised comparison has already FAILED, and then: with a `seen_as` (the text
+    layer's own garbled form of the value) the gate verifies THAT string occurs on the cited
+    page, so the disclosure is a weaker but real check rather than a hole; without one the row
+    is skipped as disclosed for a stated reason. A `seen_as` that does not occur either is
+    reported at the field's own severity, naming the disclosed form.
+
+    LOCATOR-QUOTE MISMATCH (D15), an advisory SIGNAL that needs NO page text. A locator that
+    quotes the source ("printed as 'HGV Parking 56'") is the reader's own statement of what
+    the page said, and when the figure it quotes is not the figure the row ships, the row
+    contradicts itself. On the measured run UNIT 06 shipped UNIT 07's HGV parking (38 where its
+    own schedule column prints 56) with a locator that quoted 56 beside the 38; blind reviewers
+    found it, this gate did not look. `_locator_quote_mismatches` is that look, and it runs
+    BEFORE the page-text check so a raster-only or manifest-less corpus (where nothing else can
+    verify a value) still gets it. It is a SIGNAL, never a block: a reader may legitimately
+    quote the neighbouring figure for context, and the remedy is a re-read, not a strike."""
     import csv as _csv
-    pages = _prov_page_text(args.work)
-    if not pages:
-        _ok("no deck text to verify against (raster-only, tracker-only, or no manifest)")
-        print("STATUS: ALL-PASS")
-        return 0
+    rows, ledger_err = None, None
     try:
         with open(args.ledger, newline="", encoding="utf-8") as fh:
             rows = list(_csv.DictReader(fh))
     except Exception as e:
-        _ok(f"ledger unreadable ({e}) - nothing to verify")
+        ledger_err = e
+    quote_sigs = _locator_quote_mismatches(rows) if rows is not None else []
+    for q in quote_sigs:
+        print(_quote_line(q))
+    _qtail = (f"; {len(quote_sigs)} locator-quote SIGNAL(s) above (the locator quotes a figure "
+              f"the row does not ship)") if quote_sigs else ""
+    pages = _prov_page_text(args.work)
+    if not pages:
+        _ok("no deck text to verify against (raster-only, tracker-only, or no manifest)" + _qtail)
         print("STATUS: ALL-PASS")
         return 0
+    if rows is None:
+        _ok(f"ledger unreadable ({ledger_err}) - nothing to verify")
+        print("STATUS: ALL-PASS")
+        return 0
+    markers = _prov_markers(args.work)
     bad, soft, checked = [], [], 0
+    disclosed = seen_ok = 0
     for r in rows:
         if (r.get("field") or "").strip() not in PROV_CHECK_FIELDS:
             continue
@@ -422,29 +569,125 @@ def cmd_prov_containment(args) -> int:
         checked += 1
         flat = _prov_flat(pages[key])
         missing = sorted(t for t in want if t not in flat)
-        if missing:
-            field = (r.get("field") or "").strip()
+        if not missing:
+            continue
+        field = (r.get("field") or "").strip()
+        mk = _prov_marker_for(markers, key[0], field, r.get("value"))
+        if mk is not None:
+            disclosed += 1
+            seen_as = " ".join(str(mk.get("seen_as") or "").split())
+            needle = _prov_flat(seen_as)
+            if len(needle) < PROV_SEEN_AS_MIN:
+                continue                # disclosed for a stated reason; no checkable claim made
+            if needle in flat:
+                seen_ok += 1
+                continue                # the text layer's own form IS on the page: verified
             (bad if field in PROV_BLOCK_FIELDS else soft).append(
-                (r.get("property_id"), field, r.get("value"), loc, missing))
-    for pid, field, val, loc, missing in soft:
+                (r.get("property_id"), field, r.get("value"), loc, [seen_as], "seen_as"))
+            continue
+        (bad if field in PROV_BLOCK_FIELDS else soft).append(
+            (r.get("property_id"), field, r.get("value"), loc, missing, "tokens"))
+
+    def _what(missing, why):
+        if why == "seen_as":
+            return (f"its __meta.not_in_text_layer marker says the text layer shows it as "
+                    f"{missing[0]!r}, and THAT form appears nowhere on that page either")
+        return (f"{', '.join(repr(x) for x in missing[:4])} "
+                f"appear{'s' if len(missing) == 1 else ''} nowhere on that page")
+
+    for pid, field, val, loc, missing, why in soft:
         print(f"  [note] property={pid} field={field}: {str(val)[:52]!r} is cited to "
-              f"{loc[:40]!r} but {', '.join(repr(x) for x in missing[:3])} "
-              f"appear{'s' if len(missing) == 1 else ''} nowhere on that page. Advisory: a scheme "
+              f"{loc[:40]!r} but {_what(missing[:3], why)}. Advisory: a scheme "
               f"name is often cover artwork or composed across pages, so this is a locator to "
               f"tighten, not proof of invention.")
-    for pid, field, val, loc, missing in bad:
+    for pid, field, val, loc, missing, why in bad:
         _bad(f"property={pid} field={field}: value {str(val)[:60]!r} is cited to {loc[:46]!r} "
-             f"but {', '.join(repr(x) for x in missing[:4])} "
-             f"appear{'s' if len(missing) == 1 else ''} nowhere on that page. Either the value is "
+             f"but {_what(missing, why)}. Either the value is "
              f"not from that source (strike it to 'tbd', or cite the real locator), or it was read "
-             f"from an image - in which case append '{PROV_NOT_IN_TEXT}' to its provenance.")
+             f"from an image or a garbled text layer - in which case mark it: "
+             f"__meta.not_in_text_layer.{field or '<field>'} = {{reason, seen_as}} on the record "
+             f"(seen_as = the text layer's own form, so the gate can verify it), or append "
+             f"'{PROV_NOT_IN_TEXT}' to its provenance.")
     if bad:
         print("STATUS: BLOCKED")
         return 1
+    tail = (f", {disclosed} disclosed via __meta.not_in_text_layer of which {seen_ok} verified "
+            f"by seen_as" if disclosed else "")
     _ok(f"every page-cited value occurs on its cited page ({checked} checked, "
-        f"{len(soft)} advisory)")
+        f"{len(soft)} advisory{tail})" + _qtail)
     print("STATUS: ALL-PASS")
     return 0
+
+
+# D15: a quoted span in a locator, only when the quote mark is not an apostrophe inside a word
+# ("page 3's" must not open a quote). Straight and typographic marks both count; a span is at
+# most 200 characters so an unbalanced mark cannot swallow the rest of the locator.
+_LOC_QUOTED_RE = re.compile(
+    "(?<![A-Za-z0-9])['‘’]([^'‘’]{1,200}?)['‘’](?![A-Za-z0-9])"
+    "|(?<![A-Za-z0-9])[\"“”]([^\"“”]{1,200}?)[\"“”](?![A-Za-z0-9])")
+# a standalone figure: thousands separators allowed, an optional decimal part, and NOT glued to
+# a letter on either side, so "4m", "J17", "NN67ES" and "Q3" contribute nothing
+_LOC_NUM_RE = re.compile(r"(?<![A-Za-z0-9.,])(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(?![A-Za-z0-9])")
+# fields whose value is media, a coordinate or an id: a figure inside them is not a stated datum
+_LOC_SKIP_FIELDS = frozenset({"photo", "plan", "gallery", "preBaked", "lat", "lng", "id",
+                              "coordsApprox", "regionCode", "mapLink", "brochureLink"})
+
+
+def _figures(text) -> set:
+    """The standalone numbers in `text`, as floats ('1,413' -> 1413.0, '9.50' -> 9.5)."""
+    out = set()
+    for whole, frac in _LOC_NUM_RE.findall(str(text or "")):
+        try:
+            out.add(float(whole.replace(",", "") + ("." + frac if frac else "")))
+        except ValueError:
+            continue
+    return out
+
+
+def _locator_quote_mismatches(rows) -> list[tuple]:
+    """Ledger rows whose locator QUOTES the source with a figure in it, none of which is a figure
+    the row's value carries -> [(property_id, field, value, locator, value figures, quoted
+    figures)]. Precise by construction: a row is judged only when BOTH sides state a standalone
+    number, and it passes when ANY quoted figure matches ANY figure in the value, so '320 Car
+    Parking Spaces (28 EV Charging)' against a quote of the same line passes, a quote of the
+    label alone ("'HGV Parking' row") is not judged, and a page reference outside the quotes is
+    never counted. Gap rows and media/coordinate fields are skipped."""
+    out = []
+    for r in rows or []:
+        if (r.get("source_type") or "").strip().lower() == "gap":
+            continue
+        field = (r.get("field") or "").strip()
+        if field in _LOC_SKIP_FIELDS:
+            continue
+        val = str(r.get("value") or "")
+        if val.startswith("data:"):
+            continue
+        have = _figures(val)
+        if not have:
+            continue
+        loc = str(r.get("source_locator") or "")
+        quoted = [q for pair in _LOC_QUOTED_RE.findall(loc) for q in pair if q]
+        if not quoted:
+            continue
+        cited = set().union(*(_figures(q) for q in quoted))
+        if not cited or have & cited:
+            continue
+        out.append((r.get("property_id"), field, val, loc, sorted(have), sorted(cited)))
+    return out
+
+
+def _fmt_fig(x: float) -> str:
+    return f"{x:g}"
+
+
+def _quote_line(q: tuple) -> str:
+    pid, field, val, loc, have, cited = q
+    return (f"  [SIGNAL] property={pid} field={field}: the row ships {val[:60]!r} but its own "
+            f"locator quotes the source as {loc[:110]!r} - the figure(s) quoted "
+            f"({', '.join(_fmt_fig(x) for x in cited)}) are not the figure(s) shipped "
+            f"({', '.join(_fmt_fig(x) for x in have)}). On the measured run this shape was a "
+            f"neighbouring unit's schedule column read into the wrong card. Re-read the cited "
+            f"row; if the value is right, tighten the locator to quote the text that carries it.")
 
 
 def cmd_input_accounting(args) -> int:
@@ -494,6 +737,29 @@ def _unit_of(s: str):
     if not m:
         return None
     return re.sub(r"[.\s]+", "", m.group(1)).lower() or None
+
+
+def _ledger_sources(ledger_path, canonical: Path) -> dict:
+    """{(property_id, field): source_file} from the first non-gap ledger row of each pair, or
+    {} when no ledger can be read. (F21)
+
+    Default location: source_ledger.csv BESIDE canonical.json, which is where run.py writes
+    it, so the spine needs no new argument to get source-counted votes. A canonical judged on
+    its own (an eval, a hand run) has no ledger and falls back to per-record votes; the gate
+    says so in a note rather than silently changing its arithmetic."""
+    p = Path(ledger_path) if ledger_path else Path(canonical).resolve().parent / "source_ledger.csv"
+    out: dict = {}
+    try:
+        with open(p, newline="", encoding="utf-8") as fh:
+            for r in csv.DictReader(fh):
+                if (r.get("source_type") or "").strip().lower() == "gap":
+                    continue
+                src = str(r.get("source_file") or "").strip()
+                if src:
+                    out.setdefault((str(r.get("property_id")), str(r.get("field"))), src)
+    except Exception:
+        return {}
+    return out
 
 
 def cmd_coord_provenance(args) -> int:
@@ -593,6 +859,22 @@ def cmd_value_format(args) -> int:
     """
     data = C.load_canonical(Path(args.canonical))
     props = data.get("properties", [])
+    # F21: THE UNIT OF EVIDENCE IS A SOURCE FILE, NOT A RECORD. Live: this gate BLOCKED with
+    # "6 properties ship a BARE number while 3 write it as a magnitude + unit". The three were
+    # not three sources: they were ONE deck's three unit records, each carrying the same
+    # site-wide value byte for byte, so one brochure cast three votes for its own format. When
+    # that deck was later collapsed to one record for an unrelated reason the gate passed with
+    # no other change, and nothing about the data had improved. How many records a deck
+    # contributes is a fact about deck structure, not about formatting consistency, and it
+    # cuts both ways: here a spurious block; on a corpus where the odd format belongs to the
+    # multi-unit deck, a real one suppressed and the wrong unit named as dominant. So each
+    # measured sibling votes ONCE PER SOURCE FILE (ledger-joined on property id + field), and
+    # both the evidence threshold and the dominant-unit majority are counted in votes.
+    # Distinct VALUES were considered and rejected as the unit: standardised specs ("10 m",
+    # "12.5 m") legitimately repeat across independent decks, and collapsing those would
+    # suppress the very finding this gate exists for. Without a ledger, each record is its own
+    # vote (the old arithmetic) and the note below says so.
+    src_of = _ledger_sources(getattr(args, "ledger", ""), Path(args.canonical))
     # broker WAIVERS (exit-13 declines): a (field, id) the broker explicitly chose
     # to ship bare. Filtered out of the blocking findings, still noted - a waived
     # value is a disclosed decision, not a silent pass.
@@ -610,7 +892,7 @@ def cmd_value_format(args) -> int:
     by_field: dict[str, dict] = {}
     for p in props:
         for k, v in p.items():
-            if k in _PIPELINE_ASSIGNED or _absent(v):
+            if k in _PIPELINE_ASSIGNED or _absent(v, k):
                 continue
             if isinstance(v, (dict, list)):
                 continue
@@ -632,39 +914,63 @@ def cmd_value_format(args) -> int:
                 continue
             unit = _unit_of(s)
             if unit:
-                slot["measured"].append((p.get("id"), s, unit))
+                vote = src_of.get((str(p.get("id")), k)) or f"record:{p.get('id')}"
+                slot["measured"].append((p.get("id"), s, unit, vote))
+    if not src_of and any(slot["measured"] for slot in by_field.values()):
+        print("  [note] no source ledger to join (none beside the canonical, none via --ledger): "
+              "measured siblings are counted per RECORD, so a multi-unit deck quoting one "
+              "site-wide value casts one vote per unit (F21)")
     findings = []
     for field, slot in sorted(by_field.items()):
-        if not slot["bare"] or len(slot["measured"]) < args.min_siblings:
-            continue                 # consistent field, or too little evidence to call it
-        # a DOMINANT unit is required: a field whose measured values disagree about their own
+        if not slot["bare"]:
+            continue                 # consistent field
+        votes: dict = {}             # source file -> the unit that source writes
+        for _, _, u, vote in slot["measured"]:
+            votes.setdefault(vote, u)
+        if len(votes) < args.min_siblings:
+            continue                 # too little INDEPENDENT evidence to call it
+        # a DOMINANT unit is required: a field whose measured sources disagree about their own
         # unit is a different (and worse) problem, and guessing which one the bare value meant
         # would be the invention this gate exists to prevent.
-        units = [u for _, _, u in slot["measured"]]
+        units = list(votes.values())
         top = max(set(units), key=units.count)
         if units.count(top) * 2 < len(units):
             continue
-        findings.append((field, slot["bare"], slot["measured"], top))
-    # An OPEN tracker column (not a canonical card field) is ADVISORY, never a block:
-    # repairs.load rejects non-canonical set keys, so a broker's unit answer for one
-    # could never be applied - blocking would be an unresolvable loop with the answer
-    # swallowed. The value ships in the detail view/Longlist as the source printed it.
+        findings.append((field, slot["bare"], slot["measured"], top, len(votes)))
+    # An OPEN tracker column (not a canonical card field) is ADVISORY, never a block.
+    #
+    # F5: the rationale WAS that the repair loader rejected any non-canonical `set` key, so a
+    # broker's unit answer for an open column could never be applied and blocking would have
+    # been an unresolvable loop with the answer swallowed. That is no longer true. The guard
+    # now accepts a key the SCHEMA declares OR one the resolved target property already
+    # carries, off-spec included ("an off-spec key the property DOES carry is repairable" -
+    # repairs.apply), so an open capture column IS repairable today and a fix exists for
+    # anyone who wants one.
+    #
+    # It stays advisory on the HARM instead, which is the reason that was always the real one:
+    # this gate exists because ONE CARD GRID cannot show one field in two formats, and an open
+    # column is not on the card grid. It ships in the detail view and the Longlist workbook as
+    # the source printed it, where a bare number beside a measured sibling is a faithful
+    # rendering of two source cells rather than a presentational contradiction. Note also that
+    # the findings list is filtered to canonical fields BEFORE `--emit-json`, so no broker
+    # question is ever raised for an open column and there is no answer to swallow either way.
+    # The note below keeps the drift visible.
     try:
         _canon = set(C.canonical_property_fields()) | {"lat", "lng"}
     except Exception:
         _canon = set()
     if _canon:
-        for field, bare, measured, top in [f for f in findings if f[0] not in _canon]:
+        for field, bare, measured, top, n_src in [f for f in findings if f[0] not in _canon]:
             offenders = ", ".join(f"id={i} '{v}'" for i, v in bare[:6])
             print(f"  [note] `{field}` (an open tracker column, not a card field): "
-                  f"{offenders} ship bare while {len(measured)} sibling(s) carry a unit - "
-                  f"advisory only, shown as printed in the source")
+                  f"{offenders} ship bare while {len(measured)} sibling(s) from {n_src} "
+                  f"source(s) carry a unit - advisory only, shown as printed in the source")
         findings = [f for f in findings if f[0] in _canon]
     # machine-readable findings for run.py's clarify bridge (the broker question).
     # Written even when empty so the bridge never reads a stale file.
     if getattr(args, "emit_json", ""):
         def _printed_unit(measured, top):
-            for _, s, u in measured:
+            for _, s, u, _v in measured:
                 if u == top:
                     m = _MEASURED.match(s)
                     if m:
@@ -674,19 +980,21 @@ def cmd_value_format(args) -> int:
                     "dominant_unit": top,
                     "dominant_printed": _printed_unit(measured, top),
                     "measured_count": len(measured),
-                    "examples": [s for _, s, _ in measured[:3]],
+                    "measured_sources": n_src,
+                    "examples": [s for _, s, _, _v in measured[:3]],
                     "bare": [{"id": i, "value": v} for i, v in bare]}
-                   for field, bare, measured, top in findings]
+                   for field, bare, measured, top, n_src in findings]
         try:
             C.atomic_write_text(Path(args.emit_json),
                                 json.dumps(payload, ensure_ascii=False, indent=1))
         except Exception as e:
             print(f"  [note] could not write findings json: {e}")
-    for field, bare, measured, top in findings:
-        examples = ", ".join(f"'{v}'" for _, v, _ in measured[:3])
+    for field, bare, measured, top, n_src in findings:
+        examples = ", ".join(f"'{v}'" for _, v, _, _v in measured[:3])
         offenders = ", ".join(f"id={i} '{v}'" for i, v in bare[:6])
         _bad(f"`{field}`: {len(bare)} property(ies) ship a BARE number while "
-             f"{len(measured)} write it as a magnitude + unit ({top!r}) - {offenders} "
+             f"{len(measured)} (from {n_src} independent source(s)) write it as a magnitude + "
+             f"unit ({top!r}) - {offenders} "
              f"against {examples}. Same field, two formats, on one card grid. Read the source "
              f"for the bare one(s) and record the correctly written value in "
              f"work/overrides.json - do NOT assume the unit is {top!r}; if the source does not "
@@ -761,6 +1069,410 @@ def cmd_ack(args) -> int:
     return 0
 
 
+# F17: FORM DISAGREEMENT, capture-symmetry's sibling signal. Two isolated readers wrote two
+# different forms of the same country ("UK" and "GB" are the live instance); `normalize.
+# country_iso` happened to converge them at merge, so nothing was wrong. But that depends on
+# ONE call site and on the alias table holding whichever form each reader chose: a name in
+# the deck's own language, or an alias the table lacks, splits a KPI or a filter chip
+# silently, with every value individually correct. The signal is cheap and general: for each
+# field, group the raw forms by the form the pipeline would normalise them TO, and name any
+# field where one normalised value arrives in two or more raw forms. Registered normalisers
+# are the ones merge actually applies; every other short, non-numeric value gets a
+# whitespace-and-case fold, which is exactly what a filter chip would split on.
+_FORM_NORMALISERS = {
+    "country": lambda v: N.country_iso(v).upper(),
+    "areaUnit": N.area_unit_of,
+    "rentUnit": N.rent_unit_of_text,
+    "currency": N.currency_of,
+}
+#: longer than a label is prose, and prose never collides by form
+FORM_FOLD_MAX_CHARS = 40
+
+
+def _form_key(field: str, v):
+    """The normalised form of `v` for `field`, or None when the value is not form-comparable
+    (a number, a bool, a container, prose, or a value the field's normaliser rejects)."""
+    if v is None or isinstance(v, (bool, int, float, dict, list)):
+        return None
+    s = " ".join(str(v).split())
+    if not s or len(s) > FORM_FOLD_MAX_CHARS or _BARE_NUMBER.match(s):
+        return None
+    fn = _FORM_NORMALISERS.get(field)
+    if fn is None:
+        return s.casefold()
+    try:
+        k = fn(s)
+    except Exception:
+        return None
+    return str(k) if k else None
+
+
+def form_disagreements(records: list) -> list:
+    """[{field, normalised, forms: [{form, records, sources}]}] for every field where ONE
+    normalised value arrives in two or more raw forms across `records` (pre-merge dicts, each
+    with __meta.source_file). Pure; the gate prints and files what this returns."""
+    forms: dict = {}
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        src = str((rec.get("__meta") or {}).get("source_file") or "?")
+        for k, v in rec.items():
+            if k == "__meta" or k in _PIPELINE_ASSIGNED or _absent(v, k):
+                continue
+            key = _form_key(k, v)
+            if key is None:
+                continue
+            forms.setdefault(k, {}).setdefault(key, {}).setdefault(" ".join(str(v).split()), []).append(src)
+    out = []
+    for field, groups in sorted(forms.items()):
+        for key, raw in sorted(groups.items()):
+            if len(raw) < 2:
+                continue
+            out.append({"field": field, "normalised": key,
+                        "via": "normaliser" if field in _FORM_NORMALISERS else "case/spacing fold",
+                        "forms": [{"form": f, "records": len(srcs), "sources": sorted(set(srcs))}
+                                  for f, srcs in sorted(raw.items(), key=lambda kv: (-len(kv[1]), kv[0]))]})
+    return out
+
+
+def _form_line(f: dict) -> str:
+    shown = " and ".join(f"'{x['form']}' ({x['records']} record(s): {', '.join(x['sources'][:3])})"
+                         for x in f["forms"][:3])
+    if f["via"] == "normaliser":
+        tail = ("merge converges these today through its registered normaliser, but a form "
+                "outside that table (a name in the deck's own language, an alias it lacks) "
+                "would split a KPI or a filter chip silently; confirm the readers mean one "
+                "thing and that every form is an alias the pipeline knows")
+    else:
+        tail = ("they differ only by case or spacing and nothing normalises this field, so the "
+                "grid and its filter chips show one value two ways; pick the source's own form "
+                "for every record (a work/repairs.json `set`), or leave it disclosed")
+    return (f"  [SIGNAL] `{f['field']}` arrives in {len(f['forms'])} FORMS of one value "
+            f"({f['normalised']!r}): {shown} - {tail}")
+
+
+# --- SHADOW KEYS: a non-registry key holding a datum whose canonical sibling ships a gap row (D15)
+# capture-symmetry asked ONE question: did a reader skip fields its peers captured? The blind
+# reviewers on the measured run found the sibling question it did not ask. The reader of
+# `07_Unit-6-Symmetry-Park-Rugby.pdf` put the level-access door COUNTS into a descriptive
+# non-registry key, `levelAccessDoors`, while the canonical home for that datum,
+# `overheadDoors`, shipped a gap row reading "absent in all sources". So the honesty document
+# asserted a FALSE ABSENCE: the datum was captured, under a different name, and the gap row said
+# nobody stated it. The struck-value sweep could not see it precisely because the key differs.
+#
+# THE OPEN SCHEMA IS A FEATURE. "Capture every field the source states" is the Stage-1 rule, and
+# a stated value with no canonical home is SUPPOSED to ship under a descriptive camelCase key.
+# So the finding is never "a non-registry key exists". It is specifically: a non-registry key
+# that is plausibly the SAME DATUM as a canonical field which is reported ABSENT. The pairing
+# test is the whole job, and it is deliberately strict, because a loose match produces noise
+# that trains operators to ignore the gate, which is worse than the gap.
+#
+# HOW TWO NAMES ARE JUDGED TO MEAN ONE THING - reused, not reinvented. extract_xlsx.COLUMN_MAP is
+# this skill's own declaration of which header spellings mean which field ("level access doors",
+# "overhead doors", "drive in doors", "ground level doors" all mean `overheadDoors`), already
+# widened with assets/label_ledger.json's multilingual labels, and already carrying per-field
+# NEGATIVE vetoes ("ratio|total" must never bind overheadDoors). The open key is humanised
+# (camelCase -> words) and matched against that table at the table's own two strictest tiers:
+# exact equality, or `fuzz.ratio >= 90`, the fuzzy tier `_header_candidates` uses. Whole-word
+# CONTAINMENT (the table's middle tier) is deliberately NOT used here: it is right for a column
+# header, where "Motorway" in "Motorway drive time" is the column's subject, and wrong for this
+# question, where `motorwayDriveTime` is a drive time and not the junction locator. Known misses
+# accepted for that precision: `levelAccessDoors4x5m` (a dimensioned breakdown), `officeAreaSqm`
+# (a unit variant) and `totalFloorArea` (see the next paragraph) do not pair. A number-typed
+# sibling (warehouseArea, plotArea) additionally requires the open value to carry a number, so a
+# prose key cannot pair with an area.
+#
+# `totalFloorArea` IS AN ACCEPTED MISS AND MUST STAY ONE - do not re-open this. It scores 76.9
+# against warehouseArea's nearest aliases ('total area', 'floor area'), under SHADOW_FUZZ_MIN, so
+# it does not pair. Closing it by appending "total floor area" to extract_xlsx.COLUMN_MAP's
+# warehouseArea aliases was proposed, measured and REFUSED, for two reasons.
+#
+# (1) MEASURED COLLATERAL. A sweep of 188,442 candidate headers through the real
+# `extract_xlsx._header_field` found the alias changes three column bindings, and that one of the
+# three binds WRONG: "Total Door Area" moves from unbound (open capture) to `warehouseArea`,
+# because warehouseArea's negative veto (extract_xlsx.py:159, `plot|land|office|unit\b|ratio`)
+# does not cover "door". A door-area column would silently become the card's warehouse area,
+# feeding the size filter, the sort, Total GLA and rent x GLA. The same alias reaches into this
+# gate too: `totalDoorArea` newly pairs at 90.3 and `totalFloorArea2` at 94. And the extractor
+# gains nothing for that cost - a column header "Total Floor Area" already binds warehouseArea
+# through the table's containment tier, which is a tier only this gate declines to use.
+#
+# (2) THE SEMANTICS ARE WRONG. This is the deeper reason, and it holds wherever the alias is put.
+# A printed TOTAL is a first-class, separately-homed datum in this skill: the reader contract
+# (prompts/reader-text.md) sends it to `__meta.statedTotalArea` + `statedTotalUnit`, "never a
+# total you computed", and `glaVal()` PREFERS `preBaked.statedTotal` over warehouse plus office
+# (reference/template-contract.md). Of every area spelling, `totalFloorArea` is the one whose
+# NAME asserts most strongly "this is the stated total". Pairing it with `warehouseArea` invites
+# a repair that sets warehouseArea to a figure already including the office, which is defect
+# P1-1: that shipped once with GLA 11.7 per cent above the source's own stated total and rent
+# overstated by GBP 702,108 a year. Nothing would catch the repair, either, because
+# `merge.stated_total_for` reads only `__meta.statedTotalArea` - a repairs.json `set` never
+# populates statedTotals, so the arithmetic gate skips that property entirely.
+#
+# SAID HONESTLY: this is a boundary the table ALREADY sits on. Eight plainer spellings do pair
+# with warehouseArea today through the existing entries - `totalArea`, `floorArea`, `gia`, `gla`,
+# `totalSize`, `size`, `buildingSize`, `areaSqm` (verified by calling `shadow_pairs` against an
+# absent `warehouseArea`). Those entries are not being called wrong here. The claim is narrower
+# and is only about direction: the table must not be extended FURTHER toward the stated-total
+# end of the range, where the open key's own name claims to be the datum merge homes elsewhere.
+#
+# "SHIPS A GAP ROW" IS READ LITERALLY when it can be: the Source Ledger's `record_type=property`,
+# `source_type=gap` row whose locator is the "absent in all sources" claim. A gap row merge wrote
+# with a stated reason instead (B58's "stated as N in a unit this dataset cannot express", B63's
+# "carries no single number") is an honest withholding, not a false absence, and is not paired.
+# A gap row a repair has since superseded is re-typed by merge and drops out on its own. Without
+# a ledger the check falls back to canonical's own absence and says so; without a canonical (an
+# extract-only work dir) it judges each pre-merge record on its own and says THAT.
+#
+# SIGNAL, NOT FAIL - the call and its reasons. This gate is advisory (run.py appends its result
+# to the scorecard on the stated understanding that it always returns 0, and two evals pin it).
+# A false absence is more serious than ordinary under-capture: it is an affirmative wrong claim
+# in the one document whose job is honesty, not merely a missing one. But the pairing is still a
+# NAME-similarity judgement, however strict, and the remedy needs a human to confirm that the
+# two names are one datum before a repair moves a value between them. Blocking a client
+# deliverable on a name heuristic, or gating it behind an ack key, teaches operators to ack
+# through. So the class is promoted as far as an advisory gate can promote it: EVERY shadow
+# finding is a SIGNAL unconditionally (never demoted by SIGNAL_MIN_RECORDS, never capped by
+# --max-notes), it prints ABOVE the asymmetry findings, it names both keys and the property so
+# one repair closes it, and it lands in the sidecar under its own key.
+SHADOW_FUZZ_MIN = 90                      # the fuzzy tier extract_xlsx._header_candidates uses
+GAP_ROW_CLAIM = "absent in all sources"   # merge's gap-row locator; the claim this checks
+# fields whose gap-row aliases live under ANOTHER key in COLUMN_MAP (the tracker maps a rent
+# column to the numeric twin; the chrome-read field that ships the gap row is the display one)
+_SHADOW_ALIAS_SOURCE = {"warehouseRent": "warehouseRentVal"}
+_SHADOW_CACHE: dict = {}
+
+
+def _shadow_norm(s) -> str:
+    """One spelling for a field name or an alias: diacritics stripped, lower-cased, non-
+    alphanumerics to spaces, and the LAST word singularised so 'level access doors' and 'level
+    access door' meet. Applied to both sides, so the fold can never create a match one side
+    did not earn. Reuses match.strip_diacritics rather than a third copy of it."""
+    try:
+        import match as _match
+        t = _match.strip_diacritics(str(s or ""))
+    except Exception:
+        t = str(s or "")
+    words = re.sub(r"[^a-z0-9]+", " ", t.lower()).split()
+    if words and len(words[-1]) > 3 and words[-1].endswith("s"):
+        words[-1] = words[-1][:-1]
+    return " ".join(words)
+
+
+def _humanise_key(k: str) -> str:
+    """`levelAccessDoors` -> 'level access doors'; digits are split off their letters too
+    (`levelAccessDoors4x5m` -> 'level access doors 4 x 5 m'), so a dimensioned breakdown
+    reads as what it is instead of as one long token."""
+    s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(k or ""))
+    s = re.sub(r"(?<=[A-Za-z])(?=[0-9])|(?<=[0-9])(?=[A-Za-z])", " ", s)
+    return s.lower()
+
+
+def _shadow_registry() -> dict:
+    """{canonical field that ships a gap row: {"aliases": [normalised], "veto": regex|None,
+    "numeric": bool}}, memoised.
+
+    Siblings are the fields merge writes an "absent in all sources" row for that a READER could
+    have captured: every chrome-read string field plus the identity sentinels and the three
+    reader-captured numerics (warehouseArea, plotArea, landPrice); the pipeline-assigned ones
+    (`_PIPELINE_ASSIGNED`) are excluded because a reader is not asked for them. Aliases come
+    from extract_xlsx.COLUMN_MAP, the humanised field name, and the field's own display label;
+    with extract_xlsx unimportable (openpyxl missing) it degrades to the field names plus
+    assets/label_ledger.json, and says nothing - a thinner table means fewer pairs, never a
+    wrong one."""
+    if _SHADOW_CACHE:
+        return _SHADOW_CACHE
+    siblings = ((set(C.STRING_FIELDS) | set(C.REQUIRED_TEXT_SENTINELS)
+                 | {"warehouseArea", "plotArea", "landPrice"}) - _PIPELINE_ASSIGNED)
+    col_map, negative = {}, {}
+    try:
+        import extract_xlsx as _X
+        col_map = dict(getattr(_X, "COLUMN_MAP", {}) or {})
+        negative = dict(getattr(_X, "NEGATIVE", {}) or {})
+    except Exception:
+        try:
+            led = json.loads((C.ASSETS / "label_ledger.json").read_text(encoding="utf-8"))
+            col_map = {f: list((v or {}).get("aliases") or [])
+                       for f, v in (led.get("fields") or {}).items() if isinstance(v, dict)}
+        except Exception:
+            col_map = {}
+    numeric: set = set()
+    try:
+        props = ((json.loads(C.SCHEMA_FILE.read_text(encoding="utf-8-sig")).get("$defs") or {})
+                 .get("property") or {}).get("properties") or {}
+        for f, spec in props.items():
+            t = (spec or {}).get("type")
+            if t == "number" or (isinstance(t, list) and "number" in t):
+                numeric.add(f)
+    except Exception:
+        pass
+    reg: dict = {}
+    for f in sorted(siblings):
+        src = _SHADOW_ALIAS_SOURCE.get(f, f)
+        names = {_humanise_key(f)} | {str(a) for a in (col_map.get(src) or [])}
+        aliases = sorted({_shadow_norm(a) for a in names if _shadow_norm(a)})
+        reg[f] = {"aliases": aliases, "veto": negative.get(src), "numeric": f in numeric}
+    _SHADOW_CACHE.update(reg)
+    return _SHADOW_CACHE
+
+
+def shadow_pairs(open_key: str, value, absent_fields) -> list[dict]:
+    """The canonical fields in `absent_fields` that `open_key` plausibly names, with how the
+    match was made. Empty for an unrelated open key, which is the common and correct case."""
+    if not isinstance(open_key, str) or not open_key or open_key.startswith("_"):
+        return []
+    # `_absent` takes ONE argument here by design, not by slip. It delegates to `_unknown(v,
+    # field)`, which reads `field` only to pick the CODE reading, and only for CODE_FIELDS - one
+    # member, `country`. Measured: `field` changes the answer for exactly three values ("na",
+    # "nc", "sc" - normalize.CODE_LIKE_EXEMPT), and only when the field is `country`. `open_key`
+    # is by construction NOT a registry field (both callers skip the registry), so passing it
+    # could change no answer here, and would assert the very thing this function exists to deny.
+    if isinstance(value, (dict, list)) or _absent(value):
+        return []
+    if isinstance(value, str) and value.startswith("data:"):
+        return []
+    human = _humanise_key(open_key)
+    hk = _shadow_norm(human)
+    if not hk:
+        return []
+    reg = _shadow_registry()
+    out = []
+    for field in sorted(absent_fields):
+        spec = reg.get(field)
+        if not spec:
+            continue
+        if spec["veto"] is not None and spec["veto"].search(human):
+            continue
+        if spec["numeric"] and N.extract_first_number(str(value)) is None:
+            continue
+        how = None
+        for alias in spec["aliases"]:
+            if hk == alias:
+                how = f"'{human}' is a known alias of {field}"
+                break
+            try:
+                score = _fuzz.ratio(hk, alias)
+            except Exception:
+                score = 0
+            if score >= SHADOW_FUZZ_MIN:
+                how = (f"'{human}' matches the {field} alias '{alias}' at {score:.0f}/100, "
+                       f"the tracker column-map's own fuzzy tier")
+                break
+        if how:
+            out.append({"field": field, "how": how})
+    return out
+
+
+def _ledger_gap_index(work: Path):
+    """(gap claims {(pid, field)}, property rows {(pid, field): row}) from the Source Ledger,
+    or (None, None) when there is no ledger to read - two different answers."""
+    path = Path(work) / "source_ledger.csv"
+    if not path.exists():
+        return None, None
+    gaps, rows = set(), {}
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as fh:
+            for r in csv.DictReader(fh):
+                if (r.get("record_type") or "").strip() != "property":
+                    continue
+                key = (str(r.get("property_id") or "").strip(), str(r.get("field") or "").strip())
+                if (r.get("source_type") or "").strip().lower() == "gap":
+                    if (r.get("source_locator") or "").strip().lower() == GAP_ROW_CLAIM:
+                        gaps.add(key)
+                else:
+                    rows.setdefault(key, r)
+    except Exception:
+        return None, None
+    return gaps, rows
+
+
+def _record_label(rec: dict) -> str:
+    for k in ("unit", "park", "city"):
+        v = rec.get(k)
+        if isinstance(v, str) and v.strip() and not _absent(v, k):
+            return v.strip()
+    return "record"
+
+
+def shadow_findings(work: Path, all_recs: list) -> list[dict]:
+    """Every (non-registry key, absent canonical sibling) pair worth a repair, property-scoped
+    when canonical.json exists and record-scoped otherwise. Pure apart from reading the two
+    files; the gate prints and files what this returns."""
+    registry = set(C.canonical_property_fields())
+    siblings = set(_shadow_registry())
+    out: list = []
+    cpath = Path(work) / "canonical.json"
+    if cpath.exists():
+        try:
+            props = (C.load_canonical(cpath).get("properties") or [])
+        except Exception:
+            props = []
+        gaps, prow = _ledger_gap_index(work)
+        for p in props:
+            if not isinstance(p, dict):
+                continue
+            pid = str(p.get("id"))
+            absent = {f for f in siblings if _absent(p.get(f), f)}
+            if gaps is not None:
+                absent = {f for f in absent if (pid, f) in gaps}
+            if not absent:
+                continue
+            for k in sorted(p):
+                if k in registry or k == "__meta":
+                    continue
+                for pair in shadow_pairs(k, p.get(k), absent):
+                    row = (prow or {}).get((pid, k)) or {}
+                    out.append({"kind": "shadow", "scope": "property", "property_id": pid,
+                                "open_key": k, "open_value": str(p.get(k))[:60],
+                                "field": pair["field"], "how": pair["how"],
+                                "source_file": str(row.get("source_file") or ""),
+                                "locator": str(row.get("source_locator") or "")[:120],
+                                "ledger": ("gap row" if gaps is not None else "not read"),
+                                "core": pair["field"] in CAPTURE_CORE_FIELDS, "signal": True})
+        return out
+    for rec in all_recs:
+        if not isinstance(rec, dict):
+            continue
+        meta = rec.get("__meta") or {}
+        absent = {f for f in siblings if _absent(rec.get(f), f)}
+        if not absent:
+            continue
+        for k in sorted(rec):
+            if k in registry or k == "__meta":
+                continue
+            for pair in shadow_pairs(k, rec.get(k), absent):
+                out.append({"kind": "shadow", "scope": "record", "property_id": "",
+                            "open_key": k, "open_value": str(rec.get(k))[:60],
+                            "field": pair["field"], "how": pair["how"],
+                            "source_file": str(meta.get("source_file") or ""),
+                            "record": _record_label(rec), "locator": "",
+                            "ledger": "pre-merge", "core": pair["field"] in CAPTURE_CORE_FIELDS,
+                            "signal": True})
+    return out
+
+
+def _shadow_line(f: dict) -> str:
+    where = f.get("source_file") or "?"
+    if f.get("locator"):
+        where += f", {f['locator']}"
+    fix = (f"Repair: work/repairs.json `set` {f['field']} on property "
+           f"{f.get('property_id') or '<id>'} to the value the source states (cite the page), and "
+           f"`unset` {f['open_key']} if the card should not show it twice; or confirm the two are "
+           f"genuinely different data")
+    if f.get("scope") == "record":
+        return (f"  [SIGNAL] {where} record '{f.get('record', 'record')}': the reader put "
+                f"{f['open_value']!r} under the non-registry key `{f['open_key']}` and left its "
+                f"canonical home `{f['field']}` empty on the same record - the same datum under a "
+                f"different name, so unless another record of this property states `{f['field']}` "
+                f"merge will ship a FALSE '{GAP_ROW_CLAIM}' gap row for it ({f['how']}). {fix}")
+    claim = (f"ships a gap row ('{GAP_ROW_CLAIM}')" if f.get("ledger") == "gap row"
+             else "is empty on the card (no Source Ledger was readable to confirm its gap row)")
+    return (f"  [SIGNAL] property {f['property_id']}: the non-registry key `{f['open_key']}` = "
+            f"{f['open_value']!r} ({where}) while its canonical home `{f['field']}` {claim} - the "
+            f"same datum under a different name, so that gap row is a FALSE absence in the Gaps "
+            f"Report and Source Ledger ({f['how']}). {fix}")
+
+
 def cmd_capture_symmetry(args) -> int:
     """Cross-source field asymmetry - the cheap signal for UNDER-CAPTURE. (B58)
 
@@ -784,9 +1496,21 @@ def cmd_capture_symmetry(args) -> int:
     carries how many RECORDS it affects, a core field is always a SIGNAL, SIGNAL findings
     print first and uncapped, and the full list is written to work/capture_symmetry.json so
     the capped tail survives.
+
+    SHADOW KEYS (D15), the sibling question. The asymmetry above asks whether a reader SKIPPED
+    a field its peers captured. It cannot see a reader that captured the datum under a
+    DIFFERENT NAME: on the measured run `levelAccessDoors` held the door counts while the
+    canonical `overheadDoors` shipped "absent in all sources", a false absence in the honesty
+    document itself, found only by blind human reviewers. `shadow_findings` pairs each
+    non-registry key with an ABSENT canonical sibling through the tracker column-map's own
+    alias table at its two strictest tiers (see the block above `_shadow_registry` for the
+    pairing rules, what is deliberately not matched, and why every such finding is a SIGNAL
+    but never a FAIL). Shadow findings print FIRST, uncapped, name both keys and the property,
+    and run even on a single-source corpus, because one deck can shadow itself.
     """
     work = Path(args.work)
     by_source: dict[str, dict] = {}
+    all_recs: list = []
     for path in sorted((work / "extract").glob("*.json")):
         try:
             recs = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -801,14 +1525,31 @@ def cmd_capture_symmetry(args) -> int:
             src = meta.get("source_file") or path.name
             slot = by_source.setdefault(src, {"n": 0, "fields": set()})
             slot["n"] += 1
+            all_recs.append(rec if meta.get("source_file") else dict(rec, __meta=dict(meta, source_file=src)))
             for k, v in rec.items():
                 if k == "__meta" or k in _PIPELINE_ASSIGNED:
                     continue
-                if not _absent(v):
+                if not _absent(v, k):
                     slot["fields"].add(k)
+    # D15: SHADOW KEYS print first of all. A false absence is the most serious thing this gate
+    # can find, it needs no second source to exist, and a capped tail must never hide it.
+    shadow_sigs = shadow_findings(work, all_recs)
+    for f in shadow_sigs:
+        print(_shadow_line(f))
+    _extra = ((f"; {len(shadow_sigs)} shadow-key SIGNAL(s) above (a non-registry key holding a "
+               f"datum whose canonical home ships a gap row)") if shadow_sigs else "")
+    # F17: printed FIRST and uncapped, like every SIGNAL here. Two records of ONE source can
+    # disagree on form too (a deck read in two halves), so this runs before the source-count
+    # gate below and is not subject to it.
+    form_sigs = form_disagreements(all_recs)
+    for f in form_sigs:
+        print(_form_line(f))
     sources = {s: d for s, d in by_source.items() if d["n"]}
     if len(sources) < 2:
-        _ok(f"capture symmetry not applicable ({len(sources)} source(s) with records)")
+        _ok(f"capture symmetry not applicable ({len(sources)} source(s) with records)"
+            + (f"; {len(form_sigs)} form disagreement(s) above" if form_sigs else "") + _extra)
+        if shadow_sigs:
+            _write_capture_sidecar(work, sources, [], [], shadow_sigs)
         print("STATUS: ALL-PASS")
         return 0
     everywhere = sorted(set().union(*(d["fields"] for d in sources.values())))
@@ -828,7 +1569,10 @@ def cmd_capture_symmetry(args) -> int:
                              "affected_records": affected, "present_records": present,
                              "core": field in CAPTURE_CORE_FIELDS})
     if not findings:
-        _ok(f"every field is captured symmetrically across {len(sources)} source(s)")
+        _ok(f"every field is captured symmetrically across {len(sources)} source(s)"
+            + (f"; {len(form_sigs)} form disagreement(s) above" if form_sigs else "") + _extra)
+        if shadow_sigs:
+            _write_capture_sidecar(work, sources, form_sigs, [], shadow_sigs)
         print("STATUS: ALL-PASS")
         return 0
     for f in findings:
@@ -841,15 +1585,7 @@ def cmd_capture_symmetry(args) -> int:
     findings.sort(key=lambda f: (not f["signal"], not f["core"], -f["weight"],
                                  -f["affected_records"], -f["present_records"], f["field"]))
     # the FULL list always lands on disk, so the capped tail is never simply lost
-    try:
-        (work / "capture_symmetry.json").write_text(
-            json.dumps({"sources": {s: d["n"] for s, d in sorted(sources.items())},
-                        "signal_min_records": SIGNAL_MIN_RECORDS,
-                        "signal_min_present": SIGNAL_MIN_PRESENT,
-                        "findings": findings}, ensure_ascii=False, indent=2),
-            encoding="utf-8")
-    except Exception:
-        pass
+    _write_capture_sidecar(work, sources, form_sigs, findings, shadow_sigs)
 
     def _line(f, tag):
         return (f"  [{tag}] `{f['field']}` captured from {', '.join(f['have'])} but from NONE "
@@ -869,10 +1605,30 @@ def cmd_capture_symmetry(args) -> int:
               f"list is in {work / 'capture_symmetry.json'}")
     _ok(f"{len(findings)} cross-source field asymmetry note(s) across {len(sources)} source(s), "
         f"{len(signals)} of them SIGNAL (a core field, or >= {SIGNAL_MIN_RECORDS} records "
-        f"affected with >= {SIGNAL_MIN_PRESENT} carrying it elsewhere) - ADVISORY, for the "
-        f"G-honesty/G-trace reviewers to re-derive")
+        f"affected with >= {SIGNAL_MIN_PRESENT} carrying it elsewhere)"
+        + (f", plus {len(form_sigs)} form disagreement SIGNAL(s)" if form_sigs else "")
+        + (f", plus {len(shadow_sigs)} shadow-key SIGNAL(s)" if shadow_sigs else "")
+        + " - ADVISORY, for the G-honesty/G-trace reviewers to re-derive")
     print("STATUS: ALL-PASS")
     return 0
+
+
+def _write_capture_sidecar(work: Path, sources: dict, form_sigs: list, findings: list,
+                           shadow_sigs: list) -> None:
+    """work/capture_symmetry.json - the FULL finding lists, so a capped console tail is never
+    simply lost. `shadow_findings` (D15) is a new key beside the existing ones; a reader of the
+    old shape sees exactly the fields it saw before. Best-effort, never raises."""
+    try:
+        (work / "capture_symmetry.json").write_text(
+            json.dumps({"sources": {s: d["n"] for s, d in sorted(sources.items())},
+                        "signal_min_records": SIGNAL_MIN_RECORDS,
+                        "signal_min_present": SIGNAL_MIN_PRESENT,
+                        "form_disagreements": form_sigs,
+                        "findings": findings,
+                        "shadow_findings": shadow_sigs}, ensure_ascii=False, indent=2),
+            encoding="utf-8")
+    except Exception:
+        pass
 
 
 # --- MEDIA HARVEST ------------------------------------------------------------------------ #
@@ -1158,10 +1914,97 @@ _PIPELINE_ASSIGNED = frozenset({
 })
 
 
-def _absent(v) -> bool:
-    if v is None:
-        return True
-    return str(v).strip().lower() in ("", "tbd", "tbc", "—", "-", "??", "n/a")
+def _absent(v, field=None) -> bool:
+    """Absence as this module's gates read it: the shared unknown family, nothing private.
+
+    Used by value-format (skip an unknown before judging its format), capture-symmetry (a
+    field is CAPTURED only when its value is not an unknown) and the card-title gate (an
+    unknown park or unit is no designator). Pass `field` where you have it: `country` is a
+    code-valued field, and a bare assigned alpha-2 code is a country there, not an unknown.
+    A stated "none" is NOT absent: it is a negative the source printed."""
+    return _unknown(v, field)
+
+
+def _norm_title(s) -> str:
+    """A rendered card title AS A READER COMPARES IT: every run of whitespace collapsed to
+    one space, trimmed, case-folded.
+
+    A reader cannot tell one space from two, a plain space from a non-breaking space (for a
+    str pattern `\\s` matches both), or 'Unit 4' from 'UNIT 4'. Comparing the raw strings
+    would let all three of those pass as two distinct titles, which is the very confusion
+    this normalisation exists to deny."""
+    return re.sub(r"\s+", " ", str(s if s is not None else "")).strip().casefold()
+
+
+def _title_words(s) -> str:
+    """The chrome's `tsWords` reducer, character for character: lower-cased, every run of
+    NON-alphanumeric characters collapsed to one space, trimmed.
+
+    Stronger than `_norm_title` on purpose, and used for a different question. This one
+    decides whether a park string ALREADY CARRIES the unit designator, so it has to see
+    'Kestrel Reach, Unit 3' and 'Unit 3' as the same words - punctuation and all - while
+    `_norm_title` decides whether two RENDERED titles look the same to a reader, who can see
+    a comma perfectly well."""
+    return re.sub(r"[^a-z0-9]+", " ", str(s).lower()).strip()
+
+
+def _card_title(p: dict) -> str:
+    """The heading the chrome draws on a property's card: the park name, plus the unit
+    designator when the record states one, and NOT repeated when the park string already
+    carries it.
+
+    THIS IS A HAND-MAINTAINED COPY OF `titleStr` IN `assets/dashboard_template.html`, and the
+    duplication is deliberate. That function is the single composition site for the card
+    heading, the compare-tray chip, the map popup, the map-list row, the modal title and the
+    comparison-table column header; this is a second, independent Python statement of the
+    same five lines. Importing the renderer instead is not available, and would not be the
+    better choice if it were:
+
+      * THERE IS NOTHING TO IMPORT. `titleStr` is a JS function inside the HTML asset and it
+        runs in the reader's browser. `build_dashboard.render` only injects the JSON data
+        blocks into that asset, so the only way to read a title back out of "the renderer" is
+        to build the whole multi-MB document and re-parse it - or to execute JS from a gate.
+      * THIS GATE RUNS BEFORE THE BUILD. `coverage` is a pre-build gate and has to block while
+        `canonical.json` is still the editable artefact. There is no HTML in existence yet, so
+        a check that needed one could only ever report the collision after it had been
+        rendered, past the freeze, in the direction where nothing can be edited cheaply.
+      * THE DRIFT RISK IS PINNED WHERE IT CAN BE SEEN, which is the honest answer to the cost
+        of duplicating. `evals/card_title_collision_test.py` asserts this function's output
+        rule by rule AND asserts that `titleStr`'s own rule markers are still in the template,
+        so a chrome that changes the composition without changing this copy is a RED eval
+        rather than a silent miss. The reverse direction is already guarded: `validate-html`
+        re-runs `render(canonical)` and demands byte identity, and VERSION carries the chrome
+        SHA.
+
+    THE RULE, MIRRORED EXACTLY:
+      * a sentinel park or unit is ABSENCE, so it contributes nothing and adds no separator;
+      * no unit -> the park name; no park -> the unit;
+      * the designator is dropped when the park's alphanumeric WORDS already contain the
+        unit's words as a whole-token run ANYWHERE, not merely at the end. Whole-token, so a
+        unit '3' is not found inside a park 'Kestrel Reach 300' - a plain substring test
+        would have suppressed a real designator there;
+      * otherwise the two are joined by ONE space.
+
+    THE ONE KNOWN DIVERGENCE, AND ITS DIRECTION. `_absent` (this module's sentinel vocabulary,
+    shared with the fill checks) also treats 'n/a' as absence; the chrome's `isAbsent` does
+    not. Kept rather than forked into a fifth private sentinel list, because the divergence is
+    one-directional: treating a value as ABSENT can only SUPPRESS a designator, which can only
+    make two titles compare EQUAL, which can only make this gate MORE likely to block. A
+    mismatch therefore costs a false refusal that names both ids and the title - diagnosable
+    in one line - never a missed collision that ships.
+
+    CORRECT BEFORE AND AFTER `unit` LANDS. A record with no `unit` key at all is titled by its
+    park alone, which is what a record whose source names no unit does for ever."""
+    name = "" if _absent(p.get("park"), "park") else str(p.get("park")).strip()
+    unit = "" if _absent(p.get("unit"), "unit") else str(p.get("unit")).strip()
+    if not unit:
+        return name
+    if not name:
+        return unit
+    n, u = _title_words(name), _title_words(unit)
+    if not u or n == u or f" {u} " in f" {n} ":
+        return name
+    return f"{name} {unit}"
 
 
 def cmd_coverage(args) -> int:
@@ -1190,15 +2033,239 @@ def cmd_coverage(args) -> int:
             issues.append(f"duplicate property: {key[:3]} (ids {seen[key]} & {p.get('id')})")
         seen[key] = p.get("id")
 
+    # THE OVER-MERGE COUNTERPART to the dedupe check above, and the more dangerous
+    # direction of the same error. (A14b)
+    #
+    # The check above catches an over-SPLIT: one building shipped as two cards. Nothing
+    # caught the opposite - two different buildings fused into one card - which this skill's
+    # own reference documentation until recently called structurally impossible. It is not:
+    # the matcher's auto tier fuses a pair that agrees closely on size and names no
+    # contradicting party, and only GREY pairs are ever enumerated for human adjudication, so
+    # a fused pair is offered to nobody, appealable by nobody and visible to nothing.
+    #
+    # ONE OPEN PATH still makes this a live net rather than only a regression guard, and one
+    # is what is left of the three this comment used to claim. A12 put the code veto in the
+    # matcher and A12b moved it to a SINGLE guard at the TOP of `_cross_source_auto`, ahead of
+    # every branch: the one-park-missing branch and the fuzzy-key tail, which used to claim a
+    # pair before `pair_class` ever reached the forbidden tier, are therefore both CLOSED -
+    # there is no branch left to bypass the veto in, because the function has already
+    # returned. WHAT REMAINS IS THE SAME-SOURCE PATH, and it is structural rather than an
+    # omission: `pair_class` answers its same-source branch with `_same_source_verdict` and
+    # RETURNS before either cross-source tier runs, and that verdict reads only the match key
+    # (city|developer|park) and the area. So two rows of ONE file with an identical key, an
+    # identical area and two DIFFERENT stated codes still merge as a restatement today, and
+    # `evals/overmerge_guard_test.py` pins it as the CURRENT FACT. A fusion across two stated
+    # codes therefore still ships, and a gate asking the finished dataset costs nothing where
+    # the matcher was right (it cannot fire unless the codes actually disagree) while catching
+    # the one path a match-time fix has not been able to reach.
+    #
+    # An over-split costs a duplicate card. An over-merge costs a BUILDING: one option
+    # vanishes from the client's longlist entirely and the survivor is a blend of two
+    # properties' figures, every one of them individually sourced and traceable, which is why
+    # no provenance gate can see it either.
+    #
+    # WHY THE POSTAL CODE. It is the one identity signal the matcher's recall pre-filter reads
+    # and no merge tier checks, and two DIFFERENT stated codes is a fact rather than a
+    # judgement: no threshold, no similarity score, nothing to tune. The codes arrive from
+    # merge already normalised, so plain inequality is the whole comparison - no country
+    # specific parsing, and deliberately NO prefix or district logic, because "same first
+    # half" is a claim about one country's postal geometry that this pipeline is not entitled
+    # to make and would silently mean the opposite in the next country.
+    #
+    # ONLY RECORDS THAT BOTH STATE A CODE are compared. An absent code is no signal, never a
+    # disagreement, so a corpus that quotes codes patchily is unaffected and a country whose
+    # records carry none at all can never reach the block at all - the loop finds fewer than
+    # two stated codes on every property and does nothing. Absent `meta.clusterSources` (an
+    # older work directory, or a merge that did not record it) is a silent no-op for the same
+    # reason: this gate says what it can prove, and it can prove nothing without the sources.
+    #
+    # BLOCKING, matching the over-split counterpart and every other finding in this function.
+    # Two stated codes cannot both be one building; the harm is a lost option in a client
+    # deliverable; and the remedy is nameable, which is what the house rule requires of a
+    # refusal - a `strike_from_source` repair unfuses the record that does not belong.
+    # ONE READER DECIDES THIS FACT FOR BOTH SIDES. The equality key below is
+    # `match._stated_postcode` itself, not a second implementation of it, and that sharing is
+    # the guarantee: this gate is the BACKSTOP for `match._postcode_conflict`'s veto - the
+    # veto refuses to fuse two records that state conflicting codes, and this asks the
+    # finished dataset whether a fusion got through anyway. A backstop that normalises the
+    # code differently from the guard it backs is not a backstop. It can fail in BOTH
+    # directions, and BOTH were measured on this very block before the reader was shared.
+    # Over the 35 drift probes in `evals/report_honesty_struck_test.py` section 6b, 15
+    # disagreed. 14 were the FALSE-REFUSAL direction: 'QX41 7ZP' against 'QX417ZP' clears the
+    # veto as ONE code (the veto removes all whitespace) and was reported here as TWO, a
+    # refusal for a fusion the pipeline had deliberately allowed, whose named remedy would
+    # have unfused a correct merge. Differing case, a doubled space, a non-breaking space, an
+    # integral float against an int and every unknown-value sentinel all did the same. 1 was
+    # the BLIND direction, which is the one that ships a lost building: a numeric 0, which
+    # `str(x or "").strip()` read as absence while the veto reads the code '0'. After the
+    # share: 0 of 35. That eval drives BOTH sides from ONE list of pairs and asserts the same
+    # verdict from each, so a normaliser that drifts again is a RED eval rather than a
+    # contradictory pair of guards.
+    #
+    # THE PURITY INTENT SURVIVES, which is why this is a borrow and not a coupling. The gate
+    # still reads NOTHING but `canonical.json`: what it imports is a pure string reader - no
+    # state, no IO, no knowledge of any record but the one dict handed to it - and none of the
+    # matcher's tiering, thresholds or clustering. `enrich._locality_code` already delegates
+    # to the same reader for the same stated reason: a private copy is the copy that drifts,
+    # and `normalize.looks_unknown` carries the standing warning about exactly that.
+    #
+    # LAZY, INSIDE THE ONE CHECK THAT NEEDS IT. `gate_runner` is imported by `final_gate`,
+    # `run` and `deliver`, and `import match` costs a measured ~86 ms because it pulls
+    # `rapidfuzz` (or the shim); at module scope every importer would pay that for a reader
+    # only this block uses. NO CYCLE: `match` imports re, sys, unicodedata, functools,
+    # pathlib, `normalize` and rapidfuzz, and nothing that reaches back here.
+    #
+    # THE FIELD LIST IS SHARED TOO, because the whole ENTRY is handed to the reader rather
+    # than one field picked out of it. `_POSTCODE_FIELDS` is deliberately open (a broker's own
+    # header names the column), so a name added there is read by the veto and by this gate in
+    # the same commit instead of one of them going half-blind.
+    #
+    # THE PRODUCER DELEGATES TOO, so the chain is closed END TO END and this gate agrees with
+    # the veto on every input, not merely on most of them. `merge._stated_postcode` - which is
+    # what WRITES these values - was a third private copy that trimmed and upper-cased without
+    # removing internal whitespace, read only `postcode`, and stringified with `str()`. Over a
+    # 35-pair probe list the two sides disagreed on 9 pairs: 5 closed when this gate borrowed
+    # the reader below, and the last 4 were that copy stringifying a float or a bool
+    # (str(48215.0) == '48215.0' where the matcher reads 48215; str(True) == 'TRUE' where the
+    # matcher reads ABSENCE). Every one of the four made this gate BLOCK a fusion the veto had
+    # deliberately allowed, while naming `strike_from_source` - a remedy that would have
+    # unfused a correct merge. It could not be repaired here: a rule collapsing a trailing
+    # '.0' would itself diverge from the veto on the genuine STRING '48215.0', reintroducing
+    # drift in the dimension being fixed. So merge now calls the same reader.
+    # `report_honesty_struck_test.py` 6b asserts the AGREEMENT pair by pair, and goes red if
+    # any of the three copies is ever reintroduced.
+    import match as _M
+
+    cs = (data.get("meta", {}) or {}).get("clusterSources") or {}
+    for p in props:
+        recs = cs.get(str(p.get("id"))) if isinstance(cs, dict) else None
+        # Every shape is checked rather than trusted, at both levels. A gate that raises
+        # inside a pre-build check does not fail the run honestly, it aborts it with a
+        # traceback and no scorecard fragment - so a malformed key must degrade to "nothing
+        # provable here", which is the same answer as a key that is simply absent. The reader
+        # is defensive in the same direction and for the same reason: a value that is not a
+        # string, a number, or is a sentinel reads as ABSENCE, and absence is never a
+        # disagreement, so every malformed entry costs silence rather than a block.
+        if not isinstance(recs, list):
+            recs = []
+        by_code: dict = {}
+        for r in recs:
+            if not isinstance(r, dict):
+                continue
+            code = _M._stated_postcode(r)
+            if code:
+                # THE VERDICT IS THE KEY, THE MESSAGE IS THE SOURCE'S OWN TEXT. Quoting the
+                # equality key would print 'QX417ZP' where the file printed 'QX41 7ZP', and a
+                # reader sent to that file to fix a code has to find the string it will
+                # actually see there. Asking the reader per field is how the right field is
+                # identified without a second copy of its skip rules; a drift here can only
+                # make the message read oddly, never change whether the gate blocks.
+                shown = next((str(r[f]).strip() for f in _M._POSTCODE_FIELDS
+                              if _M._stated_postcode({f: r.get(f)}) == code), code)
+                by_code.setdefault(code, (str(r.get("file") or "?"), shown))
+        if len(by_code) > 1:
+            says = " vs ".join(f"{f} states '{s}'" for f, s in by_code.values())
+            # THE REMEDY DEPENDS ON WHETHER ONE FILE OR TWO STATED THE CODES, and offering the
+            # wrong one is worse than offering none: `strike_from_source` withdraws EVERYTHING
+            # a named file gave this property, so on a same-source fusion (two rows of one
+            # tracker, the ONE residual path above) it would empty the card rather than split
+            # it.
+            # Nothing in this pipeline can split one merged property into two after the fact,
+            # so the honest instruction there is to fix the record the codes disagree about
+            # and re-run - never a verb that would quietly do something else.
+            fix = ("Confirm which record is this property and unfuse the others with a "
+                   "work/repairs.json `strike_from_source` entry naming each file, then "
+                   "re-run; if they really are one address, correct the wrong code at source "
+                   "(work/overrides.json)."
+                   if len({f for f, _ in by_code.values()}) > 1 else
+                   "Both codes come from ONE file, so `strike_from_source` cannot separate "
+                   "them - it would withdraw everything that file gave this property. Read "
+                   "the file's own rows: if one code is a keying error, correct it in "
+                   "work/overrides.json and re-run; if the rows really are two buildings, "
+                   "they have to reach the run as two records for the matcher to keep them "
+                   "apart.")
+            issues.append(
+                f"over-merge: property id={p.get('id')} was built from records stating "
+                f"{len(by_code)} DIFFERENT postal codes - {says}. Records at different codes "
+                f"are records at different addresses, so this one card is carrying more than "
+                f"one building and the rest are missing from the longlist entirely. {fix}")
+
+    # TWO SHIPPED CARDS THAT RENDER THE SAME TITLE (A14c). The third member of this family,
+    # beside the over-SPLIT dedupe and the over-MERGE code check above: two genuinely
+    # DIFFERENT units at one location, both shipped, both drawing an identical card heading.
+    #
+    # THIS SHAPE HAS SHIPPED, which is why it is a gate and not a note. A delivered run put
+    # two cards a reader could not tell apart in front of a broker, and the COMPARISON VIEW -
+    # the one place the reader is explicitly asked to choose BETWEEN two options - stood the
+    # two identical headings side by side, which is where an indistinguishable pair does the
+    # most damage. Neither existing check sees it. The dedupe key demands park, city,
+    # developer AND warehouse area all equal, and two different units differ on the area by
+    # construction; the code check needs `meta.clusterSources` to state two DISAGREEING
+    # postal codes, and two units of one park normally state the same code or none at all.
+    #
+    # THE DATA FIX ALONE IS NOT THE PROTECTION EITHER, AND NEITHER IS THE `unit` FIELD THAT
+    # MAKES THE TWO TITLES DIFFER. A canonical field is only as present as the run that filled
+    # it: a designator this month's tracker states and next month's omits collapses both cards
+    # back onto one heading, silently, with every field still individually sourced and
+    # traceable. So the invariant is asserted about the DELIVERABLE - no two cards share a
+    # heading - rather than about any one field being populated.
+    #
+    # A DATA FIX ALONE DOES NOT PROTECT AGAINST IT. The title is composed out of whatever
+    # fields the record happens to carry, so correcting this run's records fixes this run and
+    # nothing else: the next run can lose a DIFFERENT field and arrive at the same collision
+    # from another direction (a `unit` this month's tracker states and next month's omits, a
+    # park string that arrives without its phase suffix). The durable invariant is about the
+    # DELIVERABLE - no two cards share a heading - so it belongs where the finished dataset
+    # is asked, next to its two siblings.
+    #
+    # BLOCKING, for the same three reasons as those siblings: two composed strings are equal
+    # or they are not (a fact, not a judgement, with no threshold to tune), the harm lands in
+    # a client deliverable, and the remedy is nameable - which is what the house rule requires
+    # of a refusal.
+    #
+    # INERT WHEN ONLY ONE PROPERTY SHIPS, by construction: a collision needs a second title to
+    # collide with, so a single-property run cannot reach the report at all. It is equally
+    # inert on every corpus whose titles differ, which is every correct run.
+    by_title: dict = {}
+    for p in props:
+        title = _card_title(p)
+        # AN EMPTY TITLE IS NOT SKIPPED, and that is a correction of the obvious first
+        # instinct. `titleStr` returns falsy when a record states neither a park nor a unit,
+        # and the card's own `<h3>` and the comparison table's column header interpolate it
+        # with NO fallback - so two such records ship two BLANK headings, which is the
+        # indistinguishable pair in its purest form rather than an absence of one. It is
+        # keyed like any other title (the empty string cannot collide with a real one, since
+        # a stated park always normalises to something) and the message says plainly that the
+        # heading is blank, so the reader is not sent looking for a title to compare.
+        key = _norm_title(title)
+        # MEMBERSHIP, not a truthiness test on the stored id: a property whose `id` is None
+        # or 0 must still anchor the next collision, and `by_title.get(key)` would read as
+        # "not seen yet" for both of them and quietly re-key instead of reporting.
+        if key not in by_title:
+            by_title[key] = p.get("id")
+            continue
+        first = by_title[key]
+        shown = (f"'{title}'" if title else
+                 "EMPTY - neither record states a park name or a unit designator")
+        issues.append(
+            f"identical card title: properties id={first} and id={p.get('id')} both render "
+            f"the same card heading ({shown}), so two different options are indistinguishable "
+            f"on the grid and side by side in the comparison view, where the reader is being "
+            f"asked to choose between them. Give each card the unit/phase designator its "
+            f"source states - a `work/repairs.json` `set` on `unit`, or on `park` - and "
+            f"re-run. If the two records are really ONE building quoted twice, re-titling a "
+            f"card would only hide that: correct the record at source (work/overrides.json) "
+            f"so the matcher fuses them instead.")
+
     # per-record core fill OR explicit tbd - core set chosen by record kind so a
     # land/plot listing is not failed for lacking warehouse fields it never has
     for p in props:
         land = _is_land_record(p)
         core = land_core if land else wh_core
-        filled = sum(1 for f in core if _cov_filled(p.get(f)))
+        filled = sum(1 for f in core if _cov_filled(p.get(f), f))
         frac = filled / len(core)
         if frac < threshold:
-            empties = [f for f in core if not _cov_filled(p.get(f))]
+            empties = [f for f in core if not _cov_filled(p.get(f), f)]
             kind = " (land/plot)" if land else ""
             issues.append(f"property id={p.get('id')}{kind} core fill {frac:.0%} < {threshold:.0%}; thin: {empties}")
 
@@ -1471,13 +2538,14 @@ def cmd_trace_coverage(args) -> int:
             if (row.get("source_type") or "") != "gap":
                 traced.add((str(row.get("property_id")), row.get("field")))
 
-    def is_sentinel(v):
-        return v is None or str(v).strip().lower() in {"tbd", "—", "", "none", "??", "?"}
-
     # fields a real source must back; excludes structural/derived/enriched keys
     # identity fields (developer/city/park/country) must trace to a source too - a
     # fabricated identity is as damaging as a fabricated spec (audit S4-14); a
-    # gap-documented unknown (e.g. country '??') is a sentinel, skipped above.
+    # gap-documented unknown (e.g. country '??') is an unknown form, skipped by `_unknown`
+    # (the shared family; `country` gets the code reading so a real two-letter country that
+    # doubles as a market abbreviation is still traced). A stated "none" is NOT skipped: it
+    # is data the source printed, and an unsourced one is exactly the fabrication this gate
+    # exists to catch. (SEAM-13)
     check = (set(C.STRING_FIELDS)
              | {"warehouseArea", "warehouseRentVal", "plotArea",
                 "developer", "city", "park", "country"})
@@ -1485,7 +2553,7 @@ def cmd_trace_coverage(args) -> int:
     for p in data.get("properties", []):
         pid = str(p.get("id"))
         for f in check:
-            if f in p and not is_sentinel(p.get(f)) and (pid, f) not in traced:
+            if f in p and not _unknown(p.get(f), f) and (pid, f) not in traced:
                 issues.append(f"property id={pid}: field '{f}'={p.get(f)!r} has NO ledger row "
                               f"(untraceable - possible fabrication)")
     if issues:
@@ -1563,14 +2631,35 @@ def cmd_images(args) -> int:
             h = hashlib.sha1(uri.encode("ascii", "ignore")).hexdigest()[:12]
             groups.setdefault(h, []).append(p.get("id"))
     dup_ok = {str(x) for x in ack.get("duplicate_photos_ok", [])}
-    for h, ids in sorted(groups.items()):
-        if len(ids) >= 2 and h not in dup_ok:
-            issues.append(
-                f"{len(ids)} properties (ids {ids}) share ONE IDENTICAL hero photo "
-                f"(hash {h}) - a near-certain harvest failure; have the G-images "
-                f"reviewer check the contact sheet, fix the harvest (or, only if "
-                f"genuinely correct, record {{\"duplicate_photos_ok\": [\"{h}\"]}} "
-                f"in {ack_file.name})")
+    dups = [(h, ids) for h, ids in sorted(groups.items()) if len(ids) >= 2 and h not in dup_ok]
+    # F22: THE REMEDY MUST BE REACHABLE AT THE MOMENT IT BLOCKS. This gate is PRE-BUILD (exit
+    # 5/6) and the G-images reviewer is dispatched at exit 14, AFTER a build this very finding
+    # holds up - so "have the G-images reviewer check the contact sheet" named a reader who
+    # could not yet exist and an aid the spine renders only after the scorecard. The
+    # operator's real options at this moment are fix-or-acknowledge, and the one thing that
+    # makes that choice informed is the contact sheet, so the gate renders it HERE, only when
+    # the finding fires, and prints the path. The check itself stays pre-build on purpose: a
+    # duplicated hero is a data defect the reviewers should judge FIXED, and a fix after the
+    # review would need the second review round the one-round rule forbids.
+    sheets: list = []
+    if dups:
+        try:
+            import contact_sheet as _CSH
+            sheets = _CSH.build_sheets(data, Path(args.canonical).resolve().parent / "render",
+                                       5, 30, 480)
+        except Exception:
+            sheets = []
+    look = (f"LOOK at {', '.join(str(s) for s in sheets)} (rendered by this gate, now)" if sheets
+            else "LOOK at the page renders under work/vision/ for the properties named (the "
+                 "contact sheet could not be rendered here: Pillow missing or the render failed)")
+    for h, ids in dups:
+        issues.append(
+            f"{len(ids)} properties (ids {ids}) share ONE IDENTICAL hero photo (hash {h}) - a "
+            f"near-certain harvest failure. The G-images reviewer runs AFTER the build this "
+            f"blocks, so nobody else can look now: {look}, then FIX the harvest (bind each card "
+            f"its own photo), or, ONLY if the shared image is genuinely each property's cover, "
+            f"acknowledge it with `gate_runner.py ack --work <work> --add "
+            f"duplicate_photos_ok={h}` (merges into {ack_file.name})")
     # NON-PHOTO HERO check: a card's hero MUST be the page's real photo / aerial / render -
     # never a road MAP, a flat PLAN diagram or a slide screenshot. The independent G-images
     # reviewer FLAGGED exactly this on a real run, but the gate only ADVISED, so the bad
@@ -2550,6 +3639,79 @@ def qa_resolved_count(work) -> int:
     return sum(len(r.get("resolved") or {}) for r in (st.get("rounds") or []))
 
 
+def _coalesce_rounds(st: dict) -> list:
+    """Fold a window carrying MORE THAN ONE round into the single round this design allows.
+
+    A run records EXACTLY ONE review round: the reviewers are spawned once, the orchestrator
+    implements, the pack is delivered. `record` no longer opens a second round - but a work
+    dir is a durable thing, and one written by the two-round/verdict-gated design, or by any
+    build in which `record` still self-opened, arrives here carrying two or three. Both
+    obvious answers are dishonest. CRASHING strands a pack whose window is perfectly
+    readable. KEEPING ONLY THE NEWEST round silently drops an unrepaired BLOCKING finding -
+    a FALSE CLAIM by the reviewer's own rubric - because a later pass happened not to repeat
+    it. So it FOLDS, and each half of the fold is chosen so that nothing is lost and nothing
+    is overstated:
+
+      * the ADVISORY list is the LATEST RECORDED round's, verbatim, NEVER the union. That is
+        B26's doctrine and it is load-bearing: every round was judged by a fresh reviewer
+        against the artefact AS IT THEN WAS, so only the newest list describes what is
+        actually being shipped. Unioning them shipped notes the improvement pass had already
+        made false, into the one document whose whole job is honesty.
+      * every UNRESOLVED blocking finding from the superseded rounds is carried FORWARD into
+        the survivor. This is the half that fails toward BLOCKING rather than toward
+        shipping, and it is the whole reason not to simply keep the newest round.
+      * the `resolved` maps are UNIONED, so a repair already recorded - with its reason and
+        its fingerprint - is never re-blocked by the fold itself. Unioned by id, so a finding
+        resolved in two rounds counts once: `qa_resolved_count` can therefore report a
+        SMALLER number than the pre-fold state did, and that number is the true count of
+        distinct repairs.
+      * `verdicts` are unioned with the LATER round winning, which is the same
+        highest-round-first resolution `review_file` applies to the files.
+      * the superseded rounds are moved VERBATIM into `superseded_rounds`, not deleted.
+        Nothing reads them; they are there so an operator can see exactly what was folded.
+
+    Returns the lines to PRINT, because a fold nobody is told about is the silent discard
+    this function exists not to be."""
+    rounds = list(st.get("rounds") or [])
+    if len(rounds) <= 1:
+        return []
+    recorded = [r for r in rounds if r.get("recorded")]
+    live = recorded[-1] if recorded else rounds[0]
+    resolved: dict = {}
+    verdicts: dict = {}
+    for r in rounds:                       # ascending, so the later round's verdict wins
+        resolved.update(r.get("resolved") or {})
+        verdicts.update(r.get("verdicts") or {})
+    struck = set(resolved)
+    blocking = list(live.get("blocking") or [])
+    carried = []
+    for r in rounds:
+        if r is live:
+            continue
+        for entry in r.get("blocking") or []:
+            if finding_id(entry) in struck or entry in blocking:
+                continue
+            blocking.append(entry)
+            carried.append(entry)
+    survivor = dict(live)
+    survivor["n"] = 1
+    survivor["blocking"] = blocking
+    survivor["advisory"] = list(live.get("advisory") or [])
+    survivor["verdicts"] = verdicts
+    survivor["resolved"] = resolved
+    st["rounds"] = [survivor]
+    st.setdefault("superseded_rounds", []).extend([r for r in rounds if r is not live])
+    out = [f"NOTE: this work dir carried {len(rounds)} QA rounds, which this design does not "
+           f"have. Folded into ONE round - nothing discarded:",
+           f"  kept round {live.get('n', '?')}'s {len(live.get('advisory') or [])} advisory "
+           f"finding(s) as the live list (a fresh reviewer judged the CURRENT artefact)"]
+    if carried:
+        out.append(f"  carried {len(carried)} UNRESOLVED blocking finding(s) forward from the "
+                   f"superseded round(s) - they still block until a repair is recorded")
+    out.append(f"  kept {len(resolved)} recorded repair(s); the superseded rounds are "
+               f"preserved verbatim under `superseded_rounds` in qa_state.json")
+    return out
+
 
 
 def cmd_qa_round(args) -> int:
@@ -2582,16 +3744,46 @@ def cmd_qa_round(args) -> int:
         # BLOCKING-OPEN replaces the old ADJUDICATION-OPEN: with no adjudication round, the
         # question is simply which blocking findings the orchestrator has not yet recorded a
         # repair for. That is what final_gate blocks on.
-        print(f"BLOCKING-OPEN: {len(qa_blocking_open(work))}")
+        open_b = qa_blocking_open(work)
+        print(f"BLOCKING-OPEN: {len(open_b)}")
+        # F28: THE IDS AND THE FINDINGS, which is what exit 15 sends the operator here for.
+        # Its handoff and SKILL.md both say "ids + findings: `qa-round status`", and until now
+        # this printed four counts and nothing else. `record` does print the ids, but the SPINE
+        # runs `record` itself in quiet mode, so that output never reached anyone; on the live
+        # run the only way to close the exit-15 loop was to import gate_runner and call
+        # finding_id() by hand on every entry in qa_state.json. Whole findings, untruncated:
+        # this is the one place the operator is sent to READ them, and the 110-character cut
+        # `record` uses is what sent them to the JSON.
+        for e in open_b:
+            print(f"  BLOCKING {e['id']}  {e['finding']}")
+        struck = {k for r in st["rounds"] for k in (r.get("resolved") or {})}
+        for entry in last.get("blocking") or []:
+            fid = finding_id(entry)
+            if fid in struck:
+                print(f"  RESOLVED {fid}  {str(entry)}")
+        for entry in qa_carried(work):
+            print(f"  ADVISORY {finding_id(entry)}  {str(entry)}")
+        if open_b:
+            print(f"NEXT: fix each BLOCKING finding above, then `qa-round resolve --work <work> "
+                  f"--id <id> --because \"<what you changed>\"` for each, then re-run.")
         return 0
 
     if args.mode == "resolve":
-        # NARROW BY DESIGN. `resolve` says "the blocking fix made this advisory FALSE",
-        # never "we got round to it". SKILL.md's doctrine stands: an advisory is closed by
-        # being written into the Gaps Report, not by being fixed. Relaxing that hands an
-        # eager orchestrator permission to work the advisory list, which buys back the
-        # unbounded loop the QA window exists to close. Two guards keep it narrow: a real
-        # reason, and proof that an artefact actually moved. (B26)
+        # NARROW BY DESIGN, AND THE REASON MOVED. `resolve` is a claim that the finding is
+        # now FALSE of the artefact, never "we got round to it". The default for an advisory
+        # is still to SHIP DISCLOSED - that is how an advisory is closed - so nothing here
+        # invites working the list. What it does allow, and must, is the operator's own
+        # judgement call: an advisory that is ONE EDIT and changes what a reader CONCLUDES
+        # gets fixed, and a fixed finding has to be strikeable or the delivered Gaps Report
+        # asserts a defect the pack no longer has (the B9 failure, in the one document whose
+        # job is honesty). This used to be justified as keeping the unbounded ask loop shut;
+        # that argument now belongs to a mechanism that no longer exists. The loop needed a
+        # SECOND REVIEW ROUND to close over - fix, re-review, find one more - and there is no
+        # second round to close over any more: the reviewers are spawned once, the round is
+        # recorded once, and re-recording folds into it. There is deliberately NO threshold
+        # for "cheap and material"; it is a judgement, it stays with the operator, and the
+        # guard that carries the meaning is unchanged: the id must name a finding actually
+        # raised in this window, and a >= 20-character reason goes into the audit trail. (B26)
         recorded = [r for r in st["rounds"] if r.get("recorded")]
         if not recorded:
             print("[FAIL] no recorded QA round - run `qa-round record` first")
@@ -2642,17 +3834,28 @@ def cmd_qa_round(args) -> int:
         return 0
 
     # mode == "record": read the REVIEWERS' OWN labels out of reviews/*.md.
-    # SELF-OPENING: `record` opens the next round itself when the previous one was already
-    # recorded, so a normal run needs ONE command per round instead of two. (Every extra
-    # mandatory shell command is paid on every run, in an environment with a ~40s cap.)
+    # RECORDING NO LONGER OPENS THE NEXT ROUND, and that removal is the point. It used to
+    # append a fresh round whenever the last one was already recorded, so a normal run cost
+    # one command per round instead of two. The saving was real; what it bought was a
+    # mechanism this phase may not have. The required shape is: spawn the independent
+    # reviewers ONCE, implement every blocking finding plus any advisory that is cheap and
+    # material, deliver. A second review round is never correct. The only thing standing
+    # between `record` and one was the arithmetic `len(rounds) < QA_MAX_ROUNDS`, and
+    # arithmetic is the wrong kind of guard for a structural rule: raise the constant, or
+    # arrive with a window that already holds two rounds, and the second round is back.
+    # There is now ONE round slot; `record` writes into it, and a review file that changes
+    # after the round is recorded FOLDS into it as additional findings (the reviews read
+    # below) instead of opening another.
     if not st["rounds"]:
         st["rounds"].append({"n": 1, "blocking": [], "advisory": [], "verdicts": {}})
-    elif st["rounds"][-1].get("recorded") and len(st["rounds"]) < QA_MAX_ROUNDS:
-        st["rounds"].append({"n": len(st["rounds"]) + 1, "blocking": [], "advisory": [],
-                             "verdicts": {}})
-    cur = st["rounds"][-1]
-    prev = st["rounds"][-2] if len(st["rounds"]) > 1 else None
-    _snapshot(cur.get("n") or len(st["rounds"]))  # BEFORE, when record self-opened the round
+    # THE ONE-ROUND INVARIANT, ENFORCED RATHER THAN COUNTED DOWN. QA_MAX_ROUNDS is 1 and is
+    # now a CHECKED invariant instead of a budget. An older work dir may legitimately carry
+    # two or three rounds, and folding them - honestly, discarding nothing - is what makes a
+    # second round impossible without crashing on state somebody's run really produced.
+    _folded = _coalesce_rounds(st) if len(st["rounds"]) > QA_MAX_ROUNDS else []
+    cur = st["rounds"][0]
+    cur["n"] = 1
+    _snapshot(1)  # BEFORE, captured once: `record` opens the single round itself
     cur["recorded"] = True
     # "required" was PROSE ONLY: argparse defaults --reviews to "", Path("") is ".", and "." exists
     # - so `qa-round record --work W` with no --reviews globbed the CURRENT DIRECTORY, found no
@@ -2667,9 +3870,27 @@ def cmd_qa_round(args) -> int:
         print(f"[FAIL] reviews dir not found: {rroot}")
         print("STATUS: BLOCKED")
         return 1
-    # Round-scoped: read THIS round's own directory (reviews/round<N>/), falling back to
-    # the flat root as round 0 for work dirs predating the layout. (B24)
-    rdir = review_dir_for(rroot, cur.get("n"))
+    # EVERY ROUND DIRECTORY, FOLDED INTO THE ONE ROUND. `reviews/round<N>/` is a DISPATCH
+    # token, not a review round - `review_round_dirs` says so in its own docstring: N is a
+    # uniqueness token the orchestrator supplies, never derived from qa_state.json. A
+    # reviewer re-dispatched because its file came back garbled MUST write a new file, or the
+    # harness would make an ostensibly independent agent read the previous verdict first
+    # (B24), so one review round legitimately spans round1/ AND round2/.
+    #
+    # THIS IS THE INCIDENT THE DRIVER'S FINGERPRINT GUARD WAS WRITTEN FOR, now closed on
+    # this side too. Reading only `review_dir_for(rroot, cur["n"])` meant round1/ was the
+    # only directory ever read: a re-dispatched review landed in round2/,
+    # `run.qa_reviews_changed` correctly fired, `record` re-ran, read round1/ again, found
+    # nothing new and STAMPED - so the findings in round2/ were recordable by no pass and the
+    # run could exit over an unread blocking finding. Ascending order, so a re-dispatched
+    # gate's verdict WORD wins (the same highest-round-first resolution `review_file` uses)
+    # while its FINDINGS are additive: a finding is struck only by an explicit `qa-round
+    # resolve`, never by a later dispatch's silence.
+    #
+    # The flat root stays supported permanently as round 0 for work dirs predating the
+    # layout, and ONLY when no round dir exists - reading both would double-count a gate
+    # whose verdict sits in each.
+    rdirs = [d for _rd_n, d in review_round_dirs(rroot)] or [rroot]
     # final_gate owns the verdict grammar and imports THIS module, so the import must be lazy
     # (module-level would be circular). A missing parser must not lose the findings, only the
     # verdict words, so it degrades to None rather than raising.
@@ -2679,7 +3900,7 @@ def cmd_qa_round(args) -> int:
         def _parse_verdict(_t):
             return None
     n_b = n_a = n_unlabelled = 0
-    for f in sorted(rdir.glob("*.md")):
+    for f in [q for d in rdirs for q in sorted(d.glob("*.md"))]:
         txt = f.read_text(encoding="utf-8", errors="replace")
         gate_name = f.stem
         word = _parse_verdict(txt)
@@ -2708,26 +3929,26 @@ def cmd_qa_round(args) -> int:
             if entry not in cur[bucket]:
                 cur[bucket].append(entry)
             n_b, n_a = (n_b + 1, n_a) if bucket == "blocking" else (n_b, n_a + 1)
-    # CARRY FORWARD. Under a scoped re-review only the gates that raised blocking
-    # findings are re-dispatched, so round 2's directory holds nothing for the others.
-    # Reading only this round would silently retire a not-re-dispatched gate's
-    # advisories - a change to what ships in Known limitations, disguised as a path fix.
-    # Resolved findings are NOT carried forward: they were fixed, on the record. (B24/B26)
-    if prev:
-        seen_gates = {f.stem for f in rdir.glob("*.md")}
-        struck = set((prev.get("resolved") or {}).keys())
-        for entry in prev.get("advisory") or []:
-            gate = str(entry).split(":", 1)[0].strip()
-            if gate in seen_gates or finding_id(entry) in struck:
-                continue
-            if entry not in cur["advisory"]:
-                cur["advisory"].append(entry)
-                n_a += 1
+    # THE ROUND-TO-ROUND CARRY-FORWARD IS GONE, because the read above SUBSUMES it. It
+    # existed for exactly one shape: under a scoped re-review only the gates that raised
+    # blocking findings are re-dispatched, so round 2's directory holds nothing for the
+    # others, and reading only round 2 silently retired a not-re-dispatched gate's advisories
+    # - a change to what ships in Known limitations, disguised as a path fix (B24/B26).
+    # Folding EVERY round dir into the one round answers that from the source files instead:
+    # a gate that was not re-dispatched still has its round1/ file, so its advisories are
+    # RE-INGESTED each pass rather than copied forward from a previous round's list. That is
+    # strictly the more honest of the two - the finding is read off the reviewer's own words
+    # every time, never inherited - and it is what makes "a changed review file folds into
+    # this round" and "there is never a second round" one statement rather than two. A
+    # finding the improvement pass made false is still struck the only way it has ever been
+    # struck: an explicit `qa-round resolve`, with its reason on the record.
     cur["fingerprint"] = _artefact_fingerprint(work)
     _qa_save(work, st)
     _n = len(st["rounds"])
+    for _fold_line in _folded:     # say what the fold did BEFORE the counts it changed
+        print(_fold_line)
     print(f"OK recorded {n_b} blocking, {n_a} advisory finding(s) "
-          f"(reviews read from {rdir.name})")
+          f"(reviews read from {', '.join(d.name for d in rdirs)})")
     # Print each advisory's id: it is the handle `qa-round resolve --id` needs, and an
     # id the orchestrator never saw is an id it cannot misuse.
     # B60: SKILL.md tells the orchestrator to hand the adjudicator "the blocking finding list WITH
@@ -2754,7 +3975,9 @@ def cmd_qa_round(args) -> int:
         print(f"NEXT: IMPLEMENT these {len(cur['blocking'])} blocking finding(s), then record "
               f"each one with `qa-round resolve --id <id> --because \"<what you changed>\"`, "
               f"then DELIVER. There is no second review pass: the reviewers proposed, you "
-              f"implement, and final_gate checks that every blocking finding was addressed.")
+              f"implement, and final_gate checks that every blocking finding was addressed. "
+              f"Do NOT re-dispatch the reviewers - fixing a blocking finding is a loop WITHIN "
+              f"this one round, and a second review round is never correct.")
     else:
         print("NEXT: no blocking findings - run final_gate.py --qa-state and DELIVER. Do NOT "
               "re-review a clean gate, and do NOT fix advisory findings (they are carried to the "
@@ -2769,6 +3992,10 @@ def cmd_qa_round(args) -> int:
 
 # --------------------------------------------------------------------------- #
 def main() -> None:
+    # D16: every subcommand here prints finding text verbatim (reviewer findings, ledger values,
+    # brochure strings), so on a cp1252 console the first glyph outside the code page turned the
+    # findings into a traceback (`qa-round status`, U+2265). Set once, defensively, here.
+    C.force_utf8_stdout()
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -2805,6 +4032,9 @@ def main() -> None:
     p.add_argument("--waivers", default="",
                    help="JSON list of {field,id} the broker declined (exit 13) - shipped bare, "
                         "noted, never blocked")
+    p.add_argument("--ledger", default="",
+                   help="source ledger to join, so measured siblings vote once per SOURCE FILE "
+                        "rather than per record (default: source_ledger.csv beside the canonical)")
     p.set_defaults(fn=cmd_value_format)
     p = sub.add_parser("capture-symmetry",
                        help="ADVISORY: fields captured from one source deck but from none of "
@@ -2861,10 +4091,11 @@ def main() -> None:
     p.add_argument("--work", required=True)
     p.add_argument("--reviews", default="", help="reviews dir (required for `record`). "
                    "Round-scoped: reviews/round<N>/<gate>.md, the flat root = round 0")
-    p.add_argument("--id", default="", help="`resolve`: the advisory finding id printed "
-                   "by `record`")
-    p.add_argument("--because", default="", help="`resolve`: why the blocking fix made "
-                   "this advisory FALSE (>= 20 chars, recorded in qa_state.json)")
+    p.add_argument("--id", default="", help="`resolve`: the finding id, BLOCKING or ADVISORY, "
+                   "as printed by `qa-round status` (and by `record`)")
+    p.add_argument("--because", default="", help="`resolve`: why the finding is now FALSE of "
+                   "the artefact - for a blocking finding, what you changed (>= 20 chars, "
+                   "recorded in qa_state.json)")
     p.set_defaults(fn=cmd_qa_round)
     p = sub.add_parser("freeze"); p.add_argument("file")
     p.add_argument("--check", action="store_true", help="verify the file is byte-identical to the freeze snapshot")

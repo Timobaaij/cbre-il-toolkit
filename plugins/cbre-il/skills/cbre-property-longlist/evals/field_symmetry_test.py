@@ -95,7 +95,7 @@ def main() -> int:
     ck(len(loaded) == 1 and not errs, "a canonical field needs no extra_fields (back-compatible)")
 
     # --- brand-new SCALARS are now DISCLOSED, not silently tolerated -------- #
-    rec = {"park": "P", "city": "Corby", "tenure": "Leasehold", "postcode": "NN17 4XD",
+    rec = {"park": "P", "city": "Corby", "tenure": "Leasehold", "postcode": "QX41 8RD",
            "__meta": {"source_file": "deck.pdf", "locator_base": "page 2"}}
     M._normalise_offspec(rec)
     ck(rec.get("tenure") == "Leasehold",

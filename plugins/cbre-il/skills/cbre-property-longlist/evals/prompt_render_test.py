@@ -36,6 +36,37 @@ READER_NEEDLES = (
     "Transcribe, never invent",      # the honesty core
     "map_candidates",                # DMS/links go to the resolver
     "Run context",                   # the bounded additive-context slot
+    # D1: the reader agents were ~80% of a measured run's wall-clock and tool-call COUNT, not
+    # page count, predicted a deck's duration. The one-batch rule already existed as a
+    # permission and was not followed, so it is now an obligation with a self-check the
+    # agent can apply mid-run (message count, not tool-call count, is what costs time).
+    "NO IMAGE OPENED BEFORE IT",     # the visual-aid batch is an obligation, not a permission
+    "MESSAGE count",                 # the calibrated self-check (well-run deck = 5 messages)
+    # D13/D4: 5 of 8 broker answers never reached a card because the doubt named no field or
+    # no options, and where options existed they were prose ('all three office lines
+    # combined'), which the auto-repair wrote into the field with a null companion.
+    "LEADS WITH THE FIGURE AND ITS UNIT",   # value-led options on an arithmetic field
+    "NEVER offer a total you did not read",  # Python owns all arithmetic; no summed total
+    # D6: two records from one deck shipped the same hero (page 1 / heroRef 0) while a
+    # distinct aerial photograph sat in one record's own page pool
+    "DO NOT SHARE A HERO",           # distinct heroes per record where the deck offers them
+)
+# the same pinning for the raster reader, which was never pinned before D1: it carries its own
+# wording of the batch rule (bounded to FIVE full-page renders per message, with the reason)
+# and the same D6 and D13/D4 rules, so a template edit there must fail here too
+RASTER_NEEDLES = (
+    "FLOOR, not a ceiling",
+    "copied VERBATIM",
+    "cluster_label",
+    "NEVER convert",
+    "Transcribe, never invent",
+    "map_candidates",
+    "Run context",
+    "up to FIVE per message",        # D1: bounded batches, back to back
+    "MESSAGE count",                 # D1: the calibrated self-check
+    "LEADS WITH THE FIGURE AND ITS UNIT",   # D13/D4
+    "NEVER offer a total you did not read",  # D4
+    "DO NOT SHARE A HERO PAGE",      # D6, in raster terms (page_no is the hero binding)
 )
 BLIND_NEEDLES = ("NEVER", "blind")   # both verify templates must assert independence
 
@@ -69,6 +100,11 @@ def main() -> int:
                    {s: f"<{s}>" for s in set(_SLOT_RE.findall(rt_tpl)) if s not in _AUTO})
     for needle in READER_NEEDLES:
         check(needle in rt, f"reader-text carries the load-bearing clause: {needle!r}")
+    rr_tpl = (PR.TEMPLATE_DIR / "reader-raster.md").read_text(encoding="utf-8")
+    rr = PR.render("reader-raster",
+                   {s: f"<{s}>" for s in set(_SLOT_RE.findall(rr_tpl)) if s not in _AUTO})
+    for needle in RASTER_NEEDLES:
+        check(needle in rr, f"reader-raster carries the load-bearing clause: {needle!r}")
     for k in ("tracker-verify", "match-verify"):
         tpl = (PR.TEMPLATE_DIR / f"{k}.md").read_text(encoding="utf-8")
         out = PR.render(k, {s: f"<{s}>" for s in set(_SLOT_RE.findall(tpl)) if s not in _AUTO})

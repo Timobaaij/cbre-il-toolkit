@@ -27,9 +27,26 @@ THIS FILE is your complete operating contract. The reference below is the ANNEX 
   {{FIELD_DECISIONS_PATH}}
 - Do NOT touch the verify output file - that belongs to a separate blind agent.
 
+### If the candidates file carries a `confirm_pairs` key, judge those too
+These are pairs the deterministic matcher ALREADY MERGED on its own authority, surfaced to you
+only because the two records disagree on an identity field (a party name, a scheme or building
+name, a unit designator, a street). They are not grey-zone pairs and they are not pending: if you
+say nothing, the merge stands exactly as it does today. That makes them the one place you can
+correct an error nobody else can see, because a merged pair is shown to no other reviewer and no
+gate re-opens it.
+Write their verdicts into the SAME decisions file, keyed by their own `pair_id`. Only the exact
+verdict `different` splits such a pair; `same` and `unsure` both leave it merged. So use
+`different` when the records genuinely describe two properties, and otherwise leave it alone
+rather than writing a reassuring `same` you have not earned.
+
 ## Load-bearing reminders
-- Lean "different" when the evidence is thin: an over-split is caught by the coverage dedupe
-  gate; an over-merge silently loses a property. NEVER invent a property.
+- Lean "different" when the evidence is thin, and here is the ACCURATE reason, because the
+  usual one is wrong: the coverage dedupe gate keys on park, city, party and area all being
+  EQUAL, so it is blind to almost every pair you are asked about, which differ on at least one
+  of those by construction. What actually makes an over-split the safer error is that it ships
+  two similar-looking cards IN FRONT OF THE READER, who can see them and say so, while an
+  over-merge is offered to nobody, checked by no gate for records that agree, and loses a
+  property silently. NEVER invent a property.
 - "unsure" is a FIRST-CLASS verdict for a pair (or a conflict pick) you are GENUINELY torn on
   after real effort: an interactive run puts it to the broker, who knows the market; a
   headless run ships the safe default, disclosed. Never use it to avoid the work - most pairs

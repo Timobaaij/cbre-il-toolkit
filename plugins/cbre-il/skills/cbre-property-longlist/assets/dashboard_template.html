@@ -798,6 +798,16 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;background:var(--bran
 .rent{font-family:var(--font-display);font-size:18px;color:var(--ink)}
 .rent span{color:var(--muted);font-size:11px;letter-spacing:.1em;text-transform:uppercase;margin-left:4px;font-family:var(--font-body)}
 .rent-mo{display:block;font-family:var(--font-body);font-size:11px;color:var(--muted);letter-spacing:0;text-transform:none;margin-top:3px}
+/* v40: the source's own printed total, under the derived warehouse figure on the card. Shaped as
+   .rent-mo (the existing sub-line pattern) so it reads as a qualifier of the figure above it and
+   not as a second headline; it renders at all only when the two disagree beyond the arithmetic
+   gate's tolerance, so a card that shows it is a card where the difference is real. */
+.spec-total{display:block;font-family:var(--font-body);font-size:11px;font-weight:400;color:var(--muted);letter-spacing:0;text-transform:none;margin-top:3px}
+/* v42 (SEAM-16): the area x rate a Total annual rent was computed on, under the figure in the
+   modal and in the compare matrix. Shaped as .spec-total so it reads as a qualifier of the
+   figure above it; white-space:normal so a split (warehouse + office) formula wraps in a
+   compare cell rather than widening the column. */
+.rent-basis{display:block;font-family:var(--font-body);font-size:11px;font-weight:400;color:var(--muted);letter-spacing:0;text-transform:none;margin-top:3px;white-space:normal}
 .view-btn{background:transparent;color:var(--brand);font-weight:500;font-size:13px;display:inline-flex;align-items:center;gap:6px;padding:0}
 .view-btn .arrow{transition:transform .2s}
 .card:hover .view-btn .arrow{transform:translateX(3px)}
@@ -885,6 +895,15 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;background:var(--bran
 .modal-close:hover{background:var(--brand)}
 .modal-hero{position:relative;aspect-ratio:16/7;background:#e8e7de;overflow:hidden}
 .modal-hero img{width:100%;height:100%;object-fit:cover}
+/* v40: the PLAN view is contained, never cropped. .modal-hero is a fixed 16/7 frame holding an
+   object-fit:cover image - right for a photo hero, destructive for a site plan, because a plan is
+   the one image whose EDGES carry the information: yard depths, the plot boundary, dimension
+   lines. A cover fit crops away exactly those, and only the lightbox ever showed the plan whole.
+   The class is toggled at the ONE existing swap point (bindImageToggle's show()), so the photo
+   hero keeps its cover fit unchanged; the letterbox is a flat neutral ground so a white plan
+   sheet still reads as a sheet rather than bleeding into the page. */
+.modal-hero.plan-mode{background:#f2f2ef}
+.modal-hero.plan-mode img{object-fit:contain}
 .image-toggle{position:absolute;bottom:16px;left:16px;display:flex;gap:4px;background:rgba(15,31,24,.8);padding:4px;border-radius:24px;backdrop-filter:blur(8px)}
 .image-toggle button{color:rgba(255,255,255,.75);padding:7px 14px;border-radius:20px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;transition:all .15s;font-weight:500}
 .image-toggle button.active{background:#fff;color:var(--ink)}
@@ -1519,7 +1538,9 @@ function filterList(){
     if(!NUMOK(p.warehouseArea) ? f.size > SIZE_MIN : p.warehouseArea < f.size) return false;
     if(f.q){
       const q = f.q.toLowerCase();
-      const hay = [p.park, p.developer, p.city, p.motorway, p.country].join(" ").toLowerCase();
+      // v40: `unit` joins the haystack. It is now part of the visible title at every site, and
+      // a reader who can SEE 'Unit 3' on the card must be able to type it into the search box.
+      const hay = [p.park, p.unit, p.developer, p.city, p.motorway, p.country].join(" ").toLowerCase();
       if(!hay.includes(q)) return false;
     }
     return true;
@@ -1595,9 +1616,9 @@ function cardHTML(p){
     </div>
     <div class="card-body">
       <div class="dev-line">${p.developer} · ${p.motorway}</div>
-      <h3 class="card-title">${p.park}</h3>
+      <h3 class="card-title">${titleStr(p)}</h3>
       <div class="spec-row">
-        <div class="spec"><div class="spec-k">${T("row_warehouse")}</div><div class="spec-v">${areaStr(p.warehouseArea)}</div></div>
+        <div class="spec"><div class="spec-k">${T("row_warehouse")}</div><div class="spec-v">${areaStr(p.warehouseArea)}${statedTotalHTML(p)}</div></div>
         <div class="spec"><div class="spec-k">${T("row_clear_height")}</div><div class="spec-v">${p.clearHeight}</div></div>
         <div class="spec"><div class="spec-k">${T("row_status")}</div><div class="spec-v small">${p.status}</div></div>
         <div class="spec"><div class="spec-k">${T("row_early_access")}</div><div class="spec-v">${p.earlyAccess}</div></div>
@@ -1623,7 +1644,7 @@ function updateTray(){
   tray.classList.add("active");
   items.innerHTML = [...state.compare].map(id=>{
     const p = PROPS.find(x=>x.id===id);
-    return `<span class="tray-chip">${p.park} <button onclick="toggleCompare(${id}, false)" aria-label="${T('tray_remove')}">×</button></span>`;
+    return `<span class="tray-chip">${titleStr(p)} <button onclick="toggleCompare(${id}, false)" aria-label="${T('tray_remove')}">×</button></span>`;
   }).join("");
 }
 
@@ -1631,9 +1652,25 @@ let map, propMarkers = {}, poiMarkers = {}, isoLayers = [], miniMap = null;
 function initMap(){
   if(map) return;
   map = L.map("map", { zoomControl: true, scrollWheelZoom: true }).setView([49.0, 16.0], 5);
-  const streetsLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-    subdomains: 'abcd', maxZoom: 19
+  /* v40: the streets basemap moves to the KEYLESS OpenStreetMap standard tiles. The previous
+     provider now bakes an "API KEY REQUIRED" watermark INTO the imagery it serves on its keyless
+     endpoint, so that text reached the client inside real map tiles on every dashboard this
+     template builds - and nothing detects it, because the tiles still return success. Three
+     details are load-bearing and are applied IDENTICALLY at all three map sites (this map, the
+     modal mini-map, the Flyover):
+       - `subdomains` is STATED. Standard tiles are served from THREE hosts (a/b/c) and the
+         fourth does not exist, so the old 'abcd' would have failed one request in four; the
+         Flyover definition carried no subdomains key at all and would have silently taken
+         Leaflet's default. Stating it on all three is what stops them drifting apart again.
+       - the `{r}` retina placeholder is DROPPED. The standard tile server serves no @2x
+         variant, so keeping it would 404 every tile on a high-DPI screen - the exact class of
+         failure being fixed here, only louder.
+       - the attribution names the new provider only, because it is now the only one serving
+         these tiles; asserting a provider that no longer serves them would be a false credit.
+     The satellite (Esri) layer beside each of the three is deliberately UNTOUCHED. */
+  const streetsLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    subdomains: 'abc', maxZoom: 19
   });
   const satelliteLayer = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
     attribution: 'Tiles &copy; Esri, Maxar, Earthstar Geographics, CNES/Airbus DS, USDA, USGS, AeroGRID, IGN, and the GIS User Community',
@@ -1692,7 +1729,7 @@ function propPopupHTML(p){
     <img src="${p.photo}" class="popup-thumb" alt="">
     <div class="popup-body">
       <div class="popup-ref">№ ${String(p.id).padStart(2,'0')} · ${p.country} · ${p.city}</div>
-      <h4 class="popup-title">${p.park}</h4>
+      <h4 class="popup-title">${titleStr(p)}</h4>
       <div class="popup-meta">${p.developer} · ${areaStr(p.warehouseArea)} · ${p.motorway}</div>
       ${p.coordsApprox ? `<div class="popup-meta" style="color:#b06000">${T("modal_approx_note")}</div>` : ''}
       <a href="#" class="popup-btn" onclick="event.preventDefault();openModal(${p.id})">${T("map_view_details")}</a>
@@ -1732,7 +1769,7 @@ function refreshMap(list){
   $("#map-list").innerHTML = list.map(p => `
     <div class="map-list-item" onclick="flyToProperty(${p.id})">
       <div class="mli-head"><span class="mli-flag ${p.country.toLowerCase()}"></span><span class="mli-ref">№ ${String(p.id).padStart(2,'0')}</span></div>
-      <div class="mli-title">${p.park}</div>
+      <div class="mli-title">${titleStr(p)}</div>
       <div class="mli-meta">${p.city} · ${p.developer} · ${areaStr(p.warehouseArea)}</div>
     </div>
   `).join("");
@@ -1991,15 +2028,30 @@ async function computeAndDrawIsochrones(p){
   }
 }
 /* v9: dataset-wide field presence - a variable NO input ever carried renders
-   NOWHERE (no all-TBC rows for fields the sources simply never state) */
+   NOWHERE (no all-TBC rows for fields the sources simply never state).
+   v41 (F5): UNKNOWN_FORMS below is normalize.UNKNOWN_FORMS member for member, and the
+   normalisation (trim, lower-case, strip trailing full stops) is looks_unknown()'s. It used to
+   be a private six-member copy that lacked 'n/a', 'tba', 'tbs' and the market phrases, so an
+   auto-shown attribute a reader shipped as "TBA" rendered as a real datum; a stated "none" is
+   NOT in it, on purpose, because the extraction contract names it as DATA. The Python set is
+   the master: edit normalize.UNKNOWN_FORMS first, mirror it here, and
+   evals/f05_sentinel_parity_test.py holds the two equal. Non-ASCII members are written as JSON
+   escapes so this file never carries the dash sentinel as a character. */
+const UNKNOWN_FORMS = [
+  "", "-", "?", "??", "a consultar", "a consulter", "a convenir", "auf anfrage", "consultar",
+  "da definire", "do negocjacji", "do uzgodnienia", "in trattativa", "k.a", "keine angabe",
+  "n.a", "n.c", "n.v.t", "n/a", "na", "nc", "nous consulter", "nvt", "op aanvraag", "poa",
+  "sc", "segun proyecto", "seg\u00fan proyecto", "sob consulta", "su richiesta", "sur demande",
+  "tba", "tbc", "tbd", "tbs", "to be confirmed", "\u00e0 consulter", "\u2014"
+];
 const isAbsent = v => v === null || v === undefined
-  || ["", "tbd", "tbc", "—", "-", "??"].includes(String(v).trim().toLowerCase());
+  || UNKNOWN_FORMS.includes(String(v).trim().toLowerCase().replace(/\.+$/, ""));
 const FIELD_PRESENT = {};
 PROPS.forEach(p => Object.keys(p).forEach(k => { if(!isAbsent(p[k])) FIELD_PRESENT[k] = true; }));
 /* v10: dataset unit convention (source units are KEPT - a UK dataset ships sq ft
    and £/sq ft/yr); merge stamps areaUnit on every property, rentUnit per record */
 const AREA_UNIT = (PROPS.find(p => p.areaUnit) || {}).areaUnit || 'sq m';
-const RENT_PER = (((PROPS.find(p => p.rentUnit) || {}).rentUnit || '€/sq m/yr').split('/')[1]) || 'sq m';
+const RENT_PER = (((PROPS.find(p => p.rentUnit) || {}).rentUnit || ('€/' + AREA_UNIT + '/yr')).split('/')[1]) || AREA_UNIT;
 const RENT_CUR = (((PROPS.find(p => p.rentUnit) || {}).rentUnit || '€/sq m/yr').split('/')[0]) || '€';
 /* Monthly rent = the headline ANNUAL rate / 12, KEPT in its own currency + per-area
    convention (no FX, no area maths - same honesty rule as the rest of the rent). Null
@@ -2012,18 +2064,45 @@ function rentMonthlyStr(p){
   const per = (ru[1] || RENT_PER).trim();
   return cur + " " + nfmt(v / 12, 2, 2) + " / " + per + " / mo";
 }
-/* Total rent = GLA x rate. Total GLA = warehouse + office area; when a SEPARATE
+/* Total rent = rate x the SUMMED areas (warehouse + office); when a SEPARATE
    office rate exists, split (warehouse@warehouseRate + office@officeRate), else the
-   single warehouse rate applies over the whole GLA. Same currency only (no FX); areas
+   single warehouse rate applies over both. Same currency only (no FX); areas
    are already aligned to AREA_UNIT by merge. null when there is no positive warehouse
-   rate/area to compute from (office area unknown -> warehouse area alone). */
+   rate/area to compute from (office area unknown -> warehouse area alone).
+   v41 note: this deliberately does NOT read glaVal(), which may now be a source's stated
+   total. Applying a rate to a total the source did not itself price would print a rent no
+   source stated; F26 changed which figure the GLA LABEL reads, never any money figure.
+   v42 (SEAM-16): THE BASIS IS PRINTED BESIDE THE FIGURE. Since v41 the Total GLA row can carry
+   a source's stated total while the rent a few rows below it is computed on the summed
+   warehouse + office, so a reader dividing one by the other got a rate no source quoted, with
+   nothing on the page to explain the gap. The rent STAYS on the summed lettable area: a stated
+   total routinely includes a gatehouse, a plant room or a hub office that nobody pays warehouse
+   rent on, so pricing it would overstate, and this is money. What changed is that the figure
+   now says what it was computed on. rentBasis() is the ONE place the inputs are qualified;
+   totalAnnualRent() multiplies exactly those components and rentBasisStr() prints exactly those
+   components, so the printed basis cannot drift from the multiplied one. Every Total rent
+   render site goes through totalRentHTML(), the only caller of totalRentStr();
+   evals/f32_rent_basis_test.py holds all of that. The basis is a formula of numbers and units,
+   not a sentence, so no client-facing prose was authored and the EN/template i18n lockstep is
+   untouched. It prints the COMPONENTS, "(40,000 + 2,000) sq ft x rate", rather than their sum,
+   so the reader can match each term to the Warehouse area and Office area rows above it and see
+   at once which fields were priced (and that a stated total was not); an unknown office area is
+   simply absent from the formula, which IS the disclosure, never a guessed office. rentBasis()
+   is declared AFTER totalAnnualRent() on purpose: declarations hoist, and two evals read the
+   numeric-twin guards in the text directly following the function name. */
 function totalAnnualRent(p){
+  const b = rentBasis(p);
+  if(!b) return null;
+  const { wa, wr, oa, or } = b;
+  return b.split ? (wa * wr + oa * or) : ((wa + oa) * wr);
+}
+function rentBasis(p){
   const wr = p.warehouseRentVal, wa = p.warehouseArea;
   if(typeof wr !== "number" || !isFinite(wr) || wr <= 0) return null;
   if(typeof wa !== "number" || !isFinite(wa) || wa <= 0) return null;
   const oa = (typeof p.officeAreaVal === "number" && isFinite(p.officeAreaVal) && p.officeAreaVal > 0) ? p.officeAreaVal : 0;
   const or = (typeof p.officeRentVal === "number" && isFinite(p.officeRentVal) && p.officeRentVal > 0) ? p.officeRentVal : null;
-  return (or !== null && oa > 0) ? (wa * wr + oa * or) : ((wa + oa) * wr);
+  return { wa, wr, oa, or, split: or !== null && oa > 0 };
 }
 function totalRentStr(p, monthly){
   const annual = totalAnnualRent(p);
@@ -2032,15 +2111,113 @@ function totalRentStr(p, monthly){
   const cur = ((p.rentUnit || (RENT_CUR + "/x/yr")).split("/")[0] || RENT_CUR).trim();
   return cur + " " + Math.round(v).toLocaleString(LOCALE) + (monthly ? " / mo" : " / yr");
 }
-/* GLA (total internal area) = warehouse + office (+ any other building area). Plot is
-   LAND, not GLA. null when there is no numeric warehouse area. */
+/* v42: a per-area rate in the property's OWN currency and per-area convention (the split
+   rentMonthlyStr makes), so the basis line prints the rate the way the card does. The per-area
+   unit is printed on purpose: if a dataset ever carried a rent quoted per a different unit than
+   AREA_UNIT, the mismatch would be visible here rather than silently multiplied through. */
+function rentRateStr(p, r){
+  const ru = (p.rentUnit || (RENT_CUR + "/" + RENT_PER + "/yr")).split("/");
+  return (ru[0] || RENT_CUR).trim() + " " + nfmt(r, 2, 2) + " / " + (ru[1] || RENT_PER).trim();
+}
+function rentBasisStr(p){
+  const b = rentBasis(p);
+  if(!b) return null;
+  const term = (a, r) => a + " " + AREA_UNIT + " \u00d7 " + rentRateStr(p, r);
+  if(b.split) return term(fmt(b.wa), b.wr) + " + " + term(fmt(b.oa), b.or);
+  return term(b.oa > 0 ? "(" + fmt(b.wa) + " + " + fmt(b.oa) + ")" : fmt(b.wa), b.wr);
+}
+/* v42: the ONE way a Total rent figure reaches the page (modal row and compare cell). The
+   ANNUAL figure carries its basis as a .rent-basis sub-line; the MONTHLY figure is the annual
+   / 12 by its own label and carries none, so the formula is printed once per surface. null when
+   there is no total to print, so the row omits exactly as it did before. */
+function totalRentHTML(p, monthly){
+  const s = totalRentStr(p, monthly);
+  if(s === null) return null;
+  const basis = monthly ? null : rentBasisStr(p);
+  return basis ? s + `<small class="rent-basis">${basis}</small>` : s;
+}
+/* GLA (total internal area). ONE label, ONE derivation (v41, F26): every "Total GLA" on the
+   page (the card's qualifier, the modal row, the compare matrix) reads glaVal() and glaUnit().
+     1. the SOURCE'S OWN PRINTED TOTAL when the builder surfaced one on preBaked.statedTotal
+        (statedTotalHTML below records how it gets there): a deck's total routinely includes
+        space the two summed fields do not hold (a gatehouse, a hub office, a plant room), and a
+        blind review against bound site plans confirmed the printed total is the right figure;
+     2. else warehouse + office (+ any other building area), the derivation the arithmetic gate
+        replicates. Plot is LAND, not GLA. null when there is no numeric warehouse area.
+   Before v41 the modal and compare rows printed derivation 2 while the card printed the stated
+   total, so one label carried two figures on four of nine properties in a live run. Nothing
+   here touches data: the fix is which figure the label reads, never what a source stated. */
+function statedTotal(p){
+  const st = (p.preBaked && p.preBaked.statedTotal) || null;
+  if(!st || !NUMOK(st.value) || st.value <= 0) return null;
+  return { value: st.value, unit: st.unit || AREA_UNIT };
+}
 function glaVal(p){
+  const st = statedTotal(p);
+  if(st) return st.value;
   const w = p.warehouseArea;
   if(typeof w !== "number" || !isFinite(w)) return null;
   const o = (typeof p.officeAreaVal === "number" && isFinite(p.officeAreaVal) && p.officeAreaVal > 0) ? p.officeAreaVal : 0;
   return w + o;
 }
-function glaStr(p){ const g = glaVal(p); return g == null ? "—" : fmt(g) + " " + AREA_UNIT; }
+function glaUnit(p){ const st = statedTotal(p); return st ? st.unit : AREA_UNIT; }
+function glaStr(p){ const g = glaVal(p); return g == null ? "\u2014" : fmt(g) + " " + glaUnit(p); }
+/* v40: ONE way to render a property TITLE - the same single-point-of-truth discipline as
+   areaStr() below, and landed for the same kind of reason. There was no composed title
+   anywhere: every title and label site interpolated `p.park` ALONE, so two genuinely different
+   UNITS on one park rendered as two identical-looking cards - in the grid, the map popup, the
+   map list, the modal, the Flyover, and worst of all in BOTH sets of compare chips, which is
+   the moment the reader is being asked to choose between them. `unit` carries the source's own
+   designator exactly as printed ('Unit 3', 'Phase 2', 'Block A'); nothing in the pipeline
+   composes or numbers it.
+   THREE THINGS THIS HELPER OWES ITS CALLERS:
+     - A SENTINEL IS NOT A DESIGNATOR. isAbsent() drops 'tbd'/'tbc'/'??' and the two dash
+       sentinels exactly as the rest of the chrome does, so an absent unit renders NOTHING: not
+       the word for unknown, and not a trailing separator either - the return is the park name
+       byte-for-byte. (fill_render_sentinels writes 'tbd' into every unfilled string field, so
+       "absent" arrives here as that sentinel far more often than as undefined.)
+     - NO DOUBLE-PRINTING. A park name that ALREADY carries the designator (which is how many
+       trackers name the row) must not become 'Kestrel Reach Unit 3 Unit 3'. The test reduces
+       both sides to alphanumeric WORDS and looks for a whole-token run, so 'Unit 3' is found
+       inside 'Kestrel Reach Unit 3' while a unit '3' is NOT falsely found inside a park
+       'Kestrel Reach 300' - a substring test would have suppressed the real designator there.
+     - A FALSY RETURN when neither is stated, so the three sites that already fall back to
+       T('label_option') keep doing exactly that.
+   The join is a single SPACE, not a punctuation separator: the designator is part of how the
+   source names the place ('Kestrel Reach Unit 3'), and a middle dot in an <h3> reads as a
+   breadcrumb of two facts rather than one name. */
+const tsWords = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+function titleStr(p){
+  const name = isAbsent(p.park) ? "" : String(p.park).trim();
+  const unit = isAbsent(p.unit) ? "" : String(p.unit).trim();
+  if(!unit) return name;
+  if(!name) return unit;
+  const n = tsWords(name), u = tsWords(unit);
+  if(!u || n === u || (" " + n + " ").indexOf(" " + u + " ") !== -1) return name;
+  return name + " " + unit;
+}
+/* v40: THE SOURCE'S OWN PRINTED TOTAL AREA, on the card. merge lifts each source's stated total
+   into canonical.meta.statedTotals (keyed by property id) and until now the arithmetic gate was
+   its ONLY consumer - it reached neither the builder nor this chrome. Meanwhile the card's area
+   figure is DERIVED by summing components (glaVal = warehouseArea + officeAreaVal), which reads
+   BELOW the printed total whenever real space sits inside that total and in no summed field:
+   mezzanine, ancillary, plant. The client therefore saw a smaller building than the brochure
+   states, with nothing on the page to tell them so.
+   build_dashboard passes the figure through on preBaked.statedTotal - a PIPELINE-ASSIGNED
+   container, deliberately NOT a top-level property field, because extract_xlsx records why
+   (a top-level scalar is client-facing record surface and would print raw) - and ONLY when it
+   differs from the derived GLA by more than the ARITHMETIC GATE'S OWN tolerance, so the card and
+   the gate can never disagree about whether a difference matters. Agreement renders nothing.
+   The label reuses the existing row_total_gla key: no prose was authored, so the EN/template
+   lockstep is untouched.
+   v41 (F26): this qualifier prints glaVal()/glaUnit(), the SAME call the modal row and the
+   compare matrix make, so the card and the modal can no longer show two figures under one
+   label; statedTotal() is the one reader of preBaked.statedTotal in this chrome. */
+function statedTotalHTML(p){
+  const st = statedTotal(p);
+  if(!st) return "";
+  return `<small class="spec-total">${T("row_total_gla")} ${fmt(glaVal(p))} ${glaUnit(p)}</small>`;
+}
 /* v28: ONE way to render an area. The unit is appended only to a real NUMBER, because the
    fields it is used on are number|string|null:
      - a STRING plotArea already carries its own unit, so concatenating produced
@@ -2159,9 +2336,7 @@ function officeAreaHTML(p){
 function certName(v, name){
   if(v === null || v === undefined) return "";
   const t = String(v).trim();
-  if(!t) return "";
-  const low = t.toLowerCase();
-  if(low === "tbd" || low === "tbc" || low === "\u2014" || low === "-") return "";
+  if(isAbsent(t)) return "";   // v41 (F5): the chrome's one absence vocabulary, not a fifth list
   if(new RegExp(name, "i").test(t)) return t;
   const m = t.match(/^(target(?:ing|ed)?)\s+(.+)$/i);
   return m ? m[1] + " " + name + " " + m[2] : name + " " + t;
@@ -2170,11 +2345,9 @@ function certStr(p){
   return [certName(p.breeam, "BREEAM"), certName(p.epc, "EPC")].filter(Boolean).join(", ");
 }
 function detailHTML(p){
-  const isTbd = v => {
-    if(v === null || v === undefined) return true;
-    const s = String(v).trim().toLowerCase();
-    return s === "" || s === "tbd" || s === "tbc" || s === "—" || s === "-";
-  };
+  // v41 (F5): ONE absence vocabulary for the whole chrome. This was a private five-member copy,
+  // so a modal row whose value a reader shipped as "n/a" or "TBA" rendered as a real datum.
+  const isTbd = isAbsent;
   const row = (label,v) =>
     isTbd(v) ? `` :               // v21: omit absent rows entirely (was a val_tbc placeholder)
       `<div class="spec"><div class="spec-k">${label}</div><div class="spec-v">${v}</div></div>`;
@@ -2217,7 +2390,7 @@ function detailHTML(p){
     <div class="modal-body">
       <div class="modal-head">
         <div class="modal-dev"><span class="flag ${p.country.toLowerCase()}"></span>${p.developer} · ${p.country} · № ${String(p.id).padStart(2,'0')}</div>
-        <h2 class="modal-title">${p.park}</h2>
+        <h2 class="modal-title">${titleStr(p)}</h2>
         <div class="modal-meta">
           <span>${p.city}</span>
           <span>${p.motorway}</span>
@@ -2262,8 +2435,8 @@ function detailHTML(p){
       ${(rowsHtml => rowsHtml ? `<h3 class="section-title">${T("sec_commercial")}</h3><div class="spec-grid">${rowsHtml}</div>` : '')([
         row(T('row_warehouse_rent'), p.warehouseRent),
         row(T('row_warehouse_rent_monthly'), rentMonthlyStr(p) || '—'),
-        row(T('row_total_annual_rent'), totalRentStr(p,false) || '—'),
-        row(T('row_total_monthly_rent'), totalRentStr(p,true) || '—'),
+        row(T('row_total_annual_rent'), totalRentHTML(p,false) || '—'),
+        row(T('row_total_monthly_rent'), totalRentHTML(p,true) || '—'),
         row(T('row_office_rent'), p.officeRent),
         row(T('row_service_charge'), p.serviceCharge),
         row(T('row_land_price'), p.landPrice),
@@ -2369,8 +2542,10 @@ function initModalMap(p){
     el.innerHTML = `<p class="desc" style="padding:12px;color:var(--muted)">${T('map_not_confirmed')}</p>`;
     return; }
   miniMap = L.map("modal-map", { zoomControl: true, scrollWheelZoom: false }).setView([p.lat, p.lng], 9);
-  const mStreets = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
-    attribution: '&copy; OSM · CARTO', subdomains: 'abcd', maxZoom: 19
+  // v40: keyless OSM standard tiles - same URL, subdomains and attribution provider as
+  // initMap's streetsLayer (see the WHY there); the mini-map's Esri layer below is untouched.
+  const mStreets = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: '&copy; OpenStreetMap', subdomains: 'abc', maxZoom: 19
   });
   const mSatellite = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
     attribution: 'Esri', maxZoom: 19
@@ -2395,9 +2570,16 @@ function bindImageToggle(p){
   // v12: modal photo carousel + the Site Plan toggle, integrated. Manual prev/next
   // ONLY - no autoplay, no timer; the counter is a static position read-out.
   const img = $('#modal-img'), cnt = $('#modal-count');
+  // v40: the frame itself, so the plan can be letterboxed instead of cropped. Resolved once
+  // here rather than per show() call, and null-guarded: detailHTML always emits .modal-hero
+  // around #modal-img, but a future chrome that drops it must degrade to the old behaviour
+  // rather than throw inside the carousel.
+  const hero = (img && img.closest) ? img.closest('.modal-hero') : null;
   const g = gal(p);
   let mode = 'photo', i = 0;   // mode: 'photo' (carousel) | 'plan'
   function show(){
+    // toggle, never add: the same element carries both modes as the reader switches back
+    if(hero) hero.classList.toggle('plan-mode', mode === 'plan');
     if(mode === 'plan'){ img.src = p.plan; }
     else { img.src = g[i]; img.dataset.i = i; if(cnt) cnt.textContent = (i + 1) + ' / ' + g.length; }
   }
@@ -2485,8 +2667,8 @@ function compareHTML(items){
     [T('row_car_parking'), p=>p.carParking, 'carParking'],
     [T('row_warehouse_rent'), p=>p.warehouseRent, 'warehouseRent'],
     [T('row_warehouse_rent_monthly'), p=>rentMonthlyStr(p) || '—', 'warehouseRent'],
-    [T('row_total_annual_rent'), p=>totalRentStr(p,false) || '—', 'warehouseRent'],
-    [T('row_total_monthly_rent'), p=>totalRentStr(p,true) || '—', 'warehouseRent'],
+    [T('row_total_annual_rent'), p=>totalRentHTML(p,false) || '—', 'warehouseRent'],
+    [T('row_total_monthly_rent'), p=>totalRentHTML(p,true) || '—', 'warehouseRent'],
     [T('row_office_rent'), p=>p.officeRent, 'officeRent'],
     [T('row_service_charge'), p=>p.serviceCharge, 'serviceCharge'],
     [T('row_land_price'), p=>p.landPrice, 'landPrice'],
@@ -2527,7 +2709,7 @@ function compareHTML(items){
       </div>
       <div class="cmp-table-wrap">
         <table class="cmp-table">
-          <thead><tr><th style="min-width:170px">${T("cmp_attribute")}</th>${items.map(p=>`<th>${p.park}<span class="cmp-city">${p.country} · ${p.city} · ${p.developer}</span></th>`).join('')}</tr></thead>
+          <thead><tr><th style="min-width:170px">${T("cmp_attribute")}</th>${items.map(p=>`<th>${titleStr(p)}<span class="cmp-city">${p.country} · ${p.city} · ${p.developer}</span></th>`).join('')}</tr></thead>
           <tbody>
             ${allRows.map(([label, fn])=>`
               <tr><th>${label}</th>${items.map((p,i)=>{
@@ -2598,8 +2780,9 @@ document.addEventListener("keydown", e => {
 
   // ---------- helpers (esc/isLand local; VALUE + LABEL formatting reuse the chrome) ----------
   function isTbd(v) {
-    return (v === null || v === undefined || v === "tbd" || v === "—" ||
-      v === "" || v === "TBD" || v === "N/A");
+    // v41 (F5): the chrome's one absence vocabulary (isAbsent, defined in the main script and in
+    // the shared global scope by the time any slide is built); this was a private exact-case copy
+    return isAbsent(v);
   }
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
@@ -2693,7 +2876,7 @@ document.addEventListener("keydown", e => {
     return '<div class="fo-slide" data-idx="' + i + '">' +
       img +
       '<span class="fo-badge ' + (isLand(p) ? "land" : "") + '">' + esc(p.status || T("label_option")) + '</span>' +
-      '<div class="fo-name">' + esc(p.park || (T("label_option") + " " + p.id)) + '</div>' +
+      '<div class="fo-name">' + esc(titleStr(p) || (T("label_option") + " " + p.id)) + '</div>' +
       '<div class="fo-loc">' + esc(loc) + '</div>' +
       '<div class="fo-specs">' + specs + '</div>' +
       dtHtml +
@@ -2843,8 +3026,11 @@ document.addEventListener("keydown", e => {
       maxZoom: 19, pane: "overlayPane"
     });
     var hybrid = L.layerGroup([imagery, transport, places]);
-    var streets = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
-      maxZoom: 19, attribution: "&copy; OpenStreetMap &copy; CARTO"
+    // v40: keyless OSM standard tiles (see initMap for the WHY). This definition is the one
+    // that carried NO subdomains key, so it is stated here too - all three sites now request
+    // from the same three hosts, which is the only way they stay in step.
+    var streets = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19, subdomains: "abc", attribution: "&copy; OpenStreetMap"
     });
     hybrid.addTo(flyoverMap);
     var layerCtl = {};
@@ -2857,7 +3043,7 @@ document.addEventListener("keydown", e => {
       var m = L.circleMarker([p.lat, p.lng], {
         radius: 7, color: "#ffffff", weight: 2, fillColor: "#003f2d", fillOpacity: 1, className: "fo-marker"
       }).addTo(flyoverMap);
-      m.bindTooltip((i + 1) + ". " + (p.park || (T("label_option") + " " + p.id)), { direction: "top", offset: [0, -6] });
+      m.bindTooltip((i + 1) + ". " + (titleStr(p) || (T("label_option") + " " + p.id)), { direction: "top", offset: [0, -6] });
       m.on("click", function () { go(i); });
       markers.push(m);
     });
@@ -2995,7 +3181,9 @@ document.addEventListener("keydown", e => {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
     });
   }
-  function label(p) { return p.park || p.city || (T("label_option") + " " + p.id); }
+  // v40: titleStr(), so a per-unit chip is distinguishable from its neighbour on the same
+  // park - this is the chip the reader clicks to include or drop an option from the comparison.
+  function label(p) { return titleStr(p) || p.city || (T("label_option") + " " + p.id); }
 
   function injectStyles() {
     if (document.getElementById("cmpv-styles")) { return; }

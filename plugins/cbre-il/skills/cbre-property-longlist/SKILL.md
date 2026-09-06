@@ -77,7 +77,8 @@ the work directory; the exit-3 manifest's `work/` prefix is a convention resolve
 | 12 | free-text DATA translation | dispatch the rendered translate-data prompt -> merge the map into `work/i18n/data_translations.<code>.json` (or drop `work/i18n/data_translate.SKIP` to decline) |
 | 13 | **clarification** needed | read `work/questions.json`. A `setup_form` question means the Stage-0 form has not been answered: present it (`reference/setup-form.md`) and write the answers plus `setup.confirmed: true` into `project.yaml` - an `answers.json` entry does NOT clear that one. `asked_of:"agent"` = dispatch an isolated sub-agent with the named source; `asked_of:"broker"` = put ALL of them to the user in ONE plain message. Write `work/answers.json` `{"<id>": "<answer>"}` (ids verbatim; where `options` is given, one of those exact strings). `blocking:false` is asked ONCE, then ships the honest gap; `blocking:true` comes back every pass until ANSWERED or DECLINED (`"skip"` = the default ships as a disclosed decision; headless: `work/clarify.SKIP_ALL`). **Never answer a blocking broker question from your own context**. Every question here already PASSED the materiality test - it changes a value/photo shown on the dashboard or the number of options - so put it to the user rather than second-guessing whether it matters; what did not pass is in the Gaps Report's "Noted, not put to you" |
 | 14 | **independent QA review** needed | dispatch ONE isolated sub-agent per rendered `work/prompts/g-*.md` file (CONCURRENTLY; each file is that agent's VERBATIM prompt and names its own output file), plus any outstanding email ingestion the handoff names -> re-run |
-| 15 | **blocking QA finding(s)** unresolved | IMPLEMENT each fix, record it with `gate_runner.py qa-round resolve --work <work> --id <id> --because "<what you changed>"` (ids: `qa-round status`), re-run. Advisory findings are never fixed - they ship in the Gaps Report's Known limitations |
+| 15 | **blocking QA finding(s)** unresolved | IMPLEMENT each fix, record it with `gate_runner.py qa-round resolve --work <work> --id <id> --because "<what you changed>"` (ids: `qa-round status`), re-run. This is a fix loop INSIDE the one review round - **never re-dispatch a reviewer**. Advisory findings ship disclosed in the Gaps Report's Known limitations; fix one only when it is one edit AND changes what a reader concludes, and `resolve` it if you do |
+| 16 | **invalid correction entr(y/ies)** - the run refused to START | read the printed fault list (EVERY fault in `work/overrides.json` and `work/repairs.json`, all in one pass) and **FIX the NAMED entries IN PLACE** in the file each fault names - or **DELETE** one that is stale - then re-run the SAME command. **Do NOT append a new entry**: the file being rejected IS the file to edit, so appending re-runs into the same refusal with one more entry each round. **Do NOT read `gate1_scorecard.md`** - this fires at startup, the gates have not run, and on a first pass it does not exist. Nothing has been changed, so there is nothing to undo. To ship past a known-stale entry knowingly, re-run with `--allow-invalid-corrections`: the same faults print, the faulty entries are IGNORED, and whatever they were meant to correct ships UNCORRECTED - tell the broker if you use it |
 
 3. **Rendered dispatch prompts (`work/prompts/`).** Every agentic handoff renders the
    canonical prompt per pending job. **Dispatch each file's contents VERBATIM** - a
@@ -91,7 +92,37 @@ the work directory; the exit-3 manifest's `work/` prefix is a convention resolve
    cache and makes progress (the `photo cache: X/Y` line tracks the parallel image pre-warm on
    media-heavy runs; several passes are normal). The gates and the freeze are never skipped. A
    changed input invalidates its stage automatically.
-5. **Repeat-handoff diagnosis:** when the same exit re-fires, the spine prints `[pending]`
+5. **Narrowing a re-run: `--from` and `--only`** (both optional; neither is needed on the
+   normal loop, because resume already skips what is current). They answer a different question
+   from `--resume`: not "is this output still current?" but "can the correction I just made even
+   REACH this stage?". Stage vocabulary, in pipeline order - `folder scan`, `extract`, `merge`,
+   `enrichment`, `repairs`, `projection`, `gates:pre`, `build`, `gates:post`, `deliver`, `qa`
+   (a typo stops the run and lists the valid spellings; note the space and the colon).
+   - `--from <stage>` puts every stage BEFORE it OUT OF SCOPE, **even under `--no-resume`**:
+     each of those reuses its existing output instead of re-deriving it. **What it guarantees
+     is REACH, not speed** - a stage put out of scope cannot be CHANGED by that pass. The cut
+     is applied by each stage's OWN skip guard rather than by jumping into the run, so an
+     out-of-scope stage still runs whatever sits outside that guard, and `extract` is the one
+     that matters: its BODY runs on every pass regardless (the readers dispatch, the photo
+     clustering, the interpretation manifest and the exit-3/9/10 handoffs), and only its
+     per-tracker record derivation consults the cut. So on a warm work dir `--from` is
+     behaviourally the SAME as the default resume, and its one measurable saving is under
+     `--no-resume`. Use it to STATE reach, never to go faster: `--from repairs` after a
+     `work/repairs.json` edit says, in the command itself, that the correction is applied
+     AFTER merge and therefore cannot change merge or enrichment. The spine PRINTS the valid
+     re-entry at every correction-expecting exit - prefer the printed line over composing your
+     own, and note that at exits 5, 6 and 15 it names BOTH channels, because the cut is valid
+     only when your fix is a repairs entry (an override, an answer, an edited input or any
+     code change is consumed at or before merge, so it needs the full pass).
+   - `--only <stage>[,<stage>...]` runs ONLY those stages; every other stage is put out of
+     scope, even under `--no-resume`, on exactly the terms above - including the extract-body
+     caveat, so `--only build` still pays the extract body.
+   - Both **REUSE** a skipped stage's existing output rather than re-deriving it, so the work
+     dir must already hold it: they are a re-entry shortcut on a WARM work dir, never a way to
+     run one stage on a cold one. On a first pass, pass neither.
+   - Neither can reach the **pre-build gates, the post-build gates, the freeze or the QA
+     window** - those ALWAYS run, however narrow the cut, so nothing ships unverified.
+6. **Repeat-handoff diagnosis:** when the same exit re-fires, the spine prints `[pending]`
    lines naming the guard's EXACT unmet predicates (persisted to `work/pending_diagnosis.json`)
    - satisfy those lines; never guess at what the guard reads.
 
@@ -133,6 +164,18 @@ When you feel the urge to improvise: re-run the same command, or read `gate1_sco
   `media/considered/` discard pile, sources.csv, notes.md with the repair key;
   `_unassigned/` holds deck pages no property claimed) answers "what did this card have to
   choose from". Full contract: `reference/per-property.md`.
+- **EXPECT this one: two UNNAMED units at ONE location need a hand-authored correction before
+  they can ship.** Two records for different buildings on the same site, neither stating a
+  unit designator, are kept APART by the matcher (an absent party name on both sides, and a
+  one-sided absence, are both out of the auto tier) and then COLLIDE at the blocking
+  card-title gate, because with no `unit` the two cards compose the same heading. That is BOTH
+  guards working correctly: a fusion is the one matcher error a reader can never see, and the
+  gate refuses to ship two cards a reader cannot tell apart. But it is a real operator cost
+  and an ordinary corpus of that shape pays it, so expect it rather than discovering it: the
+  run blocks at exit 6 naming the collision, and you then set `unit` per card in
+  `work/repairs.json` (the gate's own message names the entry) **from what the source actually
+  says** - never a designator you invented to clear the gate. Recoverable and correctly
+  diagnosed; not something to re-run past.
 
 ## Output discipline - quiet in Cowork
 
@@ -209,23 +252,36 @@ Email answers map to the Stage-1 `outlook_email_search` sub-agent via
 
 ## The QA window - the reviewers PROPOSE, you IMPLEMENT; the SPINE drives the rest
 
+**THE SHAPE, ON EVERY RUN WITHOUT EXCEPTION: spawn the independent review agents ONCE ->
+implement every blocking finding, plus any advisory that is cheap and material -> deliver.
+A SECOND REVIEW ROUND IS NEVER CORRECT.** There is no mechanism for one either: the spine
+records exactly one round, and a review file that changes after that round is recorded folds
+INTO it as additional findings rather than opening another.
+
 LOOP-DRIVEN - you never order these steps yourself:
 
 1. **Exit 14** - dispatch ONE fresh blind agent per rendered `work/prompts/g-*.md` file,
    concurrently. Each returns FINDINGS, every line labelled `blocking:` or `advisory:` by the
-   reviewer; a reviewer that finds nothing writes `FINDINGS: none`. Re-run.
+   reviewer; a reviewer that finds nothing writes `FINDINGS: none`. Re-run. **This is the one
+   dispatch of the run.**
 2. **Exit 15** - the spine ran `qa-round record` itself (Python never classifies a finding)
    and blocking findings are unresolved: **YOU implement each fix** and record it with
-   `qa-round resolve --work <work> --id <id> --because "<what you changed>"`. Re-run.
+   `qa-round resolve --work <work> --id <id> --because "<what you changed>"`. Re-run. This is
+   a fix loop INSIDE that one round; it never re-dispatches a reviewer.
 3. **Exit 0** - the spine re-delivered (advisories folded into "Known limitations") and
    `final_gate` went green. Done-done; a red final gate is exit 7 with reasons in
    `work/final_gate_report.md`.
 
-**Prohibitions:** do NOT re-dispatch a reviewer to "confirm the fix" (one review pass; the
-repair is recorded, not re-judged). Do NOT fix advisory findings to make them go away (an
-advisory is closed by appearing in the Gaps Report; strike one with `qa-round resolve` only
-when a blocking fix made it untrue). Do NOT use `--no-reviews` because a finding felt like
-friction (it prints `STATUS: DEGRADED`, never ALL-PASS). A recurring cosmetic finding is a
+**Which advisories to fix is YOUR judgement, and there is deliberately NO threshold for it.**
+An advisory that is ONE EDIT and changes what a reader CONCLUDES gets fixed - and then
+`qa-round resolve` it, or the Gaps Report asserts a defect the pack no longer has. Everything
+else ships DISCLOSED under "Known limitations", which is how an advisory is closed. Never work
+the advisory list for its own sake, and never fix one merely to make it go away.
+
+**Prohibitions:** do NOT re-dispatch a reviewer, for any reason - not to confirm a fix, not
+because the round read thin, not after implementing the findings (one review pass; the repair
+is recorded, not re-judged). Do NOT use `--no-reviews` because a finding felt like friction
+(it prints `STATUS: DEGRADED`, never ALL-PASS). A recurring cosmetic finding is a
 **template** bug - fix it once in `assets/dashboard_template.html` with an eval.
 
 ## Environment in one breath

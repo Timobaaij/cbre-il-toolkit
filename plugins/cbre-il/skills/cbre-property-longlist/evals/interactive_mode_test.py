@@ -180,7 +180,7 @@ check("xf-repair", not xq2 and reps[0]["set"] == {"warehouseArea": 230000}
 #    single-word foreign statuses like "Ja"/"Si" as must-translate, so no shape rule)
 check("address-ineligible",
       not C.is_translatable_value("address", "Calle de la Industria 5, Nave 3"))
-check("postcode-ineligible", not C.is_translatable_value("postcode", "NN17 3JG"))
+check("postcode-ineligible", not C.is_translatable_value("postcode", "QX41 9TN"))
 check("linkstub-ineligible", not C.is_translatable_value("brochureLink", "Brochure"))
 check("foreign-status-still-eligible", C.is_translatable_value("status", "Ja"))
 check("prose-still-eligible", C.is_translatable_value(

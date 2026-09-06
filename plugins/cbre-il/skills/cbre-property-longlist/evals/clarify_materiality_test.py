@@ -72,8 +72,10 @@ ck(not CQ.field_is_displayed("someOpenTrackerColumn") and not CQ.field_is_displa
 NEVER = {
     "area_unit": "display", "rent_unit": "display", "dataset_unit": "display",
     "value_format": "display", "source_authority": "count", "match_unsure": "count",
-    "photo_confirm": "display", "excluded_figure": "display", "record_count": "count",
+    "photo_confirm": "display", "excluded_figure": "display",
 }
+# `record_count` used to sit in this map. Its producer is deleted (a page-count trigger that
+# fired on most decks), so there is no kind left to classify - asserted in clarify_test.
 for kind, expect in sorted(NEVER.items()):
     q = {"id": "x", "kind": kind}
     ck(CQ.materiality(q) == expect and CQ.is_material(q),

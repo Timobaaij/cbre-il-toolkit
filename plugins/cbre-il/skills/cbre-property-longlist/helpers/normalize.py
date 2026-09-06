@@ -83,36 +83,108 @@ def clean_value(s: str) -> str:
     return re.sub(r"\s+", " ", str(s)).strip()
 
 
+# THE unknown-value family, in ONE place (fix plan contract C5). Members are lower-cased,
+# whitespace-trimmed and have trailing full stops stripped; the set is read ONLY through
+# looks_unknown() below, which applies exactly that normalisation. It is a NAME rather than an
+# inline literal so evals/f05_sentinel_parity_test.py can hold the chrome's JS `isAbsent` list
+# equal to it, member for member, and so the guard eval can tell the one legitimate literal from
+# a new private copy.
+#
+# The three members added in v41, and why:
+#   "??"          the sentinel THIS PIPELINE writes: intake stamps it on every cluster's country
+#                 and _common.REQUIRED_TEXT_SENTINELS writes it for an unresolved one. It was the
+#                 one sentinel the shared reader did not know, so six callers grew a private set
+#                 to add it, and those sets then disagreed with each other (measured: 13 of 22
+#                 probe values had at least two verdicts across the nine sites).
+#   "tba", "tbs"  the reader prompts say "only tbd/TBC/TBA/TBS mark a genuine unknown", so a
+#                 reader following its prompt ships them verbatim; no predicate agreed until now.
+# Deliberately NOT members:
+#   "none"/"None" a STATED NEGATIVE ("Sprinklers: None"). The extraction contract names it as
+#                 DATA, never an absence (reference/interpretation.md; prompts/reader-text.md).
+#                 Four consumers used to delete it through private sets; they now read this one.
+#   "bts"         built to suit, a real status (strike_disclosure_test pins it).
+#   "null"        appears only in run.py's import-failure fallback; never written by a reader.
+# The dash sentinel is spelled by its code point so this file never carries the character in
+# prose; it is the value fill_render_sentinels writes for landPrice.
+UNKNOWN_FORMS = frozenset({
+    "", "tbd", "tbc", "tba", "tbs", "??", "?", "\u2014", "-", "n/a", "na", "n.a", "poa",
+    "to be confirmed",
+    "a consultar", "consultar", "a convenir", "segun proyecto", "según proyecto", "sc",  # ES
+    "a consulter", "à consulter", "nous consulter", "sur demande", "nc", "n.c",          # FR
+    "auf anfrage", "k.a", "keine angabe",                                                 # DE
+    "su richiesta", "da definire", "in trattativa",                                       # IT
+    "op aanvraag", "n.v.t", "nvt",                                                         # NL
+    "sob consulta",                                                                        # PT
+    "do uzgodnienia", "do negocjacji",                                                     # PL
+})
+
+
+# THE ONE EXEMPTION, and it is a collision rather than a disagreement. Three members above are
+# also ASSIGNED ISO 3166-1 alpha-2 country codes. They earn their place in UNKNOWN_FORMS as
+# ordinary VALUE abbreviations - "n/a"; the French "nous consulter"; the Spanish family - and in a
+# rent or a spec cell that reading is right. In a field that holds a two-letter COUNTRY CODE it is
+# not: there the same two characters are a country.
+#
+# So the exemption is scoped to the reading, not to the value. `looks_unknown` keeps its answer
+# for every value context; `looks_unknown_code` is what a caller uses when the field it is judging
+# holds a CODE, and it declines to call a bare assigned alpha-2 code an unknown.
+#
+# WHY THIS EXISTS AT ALL: the v41 consolidation pointed `enrich._is_unknown_cc` at the shared
+# reader, and that test had deliberately NOT carried these three. Measured against the previous
+# release, `_is_unknown_cc` moved False -> True for all three, so a property in one of those
+# countries stopped being geocoded by country and dropped out of the country KPI. The shared
+# reader already answered True for them before the consolidation; what moved was the CALLER.
+# This is the narrower named predicate that consolidation should have delegated to.
+#
+# It is deliberately NOT a fourth private set: it is this same set minus a stated exemption, so a
+# form added above is picked up here too, and the guard eval sees one literal, not two.
+CODE_LIKE_EXEMPT = frozenset({"na", "nc", "sc"})
+
+
+def looks_unknown_code(s) -> bool:
+    """`looks_unknown`, for a field whose value is a two-letter CODE rather than prose.
+
+    Identical to `looks_unknown` except that a bare assigned ISO alpha-2 code is never an
+    unknown, even when the same two letters are also a market abbreviation for one. Anything
+    longer, and every other member of the family, is unchanged - so "n/a", "n.c." and a written
+    "a consultar" still read as unknown here, and only the bare two-letter form is exempt.
+
+    An ambiguity this cannot resolve, stated rather than hidden: a source that writes the bare
+    letters meaning "not applicable" in a country column is read here as that country. There is
+    no evidence in the cell to tell the two apart, and treating a stated country as absent is the
+    worse of the two errors - it silently drops a real property from the map and the KPI, where
+    the other way round shows a country a reader can see is wrong."""
+    t = str(s or "").strip().lower().rstrip(".")
+    if t in CODE_LIKE_EXEMPT:
+        return False
+    return looks_unknown(s)
+
+
 def looks_unknown(s) -> bool:
-    """True if a value is an explicit/effective unknown (multilingual).
+    """True if a value is an explicit/effective unknown (multilingual). THE shared predicate.
 
-    FOUR "unknown" SETS EXIST IN THIS SKILL AND THEY DO NOT ALL AGREE. Recorded here deliberately,
-    once, so nobody patches a FIFTH copy:
+    HISTORY, kept because the next reader will be tempted to repeat it. Until v41 this skill
+    carried SEVEN private copies of this set: here, `_common.is_translatable_value`, two inside
+    `build_dashboard.compute_kpis`, `deliver._is_tbd`, `enrich._is_unknown_cc` and the chrome's
+    JS `isAbsent` (plus `enrich._ok_region_city`, missed by every count). Measured on the live
+    code, `"??"` was DATA to this reader and UNKNOWN to every copy; `"n/a"`/`"TBC"` were DATA in
+    the hero KPI strip alone, so a source writing `n/a` for a country was counted as a country in
+    the headline; a stated `"None"` was deleted by four copies; `"TBA"`/`"TBS"` were DATA to all.
+    Every Python caller now delegates HERE, the JS list is pinned equal by
+    evals/f05_sentinel_parity_test.py, and evals/f05_no_private_sentinel_sets_test.py fails the
+    moment a new private literal appears under helpers/.
 
-      1. this function (~30 forms, and it has `"?"` but NOT `"??"`)
-      2. `deliver._is_tbd` = `looks_unknown(v) or str(v).strip() == "??"` (the Gaps Report)
-      3. `_common.is_translatable_value`'s inline set - HAS `"??"`
-      4. the template's JS `isAbsent` - HAS `"??"`
-
-    Only 3 and 4 agree. **Do NOT widen THIS set to reconcile them.** It has ~24 call sites and feeds
-    `_common.core_fill` -> `record_is_poor` -> **run.py's vision-routing probe**, so adding a form
-    here changes WHICH INPUT FILES THE LLM IS ASKED TO READ - a judgement-surface change disguised
-    as a sentinel tidy-up. That is why P1-3 widened `deliver._is_tbd` LOCALLY instead. If a caller
-    needs a broader set, widen it at that caller, exactly as `deliver._is_tbd` does.
+    THIS IS STILL A JUDGEMENT SURFACE. The set feeds `_common.core_fill` -> `record_is_poor` ->
+    run.py's vision-routing probe, so a form added here changes WHICH INPUT FILES THE LLM IS
+    ASKED TO READ. That is the correct place for the change to land (a record stuffed with a
+    genuine unknown IS thinner and SHOULD be re-read), but land it knowingly: add the form to
+    UNKNOWN_FORMS, re-run the parity eval, and never re-grow a set at a caller. A caller that
+    needs a NARROWER family (merge/repairs `_EXPECT_ABSENT`, which must still notice a market
+    phrase) names it and states why, as those two do.
     """
     if s is None:
         return True
-    t = str(s).strip().lower().rstrip(".")
-    return t in {
-        "", "tbd", "tbc", "—", "-", "n/a", "na", "n.a", "poa", "to be confirmed", "?",
-        "a consultar", "consultar", "a convenir", "segun proyecto", "según proyecto", "sc",  # ES
-        "a consulter", "à consulter", "nous consulter", "sur demande", "nc", "n.c",          # FR
-        "auf anfrage", "k.a", "keine angabe",                                                 # DE
-        "su richiesta", "da definire", "in trattativa",                                       # IT
-        "op aanvraag", "n.v.t", "nvt",                                                         # NL
-        "sob consulta",                                                                        # PT
-        "do uzgodnienia", "do negocjacji",                                                     # PL
-    }
+    return str(s).strip().lower().rstrip(".") in UNKNOWN_FORMS
 
 
 def sentinel(s, field=None):
@@ -142,10 +214,13 @@ RENT_MIN, RENT_MAX = 1.5, 500.0
 # cell / an eaten decimal), NOT to police real estate. A 300,000 sq m / 3.2M sq ft
 # mega-campus AND a 350 sq m last-mile unit both pass. The sq ft band is the sq m band
 # x ~10.764 (SQFT_PER_SQM) so a value converted between conventions never straddles the
-# boundary. acres are converted to sq ft at parse, then the sq ft band applies; ha are
-# converted to sq m, then the sq m band applies. NO clear-height band anywhere (real
-# warehouse clear heights legitimately exceed 24 m). All constants are module-level
-# next to RENT_MIN/MAX for one-line calibration tuning.
+# boundary. acres and ha are converted (to sq ft and to sq m respectively) BY THE PARSERS,
+# so extract_xlsx/vision_validate only ever band an already-resolved sq ft / sq m magnitude
+# - but a value that KEEPS its printed unit as a string is banded IN THAT PRINTED UNIT, so
+# "acres" and "ha" DO reach area_band_for live and carry their own derived bands. Assuming
+# otherwise here is what hid a live strike class; see area_band_for. NO clear-height band
+# anywhere (real warehouse clear heights legitimately exceed 24 m). All constants are
+# module-level next to RENT_MIN/MAX for one-line calibration tuning.
 AREA_SQM_MIN, AREA_SQM_MAX = 300, 600_000
 AREA_SQFT_MIN, AREA_SQFT_MAX = 3_000, 6_500_000
 # PLOT (site) areas get their OWN ceiling (T1): a logistics PARK site of 60-180 ha
@@ -200,6 +275,15 @@ _SQFT_RX = re.compile(r"sq\.?\s*ft|sqft|\bft2\b|ft²|square\s+f[eo]+t|\bpsf\b", 
 _SQM_RX = re.compile(r"sq\.?\s*m\b|sqm|\bm2\b|m²|square\s+met", re.I)
 _ACRE_RX = re.compile(r"\bacres?\b", re.I)
 _HA_RX = re.compile(r"\bha\b|hectare", re.I)
+# a LONE "ft" (a bare column suffix, "ft/yr"), which _SQFT_RX deliberately does not match
+# because on its own it is not an area unit. Kept ONLY as area_band_for's back-compat
+# fallback, and its scope is exactly that: a string carrying a STANDALONE `ft` token keeps
+# the imperial band it got under that function's old `"ft" in unit` substring test. It does
+# NOT preserve the band for every string the substring test widened, because the substring
+# test also widened strings with no unit in them at all - `draft`, `left`, `loft`, `shaft`,
+# `aft`, `soft`, `shift`, `gift`, `lift`, `oft`, `after`, `crafted`, `rafters`, `fifty` and
+# any other word with `ft` inside it. Those correctly lose it. See area_band_for.
+_BARE_FT_RX = re.compile(r"\bft\b", re.I)
 _GBP_RX = re.compile(r"£|\bgbp\b", re.I)
 _EUR_RX = re.compile(r"€|\beuros?\b|\beur\b", re.I)
 
@@ -243,18 +327,102 @@ def rent_unit_band(unit: str | None) -> tuple[float, float]:
 
 
 def area_band_for(unit: str | None, field: str | None = None) -> tuple[float, float]:
-    """Plausibility band for a stored AREA magnitude in the given unit (the twin of
-    rent_band_for). sq ft (and acres, which are stored as sq ft) -> (3,000, 6,500,000);
-    sq m (and ha, stored as sq m) and any unknown/None unit -> (300, 600,000). A coarse,
-    deliberately WIDE backstop: it catches only a gross unit error or a parse-garble, never
-    a legitimate big logistics campus or a small urban unit. NEVER auto-converts.
+    """Plausibility band for a stored AREA magnitude IN THE UNIT IT IS STORED IN (the twin of
+    rent_band_for). A coarse, deliberately WIDE backstop: it catches only a gross unit error or
+    a parse-garble, never a legitimate big logistics campus or a small urban unit. NEVER
+    auto-converts.
 
-    `field` widens the CEILING for `plotArea` (T1): a SITE is not a building, and park
-    sites of 60-180 ha are routine, so plots use PLOT_SQM_MAX / PLOT_SQFT_MAX instead of
-    the building ceiling that struck two correct printed plot areas on a live run."""
-    if unit and "ft" in str(unit):
-        return AREA_SQFT_MIN, (PLOT_SQFT_MAX if field == "plotArea" else AREA_SQFT_MAX)
-    return AREA_SQM_MIN, (PLOT_SQM_MAX if field == "plotArea" else AREA_SQM_MAX)
+      sq ft                            -> (3,000, 6,500,000)
+      sq m, and any unknown/None unit  -> (300, 600,000)
+      acres                            -> the sq ft band / SQFT_PER_ACRE  (0.0689, 149.2194)
+      ha                               -> the sq m band  / SQM_PER_HA     (0.03, 60)
+
+    A VALUE THAT KEEPS ITS PRINTED UNIT IS JUDGED IN THAT PRINTED UNIT. This docstring used to
+    assert "sq ft (and acres, which are stored as sq ft); sq m (and ha, stored as sq m)". That
+    is true of a figure a PARSER converted - extract_xlsx resolves acres->sq ft and ha->sq m at
+    the cell before it bands, and canonical.schema.json enums `areaUnit` to sq m / sq ft, so a
+    caller reading a CANONICAL property genuinely never presents an acre - and it is FALSE of a
+    string value that prints its own unit. (It is also false of vision_validate, which an
+    earlier revision of this line named alongside extract_xlsx: that caller converts nothing and
+    reads `areaUnit` straight off a vision record no enum has screened, so acres and ha do reach
+    it. It is a warnings-only path, and the claim is corrected here rather than relied on.)
+    merge treats such a value as a supported shape and renders it
+    verbatim, deriving its unit from INSIDE the string with area_unit_of, which returns "acres"
+    or "ha". With no acres/ha branch here they fell through to the sq m band, so a printed
+    "50 acres" or "12.8 ha" plot was measured against a floor of 300, FAILED, and was struck to
+    the unknown sentinel with a ledger row telling the reader the source's own printed figure
+    looked implausible and should be checked; the honesty report then counted the field as one no
+    source had provided. A BAND THAT STRIKES A CORRECT PRINTED FIGURE AND THEN REPORTS IT AS
+    ABSENT IS WORSE THAN NO BAND AT ALL: it converts a present, sourced value into a CONFIDENT
+    FALSE ABSENCE, which is the single failure this module exists to prevent. The assertion being
+    written as settled fact is precisely why the hole survived review, so what is actually true
+    is now stated instead, per unit and per caller.
+
+    `field` widens the CEILING for `plotArea` (T1): a SITE is not a building, and park sites of
+    60-180 ha are routine, so plots use PLOT_SQM_MAX / PLOT_SQFT_MAX instead of the building
+    ceiling that struck two correct printed plot areas on a live run. Because the derived units
+    divide whichever pair `field` selected, that widening carries into them by construction
+    (a plot allows 2,525 acres / 1,000 ha against a building's 149 acres / 60 ha), so a plot
+    ceiling stays wider than a building ceiling in EVERY unit and cannot be forgotten for one.
+    """
+    # EVERY boundary is DIVIDED out of the sq ft / sq m pairs above, never typed. Two structural
+    # reasons. (1) No drift: recalibrating AREA_SQFT_MAX moves the acres ceiling with it, so the
+    # bands cannot fall out of step with each other the way this docstring fell out of step with
+    # the code. (2) EXACT division is what makes a straddle impossible - `x` acres passes iff
+    # `x * SQFT_PER_ACRE` sq ft passes, identically - whereas rounding these quotients to tidy
+    # numbers would REINTRODUCE the straddle the sq ft band is rounded outward to avoid. The
+    # ragged 0.0688705 / 149.2194 are therefore deliberate, not unfinished.
+    # acres ride the IMPERIAL pair and ha the METRIC one, matching the conversion each unit
+    # actually takes at parse (_AREA_IN_SQFT: acres -> sq ft, ha -> sq m). Deriving ha from the
+    # sq ft pair instead would put its ceiling at 60.39 ha, and 60.2 ha would then pass as ha
+    # while failing as the 602,000 sq m it converts to: the exact straddle this ordering avoids.
+    sqft = (AREA_SQFT_MIN, PLOT_SQFT_MAX if field == "plotArea" else AREA_SQFT_MAX)
+    sqm = (AREA_SQM_MIN, PLOT_SQM_MAX if field == "plotArea" else AREA_SQM_MAX)
+    # The unit is canonicalised through area_unit_of, this module's ONLY authority on what a unit
+    # string means, so a band can never disagree with the parser that produced the unit it bands.
+    # That also TIGHTENS the old `"ft" in str(unit)` substring test, which was loose in BOTH
+    # directions: it read "draft"/"left" as square feet, and it MISSED the real spellings
+    # "square feet" and "psf" that area_unit_of does resolve. Tightening matters most for the new
+    # units: copying that looseness as `"ha" in unit` would read a "gross hall area" column as
+    # HECTARES and strike a 40,000 sq m shed against a 60 ha ceiling - the same false-absence bug
+    # in a new place. area_unit_of already matches acres and ha on WORD BOUNDARIES, which is
+    # exactly the tightness required, for free and with no second spelling table to drift.
+    # THE BARE-"ft" FALLBACK, and precisely what it does and does not preserve. _SQFT_RX does
+    # not match a lone "ft", so without the fallback a real bare-suffix column header ("ft",
+    # "ft/yr", "area ft") would drop from the imperial band to the metric one - and a NARROWER
+    # band is the direction that strikes data, so that class must not lose it. The fallback is
+    # word-boundaried, which is the whole of its scope: it preserves the band for any string
+    # carrying a STANDALONE imperial token, and for nothing else.
+    #
+    # IT DOES NOT PRESERVE THE BAND FOR EVERY STRING THE SUBSTRING TEST WIDENED, and an earlier
+    # version of this comment claimed it did - "no string that got the sq ft band under the
+    # substring test may lose it here". That is false, and this file's own eval pins one of the
+    # counterexamples (strike_disclosure_test asserts `area_band_for("draft")` is the METRIC
+    # band). `"ft" in unit` widened every word with `ft` buried in it: `draft`, `left`, `loft`,
+    # `shaft`, `aft`, `after`, `crafted`, `fifty`, `rafters`, `soft`, `shift`, `gift`, `lift`,
+    # `oft` - fourteen confirmed by execution, and the class is unbounded, not fourteen strings
+    # long. All of them move from the imperial band to the metric one, which is CORRECT: none
+    # is a unit, so none should ever have had the imperial band, and the metric band is what
+    # this function gives every unrecognised unit. It is also unreachable at every production
+    # caller, because the only strings that arrive here are a column header or unit cell that
+    # `area_unit_of` already failed to resolve, and for those the metric band is the documented
+    # unknown-unit answer. What matters and is true: no REAL imperial spelling loses its band,
+    # and the tightening additionally FIXES the substring test's other half, which MISSED
+    # "square feet" and "psf" entirely.
+    #
+    # Writing a false universal as settled fact is what let the original acres/ha hole survive
+    # review two comments above this one, so the claim here is the one that was verified by
+    # running it, not the one that reads more reassuringly.
+    u = area_unit_of(unit) or ("sq ft" if _BARE_FT_RX.search(str(unit or "")) else None)
+    if u == "acres":
+        return sqft[0] / SQFT_PER_ACRE, sqft[1] / SQFT_PER_ACRE
+    if u == "ha":
+        return sqm[0] / SQM_PER_HA, sqm[1] / SQM_PER_HA
+    if u == "sq ft":
+        return sqft
+    # sq m AND every unknown/absent/unrecognised unit: unchanged, ints kept as ints so the
+    # back-compat equality pins (`== (300, 600_000)`) stay byte-identical rather than merely equal.
+    return sqm
 
 
 def area_magnitude_mismatch(value, unit: str | None) -> str | None:
@@ -301,6 +469,48 @@ def rent_display(val: float, unit: str | None = None) -> str:
 def rent_unit_str(currency: str | None, per_area: str | None) -> str:
     """'cur/per/yr' unit string; unstated parts default to the €/sq m convention."""
     return f"{currency or '€'}/{per_area or 'sq m'}/yr"
+
+
+# D11: the currency a market quotes industrial rents in, by ISO country, for the ONE case where
+# no source states a rent unit at all. Deliberately short. GB quotes in pounds and the US in
+# dollars; the eurozone quotes in euros, and so do the CEE markets (PL, CZ, HU, RO, SK), whose
+# industrial rents are quoted in EUR even though the local currency is not - which is why the
+# old fixed "€/sq m/yr" fallback was RIGHT for every CEE run and wrong only when the corpus
+# left Europe's euro-quoting markets. Everything not listed keeps the euro: a table entry is a
+# claim about a market, and an unlisted market shipping the euro default is at least the
+# convention this pipeline has always shipped, disclosed as an assumption by the caller.
+_DEFAULT_RENT_CURRENCY = {"GB": "£", "US": "$"}
+
+
+def default_rent_unit(area_unit: str | None, country: str | None) -> str:
+    """The rent-unit string a dataset FALLS BACK TO when no source states one. (D11)
+
+    THE DEFECT. `merge.dominant_units` ended in a fixed "€/sq m/yr" whenever no record stated a
+    `rentUnit`, whatever the country and whatever the dominant AREA unit it had just resolved on
+    the line above. A 100% GB, 100% sq ft brochure corpus that quoted no rents shipped "per sq m /
+    year" in the hero HEADLINE RENT KPI and "tbd / SQ M / YR" in all nine card footers, in euros,
+    on a UK longlist - and `rentUnit` is denied to both correction channels, so the operator could
+    not correct it and shipped it disclosed by hand. It fires on EVERY imperial-market run that
+    quotes no rents, which is most UK brochure-only corpora.
+
+    THE RULE, from evidence the records already carry rather than a constant:
+      * the PER-AREA basis follows the dominant AREA unit - a market that measures buildings in
+        sq ft quotes rent per sq ft (UK, IE, US), one that measures in sq m quotes per sq m;
+      * the CURRENCY follows the dominant country through `_DEFAULT_RENT_CURRENCY`, euro when the
+        country is unlisted or unknown.
+    The result is always one of the 'cur/per/yr' strings `rent_unit_band`, `rent_display` and the
+    chrome already read ("£/sq ft/yr", "€/sq m/yr", "$/sq ft/yr", "€/sq ft/yr" for Ireland), so
+    nothing downstream meets a new vocabulary.
+
+    WHAT THIS IS NOT. It is a DEFAULT, i.e. an assumption, never a source statement: the caller
+    that adopts it records it in `canonical.meta.unitAssumptions` (field "rentUnit") so the Gaps
+    Report discloses it, exactly as an assumed area unit is disclosed. It is never stamped on a
+    property's own `rentUnit` - a unit-silent rent figure keeps rendering "(unit not stated)"
+    (B06), because a default basis for the LABELS is defensible and a default currency on a
+    NUMBER is invention."""
+    per = "sq ft" if str(area_unit or "").strip().lower() in ("sq ft", "sqft", "sf") else "sq m"
+    cc = country_iso(country) if country and not looks_unknown_code(country) else ""
+    return rent_unit_str(_DEFAULT_RENT_CURRENCY.get(cc, "€"), per)
 
 
 def rent_unit_of_text(text) -> str | None:

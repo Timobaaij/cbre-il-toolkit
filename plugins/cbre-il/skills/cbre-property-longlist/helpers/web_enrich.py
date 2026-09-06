@@ -41,10 +41,12 @@ Nominatim/Overpass/OSRM/ORS API hosts.) This helper
          genuine-nearest POIs and real routed drive times with zero sandbox
          network.
 
-ONE round: the fetcher page SELF-CHAINS - it geocodes the unresolved cities,
-derives the route targets itself from the embedded POI dataset (same data +
-caps as the build), fetches the routes, and returns a single self-describing
-seeds bundle (v2). The geocode->routes dependency that used to force a second
+ONE round: the fetcher page SELF-CHAINS - it geocodes the unresolved cities
+(and, where a record states a postcode, the POSTCODE first, keyed on the
+locality cache key, with the town name only as a fallback - D9), derives the
+route targets itself from the embedded POI dataset (same data + caps as the
+build), fetches the routes, and returns a single self-describing seeds bundle
+(v2). The geocode->routes dependency that used to force a second
 round-trip is resolved inside the page. run.py exits 8 whenever fulfilable
 requests are pending, so a build can never silently ship without the
 enrichment the broker asked for.
@@ -175,9 +177,22 @@ async function runChain() {{
   const geocoded = [];  // PASS-B population: phase-1-resolved points only
   for (const p of props.filter(x => x.geocode_url)) {{
     try {{
-      const body = await fetchOne({{id: "geocode " + p.geokey, url: p.geocode_url}}, 1);
+      let body = await fetchOne({{id: "geocode " + p.geokey, url: p.geocode_url}}, 1);
       seeds.geocode.push({{key: p.geokey, body}});
-      const arr = JSON.parse(body);
+      let arr = JSON.parse(body);
+      if (!arr.length && p.fallback_url) {{
+        // POSTCODE FALLBACK (D9): the stated postcode is unknown to the geocoder. The empty
+        // answer above is memoised under the LOCALITY key (a negative memo, so this round never
+        // re-asks it; the live helper still does when it can reach the geocoder), and the TOWN
+        // name is asked next under the CITY key - its own key, so a town-level answer never
+        // lands under a locality key. One round settles both.
+        await sleep(THROTTLE.nominatim);
+        log("NOTE geocode " + p.geokey + ": postcode not recognised - falling back to the town name");
+        p.geokey = p.fallback_key;
+        body = await fetchOne({{id: "geocode " + p.geokey, url: p.fallback_url}}, 1);
+        seeds.geocode.push({{key: p.geokey, body}});
+        arr = JSON.parse(body);
+      }}
       if (arr.length) {{
         p.lat = parseFloat(arr[0].lat); p.lng = parseFloat(arr[0].lon);
         p.cc = String(((arr[0].address || {{}}).country_code) || "").toUpperCase();
@@ -347,27 +362,92 @@ def _chain_spec(canonical: dict, args) -> dict:
     # - still got a geocode_url, so `chain_work` stayed true and exit 8 was re-emitted forever
     # even though there was nothing left to learn. A cached key is settled, either way.
     _gcache = E._load_cache(E.GEOCODE_CACHE)
+    from urllib.parse import urlencode
+
+    def _postcode_request(p, city, country, known):
+        """(locality key, url) for the record's STATED postcode while it is UNSETTLED, else
+        None. Settledness is a fact about the postcode QUERY, so the key it is tested under
+        is the LOCALITY key - the same key `cmd_ingest` writes the answer back under, and the
+        one `enrich._cache_lookup_key` reads first. The URL is built from the same parameter
+        dict the live helper uses (`enrich._postcode_query`), so the browser makes exactly
+        the request the sandbox could not. An unknown country is never asked: a postal code
+        is only unambiguous within a country."""
+        code = E._locality_code(p)
+        if not code or not known:
+            return None
+        lk = E._geo_key(city, country, code)
+        if lk in _gcache:
+            # a pin (already on the card) or a negative memo: THIS ROUND never re-asks it (B02,
+            # a present key is settled here or one unknown code livelocks exit 8). The LIVE
+            # helper does re-ask a negative memo whenever it can reach the geocoder
+            # (`enrich.geocode` guards on the coordinate, not on key presence), so the memo is
+            # not a permanent claim on the slot; it only stops this round re-emitting.
+            return None
+        return lk, ("https://nominatim.openstreetmap.org/search?"
+                    + urlencode(E._postcode_query(code, country)))
+
     for p in canonical.get("properties", []):
         country = str(p.get("country", "")).strip()
         known = not E._is_unknown_cc(country)
         # known/country travel to the page so its PASS B can spot unknown-country
         # outliers and constrain the re-query to the dominant country (P2-8)
         ent = {"id": p.get("id"), "known": known, "country": country}
+        city = str(p.get("city", "")).strip()
+        city_ok = bool(city) and not E._is_unknown_cc(city)
         if isinstance(p.get("lat"), (int, float)) and isinstance(p.get("lng"), (int, float)):
             ent["lat"], ent["lng"] = p["lat"], p["lng"]
+            # AN APPROXIMATE PIN WITH A STATED POSTCODE STILL HAS A QUESTION OPEN. (D9 / D10)
+            # In Cowork the helper-side network is dead by design, so `enrich --geocode` fills
+            # every European town from the bundled gazetteer and the property arrives here
+            # PINNED - which used to mean "nothing to ask", and the postcode was never asked
+            # anywhere: the town centroid shipped 9 km across a county line with the wrong
+            # workforce panel. So a pin flagged `coordsApprox` whose stated postcode is
+            # unsettled gets a postcode request keyed on the LOCALITY key; `ingest` writes the
+            # answer back under it and the next `enrich --geocode` displaces the town pin
+            # (D10). The town pin travels too, so the routes phase still has an origin if the
+            # postcode returns nothing; a precise stated coordinate (`coordsApprox` false) is
+            # never re-asked.
+            pc = (_postcode_request(p, city, country, known)
+                  if (p.get("coordsApprox") and city_ok) else None)
+            if pc:
+                ent["city"] = city
+                ent["geokey"], ent["geocode_url"] = pc
         else:
-            city = str(p.get("city", "")).strip()
-            if not city or E._is_unknown_cc(city):
+            if not city_ok:
                 continue  # nothing to geocode - stays an honest gap
-            if f"{city}|{country}".lower() in _gcache:
+            # DELIBERATELY THE CITY KEY for the TOWN query, not the locality key
+            # `enrich._geo_key` can build. This test asks "has this QUERY been settled", and the
+            # query below is the CITY name - so settledness is a fact about the city, and a
+            # locality key here would stop a city-level NEGATIVE memo from suppressing the
+            # request. That is exactly the B02 livelock: `geocode: true` is the default in
+            # every generated project.yaml, so one mis-parsed city cell that is re-asked every
+            # round kept the whole run emitting exit 8 forever. A property whose LOCALITY is
+            # seeded already has its coordinate filled by `enrich --geocode`, so it never
+            # reaches this line at all. (G1)
+            #
+            # POSTCODE FIRST (D9): a record that states a postcode asks for THAT under the
+            # locality key, and carries the town query only as a FALLBACK the page uses when
+            # the postcode returns nothing - so one round settles both questions, each under
+            # its own key, and a town answer can never land under the locality key.
+            pc = _postcode_request(p, city, country, known)
+            city_settled = f"{city}|{country}".lower() in _gcache
+            if not pc and city_settled:
                 continue  # already asked and answered (a hit OR a 'not found') - never re-ask
-            from urllib.parse import urlencode
             q = {"q": city, "format": "json", "limit": 1, "addressdetails": 1}
             if known:
                 q["countrycodes"] = country.lower()
+            city_url = "https://nominatim.openstreetmap.org/search?" + urlencode(q)
             ent["city"] = city
-            ent["geokey"] = f"{city}|{country}".lower()
-            ent["geocode_url"] = "https://nominatim.openstreetmap.org/search?" + urlencode(q)
+            if pc:
+                ent["geokey"], ent["geocode_url"] = pc
+                if not city_settled:
+                    ent["fallback_key"] = f"{city}|{country}".lower()
+                    ent["fallback_url"] = city_url
+            else:
+                if f"{city}|{country}".lower() in _gcache:
+                    continue  # (unreachable after the test above; kept as the documented guard)
+                ent["geokey"] = f"{city}|{country}".lower()
+                ent["geocode_url"] = city_url
         props.append(ent)
     pois = []
     ds = E._poi_dataset()
@@ -420,12 +500,40 @@ def cmd_plan(args) -> int:
         gcache = E._load_cache(E.GEOCODE_CACHE)
         seen_g = set()
         for p in canonical.get("properties", []):
-            if isinstance(p.get("lat"), (int, float)):
-                continue
             city = str(p.get("city", "")).strip()
             country = str(p.get("country", "")).strip()
             if not city or E._is_unknown_cc(city):
                 continue
+            pinned = isinstance(p.get("lat"), (int, float))
+            # POSTCODE REQUEST (D9), keyed on the LOCALITY key, for a record that states a
+            # postcode and either has no pin yet or sits on an approximate town pin. The
+            # static per-request tier is the transport the orchestrator tries FIRST (the
+            # Playwright data: URL fetcher), so it must carry the postcode too or the fix
+            # would only reach the browser page. Same URL as the live helper and the chain
+            # (`enrich._postcode_query`); `cmd_ingest` writes the answer back under `key`,
+            # and an empty answer becomes the locality-level negative memo there. A precise
+            # stated coordinate (`coordsApprox` false) is never asked.
+            code = E._locality_code(p)
+            if (code and not E._is_unknown_cc(country)
+                    and (not pinned or p.get("coordsApprox"))):
+                lk = E._geo_key(city, country, code)
+                if lk not in gcache and lk not in seen_g:
+                    seen_g.add(lk)
+                    _lurl = ("https://nominatim.openstreetmap.org/search?"
+                             + urlencode(E._postcode_query(code, country)))
+                    requests_out.append({
+                        "id": f"geo_{_safe(lk)}", "kind": "nominatim", "key": lk,
+                        "url": _lurl,
+                        "save_as": f"geo_{_safe(lk)}.json",
+                        "data_url": _data_url(_lurl),
+                    })
+            if pinned:
+                continue
+            # CITY-KEYED for the same reason as `_chain_spec` above: the request this key
+            # guards queries the CITY name, so a locality key would un-inherit the city-level
+            # negative memo and re-open the B02 exit-8 livelock. The answer is written back
+            # under this same key by `cmd_ingest`, which keeps the plan, the bundle and the
+            # cache in one vocabulary. (G1)
             gkey = f"{city}|{country}".lower()
             if gkey in gcache or gkey in seen_g:
                 continue

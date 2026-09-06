@@ -93,6 +93,18 @@ matters, because most of the data needs no network at all:
   Nominatim. On an ONLINE host where Python reaches the web,
   `python helpers/seed_geocode.py coords.json --cache-dir <work>` seeds the cache from a real
   geocoder result.
+- **A coordinate finer than a town centre comes in through the SAME seam, and only if you
+  supply it.** Every offline source above answers at CITY level, so two options in one town
+  share one pin unless something states otherwise. A `seed_geocode.py` row may carry an
+  optional `postcode`, which lands it on the locality cache key `city|country|<code>` that
+  `enrich --geocode` prefers for the properties stating that same code (G1). This is the
+  established orchestrator-fetches / pipeline-consumes pattern, the same one
+  `<work>/regions_cache.json` uses: real geocoder results, fetched with whatever tool has a
+  network, never a model estimate. It is OFF unless you seed it, it is per-project rather than
+  hardcoded, it adds NO network dependency to the default path, and it is country-neutral - a
+  market that quotes no postal codes is unaffected in every respect. There is deliberately no
+  national postcode-lookup API wired in: that would work in one market and be wrong everywhere
+  else.
 - **POIs: NO network at all.** `assets/poi_dataset.json.gz` bundles COMPLETE datasets (all
   scheduled airports worldwide via OurAirports, all ports, all SGKV intermodal terminals -
   ~6,900 facilities), so the genuine nearest air/port/rail is a pure offline computation

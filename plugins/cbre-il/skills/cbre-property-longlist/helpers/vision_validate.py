@@ -350,7 +350,27 @@ def validate(work: Path, source_dir: Path | None = None) -> tuple[list[str], lis
                 v = r.get(fld)
                 if isinstance(v, (int, float)):
                     _au = r.get("areaUnit") or "sq m"
-                    _alo, _ahi = N.area_band_for(_au)
+                    # `field=fld` is load-bearing, not tidiness: a SITE is not a building, so
+                    # plotArea takes PLOT_SQM_MAX / PLOT_SQFT_MAX. Omitting it judged every
+                    # plot against the BUILDING ceiling, which is the T1 false-absence class
+                    # one layer down - a 630,000 sq m park plot, or a 400-acre park site, both
+                    # called routine by normalize's own band commentary, drew a "re-check the
+                    # read" advisory telling a reviewer to doubt a figure the page plainly
+                    # prints. This is a printed WARNING and never a strike, so the cost was
+                    # reviewer time and the band's credibility rather than data; a band that
+                    # cries wolf is still a band nobody reads.
+                    # `field` can only ever WIDEN the ceiling and never touches the floor, so
+                    # adding it here cannot newly warn about anything.
+                    # WHAT IS NOT FIXED HERE, stated rather than assumed: this is also the one
+                    # `area_band_for` caller that does NOT union the unit-aware band with the
+                    # unit-unknown one the way merge's gate does, and `areaUnit` on a vision
+                    # record is NOT checked against the canonical enum anywhere above, so a
+                    # transcription is free to hand this line "acres", "ha" or "sq ft". Knowing
+                    # the unit is therefore not monotonic here - the sq ft branch raises the
+                    # FLOOR from 300 to 3,000 - and a 1,200 sq ft record can draw a spurious
+                    # advisory. That predates this line and is out of scope for a warning-only
+                    # path; the union belongs here too if this ever becomes an errors[] check.
+                    _alo, _ahi = N.area_band_for(_au, field=fld)
                     if not (_alo <= v <= _ahi):
                         warnings.append(f"{tag}: {fld} {v} outside the plausibility band "
                                         f"({_alo:g}-{_ahi:g} {_au}) - re-check the read")

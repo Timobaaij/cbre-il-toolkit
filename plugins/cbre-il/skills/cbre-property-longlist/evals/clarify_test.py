@@ -70,12 +70,26 @@ def main() -> int:
        "each question offers concrete options AND states what happens with no answer")
     ck(not Q.unit_questions([stated]), "a fully-stated record asks nothing")
 
-    # a perception call goes to the AGENT, not the broker
-    rc = Q.record_count_questions({"deck.pdf": 8}, {"deck.pdf": [silent_area]})
-    ck(len(rc) == 1 and rc[0]["asked_of"] == "agent",
-       "an 8-page deck yielding 1 property is an AGENT perception question")
-    ck(not Q.record_count_questions({"deck.pdf": 4}, {"deck.pdf": [1, 2, 3]}),
-       "a proportionate deck asks nothing (no crying wolf)")
+    # THE record_count PRODUCER IS DELETED, and its absence is pinned rather than left to
+    # chance. It generated a question no consumer could act on, and nothing called it: its
+    # trigger was `pages >= 2 * records`, which is not evidence (a six-page brochure for ONE
+    # property is the normal case) and which fired on a legitimate 2-page/2-record deck in
+    # this very suite. A channel that cries wolf costs a round-trip every time and trains the
+    # reader to skim the questions that are precise. The capability is not lost: the reader
+    # that actually saw the deck raises "is this one property or two" itself through
+    # `__meta.doubts`, where `_COUNT_TOKENS` recognises it and it classifies "count".
+    ck(not hasattr(Q, "record_count_questions"),
+       "the record_count producer is GONE, not left dead for someone to wire wrongly")
+    ck("record_count" not in Q.KINDS and "record_count" not in Q.KIND_MATERIALITY,
+       "...and so are its KINDS / KIND_MATERIALITY entries")
+    ck(any(t in Q._COUNT_TOKENS for t in ("one property", "two properties", "how many")),
+       "the count lexicon that replaces it still recognises the question it wanted asked")
+    # a NON-BLOCKING question, for the convergence fixture below: asked once, then the run
+    # ships the honest gap. photo_confirm carries that contract now that record_count is gone.
+    rc = Q.photo_confirm_questions([{"brochure": "b.pdf", "property_key": "gamma",
+                                     "park": "Gamma"}])
+    ck(len(rc) == 1 and not Q.is_blocking(rc[0]),
+       f"a photo confirmation is the NON-blocking shape ({len(rc)})")
 
     # SOURCE AUTHORITY (B47). This takes NAMED EXTRAS computed from settled clusters, not raw
     # record counts. The old counts form asked before clustering, so a brochure record that
@@ -151,7 +165,7 @@ def main() -> int:
        "the id survives a changed VALUE (or the answer is orphaned and we ask twice)")
 
     # --- CONVERGENCE ------------------------------------------------------------
-    allq = qs + rc + sa            # 2 unit + 1 record_count + 1 source_authority
+    allq = qs + rc + sa            # 2 unit + 1 photo_confirm + 1 source_authority
     ck(len(Q.pending(d, allq)) == 4, f"round 1: every question is pending ({len(allq)})")
     Q.emit(d, Q.pending(d, allq))
     ck((d / Q.QUESTIONS_FILE).exists(), "one batched hand-off file is written")
@@ -187,7 +201,7 @@ def main() -> int:
     d2 = Path(tempfile.mkdtemp(prefix="cbre_clr2_"))
     Q.emit(d2, Q.pending(d2, allq))
     still = {q["kind"] for q in Q.pending(d2, allq)}
-    ck("record_count" not in still,
+    ck("photo_confirm" not in still,
        "converges: a NON-blocking question is never asked twice (the original bound holds)")
     ck(still == {"area_unit", "rent_unit", "source_authority"},
        f"...but every BLOCKING question comes back until it is decided ({sorted(still)})")

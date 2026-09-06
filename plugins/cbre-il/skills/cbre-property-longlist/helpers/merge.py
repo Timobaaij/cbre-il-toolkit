@@ -47,6 +47,15 @@ COMM_RANK = {"email": 0, "msg": 0, "xlsx": 1, "pdf": 2, "pptx": 3, "image": 4, "
 # SPEC_RANK. PDF stays the preferred FIELD source.
 IMG_RANK = {"pptx": 0, "image": 1, "pdf": 2, "web": 3, "xlsx": 4, "email": 5, "msg": 5}
 
+# A20: the most pages of ONE deck `prewarm_images` enumerates geometry/gallery units for. A
+# guard against a 400-page portfolio document burning the whole budget on pages no property will
+# ever claim, not a statement about how long a brochure can be. It was an unnamed literal `80`
+# written twice inside the enumeration, where nothing said it was a cap at all: the count it
+# produced was then reported as the corpus TOTAL, so a longer deck's later pages were silently
+# outside the figure the caller printed as completeness. Named here so the cap is visible, is one
+# number, and can be read by the code that has to report what it did NOT look at.
+PREWARM_MAX_DECK_PAGES = 80
+
 # a seeded library POI farther than this from EVERY property is not this dataset's
 # region (we never surface a 'nearest' POI beyond ~this range anyway), so it is
 # dropped. Region-neutral: pure distance, no place names or country adjacency.
@@ -107,11 +116,25 @@ def _normalise_offspec(rec: dict) -> dict:
 _BREEAM_GRADE = re.compile(r"\b(?:pass|good|very\s+good|excellent|outstanding|unclassified)\b", re.I)
 _EPC_BAND = re.compile(r"^(?:target\s+)?(?:epc\s*)?[A-G]\+?$", re.I)
 _EPC_TOKEN = re.compile(r"\bepc\b[\s:.\-]*", re.I)
-_CERT_SENTINELS = {"", "tbd", "tbc", "—", "-", "??", "n/a", "none", "null"}
 
 
 def _cert_unknown(v) -> bool:
-    return v is None or str(v).strip().lower() in _CERT_SENTINELS
+    """Is a certification slot (breeam / epc) free, i.e. holding no stated value? (SEAM-13)
+
+    Delegates to the shared family, `normalize.looks_unknown`, with the VALUE reading. A
+    certification is prose ("Very Good", "A+", "Target A"), not a code, so the two-letter
+    exemption `looks_unknown_code` carries for country codes has no counterpart here: a bare
+    "na" in a BREEAM cell is "not applicable", which is exactly an unknown.
+
+    What moved when the private set went. "tba", "TBS", "?", "na", "poa" and the market
+    phrases now read as EMPTY (they are the reader prompts' own unknown markers, and the
+    private set missed them, so a slot holding "TBA" refused a re-filed grade). A stated
+    "none"/"None" now reads as OCCUPIED: the extraction contract names it a stated negative
+    (this building has no BREEAM rating), and `_route_certifications` must not overwrite it
+    with a value that arrived in the wrong field; the misfiled value goes to __meta.offspec
+    instead, where it is audited rather than lost. "null" is never written by a reader
+    (run.py's import-failure fallback only), so its exit changes nothing measurable."""
+    return N.looks_unknown(v)
 
 
 def _route_certifications(rec: dict) -> dict:
@@ -156,8 +179,17 @@ def _route_certifications(rec: dict) -> dict:
               "an EPC letter band is not a BREEAM grade")
 
     e = rec.get("epc")
+    # D15 follow-up. The "is there an EPC rating here?" question is answered by `_EPC_GATE_RX`,
+    # which matches a rating TOKEN anywhere in the string. This branch used the whole-string
+    # `_EPC_BAND` instead, so the router and the plausibility gate disagreed about the same
+    # value: a composite stating BOTH ("EPC A. BREEAM Excellent.") failed the anchored band,
+    # satisfied the BREEAM search, and was re-filed WHOLESALE - which deleted a stated EPC
+    # rating from `epc` and shipped a string reading "EPC A" under BREEAM. Moving a value OUT
+    # of `epc` is only safe when it carries no rating of its own, so the token search is the
+    # right test here too. The branch above keeps `_EPC_BAND`: it moves a value INTO `epc`,
+    # where only a clean band belongs, never a composite sentence.
     if isinstance(e, str) and not _cert_unknown(e) \
-            and _BREEAM_GRADE.search(e) and not _EPC_BAND.match(e.strip()):
+            and _BREEAM_GRADE.search(e) and not _EPC_GATE_RX.search(e):
         _move("epc", "breeam", e.strip(), "a BREEAM grade is not an EPC band")
     return rec
 
@@ -260,6 +292,25 @@ def load_overrides(path, extra_fields=()) -> tuple[list[dict], list[str]]:
             bad.append(f"{tag}: a non-empty \"why\" is required - it ships in the Source Ledger "
                        f"and the Gaps Report")
             continue
+        # A18b CITING THE EVIDENCE. `source_file` / `source_locator` are OPTIONAL TOP-LEVEL keys
+        # (not inside `where`, whose allowlist above deliberately refuses anything it does not
+        # know) that replace the ledger columns of the same name. The ledger row used to stamp
+        # `where.source_file`, which is the TARGETING clause: the file+row this entry MATCHES ON.
+        # That is not a citation. A figure read off a brochure page and corrected through the
+        # tracker row that carries it was therefore attributed to the tracker, so provenance said
+        # a correction happened but not where the value came from - the reviewer's next question,
+        # and the one the Source Ledger exists to answer. `why` stays REQUIRED: a citation says
+        # where the value is, never why the old one was wrong.
+        #
+        # Same two key names and the same semantics as the repair channel (`repairs.py`), so one
+        # habit works on both. Present, they win; absent, today's row is byte-identical.
+        cite_bad = sorted(k for k in ("source_file", "source_locator")
+                          if k in e and not (isinstance(e[k], str) and e[k].strip()))
+        if cite_bad:
+            bad.append(f"{tag}: {', '.join(cite_bad)} is optional, but when present it must be "
+                       f"a non-empty string - it replaces a Source Ledger column, and an empty "
+                       f"ledger cell hard-blocks the build")
+            continue
         clean: dict = {}
         for fld, val in sets.items():
             if fld in _OV_DENIED_UNITS:
@@ -295,19 +346,34 @@ def load_overrides(path, extra_fields=()) -> tuple[list[dict], list[str]]:
         out.append({"id": oid, "where": dict(where), "set": clean, "expect": exp,
                     "why": str(e["why"]).strip(),
                     "verified_by": str(e.get("verified_by") or "").strip(),
+                    # A18b: always present (possibly ""), exactly like `verified_by` above - the
+                    # applier decides whether an EMPTY citation is worth carrying into the report.
+                    "source_file": str(e.get("source_file") or "").strip(),
+                    "source_locator": str(e.get("source_locator") or "").strip(),
                     "multi": "all" if str(e.get("multi") or "").lower() == "all" else "one"})
     return out, bad
 
 
-# The sentinel family for the override `expect` guard ONLY. Deliberately NARROWER than
-# normalize.looks_unknown (no market phrases such as "a consultar" - a broker may want the
-# guard to notice one), and widened HERE at the caller rather than in the shared set, exactly
-# as that function's docstring instructs and as deliver._is_tbd already does.
-_EXPECT_ABSENT = frozenset({"", "tbd", "tbc", "—", "-", "n/a", "none", "??"})
-
-
 def _ov_absent_like(v) -> bool:
-    return v is None or str(v).strip().lower() in _EXPECT_ABSENT
+    """Absence as the override `expect` guard reads it: repairs' rule, so the twins agree. (SEAM-13)
+
+    The two human correction channels (overrides.json pre-merge, repairs.json post-merge) carried
+    two private copies of one literal for this guard, and the plan's own lesson is that two
+    copies of one value drift. There is now ONE implementation, `repairs._absent_like`, and this
+    is a call to it, not a re-statement. What that rule says, so a reader of this file need not
+    open the other: the shared family `normalize.UNKNOWN_FORMS` is the master; a placeholder
+    TOKEN in it (empty, pure punctuation, or an abbreviation of at most three letters: tbd, tbc,
+    tba, tbs, ??, n/a, poa, the dash) is absence; a market PHRASE ("a consultar", "auf anfrage")
+    is a broker's stated words and still trips the guard, which expect_sentinel_test pins; the
+    bare alpha-2 codes normalize exempts for code fields (na, nc, sc) are not absence either.
+
+    A stated "none"/"None" is DATA (contract C5). Two `expect` outcomes MOVE here as a result,
+    both deliberate and both mirrored in repairs: `expect: tbd` against a record holding "none"
+    now SUPERSEDES (the card shows "none"), and `expect: none` against a struck field (None) now
+    supersedes (the card shows "tbd"). Two WIDEN: `expect: TBA` and `expect: ??` against a struck
+    field now match. Imported inside the function so merge's import graph does not change."""
+    import repairs as _RP
+    return _RP._absent_like(v)
 
 
 def _ov_expect_same(cur, want) -> bool:
@@ -424,10 +490,20 @@ def apply_overrides(all_records: list[dict], overrides: list[dict]) -> dict:
                 continue
             # re-quarantine: the value went through the same render boundary as any extracted one
             _normalise_offspec(rec)
-            report["applied"].append({
+            _applied = {
                 "id": ov["id"], "where": w, "set": {k: ov["set"][k] for k in old},
                 "old": old, "why": ov["why"], "verified_by": ov["verified_by"],
-                "locator": at, "partial": stale_field})
+                "locator": at, "partial": stale_field}
+            # A18b: the citation rides the APPLIED entry, because the ledger emitter runs after
+            # clustering and reads this report, not the entry file. CONDITIONAL, like every other
+            # optional key in this module: an entry that cites nothing produces the same
+            # overrides_report.json and the same canonical.meta.overrides bytes as today.
+            # `.get`, not `[...]`: apply_overrides is called directly with hand-built entries by
+            # the eval battery, and a citation it never mentions must not be a KeyError.
+            for _ck in ("source_file", "source_locator"):
+                if str(ov.get(_ck) or "").strip():
+                    _applied[_ck] = str(ov[_ck]).strip()
+            report["applied"].append(_applied)
     return report
 
 
@@ -525,6 +601,262 @@ def stated_total_for(cluster: list, merged: dict, area_unit: str) -> dict | None
     return best
 
 
+# ---------------------------------------------------------------------------- #
+# F11: an OFFICE TOTAL the source never printed, computed from the components it did.
+#
+# Measured on a live run: 3 of 7 decks itemise office space across several schedule lines
+# (ground floor, first floor, hub office, pod office) and print NO single office total. Every
+# reader correctly refused to add them, citing the contract's own rule that Python owns all
+# arithmetic; each shipped every line under its own key so nothing was lost, and raised a doubt.
+# No Python step then did the sum they deferred, so `officeArea` shipped `tbd`, the modal's Total
+# GLA silently excluded the office, and four of the run's twelve broker questions were this one
+# missing addition. This is that step.
+#
+# WHAT COUNTS AS A COMPONENT is derived from the record, not from a list of names: the reader
+# named the lines it found, so the rule reads the NAMES. A key is an office component when
+#   * its camelCase tokens carry "office"/"offices" but are not the total's own family (a stem of
+#     bare "office" after unit/area markers are removed is `officeArea`, `officeAreaSqm`,
+#     `officeAreaUnit`... the TOTAL and its twins, never a component);
+#   * its value parses as a single positive area (`_area_text_value`: no range, no unknown) and
+#     is not a rent, a percentage or a count: a currency sign, a "per"/"/" basis or "%" excludes
+#     it, and so does any token naming a non-area quantity (rent, rate, height, parking, epc...);
+#   * its unit is knowable: printed in the value, carried in the key (`...Sqm`), or stated at
+#     record level (`areaUnit`). A component whose unit cannot be known is never summed.
+# A gatehouse is NOT an office. On the live corpus the broker's answers were "stated total minus
+# warehouse", which folds the gatehouse in; f26 records that inflating an office figure to make a
+# total agree was refused once already, and the Total GLA reconciliation is the stated total's
+# job (F26), not this field's. The gatehouse is where the reconciliation below expects it.
+#
+# WHAT STOPS IT INFLATING A FIGURE, each a refusal that leaves `officeArea` an honest gap:
+#   * a stated total anywhere in the office family wins outright (in any unit);
+#   * fewer than two components is not a sum, it is a guess about which line is "the office";
+#   * a stem that is a token-prefix of another stem (a "hubOffice" beside "hubOfficeGroundFloor")
+#     is a subtotal sitting next to its own parts, so the set is AMBIGUOUS and nothing is summed;
+#   * a stem stated in two units (`hubOffice` in sq ft and `hubOfficeAreaSqm`) is ONE line, and
+#     only its reading in the target unit counts;
+#   * a sum at or above the warehouse figure is the unit-flip error class and is refused.
+# The sum is provenance-noted as a COMPUTED SUM naming every component and its printed value,
+# the way the dominant-unit conversion notes itself, and it is RECONCILED where the source
+# printed a total: warehouse + office sum against the deck's own figure, with any residual
+# explained by the other stated non-warehouse lines (the gatehouse) or, failing that, DISCLOSED
+# as a doubt. On the live corpus the residual was exactly the gatehouse on every itemised deck.
+_OFFICE_UNIT_MARKERS = frozenset({"area", "areas", "sq", "sqm", "sqft", "m", "m2", "ft", "ft2",
+                                  "val", "unit", "gia", "gla", "nia", "space", "accommodation"})
+# tokens that name a quantity which is not an area, even when the key says "office"
+_OFFICE_NON_AREA = frozenset({"rent", "rental", "rate", "price", "cost", "charge", "fee", "psf",
+                              "epc", "breeam", "rating", "desc", "description", "count", "number",
+                              "floors", "storeys", "storey", "height", "parking", "spaces",
+                              "percent", "percentage", "ratio", "fitout", "spec", "specification",
+                              "occupier", "tenant", "use"})
+_RENT_SHAPE_RX = re.compile(r"[£€$]|/|\b(?:per|pa|p\.a\.|pax|eur|gbp|usd|chf|pln|czk)\b", re.I)
+_CAMEL_RX = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
+
+
+def _key_tokens(key: str) -> list[str]:
+    return [t.lower() for t in _CAMEL_RX.findall(str(key or ""))]
+
+
+def _key_unit(tokens: list[str]) -> str | None:
+    """The area unit a KEY NAME carries ('officeAreaSqm' -> 'sq m'), or None."""
+    joined = " ".join(tokens)
+    if "sqm" in tokens or "m2" in tokens or " sq m" in f" {joined}":
+        return "sq m"
+    if "sqft" in tokens or "ft2" in tokens or " sq ft" in f" {joined}":
+        return "sq ft"
+    return None
+
+
+def _is_office_total_key(tokens: list[str]) -> bool:
+    stem = [t for t in tokens if t not in _OFFICE_UNIT_MARKERS]
+    return stem in (["office"], ["offices"])
+
+
+def _area_candidate(key: str, value, record_unit: str | None):
+    """(magnitude, unit or None, tokens) when `value` is a single stated AREA, else None."""
+    if isinstance(value, bool) or isinstance(value, (dict, list)) or value is None:
+        return None
+    tokens = _key_tokens(key)
+    if any(t in _OFFICE_NON_AREA for t in tokens):
+        return None
+    if isinstance(value, (int, float)):
+        if value <= 0 or not any(t in _OFFICE_UNIT_MARKERS for t in tokens):
+            return None          # a bare number under a key that never says "area": not an area
+        return (float(value), _key_unit(tokens) or record_unit, tokens)
+    text = str(value)
+    if "%" in text or _RENT_SHAPE_RX.search(text):
+        return None
+    parsed = _area_text_value(text)
+    if parsed is None:
+        return None
+    mag, text_unit = parsed
+    if text_unit is None and not any(t in _OFFICE_UNIT_MARKERS for t in tokens):
+        return None          # no unit in the value and no area marker in the key: not an area
+    return (mag, text_unit or _key_unit(tokens) or record_unit, tokens)
+
+
+def _record_area_unit(merged: dict) -> str | None:
+    u = merged.get("areaUnit")
+    if isinstance(u, str) and u.strip():
+        return N.area_unit_of(u) or (u.strip().lower() if u.strip().lower() in ("sq ft", "sq m") else None)
+    return None
+
+
+def derive_office_sum(cluster: list, merged: dict, prov: dict) -> dict | None:
+    """Fill `officeArea` from the office components the source itemised, when it printed no total.
+
+    Runs on the MERGED record, before `canonicalize` (which derives `officeAreaVal` from it) and
+    before the dominant-unit alignment (which converts `officeAreaVal` on its provenance's own
+    `areaUnitOfSource`, set here). Returns the audit entry it wrote, or None when nothing was
+    summed; `entry["status"]` is "computed" or "refused" with a `why`, so the caller can disclose
+    a refusal that is a genuine ambiguity. Never overwrites a stated value. See the block comment
+    above for the component rule and every refusal."""
+    if not isinstance(merged, dict):
+        return None
+    cur = merged.get("officeArea")
+    if cur is not None and not N.looks_unknown(cur):
+        return None                       # a stated total wins, always
+    if isinstance(merged.get("officeAreaVal"), (int, float)) and not isinstance(merged.get("officeAreaVal"), bool):
+        return None
+    record_unit = _record_area_unit(merged)
+    stems: dict = {}                      # stem -> [(key, magnitude, unit)]
+    for k, v in merged.items():
+        if k == "__meta":
+            continue
+        toks = _key_tokens(k)
+        if not any(t in ("office", "offices") for t in toks):
+            continue
+        if _is_office_total_key(toks):
+            if _area_candidate(k, v, record_unit) is not None:
+                return None               # a total stated under another spelling or unit wins too
+            continue
+        cand = _area_candidate(k, v, record_unit)
+        if cand is None:
+            continue
+        mag, unit, toks = cand
+        stem = tuple(t for t in toks if t not in _OFFICE_UNIT_MARKERS)
+        stems.setdefault(stem, []).append((k, mag, unit))
+    if not stems:
+        return None
+    names = sorted(k for lines in stems.values() for k, _, _ in lines)
+    if len(stems) < 2:
+        return {"status": "refused", "why": "one office line is not a sum", "components": names}
+    for a in stems:
+        for b in stems:
+            if a != b and len(a) < len(b) and b[:len(a)] == a:
+                return {"status": "refused",
+                        "why": (f"'{stems[a][0][0]}' reads as a subtotal of "
+                                f"'{stems[b][0][0]}' (one key's name is a prefix of the other's), "
+                                f"so the itemised lines may overlap; not summed"),
+                        "components": names}
+    # the target unit: the record's own, else the unit most of the lines state
+    from collections import Counter
+    known = Counter(u for lines in stems.values() for _, _, u in lines if u)
+    target = record_unit or (known.most_common(1)[0][0] if known else None)
+    if target not in ("sq ft", "sq m"):
+        return {"status": "refused", "why": "no knowable unit for the itemised office lines",
+                "components": names}
+    parts: list = []                      # (key, magnitude in target, printed value, note)
+    for stem, lines in stems.items():
+        same = [ln for ln in lines if ln[2] == target]
+        if same:
+            k, mag, _ = same[0]
+            parts.append((k, mag, merged.get(k), ""))
+            continue
+        other = [ln for ln in lines if ln[2]]
+        if not other:
+            return {"status": "refused", "why": f"'{lines[0][0]}' states no unit; not summed",
+                    "components": names}
+        k, mag, u = other[0]
+        f = N.area_factor(u, target)
+        if f is None:
+            return {"status": "refused",
+                    "why": f"'{k}' is in a unit ({u}) this dataset cannot express",
+                    "components": names}
+        parts.append((k, round(mag * f), merged.get(k), f" converted at {f:g} {target} per {u}"))
+    total = sum(p[1] for p in parts)
+    if total <= 0:
+        return None
+    wh = merged.get("warehouseArea")
+    wh_mag = None
+    if isinstance(wh, (int, float)) and not isinstance(wh, bool):
+        wh_mag = float(wh)
+    elif isinstance(wh, str):
+        _p = _area_text_value(wh)
+        wh_mag = _p[0] if _p and (_p[1] in (None, target)) else None
+    if wh_mag is not None and total >= wh_mag:
+        return {"status": "refused",
+                "why": (f"the office lines sum to {total:,.0f} {target}, at or above the "
+                        f"{wh_mag:,.0f} warehouse figure: a unit mismatch, not an office"),
+                "components": [p[0] for p in parts]}
+    listing = " + ".join(f"{k} ({v}{note})" for k, _, v, note in parts)
+    files = sorted({(prov.get(k) or {}).get("source_file", "") for k, _, _, _ in parts} - {""})
+    first = prov.get(parts[0][0]) or {}
+    value = int(total) if float(total).is_integer() else round(total, 2)
+    merged["officeArea"] = value
+    prov["officeArea"] = {
+        "source_file": files[0] if len(files) == 1 else (first.get("source_file", "") or ""),
+        "source_type": first.get("source_type", ""),
+        "locator": (f"COMPUTED SUM of {len(parts)} stated office lines: {listing} = "
+                    f"{value:,} {target}; the source printed no single office total"
+                    + (f"; lines read from {', '.join(files)}" if len(files) > 1 else "")),
+        "areaUnitOfSource": target,
+    }
+    entry = {"status": "computed", "value": value, "unit": target,
+             "components": [{"key": k, "value": v} for k, _, v, _ in parts]}
+    # RECONCILE against the deck's own printed total, when it printed one. Not a gate: a note
+    # in the audit entry, and a doubt on the conflicts channel only when the residual is not
+    # accounted for by lines the source itself states.
+    stated = None
+    for r in cluster or []:
+        m = (r.get("__meta") or {}) if isinstance(r, dict) else {}
+        sv = m.get("statedTotalArea")
+        if isinstance(sv, bool) or not isinstance(sv, (int, float)) or not sv > 0:
+            continue
+        su = str(m.get("statedTotalUnit") or r.get("areaUnit") or "").strip()
+        su = N.area_unit_of(su) or (su.lower() if su.lower() in ("sq ft", "sq m") else None)
+        if su is None:
+            continue
+        stated = float(sv) if su == target else round(float(sv) * N.area_factor(su, target))
+        break
+    if stated is not None and wh_mag is not None:
+        residual = round(stated - wh_mag - total)
+        entry["statedTotal"] = stated
+        entry["residual"] = residual
+        if abs(residual) < 1:
+            entry["reconciles"] = "warehouse + office sum equals the stated total exactly"
+        else:
+            summed = {p[0] for p in parts} | {"officeArea", "officeAreaVal", "warehouseArea", "plotArea"}
+            others: list = []
+            for k, v in merged.items():
+                if k in summed or k == "__meta" or _is_office_total_key(_key_tokens(k)):
+                    continue
+                c = _area_candidate(k, v, record_unit)
+                if c and c[1] == target and 0 < c[0] < stated:
+                    others.append((k, round(c[0])))
+            hit = _subset_summing_to(others[:12], residual)
+            if hit is not None:
+                entry["reconciles"] = (f"warehouse + office sum + {' + '.join(hit)} equals the "
+                                       f"stated total exactly")
+            else:
+                entry["reconciles"] = (f"does NOT reconcile: stated total {stated:,.0f} minus "
+                                       f"warehouse {wh_mag:,.0f} minus the office sum "
+                                       f"{total:,.0f} leaves {residual:,} {target} unexplained")
+    return entry
+
+
+def _subset_summing_to(items: list, want: int) -> list | None:
+    """The FIRST subset of `items` ([(name, int)]) whose values sum to `want`, by name; None
+    when no subset does. Bounded by the caller (at most 12 items -> 4,096 subsets)."""
+    if want <= 0:
+        return None
+    n = len(items)
+    for mask in range(1, 1 << n):
+        chosen = [items[j] for j in range(n) if mask >> j & 1]
+        if sum(v for _, v in chosen) == want:
+            return [k for k, _ in chosen]
+    return None
+
+
 _INTERNAL_FLAGS = ("areaUnitAssumed", "rentUnitAssumed")
 
 
@@ -550,17 +882,66 @@ def strip_internal_flags(merged: dict) -> dict:
     return merged
 
 
+def dominant_country(records: list[dict]) -> str:
+    """The ISO alpha-2 country MOST source records state ("" when none does). Names are
+    normalised through `N.country_iso` first, so a manifest's "United Kingdom" and a tracker's
+    "GB" count as one vote; the unknown family is skipped with the CODE reading. (D11)"""
+    from collections import Counter
+    c = Counter(N.country_iso(r.get("country")) for r in records
+                if isinstance(r, dict) and r.get("country")
+                and not N.looks_unknown_code(r.get("country")))
+    return c.most_common(1)[0][0] if c else ""
+
+
+def rent_unit_stated(records: list[dict]) -> bool:
+    """Does ANY source record state a `rentUnit`? False is the D11 fallback condition."""
+    return any(isinstance(r, dict) and r.get("rentUnit") for r in records)
+
+
+def rent_unit_default(records: list[dict], area_unit: str) -> tuple[str, dict]:
+    """(the rent unit this dataset FALLS BACK TO, the auditable assumption entry). (D11)
+
+    Used only when `rent_unit_stated` is False. The unit comes from `N.default_rent_unit` on the
+    dominant AREA unit and the dominant country, and the entry is shaped like the per-property
+    area entries `main()` already appends to `unit_assumptions` (`field`, `assumed`, `why`,
+    `property`), with `id` set to the string "dataset" because this is ONE assumption about the
+    whole longlist's display basis, not about a property's figure. deliver.py reads the same list
+    for the workbook's assumed-unit column by property id, so a non-integer id can never relabel
+    a row there, and `gaps_report` prints this entry under its own heading."""
+    cc = dominant_country(records)
+    unit = N.default_rent_unit(area_unit, cc)
+    entry = {
+        "id": "dataset",
+        "property": "(whole longlist)",
+        "field": "rentUnit",
+        "assumed": unit,
+        "why": (f"no source states a rent unit; the rent basis shown on the hero KPI and the "
+                f"card footers was derived from the dominant area unit ({area_unit}) and the "
+                f"dominant country ({cc or 'not stated'}). It is a display convention, not a "
+                f"quoted figure: no rent number was relabelled with it"),
+    }
+    return unit, entry
+
+
 def dominant_units(records: list[dict]) -> tuple[str, str]:
     """The dataset's unit convention = the units MOST source records state
     (UK/imperial inputs ship imperial, metric inputs ship metric - user rule).
-    Defaults: 'sq m' and '€/sq m/yr' when no record states a unit."""
+
+    Defaults when NO record states a unit: 'sq m' for the area, and for the rent the
+    market-derived `rent_unit_default` (D11) rather than a fixed string. The rent fallback used
+    to be a hardcoded "€/sq m/yr" whatever the country and whatever area unit this very function
+    had just resolved, so a 100% GB / 100% sq ft corpus that quoted no rents shipped a euro per
+    sq m basis on its hero KPI. Callers that need to know WHETHER the rent unit was assumed use
+    `rent_unit_stated` and record the `rent_unit_default` entry; the tuple shape here is kept
+    for the callers and evals that unpack it."""
     from collections import Counter
     a = Counter(r.get("areaUnit") for r in records
                 if isinstance(r, dict) and r.get("areaUnit"))
     rn = Counter(r.get("rentUnit") for r in records
                  if isinstance(r, dict) and r.get("rentUnit"))
-    return (a.most_common(1)[0][0] if a else "sq m",
-            rn.most_common(1)[0][0] if rn else "€/sq m/yr")
+    area_unit = a.most_common(1)[0][0] if a else "sq m"
+    rent_unit = rn.most_common(1)[0][0] if rn else rent_unit_default(records, area_unit)[0]
+    return (area_unit, rent_unit)
 
 
 # structured spec fields a RICH building tracker (>=8 mapped columns,
@@ -736,7 +1117,62 @@ def _values_equivalent(field: str, a, b) -> bool:
 _ENUM_GATE_FIELDS = {"breeam", "epc"}
 _COUNT_GATE_FIELDS = {"loadingDocks", "overheadDoors", "truckParking", "carParking"}
 _FEET_RX = re.compile(r"\b(?:ft|feet|foot)\b|'", re.I)
-_EPC_GATE_RX = re.compile(r"^(?:target(?:ing|ed)?\s+)?(?:epc\s*)?[A-G]\+?$", re.I)
+# D15: the EPC gate matches a rating TOKEN inside the string, not the whole string.
+#
+# THE DEFECT. This band used to be anchored `^...$`, so it accepted a bare "A+" and "Target EPC
+# A" and nothing else. A deck that states its EPC three times in plain prose ("The building will
+# achieve an EPC rating of A. Targeting EPC A on completion.") failed it, and because a firing
+# gate STRIKES the field, both units from that deck shipped `epc: tbd` with a note calling the
+# SOURCE implausible, while the same band passed a bare "A+" on three other properties in the
+# same run. It was rejecting the surrounding words, not the rating. `_pick_gate_verdict`'s own
+# design note says the sibling `breeam` gate passes on CONTAINING a band word; this brings epc
+# to that one convention instead of a third.
+#
+# WHY NOT A NAIVE SUBSTRING. A bare letter A to G is inside most English words, and a standalone
+# "a" is the indefinite article ("EPC assessment shows a modern building" must FAIL: it states
+# no rating). So the token is anchored on a word that identifies it as a rating - EPC, energy
+# performance (certificate), rating, rated, band, target(ed/ing) - followed by at most a few
+# whitelisted filler words (rating, of, is, will, be, to, achieve, certificate, minimum...), then
+# an UPPER-CASE letter A-G with an optional "+", not followed by a letter or digit. The letter is
+# case-sensitive on purpose ((?-i:...) inside a re.I pattern): "rating of A" is a rating,
+# "rating of a modern unit" is prose. A letter FOLLOWED by "rated"/"rating" ("A+ rated") is the
+# one post-anchored form. The whole-string bare band is kept as the first alternative, so every
+# value that passed before passes now.
+#
+# D15 follow-up: a real EPC prints a SCORE AND a BAND, so the filler chain must survive a number.
+# The filler chain above accepts only WORDS, so a numeric asset rating between the anchor word and
+# the band broke it. Measured before this fix, every one of "EPC 85 (B)", "EPC 85 B", "EPC: 82 (B)",
+# "EPC rating 85 (B)", "Energy Performance Certificate: 85 (B)" and "Energy Performance Asset
+# Rating: 85 (D)" returned "fail" - and a firing gate STRIKES the field - while the same certificate
+# written the other way round, "EPC B (85)" or "EPC score 85, band B", passed. The two orderings are
+# the same datum off the same certificate, so this deleted a stated rating from a client card purely
+# on word order. Branch (a) `[^\w.\n]+\d{1,3}[^\w.\n]{0,3}` admits that score; branch (b) is
+# character-for-character the previous expression (`\W+`), which makes the new language a strict
+# SUPERSET - nothing that passed before can start failing.
+#
+# WHY THE TWO-SIDED FULL-STOP AND NEWLINE GUARD, and why not to "simplify" branch (a). The score
+# run cannot cross a "." or a newline on EITHER side. The simpler shape that only guards the
+# score-to-band side, `\W+(?:\d{1,3}[^\w.\n]{0,3})?(?-i:[A-G])\+?`, was tried and REJECTED: its
+# mandatory leading `\W+` still matches a full stop and a newline, so an ADDRESS stapled onto a
+# heading passes as a rating - "EPC. 12 A Smith Street, Corby", "EPC\n12A Smith Street" and
+# "EPC rating.\n12 A Smith Street" would all have been read as an EPC band A. All three must fail,
+# and the eval pins them. `\d{1,3}` is deliberate too: EPC asset ratings run 0 to about 150 plus,
+# and a fourth digit would admit a YEAR, so "EPC 2023 A" stays a fail.
+#
+# THIS EXPRESSION HAS A SECOND CONSUMER. `_route_certifications` (see its D15 follow-up note above)
+# uses `_EPC_GATE_RX.search` to decide whether a value sitting in `epc` carries a rating of its own
+# before moving it to `breeam`. Widening the gate therefore widens that routing decision as well -
+# correctly, here: measured before this fix, `{"epc": "BREEAM Excellent. EPC 85 (B)."}` re-filed
+# WHOLESALE, leaving epc empty and shipping a string reading "EPC 85 (B)" under BREEAM. Any future
+# edit to this pattern must be judged against BOTH consumers, not the gate alone.
+_EPC_GATE_RX = re.compile(
+    r"^(?:target(?:ing|ed)?\s+)?(?:epc\s*)?[A-G]\+?$"
+    r"|\b(?:epc|energy\s+performance(?:\s+certificate)?|rating|rated|band|target(?:ing|ed)?)\b"
+    r"(?:\W+(?:epc|rating|band|grade|certificate|of|is|will|be|to|the|a|an|achieve[sd]?|"
+    r"achieving|minimum|min|expected|anticipated|target(?:ing|ed)?))*"
+    r"(?:[^\w.\n]+\d{1,3}[^\w.\n]{0,3}|\W+)(?-i:[A-G])\+?(?![A-Za-z0-9])"
+    r"|(?<![A-Za-z0-9])(?-i:[A-G])\+?\s+(?:rated|rating)\b",
+    re.I)
 
 
 def _pick_gate_verdict(field: str, value, rent_unit: str | None = None,
@@ -811,7 +1247,7 @@ def _pick_gate_verdict(field: str, value, rent_unit: str | None = None,
         s = str(value).strip()
         if field == "breeam":
             return "pass" if _BREEAM_GRADE.search(s) else "fail"
-        return "pass" if _EPC_GATE_RX.match(s) else "fail"
+        return "pass" if _EPC_GATE_RX.search(s) else "fail"   # D15: a token anywhere
     if field in _COUNT_GATE_FIELDS:
         num = value if isinstance(value, (int, float)) and not isinstance(value, bool) \
             else N.extract_first_number(str(value))
@@ -831,6 +1267,115 @@ def _pick_passes_gate(field: str, value, rent_unit: str | None,
                       area_unit: str | None = None) -> bool:
     """Back-compatible boolean wrapper over _pick_gate_verdict (True only on an explicit "pass")."""
     return _pick_gate_verdict(field, value, rent_unit, area_unit) == "pass"
+
+
+# A15: the media/prose slots whose provenance is EXPECTED to name a file outside the cluster, so
+# a foreign file there is not evidence of anything. `photo`/`plan`/`gallery` are bound by the
+# media harvest, which deliberately reaches park-level and otherwise-unclaimed pages of decks that
+# contributed no text record, and by the photo-match path whose whole premise is a brochure
+# matched to a property that has no record from it. `description` rides that same photo-match
+# path: when a matched brochure supplies the hero it also supplies the deck's description prose,
+# so on every photo-matched property its file is outside the cluster BY CONSTRUCTION. All four
+# already have their own audit trail (media_considered, placeholderAudit) and their own gate.
+_FUSION_EXEMPT_FIELDS = frozenset({"photo", "plan", "gallery", "description"})
+
+
+def _fusion_disclosures(cluster: list[dict], prov: dict) -> list[tuple[str, str]]:
+    """[(field, foreign file)] for every merged field whose provenance names a file that
+    contributed NO record to this cluster. Sorted by field; empty for a contained property. (A15)
+
+    THE INCIDENT. A matcher wrongly fused two separate buildings into one property. The evidence
+    was in the pack the whole time - fields on one card citing a deck that describes the other
+    building - and TWO independent human reviewers each found it the same way, by reading
+    provenance line by line. The pack itself said nothing, because every ledger row was
+    individually correct: row-by-row correctness is exactly what hides a fusion. So the
+    containment claim gets stated ONCE, out loud, on the card's own conflict channel.
+
+    FALSE POSITIVES ARE THE DESIGN PROBLEM. A disclosure that fires on every property is noise,
+    gets skipped, and takes the real one down with it. Enumerated and excluded:
+      * `_FUSION_EXEMPT_FIELDS` - the media and prose slots above, legitimately foreign by design.
+      * a GAP/placeholder prov (source_file "(none)"): it attributes nothing, so there is no
+        foreign file to name.
+      * an empty source_file: nothing to name, and the ledger's own gates already cover it.
+      * DERIVED companions need NO exclusion, and that is recorded here so nobody adds one: a
+        derived value COPIES its basis field's prov entry, so it names the basis's file, which is
+        in the cluster whenever the basis is.
+      * PIPELINE-ASSIGNED fields likewise: a value merge synthesises without a source (regionCode,
+        the area re-notations) gets no prov entry at all, so it is never even considered.
+      * ENRICHMENT-assigned fields likewise: enrichment is a LATER stage operating on canonical,
+        so nothing it assigns exists while this runs.
+
+    Matched on BASENAME, case-insensitively - the same rule the override and repair channels apply
+    to a cited file, so a work-dir path can never be what decides whether a card looks fused.
+
+    WHAT THIS IS TODAY, said plainly: an INVARIANT. Every prov entry merge_cluster writes is taken
+    from a record of the cluster it was given, so no ordinary record path can trip this, which is
+    precisely why it costs nothing and cannot cry wolf. It is armed for the paths that CAN break
+    containment - a matcher change, a media or repair path that starts attributing a field, a
+    record whose stated source and stated provenance disagree - and it is proven against a
+    synthetic prov in the eval rather than assumed."""
+    own = {Path(str((r.get("__meta") or {}).get("source_file") or "")).name.lower()
+           for r in (cluster or [])}
+    own.discard("")
+    out: list[tuple[str, str]] = []
+    for field in sorted(prov or {}):
+        if field in _FUSION_EXEMPT_FIELDS:
+            continue
+        f = Path(str((prov.get(field) or {}).get("source_file") or "")).name
+        if not f or f == "(none)" or f.lower() in own:
+            continue
+        out.append((field, f))
+    return out
+
+
+def _stated_postcode(rec: dict) -> str:
+    """One record's OWN stated postal code, NORMALISED FOR EQUALITY, or "" when it states
+    none. (A14a)
+
+    DELEGATED to `match._stated_postcode`, not normalised here. That reader is already this
+    skill's ONE answer to "what code does this record state", and the values THIS function
+    writes into `meta.clusterSources` are read back by the coverage gate's over-merge check
+    and compared for disagreement against the very veto that reader implements. Producer and
+    consumer of one comparison must therefore judge a code the same way, by construction.
+
+    THE INCIDENT, because a private copy here looked harmless and was not. This function used
+    to trim and upper-case and nothing else, read only `postcode`, and stringify whatever it
+    found with `str()`. Measured against the veto over a 35-pair probe list, the two sides
+    returned a different verdict on 9 pairs; 5 were closed when the GATE borrowed this reader,
+    and the 4 that survived were all this copy: `str(48215.0)` gave '48215.0' where the reader
+    gives '48215', and `str(True)` gave 'TRUE' where the reader reads a bool as ABSENCE. In
+    every one of the four the gate BLOCKED a fusion the veto had deliberately allowed, and the
+    block names `strike_from_source`, so following its remedy would have unfused a CORRECT
+    merge. A numeric-postal-code market whose spreadsheet stores the code as a number is the
+    ordinary way to hit it. The one honest fix was for the producer to delegate too, and that
+    is what this is: the whitespace, case, sentinel, numeric and field-name families are now
+    closed end to end.
+
+    What the shared reader does, so a reader here does not have to go and look: whitespace
+    REMOVED and the remainder upper-cased; nothing else touched, and no country-specific
+    parsing, because an outward/inward split is a fact about one country and an undivided run
+    of digits about several others; a sentinel read as absence through the shared
+    `looks_unknown`; an integral number accepted as the code it is; a bool, a non-integral
+    float and a non-finite float ignored rather than rounded into one. It reads every name in
+    `match._POSTCODE_FIELDS`, which is deliberately open, so a column name added there is read
+    by the veto and by this producer in the same commit instead of one going half-blind.
+
+    Absence stays the ordinary case and is never an error: `postcode` is not a declared
+    canonical field on every corpus (B7 keeps a brand-new scalar and auto-shows it), and a
+    market that quotes no codes at all leaves this "" everywhere, which makes the whole
+    over-merge check inert rather than degraded."""
+    return match._stated_postcode(rec)
+
+
+def _override_locked(rec: dict, field: str) -> bool:
+    """Has a REVIEWED HUMAN CORRECTION pinned this field on this record?
+
+    Reads the `__meta.override_locked` stamp `apply_overrides` writes, and nothing else. One
+    predicate for all three readers (the precedence pin, the count tiebreak and the plausibility
+    strike) so they cannot drift apart about what "locked" means: a lock the pin honours but the
+    band ignores is exactly how a correction came to be applied and then struck in the same run.
+    Tolerant of a missing/None `__meta` - a synthesised record in an eval has neither."""
+    return field in set(((rec.get("__meta") or {}).get("override_locked")) or ())
 
 
 def cluster_anchor(cluster: list) -> str:
@@ -1300,11 +1845,23 @@ def _more_qualified(field: str, a, b) -> bool:
 
 
 def merge_cluster(cluster: list[dict], decisions: dict | None = None,
-                  variants: dict | None = None) -> tuple[dict, dict, dict]:
+                  variants: dict | None = None,
+                  struck: list | None = None) -> tuple[dict, dict, dict]:
     """`variants` is an OPTIONAL out-parameter (I10): pass a dict and it is filled with
     field -> note for every pair that states the same fact in different notation. It is an
     out-param rather than a fourth return value deliberately - the 3-tuple has thirteen call
-    sites across the eval battery, and widening it would have been churn and risk for nothing."""
+    sites across the eval battery, and widening it would have been churn and risk for nothing.
+
+    `struck` is an OPTIONAL out-parameter of the same kind: pass a list and it is appended with
+    {field, value, source_file, locator} for every field the plausibility band STRIKES to the
+    unknown sentinel, `value` being the figure as its source printed it. The caller stamps the
+    property id on each entry (this function has no id) and ships them as canonical.meta.struck,
+    which is what lets the honesty report show WHAT was withdrawn beside the conflict line
+    explaining why, instead of asking the reader to reconstruct it from work/extract.
+
+    DELIBERATELY NOT COLLECTED here: the both-values-rejected strike in the LLM-pick branch. Two
+    values are withdrawn there, so no single `value` could describe it honestly, and its own
+    conflict line already quotes both verbatim. `struck` stays a one-value-per-entry artefact."""
     out: dict = {}
     prov: dict = {}
     conflicts: dict = {}  # field -> "discarded <val> from <file> (kept <winner>)"
@@ -1333,18 +1890,54 @@ def merge_cluster(cluster: list[dict], decisions: dict | None = None,
 
     for field in sorted(fields):  # sorted -> deterministic output bytes
         order = _ordered_for_field(field, cluster, comm_order, spec_order, tracker_order, has_rich)
+        # A10 COUNT-FIELD BAND TIEBREAK. For a COUNT field the plausibility band runs BEFORE
+        # source rank: among the records holding a non-unknown value, those whose value does not
+        # FAIL the band lead, and the inherited precedence order stands inside each group. A
+        # STABLE partition, so a field whose candidates all agree with the band keeps today's
+        # order byte-for-byte; records holding nothing for this field are skipped by the loop
+        # below either way, so where they land cannot matter.
+        #
+        # WHY. Source rank alone decided two halves of ONE defect. A brochure outranks a tracker
+        # for a spec field, so a prose sentence ("dock and level access loading available") won
+        # `loadingDocks` over a clean numeric count sitting in another record of the SAME cluster,
+        # and the value-format gate then flagged the very prose the merge had just chosen. When
+        # that prose went on to FAIL the band, the strike below set the field to the unknown
+        # sentinel and the numeric sibling never fell through - so the card shipped tbd with the
+        # answer already in the pack. Preferring a candidate the band accepts settles both ends.
+        #
+        # SCOPE. `_COUNT_GATE_FIELDS` is the EXISTING count vocabulary (the same set
+        # `_pick_gate_verdict` bands as counts) and is reused here deliberately: there is no
+        # unified field-type registry at the precedence point, and inventing one is out of scope
+        # for this change. Nothing outside that set is reordered, so no other field moves.
+        #
+        # A LOCKED value counts as banded whatever the band says: a reviewed correction is exempt
+        # from the strike (A9), so it must not be demoted by the band here either - otherwise
+        # this tiebreak would quietly undo the P1-4 pin two lines below.
+        if field in _COUNT_GATE_FIELDS:
+            _ok = [r for r in order
+                   if field in r and not N.looks_unknown(r[field])
+                   and (_override_locked(r, field)
+                        or _pick_gate_verdict(field, r[field]) != "fail")]
+            if _ok:
+                _okids = {id(r) for r in _ok}   # id(), never `in`: see the pin's note below
+                order = _ok + [r for r in order if id(r) not in _okids]
         # P1-4 PRECEDENCE PIN. `out[field]`/`prov[field]` are set by the FIRST record in `order`
         # holding a non-unknown value, so overriding a record that LOSES the precedence contest
         # would change nothing visible - a silent no-op that looks exactly like the bug the
         # override was written to fix. Explicit order: broker override > LLM pick > precedence.
         # Compared by id(), never by `in` (dict equality would also pull in an identical sibling).
         # Byte-identical when nothing is locked.
-        _locked = [r for r in order
-                   if field in set((r.get("__meta") or {}).get("override_locked") or ())]
+        _locked = [r for r in order if _override_locked(r, field)]
         if _locked:
             _lids = {id(r) for r in _locked}
             order = _locked + [r for r in order if id(r) not in _lids]
         chosen = None
+        # A9: WHICH RECORD supplied the value now in `out[field]`. Tracked because the
+        # plausibility strike at the foot of this loop has to ask whether a REVIEWED CORRECTION
+        # supplied it, and `_locked` alone cannot answer that: a locked record leads the order but
+        # need not hold a value for this field, and the qualifier and LLM-pick branches below can
+        # move the winner to a different record after the first one is chosen.
+        _chosen_rec = None
         # candidate records that hold a distinct non-unknown value, in precedence
         # order (used both for the discard note and the override lookup)
         cand_recs: list[dict] = []
@@ -1377,6 +1970,7 @@ def merge_cluster(cluster: list[dict], decisions: dict | None = None,
                 chosen = v
                 out[field] = v
                 prov[field] = _prov_of(r, meta)
+                _chosen_rec = r
             elif str(v) != str(chosen) and _values_equivalent(field, v, chosen):
                 # I10: the same fact in different notation. NOT a conflict - but recorded, because
                 # nothing may be silently dropped. It ships in its own Gaps Report section.
@@ -1398,6 +1992,7 @@ def merge_cluster(cluster: list[dict], decisions: dict | None = None,
                     chosen = v
                     out[field] = v
                     prov[field] = _prov_of(r, meta)
+                    _chosen_rec = r
             elif str(v) != str(chosen):
                 # a different non-unknown value lost the precedence contest - record it
                 # B55: when the GROSS basis rule is what demoted it, say so. "discarded X (kept
@@ -1409,6 +2004,19 @@ def merge_cluster(cluster: list[dict], decisions: dict | None = None,
                         f"{meta.get('source_file','?')} (kept the warehouse-only '{chosen}'): the "
                         f"gross figure already contains the office area, so using it here would "
                         f"double-count once GLA is derived. It is retained as the stated total.")
+                elif field in _COUNT_GATE_FIELDS \
+                        and _pick_gate_verdict(field, v) == "fail" \
+                        and _pick_gate_verdict(field, chosen) != "fail":
+                    # A10: the BAND is why this candidate lost, not source rank - and saying so is
+                    # the disclosure. A bare "discarded X (kept Y)" reads as an ordinary precedence
+                    # loss, leaving the reader unable to tell that a HIGHER-ranked source was
+                    # passed over on purpose. Same shape as the B55 gross-basis note above: name
+                    # the rule, then confirm the discarded text is not lost.
+                    conflicts[field] = (
+                        f"discarded '{v}' from {meta.get('source_file','?')} (kept '{chosen}'): "
+                        f"it holds no plausible {field} count, so a candidate that does was "
+                        f"preferred over source precedence rather than shipping this one and "
+                        f"striking it. The discarded text is retained in the extract.")
                 else:
                     conflicts[field] = (f"discarded '{v}' from {meta.get('source_file','?')} "
                                         f"(kept '{chosen}')")
@@ -1451,6 +2059,7 @@ def merge_cluster(cluster: list[dict], decisions: dict | None = None,
                         # supplied the number, so it must change the unit it is scaled on (B39)
                         "areaUnitOfSource": picked.get("areaUnit") or None,
                     }
+                    _chosen_rec = picked   # A9: the winner moved, so the strike's question moves
                     # B3: an UNGATED field's selection is now HONOURED and labelled, not silently
                     # dropped. The adjudicator only ever selects among values that already exist in
                     # the sources, so honouring it cannot invent data - whereas discarding it made
@@ -1501,19 +2110,55 @@ def merge_cluster(cluster: list[dict], decisions: dict | None = None,
                 and _pick_gate_verdict(field, out[field], rent_unit,
                                        (prov.get(field) or {}).get("areaUnitOfSource")) == "fail":
             _bad = out[field]
-            out[field] = "tbd"
-            _src = (prov.get(field) or {}).get("source_file") or "?"
-            # T1 wording: the note must never accuse the SOURCE of implausibility - on a live
-            # run this exact note shipped against values the source plainly printed (struck by
-            # a parse/band defect, since fixed). It names the PARSED value, the gate, and the
-            # two honest next steps; the extract still holds the original for the broker.
-            conflicts[field] = (
-                f"the parsed value '{_bad}' (from {_src}) falls outside the {field} "
-                f"plausibility band, so the card ships tbd rather than a figure that may be a "
-                f"parse or unit error. Check the source page: if it genuinely prints this "
-                f"value, restore it via work/repairs.json; otherwise confirm the real value "
-                f"with the agent."
-                + (f" {conflicts[field]}" if conflicts.get(field) else ""))
+            # basename, matching every other citation in this module (a record's source_file is a
+            # bare filename by contract, but a work-dir path must never decide how it reads)
+            _srcf = Path(str((prov.get(field) or {}).get("source_file") or "")).name
+            _src = _srcf or "?"
+            if _chosen_rec is not None and _override_locked(_chosen_rec, field):
+                # A9 OVERRIDE-LOCKED FIELDS ARE EXEMPT FROM THE BAND. A band exists to catch a
+                # PARSE; an override is a reviewed human conclusion about what the evidence says,
+                # already pinned to the front of precedence by P1-4 a few dozen lines above. The
+                # strike ran regardless of that lock, so a correction could be reported as APPLIED
+                # and then struck to the unknown sentinel in the same run - leaving the pack
+                # asserting, of one field, both that no source provides it AND that an override
+                # set it. Two contradictory statements about one datum is worse than either.
+                #
+                # EXEMPT, NOT SILENT: the value ships as the reviewer recorded it, and the
+                # exemption is disclosed in the same channel a strike would have used, so a reader
+                # meeting an out-of-band figure can see it was allowed through deliberately and by
+                # whom. Nothing else is exempt - an UNLOCKED field, on this record or any other,
+                # is still banded and still struck below.
+                _oids = ", ".join(str(x) for x in
+                                  ((_chosen_rec.get("__meta") or {}).get("override_ids") or []))
+                conflicts[field] = (
+                    f"the {field} plausibility band was NOT applied to '{_bad}' (from {_src}): a "
+                    f"reviewed correction"
+                    + (f" (override {_oids})" if _oids else "")
+                    + f" supplied this value, and the band exists to catch a parse, not to "
+                      f"re-judge a human conclusion. The value ships as recorded. Disclosed here "
+                      f"because it sits outside the band a parsed figure would have to meet, so "
+                      f"it is worth re-reading the correction against its evidence."
+                    + (f" {conflicts[field]}" if conflicts.get(field) else ""))
+            else:
+                out[field] = "tbd"
+                # T1 wording: the note must never accuse the SOURCE of implausibility - on a live
+                # run this exact note shipped against values the source plainly printed (struck by
+                # a parse/band defect, since fixed). It names the PARSED value, the gate, and the
+                # two honest next steps; the extract still holds the original for the broker.
+                conflicts[field] = (
+                    f"the parsed value '{_bad}' (from {_src}) falls outside the {field} "
+                    f"plausibility band, so the card ships tbd rather than a figure that may be a "
+                    f"parse or unit error. Check the source page: if it genuinely prints this "
+                    f"value, restore it via work/repairs.json; otherwise confirm the real value "
+                    f"with the agent."
+                    + (f" {conflicts[field]}" if conflicts.get(field) else ""))
+            # A15/honesty: the STRUCK originals, one entry per struck field per property, so the
+            # honesty report can show WHAT was withdrawn beside its conflict line instead of the
+            # reader having to reconstruct it from the extract. Collected on the cluster here and
+            # projected onto the property id by the caller (merge_cluster has no id).
+            if struck is not None and out[field] != _bad:
+                struck.append({"field": field, "value": _bad, "source_file": _srcf,
+                               "locator": str((prov.get(field) or {}).get("locator") or "")})
     # SOURCE-INTERNAL disagreements. Everything above detects a conflict BETWEEN records, so a
     # source that contradicts ITSELF was invisible to the whole conflict machinery: one brochure
     # page whose schedule totals 180 docks while its own spec block says 170, another whose
@@ -2640,13 +3285,33 @@ def _record_considered(out: dict, source_dir, pages_by_src, foreign_pages, plan_
 
 
 def prewarm_images(all_records, source_dir, image_cache, budget_kb,
-                   seconds: float = 30.0, workers: int | None = None) -> tuple:
+                   seconds: float = 30.0, workers: int | None = None,
+                   max_rounds: int = 4) -> tuple:
     """Warm the image cache merge needs, in PARALLEL and TIME-BOUNDED, so the slow
     raster+compress harvest happens up front across CPUs instead of serially inside merge
     (which then runs as cache hits and finishes in one shell window). Each unit writes its
     own atomic cache, so a budget/kill exit loses at most the unit in flight - a re-run
     continues. Returns (done_units, total_units). Pure accelerator: identical cache bytes,
-    so merge output is unchanged."""
+    so merge output is unchanged.
+
+    A20 ONE PASS SHOULD FINISH THE CORPUS. The two unit phases used to run exactly once, so any
+    unit left uncached by that single pass made the function report a partial count and hand the
+    operator another pass to run - a whole extra shell round-trip that re-walks intake and
+    validation, for work the remaining budget could often have completed. They now repeat until
+    `done == total` or a round banks nothing, which is also what lets a unit that a round's own
+    tally missed (prewarm deliberately does not JOIN its workers, so an in-flight unit can land
+    its atomic cache moments after the round returns) be counted rather than re-run.
+
+    `max_rounds` BOUNDS THAT LOOP so a permanently failing unit - a corrupt page, a converter that
+    never succeeds - cannot spin: it can never be counted done, and without a cap "repeat until
+    done" is "repeat forever". Keyword with a default, because run.py owns the call site.
+
+    THE WALL-CLOCK DEADLINE IS UNCHANGED AND IS STILL THE SAFETY VALVE. It is computed ONCE, for
+    the whole call, so looping cannot spend a second more than `seconds` allows: once the budget is
+    gone every `_run` returns immediately, the round banks nothing, and the no-progress break ends
+    the loop on the spot. The rounds are for converging INSIDE the budget, never for extending it,
+    and the operator still raises the budget with exactly the same knobs as before
+    (CBRE_PREWARM_SECONDS -> the caller's `seconds`, CBRE_IMAGE_WORKERS -> `workers`)."""
     import os
     import time
     from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -2666,21 +3331,31 @@ def prewarm_images(all_records, source_dir, image_cache, budget_kb,
             kind = "slidehero" if s.suffix.lower() == ".pptx" else "hero"
             page_units.append((kind, str(s), m["page_no"], budget_kb, cache_str))
     geom_units: list = []            # per-(deck,page) gallery + geometry (the whole-deck scans)
+    # A20: the pages a deck has that this prewarm deliberately does NOT enumerate. They are
+    # counted into `total` but never into `done`, so a deck longer than the cap can never report
+    # as complete. The alternative - counting only the capped pages - made `total` a statement
+    # about how much this function chose to look at, and `done == total` then licensed the
+    # caller's "complete" message for a corpus whose later pages had never been examined at all.
+    # An accelerator may skip work; a completeness figure may not misreport what it skipped.
+    uncounted = 0
     for s_str, sfx in decks.items():
         s = Path(s_str)
         try:
-            n = (min(len(list(IMG._get_pptx(s).slides)), 80) if sfx == ".pptx"
-                 else min(IMG._get_doc(s).page_count, 80))
+            pages = (len(list(IMG._get_pptx(s).slides)) if sfx == ".pptx"
+                     else IMG._get_doc(s).page_count)
         except Exception:
-            n = 0
+            pages = 0
+        n = min(pages, PREWARM_MAX_DECK_PAGES)
+        per_page = 1 if sfx == ".pptx" else 2   # gidxpage, plus placedpage for a PDF
+        uncounted += max(0, pages - n) * per_page
         for p in range(n):
             geom_units.append(("gidxpage", s_str, p, budget_kb, cache_str))
             if sfx != ".pptx":       # PPTX has no pdfplumber geometry tier
                 geom_units.append(("placedpage", s_str, p, 0, cache_str))
     IMG.close_doc_cache()            # release parent PDF handles before forking workers
     all_units = geom_units + page_units
-    total = len(all_units)
-    if total == 0:
+    total = len(all_units) + uncounted
+    if not all_units:                # nothing to warm at all (the historic `total == 0` case)
         return (0, 0)
     if workers is None:
         env = 0
@@ -2774,10 +3449,209 @@ def prewarm_images(all_records, source_dir, image_cache, budget_kb,
                 if not IMG._unit_cached(u):
                     IMG._prewarm_unit(u)
 
-    _run(geom_units)                 # phase 1: page-grained geometry + gallery (no herd)
-    _run(page_units)                 # phase 2: heroes (geometry now warm)
-    done = sum(1 for u in all_units if IMG._unit_cached(u))
+    # A20: repeat the two phases until the corpus is warm or a round banks nothing. The phase
+    # ORDER is load-bearing and unchanged inside every round - geometry first so the hero units
+    # read it warm instead of each re-deriving it (#20).
+    #
+    # The break on NO PROGRESS is what makes `max_rounds` a ceiling rather than a schedule: a
+    # unit that cannot succeed (a corrupt page, a converter that always fails) leaves `done`
+    # exactly where it was and the loop stops immediately, and so does a spent budget, because
+    # every `_run` then returns at its own deadline check. So the common cases cost ONE extra
+    # tally, not another pass over the corpus: round two's `todo` is empty and `_run` returns
+    # without submitting anything.
+    done = 0
+    for _round in range(max(1, max_rounds)):
+        _run(geom_units)             # phase 1: page-grained geometry + gallery (no herd)
+        _run(page_units)             # phase 2: heroes (geometry now warm)
+        _before, done = done, sum(1 for u in all_units if IMG._unit_cached(u))
+        if done >= total or done <= _before:
+            break
     return (done, total)
+
+
+# THE POST-MERGE DERIVATIONS canonicalize() performs, one function each, so the repairs stage can
+# re-run exactly the same rule (`rederive_after_repairs`, below) instead of carrying a second
+# copy of it. Each returns the derived value or None; the caller decides whether to write it.
+def _rent_pair_from_display(p: dict):
+    """(annual numeric, unit) parsed from the warehouseRent DISPLAY string, annualising a monthly
+    quote x12, accepted only inside its own convention's plausibility band; None when the text
+    is absent, an unknown, or implausible. The unit is `rentUnit` when set, else the text's."""
+    disp = p.get("warehouseRent")
+    if not (isinstance(disp, str) and disp.strip() and not N.looks_unknown(disp)):
+        return None
+    unit = p.get("rentUnit") or N.rent_unit_of_text(disp)
+    num = N.extract_first_number(disp)
+    if num is not None and N.MONTHLY_RX.search(disp):
+        num = round(num * 12, 2)
+    lo, hi = N.rent_unit_band(unit)
+    if num is None or not (lo <= num <= hi):
+        return None
+    return (num, unit)
+
+
+def _office_rent_val_from(p: dict):
+    """officeRentVal from the officeRent display string: same convention, band and x12 rule as
+    the warehouse rent. None when absent, unknown or implausible."""
+    odisp = p.get("officeRent")
+    if not (isinstance(odisp, str) and odisp.strip() and not N.looks_unknown(odisp)):
+        return None
+    ounit = p.get("rentUnit") or N.rent_unit_of_text(odisp)
+    onum = N.extract_first_number(odisp)
+    if onum is not None and N.MONTHLY_RX.search(odisp):
+        onum = round(onum * 12, 2)
+    olo, ohi = N.rent_unit_band(ounit)
+    if onum is None or not (olo <= onum <= ohi):
+        return None
+    return onum
+
+
+# D5: every AREA MENTION in an officeArea string - a number and the unit printed beside it, if
+# any. The number alternation accepts a thousands group split by a comma, a point or a single
+# space ("9,681", "1.413", "12 500") but NOT an arbitrary run of spaced digits, so the two
+# figures in "transport office 1 7,492" stay two figures (normalize_number, built for ONE
+# number, would read them as 17,492). The unit alternation is the area vocabulary of
+# normalize._SQFT_RX / _SQM_RX minus "psf", which is a RENT unit and never an office area.
+_OFFICE_MENTION_RX = re.compile(
+    r"(?P<num>\d{1,3}(?:[.,\u00a0\u202f ]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d+)?)"
+    r"\s*(?P<unit>sq\.?\s*ft\b|sqft\b|ft2\b|ft²|square\s+f[eo]+t\b"
+    r"|sq\.?\s*m\b|sqm\b|m2\b|m²|square\s+met\w*)?", re.I)
+# a bare number below this beside a unit-bearing figure is a floor count, a level, a room index
+# ("over 2 floors", "transport office 2"), never an office area
+_OFFICE_BARE_MIN = 100
+
+
+def _office_area_parse(oa, record_unit: str | None = None) -> dict | None:
+    """What `officeArea` says, read carefully enough to be trusted with arithmetic. (D5)
+
+    Returns None when the text holds nothing an officeAreaVal could be (absent, an unknown, a
+    '% of GLA' share, a RANGE, no figure at all), else a dict:
+        {"value": float, "unit": the unit printed beside the CHOSEN figure or None,
+         "note": how the figure was chosen when that needed saying, or None}
+    or, when the string holds several figures and no single one is identifiably the total:
+        {"value": None, "unit": None, "refused": True, "why": ..., "figures": [...]}
+
+    THE DEFECT. The predecessor took the FIRST number of any non-unknown string. Where a reader
+    shipped several stated office lines in one string that produced, on a live run:
+        "899 sq m / 9,681 sq ft ground floor office; 880 sq m / 9,469 sq ft first floor; ..."
+            -> 899.0, on a sq ft dashboard: a 27x understatement AND a sq m figure taken as sq ft;
+        "11,829 sq ft (GF Offices); 11,807 sq ft (FF Offices)" -> 11,829 (the total is 26,208).
+    The value-format gate did not fire (899 is not "bare"; its string carries units), the
+    arithmetic gate did not fire (a too-SMALL office cannot inflate the GLA), and it reached the
+    client pack, where a human reviewer found it. The same first-number read also mis-footed the
+    dual-unit restatement "1,413 sq m / 15,213 sq ft": it returned 1,413 while `area_unit_of`
+    on the whole string said sq ft, so the sq m figure shipped unconverted as sq ft.
+
+    THE RULES, and why each stops where it does:
+      1. ONE unit-bearing figure, or one figure and nothing else: it is the value, in its own
+         unit. "2,500 sq ft", "1,413 sq m", "24230", "2,500 sq ft over 2 floors" - the common
+         case is byte-identical to before. A bare number under `_OFFICE_BARE_MIN` beside a
+         unit-bearing figure is a floor count or an index, not an area, and is ignored.
+      2. A SINGLE figure RESTATED in two units ("1,413 sq m / 15,213 sq ft", "9,681 sq ft (899
+         sq m)"): one mention per unit and the two agree within 1% (brochures round each side
+         independently). The figure printed in the RECORD's own unit is taken, so no conversion
+         is needed and the wrong-unit twin can never be picked; with no record unit the first
+         is taken in its own unit and the alignment step converts it. The choice is noted.
+      3. A LEADING TOTAL followed by its own breakdown ("24,230 (offices 20,000; gatehouse
+         4,230)", "45,649 sq ft total non-warehouse area (offices ... 28,804; ... 1,711; ...)"):
+         the first figure EQUALS the sum of the later figures in the same unit (or all bare),
+         within 0.5% or one unit. That arithmetic identity is the only evidence that the first
+         figure is the total rather than a part, and it is checked, never assumed. Noted.
+      4. Anything else with several figures is REFUSED: a semicolon list of floors, a string
+         restating each of three lines in two units, a total that does not reconcile with its
+         parts. No figure is taken, none is invented, and the clauses are NOT summed - a sum
+         assumes the clauses are disjoint parts of one total, and the Novus string above
+         restates the SAME area in two units, so summing it would have been catastrophically
+         wrong. The refusal names every figure so the operator can state the total by repair.
+    The gate on a RANGE (T1) and on a '%' share is unchanged: neither has a single value."""
+    if isinstance(oa, (int, float)) and not isinstance(oa, bool):
+        return {"value": float(oa), "unit": None, "note": None} if oa > 0 else None
+    if not (isinstance(oa, str) and oa.strip() and not N.looks_unknown(oa) and "%" not in oa):
+        return None
+    if N.is_range(oa):
+        return None
+    mentions: list = []          # (value, unit-or-None, printed)
+    for m in _OFFICE_MENTION_RX.finditer(oa):
+        val = N.normalize_number(m.group("num"))
+        if val is None or val <= 0:
+            continue
+        u = N.area_unit_of(m.group("unit")) if m.group("unit") else None
+        mentions.append((float(val), u, m.group(0).strip()))
+    if not mentions:
+        return None
+    unit_bearing = [x for x in mentions if x[1]]
+    bare = [x for x in mentions if not x[1]]
+    rec_u = str(record_unit or "").strip().lower() or None
+
+    def _close(a: float, b: float, tol: float) -> bool:
+        return abs(a - b) <= max(1.0, tol * max(abs(a), abs(b)))
+
+    if not unit_bearing:
+        if len(bare) == 1:
+            return {"value": bare[0][0], "unit": None, "note": None}
+        if _close(bare[0][0], sum(x[0] for x in bare[1:]), 0.005):
+            return {"value": bare[0][0], "unit": None,
+                    "note": (f"the leading figure {bare[0][2]} is the total: the "
+                             f"{len(bare) - 1} figures after it sum to it exactly")}
+        return {"value": None, "unit": None, "refused": True,
+                "figures": [x[2] for x in mentions],
+                "why": (f"the text holds {len(mentions)} figures and none is identifiably the "
+                        f"total (the first is not the sum of the rest)")}
+    big_bare = [x for x in bare if x[0] >= _OFFICE_BARE_MIN]
+    if len(unit_bearing) == 1 and not big_bare:
+        v, u, _ = unit_bearing[0]
+        return {"value": v, "unit": u, "note": None}
+    units = {x[1] for x in unit_bearing}
+    # rule 2: one figure restated in two units
+    if len(units) == 2 and len(unit_bearing) == 2 and not big_bare:
+        (v1, u1, p1), (v2, u2, p2) = unit_bearing
+        f = N.area_factor(u1, u2)
+        if f is not None and _close(v1 * f, v2, 0.01):
+            pick = next((x for x in unit_bearing if x[1] == rec_u), unit_bearing[0])
+            return {"value": pick[0], "unit": pick[1],
+                    "note": (f"one figure restated in two units ({p1} / {p2}); the "
+                             f"{pick[1]} figure was taken"
+                             + ("" if pick[1] == rec_u else
+                                " (the record states no area unit, so the first was taken "
+                                "in its own unit)"))}
+    # rule 3: a leading total whose later figures (same unit, or bare) sum to it
+    lead = mentions[0]
+    if lead[1] is not None:
+        rest = mentions[1:]
+        # a small bare number after the total is an index or a floor count, not a part
+        parts = [x for x in rest if x[1] or x[0] >= _OFFICE_BARE_MIN]
+        if len(parts) >= 2 and all(x[1] in (None, lead[1]) for x in parts) \
+                and _close(lead[0], sum(x[0] for x in parts), 0.005):
+            return {"value": lead[0], "unit": lead[1],
+                    "note": (f"the leading figure {lead[2]} is the total: the {len(parts)} "
+                             f"figures after it sum to it exactly")}
+    return {"value": None, "unit": None, "refused": True,
+            "figures": [x[2] for x in mentions],
+            "why": (f"the text holds {len(mentions)} figures"
+                    + (f" in {len(units)} units" if len(units) > 1 else "")
+                    + " and none is identifiably the total: it was not summed (the clauses "
+                      "may restate one area or overlap) and no single figure was taken")}
+
+
+def _office_area_val_from(p: dict):
+    """officeAreaVal from officeArea, in the TEXT'S OWN unit: a positive number as a float, or
+    the ONE figure `_office_area_parse` can stand behind. None when the text is absent, an
+    unknown, a '% of GLA' phrasing, a range - or several figures with no identifiable total
+    (D5: the field then ships absent and main() discloses the refusal; see `_office_area_parse`
+    for the rules). The record's own `areaUnit` is passed so a figure restated in two units is
+    taken in the unit the dataset already uses."""
+    r = _office_area_parse(p.get("officeArea"), _record_area_unit(p))
+    if r is None or r.get("value") is None:
+        return None
+    return r["value"]
+
+
+def _expansion_park_val_from(p: dict):
+    """expansionParkVal from expansionPark: a number of at least 1,000 (below that the text is a
+    phase count or a phrase, not an area). None otherwise."""
+    if p.get("expansionPark") is None:
+        return None
+    v = N.normalize_number(p["expansionPark"])
+    return v if v is not None and v >= 1000 else None
 
 
 def canonicalize(p: dict) -> dict:
@@ -2818,52 +3692,390 @@ def canonicalize(p: dict) -> dict:
                     p["rentUnit"] = _u
         p["warehouseRent"] = N.rent_display(val, _u)
     else:
-        disp = p.get("warehouseRent")
-        if isinstance(disp, str) and disp.strip() and not N.looks_unknown(disp):
-            unit = p.get("rentUnit") or N.rent_unit_of_text(disp)
-            num = N.extract_first_number(disp)
-            if num is not None and N.MONTHLY_RX.search(disp):
-                num = round(num * 12, 2)
-            lo, hi = N.rent_unit_band(unit)
-            if num is not None and lo <= num <= hi:
-                p["warehouseRentVal"] = num
-                if unit:
-                    p["rentUnit"] = unit
-                p["warehouseRent"] = N.rent_display(num, unit)
+        _pair = _rent_pair_from_display(p)
+        if _pair is not None:
+            num, unit = _pair
+            p["warehouseRentVal"] = num
+            if unit:
+                p["rentUnit"] = unit
+            p["warehouseRent"] = N.rent_display(num, unit)
     # office rent NUMERIC (officeRentVal) for the total-rent split: parse the office
     # rent string in the SAME currency/per-area convention + plausibility band as the
     # warehouse rent (annualising a monthly quote x12). The office DISPLAY string is
     # left untouched; only a clean numeric is extracted. Never invented - absent stays absent.
     if not isinstance(p.get("officeRentVal"), (int, float)):
-        odisp = p.get("officeRent")
-        if isinstance(odisp, str) and odisp.strip() and not N.looks_unknown(odisp):
-            ounit = p.get("rentUnit") or N.rent_unit_of_text(odisp)
-            onum = N.extract_first_number(odisp)
-            if onum is not None and N.MONTHLY_RX.search(odisp):
-                onum = round(onum * 12, 2)
-            olo, ohi = N.rent_unit_band(ounit)
-            if onum is not None and olo <= onum <= ohi:
-                p["officeRentVal"] = onum
+        onum = _office_rent_val_from(p)
+        if onum is not None:
+            p["officeRentVal"] = onum
     # office area NUMERIC (officeAreaVal) for total GLA: officeArea may be a number or
     # a string ('13576 sq ft'); extract the figure in the record's OWN area unit (the
     # minority-unit conversion in main() then aligns it to the dataset unit, like
     # warehouseArea). A '% of GLA' phrasing is skipped (not an absolute area).
     if not isinstance(p.get("officeAreaVal"), (int, float)):
-        oa = p.get("officeArea")
-        if isinstance(oa, (int, float)) and not isinstance(oa, bool):
-            if oa > 0:
-                p["officeAreaVal"] = float(oa)
-        elif isinstance(oa, str) and oa.strip() and not N.looks_unknown(oa) and "%" not in oa:
-            oan = N.extract_first_number(oa)
-            if oan is not None and oan > 0:
-                p["officeAreaVal"] = oan
+        oan = _office_area_val_from(p)
+        if oan is not None:
+            p["officeAreaVal"] = oan
     # expansionParkVal companion
     if "expansionPark" in p and "expansionParkVal" not in p:
-        v = N.normalize_number(p["expansionPark"])
-        if v is not None and v >= 1000:
+        v = _expansion_park_val_from(p)
+        if v is not None:
             p["expansionParkVal"] = v
     # fill sentinels for every chrome-read key (honest unknowns, never invented)
     return C.fill_render_sentinels(p)
+
+
+# ---------------------------------------------------------------------------- #
+# C2 / F24: DERIVED TWINS, and re-derivation after the repairs stage.
+#
+# THE DEFECT, measured. `repairs` runs at stage 5, AFTER merge and AFTER enrichment, and writes
+# straight into canonical. Several shipped values are DERIVED here at merge from a sibling field,
+# and nothing re-derived them: a repair to the sibling left the derived value exactly as merge had
+# computed it from the OLD sibling, or absent when the sibling had been absent. On one live run,
+# every property whose office area came through merge carried a matching `officeAreaVal`; the
+# two whose office area came from a repair carried None, so their modals printed a raw unit-less
+# string and their Total GLA silently excluded the office. Every mechanical gate was green. The
+# operator's workaround was a hand-written second repair per property setting the twin itself.
+# Three blind reviewers filed this as three separate blocking findings.
+#
+# THE REGISTRY. Source field -> the field canonicalize() derives from it. This is the full set of
+# post-merge derivations in this file that a repair can change the input of:
+#   officeArea      -> officeAreaVal    (`_office_area_val_from`; then unit-aligned in main())
+#   officeRent      -> officeRentVal    (`_office_rent_val_from`)
+#   expansionPark   -> expansionParkVal (`_expansion_park_val_from`)
+#   warehouseRentVal -> warehouseRent   (display regenerated from the numeric, `N.rent_display`)
+#   warehouseRent   -> warehouseRentVal (numeric parsed from the display, `_rent_pair_from_display`)
+# The rent pair is listed in BOTH directions because canonicalize() derives whichever side is
+# missing, so a repair to either side strands the other. `rederive_after_repairs` treats the two
+# as one consistency pair (see there). Two in-place normalisations of a field onto itself are
+# re-run too but cannot be expressed as twins: `country` -> ISO code and `motorway` -> its
+# condensed locator form. NOT re-run, deliberately: `regionCode` (merge derives a raw label only
+# when regions are on; enrich then HARMONISES it against the workforce profiles, and a raw label
+# re-derived after enrich would match no profile and block validate-data), `preBaked.statedTotal`
+# (read from the source records' __meta, which a repair cannot touch), and
+# `fill_render_sentinels` (run.py's `_coerce_repaired_scalars` already re-runs it).
+# repairs.py reads this map to refuse an entry that repairs a source field without its twin
+# unless the caller re-derives; run.py calls `rederive_after_repairs` right after the stage.
+DERIVED_TWINS = {
+    "officeArea": "officeAreaVal",
+    "officeRent": "officeRentVal",
+    "expansionPark": "expansionParkVal",
+    "warehouseRentVal": "warehouseRent",
+    "warehouseRent": "warehouseRentVal",
+}
+# A derived numeric within this of its recomputation is the SAME figure: a source's own rounding
+# (a brochure printing both 1,413 sq m and 15,213 sq ft) must not make an untouched property
+# "re-derive" on every pass. Same tolerance as GALLERY_FIGURE_TOL, for the same reason.
+_TWIN_TOL = 0.005
+
+
+def repaired_fields(report) -> dict:
+    """{property id (STRING) -> the field names an APPLIED repair CHANGED}, read off the repairs
+    report exactly as run.py's `_repairs_cleared` reads the cleared ones. Read, never inferred:
+    it is what lets `rederive_after_repairs` know WHICH side of a pair a human touched. Any
+    other shape yields {} and the re-derivation falls back to its consistency rules."""
+    out: dict = {}
+    for a in ((report or {}).get("applied") or []) if isinstance(report, dict) else []:
+        if not isinstance(a, dict):
+            continue
+        names = {str(f) for f in (a.get("changed") or {}).keys()}
+        if names:
+            out.setdefault(str(a.get("property_id")), set()).update(names)
+    return out
+
+
+def _num(v):
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _close(a, b) -> bool:
+    if a is None or b is None:
+        return False
+    return abs(a - b) <= max(0.5, _TWIN_TOL * max(abs(a), abs(b)))
+
+
+def _rederive_property(p: dict, changed: set | None) -> list[tuple[str, str]]:
+    """Re-derive one property in place. Returns (derived field, what happened) pairs.
+
+    `changed` is the set of fields a repair changed on THIS property, or None when the caller
+    has no report. With it, a twin whose source was repaired is recomputed unconditionally
+    (and withdrawn when the source no longer yields one). Without it, the rules are those a
+    pass over UNTOUCHED properties must satisfy: fill a missing twin, refresh one that disagrees
+    with its source beyond `_TWIN_TOL`, and never withdraw (a tracker can supply `officeAreaVal`
+    with no `officeArea` beside it, and that is not staleness)."""
+    done: list = []
+    forced = changed or set()
+    unit = _record_area_unit(p)
+
+    def one_way(src: str, dst: str, derive) -> None:
+        exp = derive(p)
+        cur = _num(p.get(dst))
+        if src == "officeArea" and exp is not None and isinstance(p.get("officeArea"), str):
+            # the text's own unit vs the dataset's: merge aligns officeAreaVal to the dataset
+            # unit on the source's footing, so this must too, or a repair typed as "1,413 sq m"
+            # into a sq ft dataset would ship un-converted.
+            # D5: the unit is the one printed beside the figure that was TAKEN, read from the
+            # same parse that chose it. `area_unit_of` on the WHOLE string prefers sq ft, so on
+            # "899 sq m (9,681 sq ft)" in a sq m dataset it would have called the chosen 899 a
+            # sq ft figure and divided it by 10.76.
+            _pr = _office_area_parse(p["officeArea"], unit)
+            tu = (_pr or {}).get("unit") or None
+            if tu and unit and tu != unit:
+                f = N.area_factor(tu, unit)
+                if f is None:
+                    exp = None
+                else:
+                    exp = float(round(exp * f))
+        if exp is None:
+            if cur is not None and src in forced:
+                p.pop(dst, None)
+                done.append((dst, f"withdrawn: {src} was repaired and no longer yields a value"))
+            return
+        if cur is None or src in forced or not _close(exp, cur):
+            if cur is not None and _close(exp, cur):
+                return
+            p[dst] = exp
+            done.append((dst, f"{'set' if cur is None else 'refreshed from ' + repr(cur)} to "
+                              f"{exp:g} (derived from {src} = {p.get(src)!r})"))
+
+    one_way("officeArea", "officeAreaVal", _office_area_val_from)
+    one_way("officeRent", "officeRentVal", _office_rent_val_from)
+    one_way("expansionPark", "expansionParkVal", _expansion_park_val_from)
+
+    # THE RENT PAIR is bidirectional, so direction has to come from the report. With it, the
+    # repaired side is the source. Without it, a missing side is filled from the other, and two
+    # present sides that disagree are REPORTED, never touched: canonicalize() would let the
+    # numeric win, which is exactly the rule that would clobber a display-only repair.
+    val = _num(p.get("warehouseRentVal"))
+    disp = p.get("warehouseRent")
+    disp_ok = isinstance(disp, str) and bool(disp.strip()) and not N.looks_unknown(disp)
+    val_rep = "warehouseRentVal" in forced and "warehouseRent" not in forced
+    disp_rep = "warehouseRent" in forced and "warehouseRentVal" not in forced
+    if val_rep or (val is not None and not disp_ok and not disp_rep):
+        if val is not None:
+            new = N.rent_display(val, p.get("rentUnit"))
+            if new != disp:
+                p["warehouseRent"] = new
+                done.append(("warehouseRent", f"regenerated as {new!r} from warehouseRentVal = {val:g}"))
+        elif val_rep and disp_ok:
+            p["warehouseRent"] = "tbd"
+            done.append(("warehouseRent", "withdrawn: warehouseRentVal was repaired to nothing"))
+    elif disp_rep or (disp_ok and val is None):
+        pair = _rent_pair_from_display(p)
+        if pair is not None:
+            num, u = pair
+            if not _close(num, val):
+                p["warehouseRentVal"] = num
+                if u:
+                    p["rentUnit"] = u
+                p["warehouseRent"] = N.rent_display(num, u)
+                done.append(("warehouseRentVal", f"set to {num:g} (parsed from warehouseRent = {disp!r})"))
+        elif disp_rep and val is not None:
+            p["warehouseRentVal"] = None
+            done.append(("warehouseRentVal", f"withdrawn: the repaired warehouseRent {disp!r} "
+                                             f"carries no plausible figure"))
+    elif changed is None and val is not None and disp_ok:
+        pair = _rent_pair_from_display(p)
+        if pair is not None and not _close(pair[0], val):
+            done.append(("warehouseRent", f"INCONSISTENT with warehouseRentVal ({disp!r} reads as "
+                                          f"{pair[0]:g}, the numeric is {val:g}); left alone: pass "
+                                          f"the repairs report so the repaired side is known"))
+
+    # in-place normalisations canonicalize() applies to a field ON ITSELF; both idempotent
+    c = p.get("country")
+    if isinstance(c, str) and c.strip() and not N.looks_unknown_code(c):
+        iso = N.country_iso(c)
+        if iso and iso != c:
+            p["country"] = iso
+            done.append(("country", f"normalised {c!r} -> {iso!r}"))
+    m = p.get("motorway")
+    if isinstance(m, str) and m.strip():
+        short = N.short_motorway(m)[0]
+        if short and short != m:
+            p["motorway"] = short
+            done.append(("motorway", f"condensed {m!r} -> {short!r}"))
+    return done
+
+
+def _load_props(canonical):
+    """(document-or-None, properties list, path-or-None) for a path, a document dict, a bare
+    property list or a single property dict."""
+    if isinstance(canonical, (str, Path)):
+        path = Path(canonical)
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        return data, (data.get("properties") if isinstance(data, dict) else data) or [], path
+    if isinstance(canonical, dict) and isinstance(canonical.get("properties"), list):
+        return canonical, canonical["properties"], None
+    if isinstance(canonical, list):
+        return None, canonical, None
+    if isinstance(canonical, dict):
+        return None, [canonical], None
+    return None, [], None
+
+
+def rederive_after_repairs(canonical, changed: dict | None = None, ledger=None) -> list[str]:
+    """Re-run every post-merge derivation whose input a repair may have changed.
+    Returns human-readable lines naming what it re-derived, for the run log.
+
+    `canonical` is the canonical document (a dict with `properties`), or a path to it (then the
+    file is rewritten only when a byte moves, like run.py's `_coerce_repaired_scalars`), or a
+    bare property list. `changed` is `repaired_fields(report)`; pass it whenever the report is
+    to hand, because it is what decides direction for the rent pair and permits a withdrawal.
+    Without it every rule is the conservative one (see `_rederive_property`).
+
+    `ledger`, when given the Source Ledger path, does the two things the ledger needs after a
+    repair: a provenance row for each twin re-derived here (copied from the twin's basis row and
+    marked "derived from <basis>", the way merge attributes a derived companion at merge time,
+    so the ledger has a row for `officeAreaVal` after a repair exactly as it does after a merge),
+    and `retract_superseded_gap_rows`. Both idempotent across passes."""
+    data, props, path = _load_props(canonical)
+    lines: list = []
+    derived_rows: list = []
+    dirty = False
+    for p in props:
+        if not isinstance(p, dict):
+            continue
+        pid = str(p.get("id"))
+        before = json.dumps(p, ensure_ascii=False, sort_keys=True, default=str)
+        hint = (set(changed.get(pid) or ()) if isinstance(changed, dict) else None)
+        for fld, what in _rederive_property(p, hint):
+            lines.append(f"  - property {pid} {fld}: {what}")
+            if fld in DERIVED_TWINS.values() and not what.startswith("INCONSISTENT"):
+                derived_rows.append((pid, fld, p.get(fld)))
+        if json.dumps(p, ensure_ascii=False, sort_keys=True, default=str) != before:
+            dirty = True
+    if dirty and path is not None:
+        C.atomic_write_text(path, json.dumps(data, ensure_ascii=False))
+    if ledger is not None:
+        lines.extend(_ledger_after_rederive(Path(ledger), derived_rows))
+    return lines
+
+
+# ledger rows this module writes AFTER repairs carry this record_type, so a re-run replaces them
+# (as run.py's `_ledger_append` replaces `repair` rows) instead of stacking a copy per pass
+DERIVED_RECORD_TYPE = "derived"
+SUPERSEDED_RECORD_TYPE = "superseded"
+
+
+def _read_ledger(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    csv.field_size_limit(2 ** 31 - 1)
+    with open(path, newline="", encoding="utf-8-sig") as fh:
+        return list(csv.DictReader(fh))
+
+
+def _write_ledger(path: Path, rows: list[dict]) -> None:
+    """Rewrite the ledger in ledger.COLUMNS order, atomically, the way main() writes it."""
+    import io
+    import ledger as _ledger
+    sio = io.StringIO()
+    w = csv.DictWriter(sio, fieldnames=_ledger.COLUMNS, extrasaction="ignore", lineterminator="\n")
+    w.writeheader()
+    for r in rows:
+        w.writerow(r)
+    C.atomic_write_text(path, sio.getvalue())   # atomic + LF, exactly as main() writes it
+
+
+def _ledger_after_rederive(path: Path, derived: list) -> list[str]:
+    rows = _read_ledger(path)
+    if not rows:
+        return []
+    lines: list = []
+    if derived:
+        keys = {(pid, fld) for pid, fld, _ in derived}
+        rows = [r for r in rows
+                if not ((r.get("record_type") or "").strip() == DERIVED_RECORD_TYPE
+                        and (str(r.get("property_id")), r.get("field")) in keys)]
+        for pid, fld, value in derived:
+            basis = next((s for s, d in DERIVED_TWINS.items() if d == fld), None)
+            if value is None:
+                continue          # a withdrawal leaves no value to attribute; the removal is in the run log
+            src_row = None
+            if basis:
+                cands = [r for r in rows if str(r.get("property_id")) == pid and r.get("field") == basis
+                         and (r.get("source_type") or "").strip().lower() != "gap"]
+                src_row = cands[-1] if cands else None   # the LATEST non-gap row is the live one
+            rows.append({
+                "property_id": pid, "record_type": DERIVED_RECORD_TYPE, "field": fld,
+                "value": _short(value),
+                "source_file": (src_row or {}).get("source_file") or "(derived)",
+                "source_locator": ((f"{(src_row or {}).get('source_locator', '')} " if src_row else "")
+                                   + f"(derived from {basis} after repairs)").strip(),
+                "source_type": (src_row or {}).get("source_type") or "derived",
+                "extractor": "merge.rederive_after_repairs",
+                "confidence": (src_row or {}).get("confidence", ""),
+                "conflict_note": "", "verified": (src_row or {}).get("verified", ""),
+            })
+            lines.append(f"  - ledger: property {pid} {fld}: provenance row written (derived from {basis})")
+    lines.extend(retract_superseded_gap_rows(rows))
+    _write_ledger(path, rows)
+    return lines
+
+
+def retract_superseded_gap_rows(ledger) -> list[str]:
+    """Mark every gap row a later row SUPERSEDES; restore one whose superseder is gone. (F24)
+
+    THE DEFECT. Merge writes a gap row ("value=tbd, absent in all sources, verified=no") for
+    every chrome-read field no source stated. Repairs run later and append a row carrying the
+    value with full provenance, and nothing touched the gap row, so the Source Ledger, whose
+    whole purpose is to be authoritative, carried TWO rows for every repaired field and
+    contradicted the dashboard on each of them. Measured on a live ledger: 5 of 5 repaired gap
+    fields.
+
+    MARKED, NOT DELETED, for three reasons. (1) The ledger is a client deliverable and reviewers
+    re-derive from it: a row that vanishes between two runs is a silent edit to an audit trail,
+    while a row that says SUPERSEDED and names its superseder is a visible, explicable one. (2)
+    Resume skips merge when nothing upstream changed, so the ledger merge wrote is the only copy;
+    a repair later deleted or refused would then leave the field with NO row at all, and
+    G-honesty requires a gap row behind every sentinel. Marking is reversible: this function
+    RESTORES a marked row whose superseder is gone, so the ledger always states the current
+    truth. (3) It is a pure function of the ledger itself, so it is idempotent and needs no
+    report: superseded iff a non-gap row exists for the same (property_id, field).
+
+    What changes on a marked row: `record_type` (the column the xlsx shows and `_ledger_append`
+    keys on) becomes "superseded", and `conflict_note` names the superseding row. `source_type`
+    stays "gap" and `value` stays the sentinel, on purpose: every consumer that must ignore a gap
+    row (trace-coverage, repairs.read_provenance, the source-count votes) already filters on
+    `source_type == "gap"`, so a marked row is invisible to them exactly as it was before, and
+    the row still records what merge knew at merge time.
+
+    `ledger` is a path (read, marked, rewritten only when a row moved) or a list of rows (marked
+    in place). Returns run-log lines."""
+    path = Path(ledger) if isinstance(ledger, (str, Path)) else None
+    rows = _read_ledger(path) if path is not None else list(ledger or [])
+    live: dict = {}
+    for r in rows:
+        if (r.get("source_type") or "").strip().lower() != "gap":
+            live[(str(r.get("property_id")), str(r.get("field")))] = r
+    lines: list = []
+    moved = False
+    for r in rows:
+        if (r.get("source_type") or "").strip().lower() != "gap":
+            continue
+        key = (str(r.get("property_id")), str(r.get("field")))
+        sup = live.get(key)
+        rt = (r.get("record_type") or "").strip()
+        if sup is not None:
+            note = (f"SUPERSEDED: written at merge, when no source stated this value; a later "
+                    f"{(sup.get('record_type') or 'property')} row ({sup.get('source_file', '')}: "
+                    f"{sup.get('source_locator', '')}) supplies {_short(sup.get('value'), 40)!r} with "
+                    f"full provenance. Kept so the retraction is visible; NOT the live value.")
+            if rt != SUPERSEDED_RECORD_TYPE or r.get("conflict_note") != note:
+                r["record_type"] = SUPERSEDED_RECORD_TYPE
+                r["conflict_note"] = note
+                moved = True
+                lines.append(f"  - ledger: property {key[0]} {key[1]}: gap row marked superseded by "
+                             f"the {(sup.get('record_type') or 'property')} row")
+        elif rt == SUPERSEDED_RECORD_TYPE:
+            r["record_type"] = "property"
+            if str(r.get("conflict_note") or "").startswith("SUPERSEDED:"):
+                r["conflict_note"] = ""
+            moved = True
+            lines.append(f"  - ledger: property {key[0]} {key[1]}: gap row RESTORED, its superseding "
+                         f"row is gone")
+    if moved and path is not None:
+        _write_ledger(path, rows)
+    return lines
 
 
 def load_hero(project_yaml: Path | None, properties: list[dict], default_date: str = "") -> dict:
@@ -3090,6 +4302,20 @@ def main() -> None:
                 area_unit = _du
         except Exception as e:
             print(f"  (answered dataset unit not applied: {e})", file=sys.stderr)
+    # D11: THE RENT BASIS IS AN ASSUMPTION WHEN NO SOURCE STATES ONE, AND IT IS SAID SO.
+    # dominant_units already falls back to the market-derived default, but it is recomputed HERE
+    # because the broker's answer above may have moved `area_unit`, and a rent basis derived from
+    # the vote's area unit would then disagree with the grid it labels. The entry lands in
+    # `meta.unitAssumptions` (appended once the list exists, below) so the Gaps Report carries it
+    # exactly as it carries an assumed area unit - on the measured run the operator had to write
+    # that disclosure by hand. Printed as well, because a default that is only visible in a report
+    # read after the dashboard shipped is the silence this codebase treats as the bug.
+    _rent_assumption = None
+    if not rent_unit_stated(all_records):
+        rent_unit, _rent_assumption = rent_unit_default(all_records, area_unit)
+        print(f"  (no source states a rent unit: the rent basis '{rent_unit}' is ASSUMED from the "
+              f"dominant area unit and country, and is disclosed in the Gaps Report; no rent "
+              f"figure is relabelled with it)")
     MATCH_DECISIONS = {}  # pair_id -> 'same'|'different'|{verdict,reason} (grey-zone sub-agent)
     if args.match_decisions and Path(args.match_decisions).exists():
         try:
@@ -3161,8 +4387,18 @@ def main() -> None:
     except OSError:
         image_cache = None  # unwritable cache dir must never break the merge
 
-    def _is_sentinel(v):
-        return v is None or str(v).strip().lower() in {"tbd", "—", "", "none", "??"}
+    def _is_sentinel(v, field=None):
+        # The shared family, nothing private (SEAM-13). Four sites read this: the regionCode
+        # derivation, the derived-companion provenance, the brochure description backfill and
+        # the gap rows. A stated "none" is DATA at all four (a source that prints "None" for a
+        # spec has spoken; it gets a provenance row, not a gap row), and the markers the old
+        # five-member set lacked ("tbc", "n/a", "tba", "-", "?") are absences at all four, so a
+        # description reading "tbc" is now backfilled from the deck instead of shipping. The
+        # gap rows pass `field` so `country` gets the CODE reading: a bare assigned alpha-2
+        # code that doubles as a market abbreviation is a country, not a gap.
+        if field == "country":
+            return N.looks_unknown_code(v)
+        return N.looks_unknown(v)
 
     properties, ledger_rows, all_conflicts = [], [], []
     # Both-shipped forbidden-with-identity pairs: two cards plausibly ONE building,
@@ -3201,6 +4437,13 @@ def main() -> None:
     # Pure recording - see attach_media's `considered` parameter.
     media_considered: list = []
     unit_assumptions: list = []    # areas whose unit the SOURCE never stated -> Gaps Report
+    if _rent_assumption:           # D11: the dataset-level rent basis, when no source stated one
+        unit_assumptions.append(_rent_assumption)
+    # D5: {property_id: the refusal text} for an officeArea string holding SEVERAL figures, from
+    # which no single officeAreaVal could honestly be taken. The field ships ABSENT and the
+    # refusal is said on stdout, on the conflicts channel and in a gap ledger row - a first-number
+    # parse shipped 899 (a sq m figure) as the sq ft office area on a live run and nothing saw it.
+    office_val_refused: dict = {}
     # B58: {property_id: [(field, raw value, unrecognised unit)]}. A figure the dataset cannot
     # express is withdrawn rather than mislabelled, and its gap row must say THAT instead of
     # claiming the source was silent - the false-absence claim both critical reviewers blocked on.
@@ -3212,20 +4455,85 @@ def main() -> None:
     # say what was dropped rather than assert the sources were silent about it.
     unparseable_areas: dict = {}
     stated_totals: dict = {}       # P1-1: id -> the SOURCE's own stated total area (arithmetic gate)
+    computed_sums: dict = {}       # F11: id -> the office-sum audit entry (computed or refused)
     open_capture_by_id: dict = {}  # id -> the extractor's __meta.open_capture entries (commentary/
     #                                denied/CJK columns): READ but never client-shown; __meta is
     #                                popped at merge, so this is how they reach the per-property view
+    all_struck: list = []          # A9/honesty: {id, field, value, source_file, locator} per strike
+    cluster_sources: dict = {}     # A14a: id (STRING) -> the records that built this property
     for i, cl in enumerate(clusters, start=1):
         variants: dict = {}   # I10: same fact, different notation - reported, not adjudicated
-        merged, prov, conflicts = merge_cluster(cl, FIELD_DECISIONS or None, variants)
+        _struck: list = []    # this cluster's band strikes, id-stamped a few lines below
+        merged, prov, conflicts = merge_cluster(cl, FIELD_DECISIONS or None, variants, _struck)
         merged["id"] = i
+        # The property id exists only HERE, so this is where a per-cluster artefact gets stamped
+        # with it. Key SHAPE is deliberate and matches the existing per-property projections
+        # below: `struck` carries an INT id (it sits beside the properties, which key on an int
+        # `id`), while the dict projections key on a STRING (openCapture/placeholderAudit already
+        # do, because JSON object keys are strings and a round-trip must not change them).
+        for _s in _struck:
+            all_struck.append({"id": i, "field": _s["field"], "value": _s["value"],
+                               "source_file": _s["source_file"], "locator": _s["locator"]})
+        # A14a WHICH SOURCES BUILT THIS PROPERTY, and what postcode each of them stated.
+        # Captured HERE, inside the loop that still holds both the cluster's records and the
+        # assigned id, and necessarily BEFORE the `merged.pop("__meta")` choke point below.
+        #
+        # WHY THE POSTCODE RIDES ALONG. The over-merge gate has to ask whether two records the
+        # matcher fused state DIFFERENT postcodes - two buildings, one card. Recording each
+        # contributing record's own stated postcode here makes that a pure function of
+        # canonical.json, so the gate never has to import the matcher, re-cluster, or re-read the
+        # inputs to answer it. A gate that re-derives clustering to check clustering can only
+        # ever agree with itself.
+        cluster_sources[str(i)] = [
+            {"file": Path(str((r.get("__meta") or {}).get("source_file") or "")).name,
+             "postcode": _stated_postcode(r)} for r in cl]
         _oc = [dict(e, source_file=(r.get("__meta") or {}).get("source_file", ""))
                for r in cl
                for e in ((r.get("__meta") or {}).get("open_capture") or [])
                if isinstance(e, dict)]
         if _oc:
             open_capture_by_id[str(i)] = _oc
+        # F11: an office total the source never printed, summed from the lines it did. BEFORE
+        # canonicalize, which derives officeAreaVal from officeArea, and before the unit
+        # alignment, which converts officeAreaVal on the areaUnitOfSource this stamps. A stated
+        # total is never touched; every refusal leaves the field an honest gap and the ambiguous
+        # ones (overlapping lines, an unknowable unit) are said on the conflicts channel, where
+        # the Gaps Report already reads.
+        _os = derive_office_sum(cl, merged, prov)
+        if _os:
+            computed_sums[str(i)] = _os
+            if _os.get("status") == "computed" and str(_os.get("reconciles", "")).startswith("does NOT"):
+                all_conflicts.append(f"id {i} officeArea: computed from itemised office lines, but "
+                                     f"{_os['reconciles']}. Read the schedule of accommodation "
+                                     f"before this figure goes to the client.")
+            elif _os.get("status") == "refused" and "not a sum" not in str(_os.get("why", "")):
+                all_conflicts.append(f"id {i} officeArea: the source itemises office space "
+                                     f"({', '.join(_os.get('components') or [])}) but prints no "
+                                     f"total, and the lines were NOT summed: {_os['why']}.")
         merged = canonicalize(merged)
+        # D5: THE OFFICE FIGURE, WHEN CANONICALIZE COULD NOT TAKE ONE. `_office_area_parse` reads
+        # the officeArea string canonicalize just derived from; when it REFUSED (several figures,
+        # no identifiable total) the twin is absent and that absence has to be visible - a
+        # first-number parse used to ship 899 (a sq m figure) as the sq ft office on a live run
+        # and nothing saw it. Three surfaces: stdout now, the conflicts channel the Gaps Report
+        # prints, and a gap ledger row a few lines below that says WHY rather than "absent in
+        # all sources". When it DID take a figure but had to choose (a dual-unit restatement, a
+        # leading total confirmed by its parts) the choice is stamped onto the derived prov entry
+        # below, together with the unit printed beside the CHOSEN figure - which is the footing
+        # the alignment step converts on. That footing used to be inherited from the record's
+        # `areaUnit`, so "1,413 sq m" on a sq ft record shipped 1,413 unconverted as sq ft.
+        _oa_parse = _office_area_parse(merged.get("officeArea"), _record_area_unit(merged))
+        if _oa_parse and _oa_parse.get("refused"):
+            _figs = ", ".join(_oa_parse.get("figures") or [])
+            office_val_refused[i] = (f"{_oa_parse['why']}; figures: {_figs}. Total GLA "
+                                     f"therefore counts the warehouse alone until the office "
+                                     f"total is stated (repairs.json: officeAreaVal, with "
+                                     f"officeArea) or read from the source")
+            all_conflicts.append(f"id {i} officeAreaVal: NOT derived from officeArea - "
+                                 f"{office_val_refused[i]}.")
+            print(f"  (id {i} {merged.get('park') or merged.get('city') or '?'}: officeAreaVal "
+                  f"NOT derived - {_oa_parse['why']}; the office is excluded from Total GLA and "
+                  f"the gap is disclosed. State the total via repairs.json if it is known.)")
         # regionCode auto-derivation: the workforce block keys on regionCode, but no
         # extractor sets it - a real run shipped an EMPTY workforce block because
         # nothing ever bound properties to profiles. When the regions extra is on,
@@ -3249,6 +4557,16 @@ def main() -> None:
             if derived not in prov and basis in prov and not _is_sentinel(merged.get(derived)):
                 src = dict(prov[basis])
                 src["locator"] = (f"{src.get('locator', '')} (derived from {basis})").strip()
+                if derived == "officeAreaVal" and _oa_parse and _oa_parse.get("value") is not None:
+                    # D5: the footing is the unit printed beside the figure that was TAKEN, not
+                    # the record-level areaUnit the basis prov inherited from merge_cluster. A
+                    # text that states its unit is the most specific evidence there is (the
+                    # same rule B63 applies to a printed warehouseArea a few lines below), and
+                    # without it a metric office line on an imperial record was never converted.
+                    if _oa_parse.get("unit"):
+                        src["areaUnitOfSource"] = _oa_parse["unit"]
+                    if _oa_parse.get("note"):
+                        src["locator"] = f"{src['locator']} ({_oa_parse['note']})"
                 prov[derived] = src
         # DATASET UNIT CONVENTION: the dominant area unit wins; a minority-unit
         # record converts ARITHMETICALLY (prov-noted). Currency is never touched
@@ -3524,21 +4842,43 @@ def main() -> None:
                 if not _oa:
                     continue
                 for _f, _new in _oa["set"].items():
+                    # A18b: an override may CITE THE EVIDENCE A HUMAN ACTUALLY READ. The two
+                    # columns below defaulted to `where.source_file` plus this entry's own
+                    # targeting clause - which names the file+row the correction MATCHES ON, not
+                    # the page the value was read from. A figure taken off a brochure page and
+                    # corrected through the tracker row that carries it was therefore attributed
+                    # to the tracker. When the entry cites its own evidence, the citation wins and
+                    # the was/now/why audit trail moves into the conflict_note column, which is
+                    # the honest split: `source_locator` answers "where is this value", the note
+                    # answers "what changed and why". Absent, both columns are byte-identical to
+                    # today. A cited page is EVIDENCE the prov-containment gate can then check, so
+                    # cite the page the value actually occurs on.
+                    _cite_f = str(_oa.get("source_file") or "").strip()
+                    _cite_l = str(_oa.get("source_locator") or "").strip()
+                    _trail = (f"work/overrides.json#{_oa['id']} at {_oa['locator']}"
+                              f" | was: {_short(_oa['old'].get(_f))} -> now: "
+                              f"{_short(_new)} | why: {_oa['why']}")
                     override_rows.append({
                         "property_id": i, "record_type": "override", "field": _f,
                         "value": _short(_new) or "tbd",
-                        "source_file": _oa["where"]["source_file"],
-                        "source_locator": (f"work/overrides.json#{_oa['id']} at {_oa['locator']}"
-                                           f" | was: {_short(_oa['old'].get(_f))} -> now: "
-                                           f"{_short(_new)} | why: {_oa['why']}"),
+                        "source_file": _cite_f or _oa["where"]["source_file"],
+                        "source_locator": _cite_l or _trail,
                         # non-empty and != "gap": ledger.REQUIRED is satisfied by construction and
                         # trace-coverage still counts the field as traced. An override can never
                         # make a field untraceable, and never launders one into a gap-free field
                         # without leaving this row behind.
                         "source_type": "override", "extractor": "manual",
                         "confidence": "manual",
+                        # A18b: NOTHING IS SILENTLY DROPPED. When a cited locator displaces the
+                        # was/now/why trail out of `source_locator`, the trail moves HERE rather
+                        # than being lost - the honest split being that source_locator says where
+                        # the value IS and this column says what changed and why. The repair
+                        # channel already carries its id, why and old value in this same column,
+                        # so citing evidence leaves the two channels the same shape instead of
+                        # making them diverge. Byte-identical when nothing is cited.
                         "conflict_note": ("manual correction applied post-extraction; "
-                                          "work/extract was NOT edited"),
+                                          "work/extract was NOT edited"
+                                          + (f". {_trail}" if _cite_l else "")),
                         "verified": ("yes" if _oa.get("verified_by") else ""),
                     })
         # ledger rows for every populated field (with conflict note where one occurred)
@@ -3560,7 +4900,7 @@ def main() -> None:
             if field in prov:
                 continue
             val = merged.get(field)
-            if _is_sentinel(val):
+            if _is_sentinel(val, field):
                 ledger_rows.append({
                     "property_id": i, "record_type": "property", "field": field,
                     # an empty-string sentinel (mapLink) still needs a non-empty
@@ -3584,10 +4924,35 @@ def main() -> None:
                     "source_type": "gap",
                     "extractor": "", "confidence": "", "conflict_note": "", "verified": "no",
                 })
+        # D5: a gap row for an officeAreaVal that was REFUSED, and only then. officeAreaVal is
+        # not in the sentinel sweep above (an absent office is the common case and needs no
+        # row), but a twin that is absent BECAUSE the text held several figures must leave a
+        # trace the operator and the honesty report can see, and that trace may never read
+        # "absent in all sources" when the source printed three office lines.
+        if i in office_val_refused and "officeAreaVal" not in prov \
+                and _is_sentinel(merged.get("officeAreaVal")):
+            ledger_rows.append({
+                "property_id": i, "record_type": "property", "field": "officeAreaVal",
+                "value": "tbd", "source_file": "(none)",
+                "source_locator": f"NOT derived from officeArea: {office_val_refused[i]}",
+                "source_type": "gap",
+                "extractor": "", "confidence": "", "conflict_note": "", "verified": "no",
+            })
         for field, note in conflicts.items():
             all_conflicts.append(f"id {i} {field}: {note}")
         for field, note in variants.items():
             all_variants.append(f"id {i} {field}: {note}")
+        # A15: a fusion must DISCLOSE ITSELF. See `_fusion_disclosures` for the rule and for
+        # every exclusion behind it. Emitted in the existing "id N field: note" format, on the
+        # same channel the Gaps Report already reads, so a reader meeting the card meets this too.
+        for _ffield, _ffile in _fusion_disclosures(cl, prov):
+            all_conflicts.append(
+                f"id {i} {_ffield}: this value was read from {_ffile}, a file that contributed no "
+                f"record to this property, so it is not one of the sources that built this card. "
+                f"Either the value belongs to a DIFFERENT property (two options merged into one "
+                f"is the failure this discloses) or this property's own record from that file was "
+                f"lost on the way here. Read the cited page against the identity fields on this "
+                f"card before the pack goes out.")
 
     # SEMANTIC VERIFIER (grey-match): fold the blind verifier's ADVISORY disagreement lines
     # into meta.conflicts so the Gaps 'Source conflicts' section surfaces them. These do NOT
@@ -3667,6 +5032,17 @@ def main() -> None:
     }
     if meta_offspec:
         meta["offspec"] = meta_offspec
+    # A9: the ORIGINAL figure behind every band strike, so the honesty report can print what was
+    # withdrawn beside the conflict line saying why. CONDITIONAL, mirroring meta["offspec"]: a run
+    # where the band strikes nothing is byte-identical to before this change.
+    if all_struck:
+        meta["struck"] = all_struck
+    # A14a: the contributing sources per property, with each one's stated postcode. NOT
+    # conditional, unlike the keys around it - every run has clusters, so an absent key would mean
+    # "this merge predates the change", which is precisely the ambiguity the over-merge gate must
+    # not have to guess at. A gate that cannot tell "no disagreement" from "no data" either passes
+    # a fused pack or blocks every older one.
+    meta["clusterSources"] = cluster_sources
     # B7: conditional, mirroring meta["offspec"] - a run with no new fields must be
     # byte-identical to before this change.
     if meta_newfields:
@@ -3677,6 +5053,8 @@ def main() -> None:
         meta["unitAssumptions"] = unit_assumptions
     if stated_totals:  # P1-1: input to `gate_runner arithmetic`; absent when no source states one
         meta["statedTotals"] = stated_totals
+    if computed_sums:  # F11: CONDITIONAL like every optional meta key; a run with no itemised
+        meta["computedSums"] = computed_sums   # office lines stays byte-identical
     if open_capture_by_id:  # read-but-not-shown captures, for the per-property view
         meta["openCapture"] = open_capture_by_id
     # B47: options EXCLUDED by the broker's source-authority answer. CONDITIONAL, exactly like
@@ -3818,4 +5196,6 @@ def _load_yaml(path):
 
 
 if __name__ == "__main__":
+    C.force_utf8_stdout()   # D16: a non-ASCII value in printed output must not
+    #                        crash the print on a cp1252 Windows console
     main()

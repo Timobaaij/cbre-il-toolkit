@@ -202,6 +202,20 @@ rendered prompt.
   figures are unchanged. **To DECLINE** (ship the data in its source language), drop
   `work/i18n/data_translate.SKIP`. Full contract: `reference/localisation.md`. (Cowork quiet
   line: "Translating the descriptions...".)
+- **Exit 10 also carries `confirm_pairs` - AUTO merges offered for confirmation.** The auto
+  tier merges without asking anybody, `grey_pairs` enumerated only the ambiguous middle, and a
+  fusion is the one matcher error the reader never sees and nothing can undo - so the auto
+  pairs whose records MATERIALLY DISAGREE on identity (`match.identity_disagreements`: a party,
+  a scheme name, a unit designator or a street, both sides stated and no token in common) are
+  now listed in `work/match_candidates.json` under `confirm_pairs`, each carrying
+  `disagrees_on`. The postal code cannot appear there - its veto sends such a pair to
+  `forbidden` first. **The contract this changes: the auto tier is authoritative in one
+  direction only.** An auto pair merges UNLESS `work/match_decisions.json` records the exact
+  verdict `different` for it, which splits it back into two cards; an absent verdict, `same`,
+  `unsure` or junk all leave the merge untouched, so offline behaviour is unchanged. Offered
+  ONCE, dropped with `pairs` in round two, so a merge already looked at is never re-asked.
+  Full contract, including what counts as a material disagreement and why: `reference/
+  matching.md`, "`confirm_pairs`".
 - **Judgement gates (exit 14 - parallel, isolated, blind):** G-honesty + G-trace (Opus),
   G-images (Sonnet, judging the `contact_sheet.py` montage), and G-enrich (Sonnet, only when
   regions were enriched) run as ONE concurrent batch against the **frozen** `canonical.json`;
@@ -219,3 +233,21 @@ rendered prompt.
   and every blocking finding has a recorded resolution; a `VERDICT:` line is optional and
   ignored. It re-checks the freeze. Full rules: `reference/gates.md` "Reviewer dispatch
   contract".
+- **ONE ROUND, AND ONLY ONE. The shape is: spawn the review agents ONCE -> implement every
+  blocking finding, plus any advisory that is cheap and material -> deliver.**
+  **A second review round is never correct.** Exit 14 is that single dispatch. Exit 15 is a fix loop WITHIN the
+  round - implement, `qa-round resolve --id <id> --because "<what you changed>"`, re-run - and
+  it never re-dispatches a reviewer, not to confirm a fix and not because the round read thin.
+  `qa-round record` writes into ONE round slot and never opens a second: a review file that
+  changes after the round is recorded (the ordinary case being a garbled reviewer re-dispatched
+  into `reviews/round2/`) FOLDS into that same round as additional findings, which is what
+  keeps a re-dispatched review recordable without buying back a second round. A work dir that
+  arrives carrying more than one round - from an older build - is FOLDED to one on the next
+  `record`, keeping the latest round's advisory list, carrying every unresolved blocking
+  finding forward, and preserving the superseded rounds verbatim in `qa_state.json`; it says
+  on stdout exactly what it did.
+  **Which advisories to fix is a judgement call and it stays with the operator.**
+  **There is no threshold for it, and none will be added.** An advisory that is ONE EDIT and changes what a reader
+  CONCLUDES gets fixed, and is then recorded with `qa-round resolve` so the delivered Gaps
+  Report does not assert a defect the pack no longer has. The rest SHIP, disclosed under
+  "Known limitations" - that is how an advisory is closed, and it is never forced.

@@ -20,8 +20,19 @@ function grab(name) {
   return tpl.slice(start, i);
 }
 
+// v41 (F5): certName reads absence through isAbsent, which reads UNKNOWN_FORMS; both are
+// top-level consts in the same script, so they are extracted with it and evaluated FIRST.
+function grabConst(name, terminator) {
+  const start = tpl.indexOf(`const ${name} =`);
+  if (start < 0) throw new Error(`${name} not found in template`);
+  const end = tpl.indexOf(terminator, start);
+  if (end < 0) throw new Error(`${name}: terminator ${JSON.stringify(terminator)} not found`);
+  return tpl.slice(start, end + terminator.length);
+}
+
 const ctx = vm.createContext({});
-vm.runInContext(grab("certName") + "\n" + grab("certStr"), ctx);
+vm.runInContext(grabConst("UNKNOWN_FORMS", "];") + "\n" + grabConst("isAbsent", ";\n") + "\n"
+  + grab("certName") + "\n" + grab("certStr"), ctx);
 const certStr = (p) => vm.runInContext("certStr", ctx)(p);
 
 let fails = 0;

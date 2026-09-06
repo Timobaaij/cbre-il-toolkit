@@ -128,4 +128,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    try:                     # D16: UTF-8 console. Guarded and locally imported so a
+        import _common as _C  # bootstrap tool is never stopped by this call itself.
+        _C.force_utf8_stdout()
+    except Exception:
+        pass
     sys.exit(main())

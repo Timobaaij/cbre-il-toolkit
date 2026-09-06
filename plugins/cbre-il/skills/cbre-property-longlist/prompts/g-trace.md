@@ -26,6 +26,12 @@ basis/unit yourself from headers + magnitudes), `overrides.json`, `repairs.json`
 `source_ledger.csv`. A ledger row asserting "absent in all sources" for a value the cited page
 states is a blocking trace failure.
 
+## Reading a delivered workbook
+- Any claim about a delivered `.xlsx` (the Longlist or the Source Ledger workbook) is made
+  through a DECODING reader, never by grepping the zip's raw sheet XML, which carries
+  numeric character references no consumer ever sees (gates.md, "Reading a delivered
+  workbook"): `python -c "import openpyxl,sys; wb=openpyxl.load_workbook(sys.argv[1],read_only=True,data_only=True); [print(ws.title, r) for ws in wb.worksheets for r in ws.iter_rows(max_row=25, values_only=True)]" "<file>.xlsx"`
+
 ## Output
 WRITE your findings to:
 {{REVIEWS_ROUND_DIR}}/G-trace.md

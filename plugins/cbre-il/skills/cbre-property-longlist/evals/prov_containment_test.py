@@ -30,7 +30,7 @@ def ck(label, cond, detail=""):
         print(f"  [FAIL] {label}" + (f" - {detail}" if detail else ""))
 
 
-PAGE1 = "A NEW LOGISTICS FACILITY 494,750 SQ FT CAMPBELTOWN ROAD, MERSEYSIDE, CH41 9HP"
+PAGE1 = "A NEW LOGISTICS FACILITY 494,750 SQ FT CAMPBELTOWN ROAD, MERSEYSIDE, QX52 3BH"
 PAGE4 = "Located in the prime East Midlands logistics UK market"
 
 
@@ -77,7 +77,7 @@ ck("PASSES a value printed verbatim on its cited page",
 ck("PASSES a single-token value present on the page",
    run(build([("city", "Merseyside", "deck.pdf", "page 1 (text interpretation)", "pdf")])) == 0)
 ck("PASSES when only SHORT/numeric tokens differ (they are not evidence)",
-   run(build([("postcode", "CH41 9HP", "deck.pdf",
+   run(build([("postcode", "QX52 3BH", "deck.pdf",
                "page 1 (text interpretation)", "pdf")])) == 0)
 
 # THE LIVE-RUN LESSON. Marketing PDFs letter-space their headings, so the extractor legitimately
@@ -93,7 +93,7 @@ _m["decks"][0]["pages"][0]["text"] = SPACED
 ck("'Worksop' matches 'WOR K S O P' after flattening", run(d) == 0)
 d = build([("park", "UltraBox", "deck.pdf", "page 1 (text interpretation)", "pdf")])
 _m = json.loads((d / "vision" / "manifest.json").read_text(encoding="utf-8"))
-_m["decks"][0]["pages"][0]["text"] = "ULTRA BOX PURFLEET | RM19 1TT TO LET"
+_m["decks"][0]["pages"][0]["text"] = "ULTRA BOX PURFLEET | QX63 4LM TO LET"
 (d / "vision" / "manifest.json").write_text(json.dumps(_m), encoding="utf-8")
 ck("'UltraBox' matches 'ULTRA BOX' after flattening", run(d) == 0)
 

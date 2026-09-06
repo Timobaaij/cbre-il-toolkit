@@ -105,8 +105,15 @@ def main() -> int:
         ck(q.get("warehouseArea") == 10000 and q.get("plotArea") == 20000,
            f"nothing is converted when every footing already matches "
            f"({q.get('warehouseArea')}, {q.get('plotArea')})")
-        ck(not (c2.get("meta") or {}).get("unitAssumptions"),
-           "and nothing is recorded as assumed (no false disclosure)")
+        # AREA assumptions only. D11 made the same list carry ONE dataset-level entry for the
+        # RENT basis (field "rentUnit", id "dataset") whenever no source states a rent unit,
+        # which is true of this fixture and of most brochure-only corpora. That entry is a
+        # correct disclosure, not the false one this check guards against: the assertion is that
+        # no AREA footing was silently assumed, so it filters to the area entries by field.
+        _ua2 = [e for e in ((c2.get("meta") or {}).get("unitAssumptions") or [])
+                if not (isinstance(e, dict) and e.get("field") == "rentUnit")]
+        ck(not _ua2,
+           "and no AREA unit is recorded as assumed (no false disclosure)")
 
     # --- a genuine cross-unit conversion still happens --------------------------
     cross = [_r("A.pdf", warehouseArea=1000, areaUnit="sq m"),

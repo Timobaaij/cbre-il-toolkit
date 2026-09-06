@@ -19,10 +19,25 @@ Patches (map to the client's numbered requests):
   P5/6 modal top row: add Brochure / Video / Website / Street View links (reusing the .map-link
       style) whenever the property carries those URLs (injected by patch_canonical.py)
 
-P7 and P12 are RETIRED - template v38 does both jobs natively (no auto 'Additional Details'
-section exists, and the modal already renders a combined BREEAM/EPC row). They are not deleted:
-each keeps a premise re-asserted every run, so a regression reinstating the old condition fails
-loudly rather than quietly shipping a dashboard missing the fix. See RETIRED below.
+P7 and P12 are RETIRED - the toolkit template does both jobs natively (no auto 'Additional
+Details' section exists, and the modal already renders a combined BREEAM/EPC row). They are not
+deleted: each keeps a premise re-asserted every run, so a regression reinstating the old condition
+fails loudly rather than quietly shipping a dashboard missing the fix. See RETIRED below.
+
+Registry state, verified against template v40: all 12 active patches match their anchor exactly
+once and both retired premises hold. NONE of the 12 became redundant, and that is not an accident
+of this version - every one of them is a wrapper-specific PRESENTATION choice (which cell, which
+chip, which tile, which link) rather than a defect fix, so native toolkit work does not converge
+on them. The marker check is the test that settles it per patch: a marker already present means
+the template does that job now, whether natively or from a previous pass, and no marker was found.
+The toolkit's own recent native additions (a keyless basemap, a composed card title from a new
+field, a stated-total sub-line, an uncropped plan view) touch none of the anchors below; the
+composed card title in particular is a different element from P3's eyebrow line, which still
+carries the raw two-token form P3 rewrites.
+
+Note on P11: its anchor is a line P4a INSERTS, so in a full pass P4a has already run and P11
+matches once, but against a template in isolation P11's anchor does not exist yet. That chaining
+is deliberate, is called out in the abort path below, and is not a defect to "fix".
 
 The template SHA gate is gate_runner.py: sha256(load_template()) must equal VERSION.chrome_sha256.
 So after any edit we always rewrite chrome_sha256 to the current template's SHA and tag the label
@@ -143,7 +158,8 @@ PATCHES = [
 # Retired patches. A patch is retired ONLY when the toolkit does the job natively - never merely
 # because its anchor vanished. Each entry carries a PREMISE re-asserted on every run, so a toolkit
 # regression that brings the old condition back fails LOUDLY instead of quietly shipping a dashboard
-# missing the fix. Verified against template v38.
+# missing the fix. Both premises re-verified against template v40; nothing new joined this list,
+# because no active patch became native (see the registry note in the module docstring).
 #
 #   (name, why it is unnecessary, predicate that must hold of the template)
 RETIRED = [

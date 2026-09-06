@@ -172,7 +172,10 @@ def main() -> int:
        "the LIVE geocode path memoises the negative")
     # ...and the memo must NOT stop a later live retry: a place can be added to OSM later,
     # and the memo's only job is to stop the exit-8 emission.
-    _i_neg = esrc.find('{"latlng": None, "cc": ""}')
+    # Anchored to the CITY-level writer this check is about. The bare literal also appears in
+    # the D9 postcode path, so an unanchored find() tripped on an unrelated write rather than on
+    # the guard being removed - a false alarm about the very line it exists to protect.
+    _i_neg = esrc.find('cache[f"{city}|{country}".lower()] = {"latlng": None, "cc": ""}')
     ck("if latlng is None and city" in esrc[:_i_neg],
        "the live retry guard still runs on latlng, so a negative memo never blocks a re-query")
 

@@ -56,8 +56,12 @@ def main() -> int:
           "certName leaves a value that already states its certificate untouched")
     check("target(?:ing|ed)?" in nbody,
           "certName keeps a leading Target/Targeting in front of the certificate name")
-    check('"tbd"' in nbody and '"tbc"' in nbody,
-          "certName treats the tbd/tbc sentinels as absent, so no row is invented")
+    # v41 (F5): certName used to carry a private four-member sentinel chain here, and this check
+    # pinned that chain. It now reads absence through the chrome's ONE vocabulary, so tbd, tbc,
+    # ??, n/a and TBA all omit the row alike and no fifth list can drift from the others.
+    check("isAbsent(t)" in nbody and '"tbd"' not in nbody,
+          "certName treats a sentinel as absent through isAbsent (the chrome's one vocabulary), "
+          "so no row is invented and no private list can drift")
 
     # ---- MODAL: a curated row ----
     check("row(T('cmp_certification'), certStr(p))" in t,

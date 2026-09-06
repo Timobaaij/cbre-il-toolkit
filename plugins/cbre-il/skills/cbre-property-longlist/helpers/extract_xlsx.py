@@ -75,6 +75,14 @@ import coords as _CO
 COLUMN_MAP = {
     "park": ["park", "marketing name", "project", "scheme", "property", "site name",
              "building name", "logistics park", "unit name"],
+    # v40: THE UNIT DESIGNATOR the source prints for this option within its park. A tracker
+    # that lists three units on one park previously produced three identically-titled cards.
+    # NOTE that "unit name" deliberately STAYS a `park` alias: it has been one since this table
+    # was written, alias order is priority, and re-pointing it here would silently move every
+    # existing dataset's park name into this field. "phase"/"block" are here because a phase or
+    # a block IS how some trackers designate the option (the schema says so too).
+    "unit": ["unit", "unit number", "unit no", "unit ref", "unit reference",
+             "phase", "block"],
     "developer": ["developer", "promoter"],
     # LANDLORD is a DISTINCT party from the developer (the owner / asset manager /
     # freeholder of an existing building, vs the party that built/is building it). One
@@ -163,6 +171,13 @@ NEGATIVE = {
     "landlord": re.compile(r"verified", re.I),
     "leaseTerm": re.compile(r"start|expiry|break|outside", re.I),
     "park": re.compile(r"solus|/", re.I),
+    # v40: `unit` is a short, collision-prone alias AND it lands in the card TITLE, the largest
+    # client-facing string on the page, so the veto is deliberately wide: a column that merely
+    # CONTAINS the word while measuring, pricing or classifying something ("Size Unit", "Unit
+    # Size", "Unit Rent", "Unit Type", "Number of units") is never a designator. warehouseArea's
+    # own veto already excludes 'unit\b', so the two fields cannot fight over one header.
+    "unit": re.compile(r"size|area|sq\s*m|sqm|sq\s*ft|basis|price|rent|charge|cost"
+                       r"|ratio|type|count|\bno\.?\s+of\b|number\s+of", re.I),
     # land PRICE must never claim a rent column (rent / per sq ft / psf / service)
     "landPrice": re.compile(r"rent|per\s*sq|psf|/\s*sq|service", re.I),
 }

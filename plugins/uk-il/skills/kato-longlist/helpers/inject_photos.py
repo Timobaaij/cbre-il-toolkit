@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
 """Toolkit step: inject our downloaded Kato photos into the toolkit canonical.json (photo hero +
 gallery), compressed for embedding. Matches each canonical property back to our own dataset
-entry by (coordinates, size) via common.match_canonical_to_our - NOT by list position, which
-breaks the moment the toolkit's own dedup drops a duplicate listing partway through."""
+entry by POSTAL CODE (coordinates only as a tiebreak) via common.match_canonical_to_our -
+NOT by list position, which breaks the moment the pipeline's own dedup drops a duplicate
+listing partway through, and no longer by floor area either, which breaks the moment the
+pipeline binds a warehouse-only figure or a gross-to-net adjustment where we hold a total.
+
+That function RAISES unless every pipeline property pairs to EXACTLY ONE source record, so
+this step cannot inject photos into a subset and report it as a success. It used to be able
+to: the pairing dropped a miss with a bare `continue` and the line below printed the count of
+pairs it managed to make, which nobody compared against the number of properties in the
+dashboard. It also RAISES rather than binding one record to two properties, which is what
+stops two cards from shipping the same hero photo and gallery for two different buildings -
+a misattribution no count in the line below could have revealed, since the count was right."""
 import os, io, re, sys, json, glob, base64, argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import load_config, read_json, upsert_ledger
@@ -85,7 +95,12 @@ def main():
                 "conflict_note": "", "verified": ""})
     json.dump(canon, open(canon_path, "w", encoding="utf-8"), ensure_ascii=False)
     upsert_ledger(ledger_path, ledger_rows, managed)
-    print(f"photos injected: {done}/{len(pairs)} | canonical {round(os.path.getsize(canon_path)/1e6,1)} MB"
+    # Denominator is the DASHBOARD's property count, not the pairing's own length. Those two
+    # are equal by construction now, and printing the pairing's length is what let a partial
+    # pairing read as "12/12 injected" while the dashboard shipped thirty-four cards.
+    total = len(canon["properties"])
+    print(f"photos injected: {done}/{total} | paired {len(pairs)}/{total}"
+          f" | canonical {round(os.path.getsize(canon_path)/1e6,1)} MB"
           f" | {len(ledger_rows)} ledger rows")
 
 if __name__ == "__main__":

@@ -68,12 +68,12 @@ def corby_corpus() -> list[dict]:
     COORDINATES, which is why the coordinate net cannot help any cross-source pair
     here - the single most important property of this fixture."""
     return [
-        r(TRK, "EVO 169, Sallow Road, Corby NN17 5JX", dev="", area=172867,
+        r(TRK, "EVO 169, Sallow Road, Corby QX41 7ZP", dev="", area=172867,
           lat=52.50304981, lng=-0.650581854),
         r(TRK, "Rockingham 161, Earlstree 160, Earlstrees Industrial Estate", dev="",
           area=161415, lat=52.50479792, lng=-0.698356033),
         r(TRK, "Saxon 132", dev="", area=131536, lat=52.46850533, lng=-0.737056454),
-        r(TRK, "Unit 1, Raven Park, Earlstrees Industrial Estate, Corby, NN17 4XD",
+        r(TRK, "Unit 1, Raven Park, Earlstrees Industrial Estate, Corby, QX41 8RD",
           dev="Canmoor", area=177750, lat=52.5113515746894, lng=-0.7051011759664334),
         r("Evo-corby-169-brochure.pdf", "EVO Corby 169", dev="EVO Industrial", area=156840),
         r("Earlstree 160 Corby.pdf", "Rockingham 161"),
@@ -139,7 +139,7 @@ def main() -> int:
        and M.pair_class(ca, cb) == "grey", "coordinates within ~2 km -> grey")
     # (ii) a shared DISTINCTIVE park token that is not the town
     ta = r("a.pdf", "Raven Park", city="Corby", area=50000)
-    tb = r("b.xlsx", "Unit 1, Raven Park, Earlstrees Industrial Estate, Corby NN17 4XD",
+    tb = r("b.xlsx", "Unit 1, Raven Park, Earlstrees Industrial Estate, Corby QX41 8RD",
            city="Corby", area=90000)   # >15% apart so `auto` cannot claim it first
     ck(M.pair_class(ta, tb) == "forbidden" or "raven" in (
         M._grey_tokens(ta["park"], M._grey_city_tokens(ta, tb))
@@ -188,7 +188,7 @@ def main() -> int:
 
     # ---- 3. the city-token strip ------------------------------------------------------
     print("\nthe town's own name is not identity:")
-    sa = r(TRK, "EVO 169, Sallow Road, Corby NN17 5JX", city="Corby", area=177750)
+    sa = r(TRK, "EVO 169, Sallow Road, Corby QX41 7ZP", city="Corby", area=177750)
     sb = r("raven.pdf", "Raven Park Corby", city="Corby", area=169250)
     ct = M._grey_city_tokens(sa, sb)
     ck("corby" in (M._distinctive_tokens(sa["park"]) & M._distinctive_tokens(sb["park"])),
@@ -309,8 +309,22 @@ def main() -> int:
        "a DEMOTED pair can no longer be merged by an LLM 'same' (over-split, never over-merge)")
     ck(not any(g["pair_id"] == pid for g in new),
        "...and it is not written to match_candidates.json, so the LLM is never asked")
-    print("      ^ deliberate: the coverage dedupe gate catches a wrong split; an over-merge "
-          "silently destroys a property")
+    # WHY THAT IS THE ACCEPTED DIRECTION, stated accurately. This line used to read "the
+    # coverage dedupe gate catches a wrong split", which is false for these pairs: that gate
+    # fires only on two cards IDENTICAL in park, city, developer AND warehouse area, and a
+    # pair this filter demotes is by construction one whose names did NOT align. Asserted
+    # below rather than left as prose.
+    print("      ^ deliberate: a wrong split ships two cards the reader can SEE and query, "
+          "while a fusion is shown to nobody")
+
+    def _cov_key(rec):
+        return (str(rec.get("park", "")).lower(), str(rec.get("city", "")).lower(),
+                str(rec.get("developer", "")).lower(), rec.get("warehouseArea"))
+
+    blind = [(x, y) for x, y in demoted if _cov_key(x) != _cov_key(y)]
+    ck(len(blind) == len(demoted),
+       f"the coverage dedupe gate is BLIND to EVERY one of these {len(demoted)} splits - its "
+       f"park+city+developer+area key differs on all of them ({len(blind)}/{len(demoted)})")
 
     # ---- 7b. I12: the bag is CROSS-FIELD, in both directions -------------------------
     # THE LIVE BUG. A 17-row tracker and 15 brochures, nearly every row the same physical
@@ -365,13 +379,23 @@ def main() -> int:
     noise = [
         ("an outward postcode code covers a whole town",
          r("a.pdf", "Apollo Court", city="Corby", area=50000),
-         r("b.xlsx", "Mercury House", city="Corby", area=52000), "NN17 5JX", "NN17 4XD"),
+         r("b.xlsx", "Mercury House", city="Corby", area=52000), "QX41 7ZP", "QX41 8RD"),
     ]
     for label, x, y, px, py in noise:
         x, y = dict(x, postcode=px), dict(y, postcode=py)
-        ck(M.pair_class(x, y) == "no", f"{label} -> 'no' ({M.pair_class(x, y)})")
-    full = dict(r("a.pdf", "Apollo Court", city="Corby", area=50000), postcode="NN17 5JX")
-    full2 = dict(r("b.xlsx", "Mercury House", city="Corby", area=52000), postcode="NN17 5JX")
+        # NOT PINNED ON THE TIER NAME ANY MORE, and the reason is a later guard rather than
+        # a regression here. A12 made two DIFFERING stated postal codes a hard blocker in
+        # both the auto and the forbidden tiers, so this pair - two different buildings with
+        # two different full codes - now lands in 'forbidden' where it used to land in 'no'.
+        # Both verdicts mean "never merged". What THIS case exists to prove is I12's claim
+        # that an area code cannot manufacture grey CORROBORATION out of a shared town, so
+        # that is what it asserts; pinning the exact tier would fail again on any future
+        # guard that blocks the pair even harder. (evals/overmerge_guard_test.py owns the
+        # A12 verdict itself.)
+        cls = M.pair_class(x, y)
+        ck(cls not in ("grey", "auto"), f"{label} -> never merge-eligible ({cls})")
+    full = dict(r("a.pdf", "Apollo Court", city="Corby", area=50000), postcode="QX41 7ZP")
+    full2 = dict(r("b.xlsx", "Mercury House", city="Corby", area=52000), postcode="QX41 7ZP")
     ck(M.pair_class(full, full2) == "grey",
        "...but a FULL postcode match (its inward half survives) IS grey")
     rg1 = r("a.pdf", "Alpha Park", city="Corby", area=50000)

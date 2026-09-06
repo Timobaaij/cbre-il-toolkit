@@ -2923,8 +2923,51 @@ def vision_dedup_cases() -> None:
     check(not MA.same_property(phase2, B),
           "coord net: same pin but materially different size = a distinct phase")
     unknown_dev = dict(A, developer="tbd")
-    check(MA.same_property(unknown_dev, B),
-          "coord net: an unknown developer never counts as a disagreement")
+    # RE-PINNED FOR A13, and the distinction is the whole point. An unknown developer is
+    # still NOT a disagreement (`_known_dev` returns "" for it, so `other_dev` above is the
+    # only disagreement here) - but a non-disagreement is no longer ENOUGH for the coord net,
+    # which now requires the developer STATED ON BOTH SIDES and equal, exactly as the
+    # one-park-missing branch has since audit S2-8. This pin used to read the two as the same
+    # thing, which is how two records naming no party at all could merge on a pin and a floor
+    # area alone: 300 m is one park's width, so the pin is not identity, and "similar sizes in
+    # one market" is evidence this module explicitly refuses elsewhere (see the area note in
+    # `_cross_source_grey`).
+    #
+    # THE RULE IS WIDER THAN "TWO ABSENCES" AND THE COST IS WIDER THAN "RECALL". What is
+    # implemented is both-stated-and-equal, so this ONE-SIDED absence (A states no party, B
+    # names CTP) is demoted too. That is defensible and it is kept - one stated party
+    # corroborates nothing on its own - but the fixture below is a TRUE match and it is the
+    # founding incident the coordinate net was written for: a record whose city, park and
+    # developer are all unknown, pinned ~100 m from its named twin.
+    #
+    # It lands in GREY, so an adjudicated 'same' still merges it - and OFFLINE, with no
+    # decisions file, the deterministic matcher is the whole decision and this pair ships as
+    # TWO cards. Both halves are asserted below, so neither can be read as the only truth.
+    # The comment here used to call that over-split "adjudicable and gate-visible, while an
+    # over-merge is offered to nobody and checked by no gate". Two corrections:
+    #   * NOT gate-visible. The coverage dedupe gate needs two cards IDENTICAL in park, city,
+    #     developer and warehouse area; these two differ on THREE of the four ('tbd'/'tbd'/
+    #     'tbd'/40000 against 'CTPark Azuqueca'/'Azuqueca'/'CTP'/40500), asserted below.
+    #     Adjudicable, yes; gated, not at all.
+    #   * an over-merge is no longer checked by NO gate: `gate_runner.py coverage` (A14b)
+    #     blocks a property built from records stating two different postal codes. Narrow -
+    #     it needs stated codes, and it asks the finished dataset - but it exists.
+    check(MA._known_dev(unknown_dev) == "" and MA._known_dev(B) == "ctp",
+          "coord net: an unknown developer is still not a DISAGREEMENT, it is an ABSENCE")
+    check(MA.pair_class(unknown_dev, B) == "grey" and not MA.same_property(unknown_dev, B),
+          "coord net: ...but an absent developer no longer auto-merges - it goes to GREY (A13)")
+    check(MA.same_property(unknown_dev, B, {MA.pair_id(unknown_dev, B): "same"}),
+          "coord net: ...and the adjudicator can still merge it, so no match is lost")
+    check(len(MA.dedupe([unknown_dev, B])) == 2,
+          "coord net: ...but OFFLINE (no decisions file) it ships as TWO cards - the cost")
+
+    def _cov_key(rec):
+        return (str(rec.get("park", "")).lower(), str(rec.get("city", "")).lower(),
+                str(rec.get("developer", "")).lower(), rec.get("warehouseArea"))
+
+    check(_cov_key(unknown_dev) != _cov_key(B),
+          "coord net: ...and NO gate catches that split - the coverage dedupe key "
+          "(park+city+developer+area) differs on three of its four fields")
 
     # 3. numeric reconciliation vs the twin text layer
     import fitz
@@ -3507,7 +3550,7 @@ def batch_b_cases() -> None:
         return {"city": city, "developer": dev, "park": park, "warehouseArea": area,
                 "__meta": {"source_file": src}}
 
-    tr = rec("Corby", "Canmoor", "Unit 1, Raven Park, Earlstree Industrial Estate, Corby, NN17 4XD", 177750, "data.xlsx")
+    tr = rec("Corby", "Canmoor", "Unit 1, Raven Park, Earlstree Industrial Estate, Corby, QX41 8RD", 177750, "data.xlsx")
     vis = rec("Corby", "Canmoor", "Raven Park", 177750, "raven.pdf")
     check(match.same_property(tr, vis),
           "P0-2: tracker postal-address park merges with the brochure scheme name (no double-count)")

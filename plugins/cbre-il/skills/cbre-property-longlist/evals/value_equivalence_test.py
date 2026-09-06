@@ -55,7 +55,7 @@ def main() -> int:
 
     # --- 4. containment, park ONLY ------------------------------------------ #
     ck(EQ("park", "Raven Park",
-          "Unit 1, Raven Park, Earlstree Industrial Estate, Corby, NN17 4XD"),
+          "Unit 1, Raven Park, Earlstree Industrial Estate, Corby, QX41 8RD"),
        "a scheme name inside its own full postal address")
 
     # --- the cases that MUST remain genuine conflicts (the important half) --- #

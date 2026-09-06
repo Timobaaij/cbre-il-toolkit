@@ -31,6 +31,16 @@ Runtime caches are unaffected: the toolkit writes `geocode_cache.json` /
 the skill dir (run.py, seed_geocode.py --cache-dir). `reference/*.json` are read-only
 seed caches and are copied in, so the shadow starts just as warm as the install.
 
+The version gate
+----------------
+This is also the ONE place the wrapper states which wrapped-toolkit versions it will run
+against, because it is the only step that reads the toolkit's own `assets/VERSION` before
+anything else has touched it. The wrapper depends on behaviour the toolkit gained in
+MIN_TOOLKIT_VERSION, so an older toolkit is refused here, loudly, with the remedy - rather
+than shadowed and then failed halfway through by a patch anchor that moved, or worse, run
+to completion against the old behaviour. One owner per behaviour: the wrapper asserts the
+floor, the toolkit does not assert a ceiling.
+
 Usage
 -----
     python toolkit_shadow.py --source "<installed toolkit skill dir>" --work "<work dir>"
@@ -40,10 +50,15 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 
 SHADOW_MARKER = ".kato-shadow.json"
+
+# The oldest wrapped-toolkit version this wrapper will run against. Raise it only when the
+# wrapper starts depending on something newer, and say what in the same commit.
+MIN_TOOLKIT_VERSION = "v40"
 
 # Directory names skipped wholesale. The toolkit spine (run.py -> merge/enrich/gates ->
 # build_dashboard -> deliver) reads none of them.
@@ -75,6 +90,27 @@ def version_label(toolkit):
         return "unknown"
     lines = open(p, encoding="utf-8").read().splitlines()
     return lines[0].strip() if lines else "unknown"
+
+
+def parse_version(label):
+    """'v40' -> ((40,), ''). 'v40.1-kato' -> ((40, 1), 'kato'). Unparseable -> (None, '').
+
+    COMPARED AS A TUPLE OF INTEGERS, NEVER AS A STRING. String order puts 'v9' after 'v40'
+    and 'v100' before 'v40', so a string gate starts passing or failing at random the first
+    time the toolkit's number gains a digit - and it would do so silently, which is the one
+    failure mode a version gate exists to rule out. A dotted label sorts correctly for free.
+
+    THE SUFFIX IS STRIPPED BEFORE COMPARING, and that is not cosmetic. patch_template.py
+    re-stamps whatever label it patches as '<label>-kato', so any toolkit copy that has been
+    through a Kato run reads 'v40-kato'. A whole-string comparison would therefore fail the
+    gate against the wrapper's OWN output - including the legitimate case of shadowing an
+    install a previous run patched in place, which the warning below exists to handle rather
+    than to block. The suffix is reported, never compared.
+    """
+    m = re.match(r"^v(\d+(?:\.\d+)*)(?:-(.*))?$", (label or "").strip(), re.I)
+    if not m:
+        return None, ""
+    return tuple(int(x) for x in m.group(1).split(".")), (m.group(2) or "")
 
 
 def copy_tree(src, dst):
@@ -140,7 +176,34 @@ def main():
     src_sha = sha256_file(src_tpl)
     src_ver = version_label(src)
 
-    if src_ver.endswith("-kato"):
+    # --- Version gate -------------------------------------------------------------
+    # Placed BEFORE the --keep branch and before the copy, so a --resume against an
+    # out-of-date install is refused too and nothing is written first.
+    src_num, src_sfx = parse_version(src_ver)
+    min_num, _min_sfx = parse_version(MIN_TOOLKIT_VERSION)
+    if src_num is None:
+        sys.exit(
+            "ERROR: cannot read a version from the toolkit at %s (assets/VERSION first line "
+            "is %r).\n"
+            "       This wrapper needs %s or newer and will not guess. An unprovable version "
+            "is not\n       a new one: the wrapper's template patches and its canonical "
+            "pairing both depend on\n       behaviour the toolkit gained in %s, and running "
+            "against an older copy ships a\n       dashboard that is wrong rather than one "
+            "that fails.\n"
+            "       Remedy: reinstall or update cbre-property-longlist so assets/VERSION "
+            "carries a\n       label like %r, then re-run this step."
+            % (src, src_ver, MIN_TOOLKIT_VERSION, MIN_TOOLKIT_VERSION, MIN_TOOLKIT_VERSION))
+    if src_num < min_num:
+        sys.exit(
+            "ERROR: the toolkit at %s is version %s; this wrapper requires %s or newer.\n"
+            "       %s predates the fixes this wrapper is built against, so shadowing it "
+            "would either\n       abort later on a moved patch anchor or, worse, complete "
+            "against the old behaviour\n       and ship a wrong dashboard quietly.\n"
+            "       Remedy: update the installed cbre-property-longlist skill to %s or newer, "
+            "then\n       re-run this step. Nothing has been written."
+            % (src, src_ver, MIN_TOOLKIT_VERSION, src_ver, MIN_TOOLKIT_VERSION))
+
+    if src_sfx.lower() == "kato":
         print("WARNING: the INSTALLED toolkit at %s is already Kato-patched (VERSION %r). "
               "A previous run patched it in place. Reinstall or update the toolkit to restore "
               "pristine CBRE chrome; shadowing from here just carries the old patch forward."
@@ -172,6 +235,9 @@ def main():
     json.dump({
         "source": src,
         "source_version": src_ver,
+        # Recorded so a later reader can see WHICH floor this shadow was admitted under,
+        # rather than having to infer it from the wrapper's source at the time.
+        "min_toolkit_version_required": MIN_TOOLKIT_VERSION,
         "source_template_sha256": src_sha,
         "files": files,
         "bytes": nbytes,
@@ -180,7 +246,7 @@ def main():
                 "Kato patches THIS copy; the install stays pristine. Safe to delete.",
     }, open(os.path.join(dst, SHADOW_MARKER), "w", encoding="utf-8"), indent=2)
 
-    print("toolkit_shadow: %s -> %s" % (src_ver, dst))
+    print("toolkit_shadow: %s -> %s (gate: >= %s, ok)" % (src_ver, dst, MIN_TOOLKIT_VERSION))
     print("  %d files, %.1f MB (%d hardlinked), template SHA %s (install untouched)"
           % (files, nbytes / 1048576.0, linked, src_sha[:16]))
     print(dst)

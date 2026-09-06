@@ -137,8 +137,33 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
 > per-run **shadow** of it (step 7a.5) and is what every later step uses. Kato writes only to the
 > shadow, never to `<install>`.
 
-- **7a.** `python "%HELP%\toolkit_tracker.py" --config run.yaml` — writes `longlist_inputs/` (the
-  availability tracker + `project.yaml`, all enrichment on, ORS key baked).
+- **7a.** `python "%HELP%\toolkit_tracker.py" --config run.yaml` writes the pipeline's inputs in
+  two places, deliberately:
+  - `longlist_inputs/` (the folder the pipeline SCANS): the availability tracker **and every
+    property's own source documents**, PDF and PPTX, each named `NN <original stem> - <property
+    label>` so that the pipeline's filename-derived clustering puts one property's documents in
+    one reader deck and never mixes two properties. The label is routing only; what actually ties
+    a document to its row is what the two of them state (scheme name, parties, postal code, area
+    with its unit).
+  - `longlist_work/project.yaml` (the folder the pipeline READS ITS CONFIG FROM): the config, all
+    enrichment on, ORS key baked. **Not** in `longlist_inputs/`, because `.yaml` matches none of
+    the pipeline's accepted input types, so a copy there was classified unreadable and shipped in
+    the CLIENT-FACING Gaps Report under "Unreadable / skipped input files", advising the reader to
+    re-save or unlock a file we generated ourselves. The pipeline reads `<work>/project.yaml` and
+    its own intake merges its cluster map into ours rather than overwriting it.
+
+  **It REFUSES (exit 2) when any longlist row has no machine-readable source in the inputs
+  folder**, names every such row, and writes neither the tracker nor the config. This is the guard
+  against the worst thing this skill has shipped: with no document for a property the pipeline
+  dispatches zero document readers for it, so every specification field on its card comes from the
+  tracker this very step generated, with no page-cited evidence behind any value. Nothing fails and
+  every gate passes, so the run is silently wrong rather than late. Fix it by putting the missing
+  document in that property's folder. Only when there genuinely is none, re-run with
+  `--allow-unevidenced-rows`: it ships and records the affected rows in
+  `longlist_work/kato_unevidenced_rows.json`, and you must then carry them into the Gaps Report
+  yourself. `--include-sheets` also copies per-property spreadsheets, but each one becomes a
+  SEPARATE tracker for the pipeline (one extra exit-3 column-map round-trip per file, and its rows
+  merge in as further properties), so use it only where a sheet is a property's only source.
 - **7a.5. Shadow the toolkit** — `python "%HELP%\toolkit_shadow.py" --source "<install>" --work <work>`
   → prints `<work>\toolkit`, which is `<toolkit>` for the rest of step 7. Copies the installed
   toolkit (~28 MB, ~1 s; skips `evals/`, `docs/`, hardlinks `vendor/`) so step 7e.5 can patch the
@@ -149,10 +174,42 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
   writes `geocode_cache.json` / `poi_osm_cache.json` / `osrm_cache.json` / `regions_cache.json` into
   the **work** dir, not the skill dir). It warns if `<install>` is already `-kato` tagged, which means
   an older Kato run patched it in place — reinstall or update the toolkit to get pristine chrome back.
+  **It also asserts the minimum wrapped-toolkit version** (`MIN_TOOLKIT_VERSION`, currently `v40`)
+  and REFUSES an older or unreadable one, with the remedy, before copying anything. The wrapper owns
+  that floor and the toolkit owns no ceiling, so there is exactly one place to change it. The
+  comparison is numeric, not textual, so a future `v100` is correctly newer than `v40`; the `-kato`
+  suffix a previous run may have stamped is reported but never compared, so re-shadowing the
+  wrapper's own output still passes.
 - **7b.** Run the toolkit spine on that folder:
   `python "<toolkit>\helpers\run.py" --folder <work>\longlist_inputs --work <work>\longlist_work --client "<client>" --geocode --pois --osrm --regions`.
-  When it asks for the tracker column map (exit 3), write the map + its blind-check file, then re-run;
-  it builds `canonical.json` and passes its data gates. (Drive-times report `driving-hgv`.)
+  It builds `canonical.json` and passes its data gates. (Drive-times report `driving-hgv`.)
+
+  **Two different round-trip exits can stop this step, and both are normal.** They ask different
+  questions and are answered with different files, so read which one you got before acting.
+  - **Exit 3, the tracker column map.** "What do this spreadsheet's column headers mean?" It runs
+    before any record exists and its answer is a schema map, never a value. Write the map plus its
+    blind-check file where the manifest names them, then re-run the same command.
+  - **Exit 10, the cross-source match adjudication.** "Are these two extracted records the same
+    building, and which of two disagreeing values is right?" **This is EXPECTED, and it is a direct
+    consequence of step 7a now shipping each property's source documents.** The exit can only fire
+    when the corpus holds more than one record source; with a tracker alone it could not fire at
+    all, which is why this flow used to document only exit 3. Getting it does not mean anything
+    has broken.
+    Answer it by writing a verdict for **every** pair id listed in
+    `longlist_work/match_candidates.json` into `match_decisions.json`, plus `field_decisions.json`
+    for any value conflict, plus the separate blind `match_verify.json`; then re-run the same
+    command (`--from repairs` is rejected here, it needs a full pass). Read the candidate list
+    rather than approving it blind: two records stating DIFFERENT postal codes can never be merged
+    whatever verdict you give, so that pair ships as two cards for one building, and the fix is the
+    source data, not the verdict.
+    **Expect a `country` value conflict on most properties, and do not read it as a data problem.**
+    Our per-property cluster labels cannot resolve in the pipeline's city-to-country index (they are
+    routing strings, deliberately unique per property), so every brochure reader is handed the
+    unknown-country sentinel and writes it into its record, where it disagrees with the country our
+    tracker states. Answer it however you like: step 7c.5 repairs the field afterwards from a single
+    market constant either way.
+  - **Exit 13** follows if a verdict is `unsure`: the pipeline escalates that pair to a blocking
+    question for the user in `answers.json`. Put it to them and write their answer. Do not guess it.
 - **7c.** `python "%HELP%\inject_photos.py" --config run.yaml` — put our photos into `canonical.json`.
 - **7c.5. Patch canonical (our data the toolkit drops)** — `python "%HELP%\patch_canonical.py" --config run.yaml`.
   Injects, per property, straight from `property.json`: the curated **description**, the **landlord**
@@ -161,6 +218,11 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
   and no tracker path to description/links, so these are dropped in its column-mapping step — we own
   `property.json`, so we inject them here (same pattern as `inject_photos.py`). `developer` is left
   `tbd` on purpose (the source rarely names one).
+  It also repairs **`country`**, which arrives as the pipeline's unknown sentinel on every card (the
+  cause is in 7b above): left alone it shows as that sentinel in every detail modal, kills the flag
+  icon, and makes the hero KPI strip count zero countries. Only the sentinel is overwritten; a real
+  two-letter code the pipeline read off a page is kept and named on stderr, so check stderr if one
+  appears.
 - **7d. Site plans (vision).** `python "%HELP%\brochure_montages.py" --config run.yaml` → look at each
   `plan_qa/broch_NN.png` and pick the site-plan page for each property (0-based global page label);
   write `decisions.json` (`{"<order>": <page>|null}`, null where the brochure has none) →
@@ -176,19 +238,34 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
   `developer · motorway` (both tbd → "TBD · TBD") → developer-or-city (no dangling separator); drop the
   hero **Developers** KPI tile when ≤1 distinct developer; add **Brochure / Video / Website / Street
   View** links to the modal top row; and hide the bare `motorway`/`status`/`breeam`/`early-access`
-  "tbd" chips there. Two patches are RETIRED because template v38 does the job natively: the
-  `DENY_FIELDS` guard (v38 has no auto "Additional Details" section at all) and the separate modal EPC
+  "tbd" chips there. Two patches are RETIRED because the template does the job natively: the
+  `DENY_FIELDS` guard (there is no auto "Additional Details" section at all) and the separate modal EPC
   row (v36+ renders a combined BREEAM/EPC row via `certStr(p)`). Retired patches are not deleted - each
   keeps a premise re-asserted every run, so a toolkit regression bringing the old condition back fails
-  loudly instead of quietly shipping a dashboard missing the fix. Idempotent + version-agnostic: re-run
+  loudly instead of quietly shipping a dashboard missing the fix.
+  **Verified against template v40:** all 12 active patches still match their anchor exactly once and
+  neither retired premise has regressed. None of the 12 became redundant, because every one of them is
+  a wrapper-specific presentation choice rather than a defect fix, so the toolkit gaining native
+  features (a keyless basemap, a composed card title, a stated-total sub-line, an uncropped plan view)
+  does not overlap any of them. Idempotent + version-agnostic: re-run
   each session (the shadow is rebuilt pristine from the install every run); it reports EVERY moved anchor
   in one run and writes nothing rather than shipping unpatched. Use `--dry-run` to check a new toolkit
   version without touching it — that one is safe to point straight at `<install>`.
   **NEVER hand-edit `built.html`** (the byte-equality gate rejects it) — the patch goes in the template.
 - **7f. Build + deliver** — `python "<toolkit>\helpers\build_dashboard.py" <work>\longlist_work\canonical.json --out <work>\longlist_work\built.html`
   then the toolkit `deliver.py` (dashboard, Source Ledger, Gaps Report, Longlist xlsx).
-- **7g. Reviewer gates** — run the toolkit's isolated reviewer gates (G-honesty, G-trace, G-images,
-  G-visual, G-enrich) per its `reference/gates.md`, then its `final_gate.py`.
+- **7g. Reviewer gates: ONE ROUND, NEVER TWO.** Run the toolkit's isolated reviewer gates
+  (G-honesty, G-trace, G-images, G-visual, G-enrich) per its `reference/gates.md`, then its
+  `final_gate.py`.
+  **The required shape, for every run: spawn the independent review agents ONCE, implement every
+  blocking finding plus any advisory that is cheap and material, then deliver. A second review round
+  is never correct.** Re-reviewing after the fixes buys nothing and costs a full cycle: the agents
+  re-read the same deliverable and produce a fresh crop of advisories, which is indistinguishable
+  from progress and has no termination condition.
+  There is deliberately no threshold here for which advisories to fix, and none will be written down.
+  An advisory that is one edit and changes what a reader concludes gets fixed; the rest ship
+  disclosed in the Gaps Report. That judgement is the operator's, and encoding it as a rule would
+  either wave through something material or mandate work that changes nothing.
 
 **8. Finalise — ALWAYS LAST, NEVER SKIP** — `python "%HELP%\finalize_run.py" --config run.yaml`
 Collects every client-facing file into `OUTPUT/`, writes a plain-English `START-HERE.md`, and deletes

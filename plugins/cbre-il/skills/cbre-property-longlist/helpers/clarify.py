@@ -78,7 +78,6 @@ SKIP_ALL_FILE = "clarify.SKIP_ALL"
 KINDS = {
     "area_unit": "broker",        # a numeric area whose source states no unit
     "rent_unit": "broker",        # a rent whose source states no currency / per-area
-    "record_count": "agent",      # a deck that may hold more properties than were emitted
     "source_authority": "broker",  # two sources disagree on HOW MANY properties exist
     "dataset_unit": "broker",     # the corpus states BOTH sq ft and sq m - which is displayed
     "value_format": "broker",     # one bare number among unit-carrying siblings (gate B59)
@@ -116,7 +115,12 @@ BLOCKING_KINDS = {"source_authority", "dataset_unit", "area_unit", "rent_unit",
 # cell or an Excel-only column. A ledger question is NOT put to the broker. Stopping a run
 # for one buys nothing a client can see, and the cost is real - each round is an
 # interruption, and a channel that asks about trivia trains the reader to skim the
-# questions that are precise (the same reasoning that keeps record_count unwired).
+# questions that are precise. That reasoning is also what finally DELETED the `record_count`
+# producer rather than wiring it: its page-count trigger fired on most decks (a six-page
+# brochure for ONE property is the normal case), and a channel that cries wolf destroys the
+# value of the questions that ARE precise. The capability it wanted is not lost - see
+# `agent_doubt_questions` and `_COUNT_TOKENS`, where the reader that actually SAW the deck
+# raises "is this one property or two" itself, with the trigger that works.
 #
 # WHAT SUPPRESSION IS NOT. It is not silence and it is not a guess. An unasked question
 # ships its OWN STATED DEFAULT - the value the source already gave - and is recorded in
@@ -146,7 +150,7 @@ DISPLAY_FIELDS = frozenset({
     "lat", "leaseTerm", "lng", "loadingDocks", "mapLink", "motorway", "officeArea",
     "officeAreaVal", "officeRent", "officeRentVal", "overheadDoors", "park", "permitting",
     "photo", "plan", "plotArea", "preBaked", "region", "regionCode", "reit", "rentFree",
-    "rentUnit", "serviceCharge", "sprinklers", "status", "truckParking", "warehouseArea",
+    "rentUnit", "serviceCharge", "sprinklers", "status", "truckParking", "unit", "warehouseArea",
     "warehouseRent", "warehouseRentVal",
 })
 
@@ -159,7 +163,6 @@ DISPLAY_FIELDS = frozenset({
 #   text doubt is only worth a round-trip when it names something the client will see.
 KIND_MATERIALITY = {
     "source_authority": "count",     # which source decides what belongs (17 vs 41)
-    "record_count": "count",         # a deck that may hold more properties than it emitted
     "match_unsure": "count",         # merged or split = one card or two
     "dataset_unit": "display",       # relabels every area on the grid
     "area_unit": "display",          # the figure on the card
@@ -330,6 +333,21 @@ _COUNT_RX = _phrase_rx(_COUNT_TOKENS)
 _LEDGER_RX = _phrase_rx(_LEDGER_TOKENS)
 
 
+def _doubt_declared_fields(doubt: dict) -> list:
+    """The field names a reader DECLARED on one doubt (`fields` then `field`), in order.
+
+    ONE reader, shared by the materiality classifier and by the `field` stamp the answer
+    bridge lands a repair on. If the two ever read different lists, a doubt could be promoted
+    to a broker question on the strength of a declared field and then be UNLANDABLE because
+    the bridge looked somewhere else - the answer recorded, the field unchanged, which is the
+    exact defect this wiring exists to close."""
+    d = doubt if isinstance(doubt, dict) else {}
+    out = list(d.get("fields") or []) if isinstance(d.get("fields"), (list, tuple)) else []
+    if d.get("field"):
+        out.append(d.get("field"))
+    return [str(f) for f in out if str(f).strip()]
+
+
 def _doubt_context(doubt: dict) -> str:
     """`why_it_matters` + `options`, which is where a reader legitimately puts the substance
     when the `question` itself is terse ("which one is right?").
@@ -364,10 +382,7 @@ def _doubt_materiality(doubt: dict, text: str = "") -> str:
     m = str(d.get("materiality") or d.get("affects") or "").strip().lower()
     if m in MATERIALITIES:
         return m
-    fields = list(d.get("fields") or []) if isinstance(d.get("fields"), (list, tuple)) else []
-    if d.get("field"):
-        fields.append(d.get("field"))
-    declared = [f for f in fields if known_field(f)]
+    declared = [f for f in _doubt_declared_fields(d) if known_field(f)]
     if declared:
         return "display" if any(field_is_material(f) for f in declared) else "ledger"
     t = (str(text or "") + " " + _doubt_context(d)).lower()
@@ -442,6 +457,11 @@ def note_suppressed(work, questions: list, why: str = WHY_LEDGER,
             "source_file": str(q.get("source_file") or ""),
             "if_unanswered": str(q.get("if_unanswered") or "")[:300],
         }
+        # WHICH records the doubt covered (F15). A coalesced question stands for several, and
+        # a Gaps Report that names only its topic could not say which cards kept the default.
+        _aff = _affected_labels(q)
+        if _aff:
+            sup[str(i)]["affected"] = _aff
         n += 1
     if json.dumps(sup, sort_keys=True) != before:
         save_state(work, st)
@@ -458,6 +478,28 @@ DECLINE_TOKENS = {
     "no answer", "no preference", "dont know", "don't know", "do not know", "unknown",
     "unsure", "no idea", "whatever you think", "proceed", "n/a", "na",
 }
+# An answer meaning "the source states NOTHING for that field", which is a real answer and
+# not a decline. It is the one answer whose honest correction is the repair channel's CLEARING
+# verb rather than its `set`: writing "tbd" over the field would be indistinguishable from a
+# source that printed "tbd", and the ledger row would then say the repair SET a value when
+# what the broker did was WITHDRAW one (repairs.py makes that argument in full under
+# `unset`). Deliberately disjoint from DECLINE_TOKENS above - "unknown" and "no idea" mean
+# "I am not answering", which ships the stated default, while these mean "the answer is that
+# there is no value", which changes the field.
+NOT_STATED_TOKENS = {
+    "not stated", "not given", "not in the source", "not in the brochure", "no value",
+    "none", "none stated", "nothing", "blank", "empty", "unstated", "remove it",
+    "clear it", "leave it blank", "there is none",
+}
+
+
+def is_not_stated(v) -> bool:
+    """Whole-answer match against NOT_STATED_TOKENS, same discipline as `is_decline`: a real
+    answer that merely CONTAINS one of these words ('none of the halls are let') is never
+    misread as a withdrawal."""
+    return _norm_answer(v) in NOT_STATED_TOKENS
+
+
 ESCALATE_AFTER = 2   # blocking offers before the hand-off text spells out the decline path
 
 
@@ -492,6 +534,7 @@ def load_state(work) -> dict:
     st.setdefault("offers", {})     # id -> how many times it has been PUT (blocking escalation)
     st.setdefault("titles", {})     # id -> {kind, subject, question} for the Gaps disclosure
     st.setdefault("suppressed", {})  # id -> ledger-only question, NOT asked but DISCLOSED
+    st.setdefault("landable", {})   # id -> what an ANSWER to it may be written into (below)
     if not isinstance(st["asked"], list):
         st["asked"] = []
     if not isinstance(st["answers"], dict):
@@ -504,6 +547,8 @@ def load_state(work) -> dict:
         st["titles"] = {}
     if not isinstance(st["suppressed"], dict):
         st["suppressed"] = {}
+    if not isinstance(st["landable"], dict):
+        st["landable"] = {}
     return st
 
 
@@ -515,12 +560,16 @@ def save_state(work, st: dict) -> Path:
     build -> deliver all re-fire on a no-change resume. `ingest_answers` runs on EVERY pass, so
     the churn was guaranteed. Same rule, and the same reason, as run._write_if_changed."""
     p = _state_path(work)
-    # An EMPTY `suppressed` is not written. load_state setdefaults the key, and ingest_answers
-    # saves on every pass, so persisting it would rewrite every pre-existing work dir's state
-    # exactly once - and because this file is a merge input, that one rewrite re-fires
-    # merge -> build -> deliver on an already-delivered project for a key holding nothing.
-    if isinstance(st.get("suppressed"), dict) and not st["suppressed"]:
-        st = {k: v for k, v in st.items() if k != "suppressed"}
+    # An EMPTY `suppressed` or `landable` is not written. load_state setdefaults both keys, and
+    # ingest_answers saves on every pass, so persisting one would rewrite every pre-existing
+    # work dir's state exactly once - and because this file is a merge input, that one rewrite
+    # re-fires merge -> build -> deliver on an already-delivered project for a key holding
+    # nothing. The rule is per-KEY rather than hard-coded to `suppressed` precisely because the
+    # second such key arrived and re-created the bug the first one's guard had already fixed.
+    _empty = [k for k in ("suppressed", "landable")
+              if isinstance(st.get(k), dict) and not st[k]]
+    if _empty:
+        st = {k: v for k, v in st.items() if k not in _empty}
     body = json.dumps(st, ensure_ascii=False, indent=2)
     try:
         if p.exists() and p.read_text(encoding="utf-8-sig") == body:
@@ -741,6 +790,10 @@ def emit(work, questions: list) -> Path:
             "Write work/" + ANSWERS_FILE + " as {\"<id>\": \"<answer>\", ...} using each "
             "question's `id` VERBATIM and, where `options` is given, one of those exact "
             "strings.\n"
+            "A reader-doubt question's `answer_handling` says whether an answer is APPLIED to the "
+            "named field on the next pass (on every record listed in `anchors`) or only RECORDED "
+            "and disclosed in the Gaps Report; where it says recorded only, nothing on a card "
+            "will change, so do not promise the broker otherwise.\n"
             "`asked_of` says who can answer: \"agent\" = a reading/perception call, so "
             "dispatch an ISOLATED sub-agent with the named source (never answer it from the "
             "orchestrator's own context); \"broker\" = a decision no reading can settle, so "
@@ -783,8 +836,88 @@ def emit(work, questions: list) -> Path:
             "blocking": bool(is_blocking(q)),
             "if_unanswered": str(q.get("if_unanswered") or "")[:300],
         }
+        # ...and WHICH records it covered, so the Gaps Report can name every card one answer
+        # moved (F15), plus whether the answer lands at all (F18), for the same reason.
+        _aff = _affected_labels(q)
+        if _aff:
+            st["titles"][q["id"]]["affected"] = _aff
+        if q.get("answer_handling"):
+            st["titles"][q["id"]]["answer_handling"] = str(q.get("answer_handling"))[:300]
+        # ...and the paste-ready plan for an answer the run will not land (D13), so the
+        # answer-time report can print it WITH the broker's answer beside it
+        if isinstance(q.get("to_apply_by_hand"), dict):
+            st["titles"][q["id"]]["to_apply_by_hand"] = q["to_apply_by_hand"]
+        # WHAT AN ANSWER MAY BE WRITTEN INTO, remembered durably beside the question itself.
+        # A field-level answer is applied on a LATER pass, against the MERGED dataset, by
+        # `run.agent_doubt_repairs` - and by then questions.json holds only the last batch and
+        # the pre-merge records that raised the doubt are no longer what the bridge is looking
+        # at. Two properties fall out of putting it here rather than re-deriving it:
+        #   * only a question actually PUT to somebody can be landed, which is the same guard
+        #     `ingest_answers` applies to answer ids ("an id we never asked -> ignore, never
+        #     mis-apply"). An answer to a question this run never asked writes nothing.
+        #   * the field, the offered options and the source file travel together, so the bridge
+        #     cannot land a value against a field the question did not name.
+        # Stamped ONLY for a question that names a field AND offers options; everything else
+        # stays disclosure-only.
+        #
+        # WHY OPTIONS ARE REQUIRED HERE, NOT MERELY RECOMMENDED (F18). The lander is selection-
+        # first: an answer is matched against the strings the reader itself offered. With
+        # `options: []` that match is always None, so a stamp without options is a PROMISE THAT
+        # CANNOT BE KEPT - the broker is asked as if the answer will reach the card, answers,
+        # and the answer is silently ignored (six of eight on the measured run). Refusing the
+        # stamp does not drop the question: `pending` still asks it, and the question carries
+        # `answer_handling` saying the answer will be recorded, not applied. Asking without
+        # landing is honest; claiming to land and not landing is not.
+        #
+        # THE ANCHOR IS THE RECORD'S IDENTITY, NEVER THE SUBJECT (F18). `subject` is the human
+        # topic the interpretation contract asks the reader for ("office area", "which region")
+        # and the lander used to resolve the card by matching it against park names, so eight
+        # of eight landable answers on the measured run matched nothing. The producer now
+        # carries the record's own `park` and `unit` verbatim, and the stamp copies them; the
+        # lander anchors on those and only falls back to `subject` when they are absent (an
+        # old work dir). `anchors` lists EVERY record a coalesced question stands for (F15), so
+        # one answer can be applied to each; `anchor_park`/`anchor_unit` are always its first
+        # entry, so a lander reading only the scalar pair degrades to the first record rather
+        # than crashing. An empty `anchor_park` means the record named no park.
+        if q.get("field") and q.get("options"):
+            # ...AND NO OPTION IS PROSE ON AN ARITHMETIC FIELD (D4c). `unlandable_options` is
+            # set by `agent_doubt_questions` when an option on a twin-bearing or numeric field
+            # does not lead with a figure; stamping it landable would re-create the measured
+            # entry (`officeAreaVal: null`, refused by the validator, so the answer did
+            # nothing). The question is still asked; only the landing promise is withheld.
+            if q.get("unlandable_options"):
+                continue
+            stamp = {
+                "kind": str(q.get("kind") or ""),
+                "field": str(q.get("field")),
+                "subject": str(q.get("subject") or ""),
+                "options": [str(o) for o in (q.get("options") or [])][:6],
+                "source_file": str(q.get("source_file") or ""),
+            }
+            if q.get("anchors") or q.get("anchor_park"):
+                _anc = _anchors_of_q(q)
+                stamp["anchor_park"] = _anc[0]["park"] if _anc else ""
+                stamp["anchor_unit"] = _anc[0]["unit"] if _anc else ""
+                stamp["anchors"] = _anc
+            st["landable"][q["id"]] = stamp
     save_state(work, st)
     return out
+
+
+def landable(work) -> dict:
+    """{question id: {kind, field, subject, options, source_file, anchor_park, anchor_unit,
+    anchors}} for every asked question whose ANSWER can be written into a named field.
+
+    `anchor_park`/`anchor_unit` are the raising record's own park and unit, verbatim (F18);
+    `anchors` is the full list of {park, unit} the question stands for, one per record a
+    coalesced question covered (F15), with the scalar pair equal to its first entry. A stamp
+    written before those keys existed carries none of them, and the lander then falls back
+    to matching `subject`, which is what it always did.
+
+    The reader half of the `landable` stamp `emit` writes. Kept here rather than in the
+    bridge so the question grammar has exactly one owner: clarify decides what a question is
+    and what an answer to it may touch, run.py decides how a correction is attributed."""
+    return dict(load_state(work).get("landable") or {})
 
 
 _AREA_UNITS = ("sq m", "sq ft")
@@ -805,7 +938,18 @@ def apply_answers(records: list, answers: dict) -> int:
     the vote as a KNOWN unit rather than an assumed one.
 
     Selection-only: an answer may only pick one of the options the question offered. It can
-    never introduce a value nobody was asked about, and it never converts a number. (B38)"""
+    never introduce a value nobody was asked about, and it never converts a number. (B38)
+
+    THIS FUNCTION IS THE UNIT-LABEL HALF ONLY, and that is not an oversight to be fixed here.
+    `areaUnit`/`rentUnit` are the two fields the repair channel DENIES (they relabel every
+    figure in the dataset at once - the 10.76x class), so they have to be filled in place,
+    pre-vote, with their provenance rewritten to say the broker stated them. Every OTHER
+    field-level answer goes the other way, through `run.agent_doubt_repairs` and the one
+    attributed-repair helper it shares with the value-format and excluded-figure bridges: a
+    work/repairs.json entry with `expect`, `set`, `why` and `verified_by`, applied before the
+    pre-build gates and disclosed in the Source Ledger and the Gaps Report. Do not grow this
+    function into a general field writer - a silent in-place write is exactly what the
+    attributed channel exists instead of."""
     if not answers:
         return 0
     n = 0
@@ -846,6 +990,139 @@ def apply_answers(records: list, answers: dict) -> int:
 def _subject(rec: dict) -> str:
     m = rec.get("__meta") or {}
     return str(rec.get("park") or rec.get("city") or m.get("source_file") or "?")
+
+
+# --------------------------------------------------------------------------- #
+# ANCHORS - the record's OWN identity, carried on a question so an answer can find its card.
+#
+# THE DEFECT THIS CLOSES (F18). A reader doubt is raised against a PRE-MERGE record and its
+# answer is applied against the MERGED dataset, where `__meta` is gone. The bridge used to
+# resolve the card by matching the question's `subject` against the shipped park names, but
+# `subject` is what the interpretation contract asks the reader for as a human-readable TOPIC
+# ("office area", "property region", "which office area belongs to this unit"). One field was
+# carrying two incompatible meanings, a topic to its author and a park key to its applier, and
+# on the measured run eight of eight landable answers matched nothing. So the identity travels
+# SEPARATELY, read off the record itself while it is still in scope, and `subject` keeps the
+# one meaning it was written with.
+# --------------------------------------------------------------------------- #
+
+def _anchor_of(rec: dict) -> tuple:
+    """(park, unit) of ONE pre-merge record, verbatim and stripped, '' where it names none."""
+    return (str(rec.get("park") or "").strip(), str(rec.get("unit") or "").strip())
+
+
+def _anchor_label(a: dict) -> str:
+    """'Park, Unit' | 'Park' | 'Unit' | '' - how a broker would name the record."""
+    park, unit = str((a or {}).get("park") or "").strip(), str((a or {}).get("unit") or "").strip()
+    return ", ".join(x for x in (park, unit) if x)
+
+
+def _anchors_of_q(q: dict) -> list:
+    """The {park, unit} list a question carries, normalised; the scalar pair when the list is
+    missing (a hand-built question), so every consumer reads ONE shape."""
+    out = []
+    for a in (q.get("anchors") or []) if isinstance(q.get("anchors"), list) else []:
+        if isinstance(a, dict):
+            e = {"park": str(a.get("park") or "").strip(), "unit": str(a.get("unit") or "").strip()}
+            if e not in out:
+                out.append(e)
+    if not out and (q.get("anchor_park") or q.get("anchor_unit")):
+        out.append({"park": str(q.get("anchor_park") or "").strip(),
+                    "unit": str(q.get("anchor_unit") or "").strip()})
+    return out
+
+
+def _affected_labels(q) -> list:
+    """The records a question covers, as broker-readable labels, for the Gaps Report."""
+    if not isinstance(q, dict):
+        return []
+    return [lab for lab in (_anchor_label(a) for a in _anchors_of_q(q)) if lab]
+
+
+def _norm_key(v) -> str:
+    """Lowercased, whitespace-collapsed, outer punctuation stripped - for grouping only."""
+    return re.sub(r"\s+", " ", _norm_answer(v))
+
+
+# FIELDS A DECK STATES ONCE FOR THE WHOLE PARK, so one answer is correct for every unit on it.
+# This is the coalescing whitelist (F15) and it is deliberately short. Two doubts are the same
+# question only if ONE answer is right for all the records they cover; for a park-wide field
+# that follows from the records sharing a park, for a per-unit field (an area, a height, a dock
+# count, a unit designator) it does not, however alike the wording - two units can each be torn
+# between the same two printed figures and resolve differently. A field not listed here is
+# asked once PER RECORD, which is the fail-closed direction: repairs.py's own doctrine is that a
+# correction on the wrong card is worse than one that did not land. Names are canonical keys.
+PARK_LEVEL_FIELDS = frozenset({
+    "park", "city", "region", "regionCode", "country", "district", "postcode",
+    "developer", "landlord", "reit", "motorway",
+})
+
+# What happens to an ANSWER, stated on every reader-doubt question so the orchestrator never
+# promises the broker a change that cannot happen (F18).
+ANSWER_APPLIED = ("applied: an answer that picks one of `options`, says the source states "
+                  "nothing, or states a single clean value of the field's own type, is written "
+                  "into `field` on the next pass as an attributed repair, on every record "
+                  "listed in `anchors`")
+ANSWER_RECORDED_NO_OPTIONS = ("recorded only: the reader declared `{field}` but offered no "
+                              "`options`, so no answer can be landed on the field; it is "
+                              "disclosed in the Gaps Report. THE READER SHOULD HAVE STATED THE "
+                              "CANDIDATES IT WAS TORN BETWEEN")
+ANSWER_RECORDED_NO_FIELD = ("recorded only: the reader declared no canonical field, so the "
+                            "answer is disclosed in the Gaps Report and nothing is written")
+# D4 (c). The chosen option is written into the field VERBATIM and its numeric companion is
+# derived from it by merge, so on an arithmetic field an option that does not lead with a
+# figure would land a sentence and lose the number. On the measured run two office-area doubts
+# offered 'the combined office lines' / 'all three office lines combined'; both were stamped
+# applied, both were picked, and the generator wrote `officeAreaVal: null`, which its own
+# validator refused, silently. The reader prompts (prompts/reader-*.md, reference/
+# interpretation.md) now promise the contract in these exact words, and this stamp quotes them
+# back so reader and operator see the same sentence. The question is still ASKED (a recorded
+# doubt is never hidden); what changes is that nobody is promised a landing that cannot happen.
+ANSWER_RECORDED_PROSE_OPTION = (
+    "recorded only: the reader declared `{field}`, which {why}, but offered the option "
+    "{option!r}, which does not lead with a figure. The chosen option is written into the field "
+    "verbatim and its number derived from it, so that option would land a sentence and lose the "
+    "number; on an arithmetic field every option LEADS WITH THE FIGURE AND ITS UNIT as printed "
+    "('24,230 sq ft (all three office lines combined)' is valid, 'all three office lines "
+    "combined' is refused). No answer to this question is landed; it is disclosed in the Gaps "
+    "Report. THE READER SHOULD HAVE LED EVERY OPTION WITH THE PRINTED FIGURE")
+
+
+def _doubt_qid(src: str, subject: str, question: str, field: str, options: list,
+               default, park: str, unit: str) -> str:
+    """The id of a FIELD-BEARING reader doubt, which decides what coalesces (F15).
+
+    A PARK-LEVEL field on a record that names its park is keyed on the AMBIGUITY - source,
+    topic, field, the option set, the reader's default and the park - and not on the wording,
+    so six units of one deck each asking which region the park sits in are ONE question. The
+    option set and the default are in the key on purpose: different options, or a reader that
+    leaned different ways, is positive evidence the two resolve differently, and they stay
+    apart. Every other field-bearing doubt is keyed per RECORD (park and unit added to the
+    wording key), so two units with the same words are two questions and one answer is never
+    fanned out across per-unit values. Doubts naming no field keep the wording key unchanged;
+    nothing can land on them, so how many disclosure lines they collapse to is cosmetic."""
+    if field in PARK_LEVEL_FIELDS and park:
+        opts = "|".join(sorted(_norm_key(o) for o in (options or [])))
+        return qid("agent_doubt",
+                   f"{src}|{_norm_key(subject)}|{field}|{opts}|{_norm_key(default)}|"
+                   f"{_norm_key(park)}", field)
+    return qid("agent_doubt",
+               f"{src}|{subject}|{str(question)[:60]}|{_norm_key(park)}|{_norm_key(unit)}",
+               field)
+
+
+def _covers_suffix(q: dict) -> str:
+    """Name the record(s) a question covers, in the question text the broker reads. With a
+    prose subject ("office area") and no suffix, six coalesced-or-not questions from one deck
+    are indistinguishable to the person answering them."""
+    labels = _affected_labels(q)
+    if len(labels) > 1:
+        return (f" [one answer covers {len(labels)} records from this file: "
+                + "; ".join(labels[:8])
+                + (f" (+{len(labels) - 8} more)" if len(labels) > 8 else "") + "]")
+    if len(labels) == 1 and _norm_key(labels[0]) != _norm_key(q.get("subject")):
+        return f" [record: {labels[0]}]"
+    return ""
 
 
 def unit_questions(records: list) -> list:
@@ -981,6 +1258,143 @@ MAX_DOUBT_QUESTIONS = 12   # material doubts PUT to the broker in one round
 MAX_DOUBT_CARRIED = 200    # doubts carried at all, asked or merely disclosed
 
 
+# An option "leads with the figure" when, after an optional currency mark, its first character
+# is a digit. Deliberately NOT `normalize_number(option) is not None`: that reader is lenient by
+# design ('approx 3,000 sq ft' reads 3000, 'all three office lines' happens to read nothing
+# only because the count is spelled out), and the contract the prompts promise is positional,
+# "LEADS WITH", so the test is positional too. A range is refused as well: the lander refuses
+# it on a numeric field and merge derives no companion from it on a string one.
+_FIGURE_LED_RX = re.compile(r"^(?:[\u00a3\u20ac$]|[A-Z]{3}\s?)?\d")
+
+
+def _figure_led(option) -> bool:
+    """Does this option string lead with a figure the field's companion can be derived from?
+    Positional, never arithmetic: nothing here sums, converts or picks a number (D4)."""
+    s = str(option or "").strip()
+    if not s or not _FIGURE_LED_RX.match(s):
+        return False
+    try:
+        import normalize as _N
+        return _N.normalize_number(s) is not None and not _N.is_range(s)
+    except Exception:
+        return True                  # the positional test already passed; be inert without normalize
+
+
+def _arithmetic_reason(field: str, rec: dict) -> str:
+    """Why `field` counts as ARITHMETIC (the dashboard does sums with it), or '' when it does
+    not. Two routes, both read rather than guessed: the field is the SOURCE of a derived
+    numeric companion in merge's own registry (`merge.DERIVED_TWINS`: officeArea ->
+    officeAreaVal is the measured case), or the raising record already holds a NUMBER in it
+    (the lander would refuse a non-numeric option against it anyway, so refusing at ask time
+    merely moves the refusal to where it can still be acted on). Inert on a merge.py without
+    the registry, exactly as run.py's `_derived_twin_of` is."""
+    twin = None
+    try:
+        import merge as _merge
+        reg = getattr(_merge, "DERIVED_TWINS", None)
+        twin = reg.get(field) if isinstance(reg, dict) else None
+    except Exception:
+        twin = None
+    if twin:
+        return f"carries the numeric companion `{twin}`"
+    v = (rec or {}).get(field) if isinstance(rec, dict) else None
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return "is itself a number on this record"
+    return ""
+
+
+def _prose_options(field: str, rec: dict, options: list) -> list:
+    """The offered options that do NOT lead with a figure, on an arithmetic field; [] when the
+    field is not arithmetic or every option passes (D4c)."""
+    if not options or not _arithmetic_reason(field, rec):
+        return []
+    return [str(o) for o in options if not _figure_led(o)]
+
+
+def _hand_repair_skeleton(rec: dict, field, anchor: dict) -> dict:
+    """ONE ready-to-paste work/repairs.json entry for a question whose answer the run will NOT
+    land, with the `expect` guard filled from the raising record and the value left blank (D13).
+
+    On the measured run five of eight answers were recorded and applied to nothing, and the
+    operator reverse-engineered the entry shape, the key, the `expect` guard and the
+    attribution from source before hand-writing each one. Every one of those parts is knowable
+    HERE, while the record is in scope, so it is written down here. The value is never filled:
+    the answer has not been given yet, and when it has, filling it in is the lander's job under
+    the lander's guards, not this helper's. `id` and `verified_by` are stamped once the
+    question's final id is known (after coalescing), so the pasted entry carries the same id
+    the lander would have used and dedupes against it."""
+    try:
+        from project_properties import repair_key as _rk
+        key = _rk(rec) if isinstance(rec, dict) else ""
+    except Exception:
+        key = ""
+    fld = str(field) if field else "<ONE canonical field, spelled exactly as the schema spells it>"
+    cur = (rec or {}).get(field) if field and isinstance(rec, dict) else None
+    if cur is None:
+        cur = "<the card's CURRENT value for this field, copied from canonical.json>"
+    return {
+        "record": _anchor_label(anchor) or "(the record named no park)",
+        "entry": {
+            "id": "",
+            "property": {"key": key},
+            "expect": {fld: cur},
+            "set": {fld: ("<the broker's answer, as a value of the field's own type; on an "
+                          "arithmetic field the printed figure WITH its unit, e.g. '24,230 sq ft "
+                          "(all three office lines combined)', never a sentence>")},
+            "why": f"broker answered the exit-13 reader-doubt question on {fld}",
+            "verified_by": "",
+        },
+    }
+
+
+def _recorded_only_reason(answer_handling: str) -> str:
+    """The short clause the handoff prints for WHY an answer will be recorded only."""
+    ah = str(answer_handling or "")
+    if ah.startswith(ANSWER_RECORDED_NO_FIELD[:44]):
+        return "the reader named no canonical field"
+    if "does not lead with a figure" in ah:
+        return "an offered option does not lead with a figure, so the field's number could not be derived from it"
+    if "offered no `options`" in ah:
+        return "the reader offered no candidate values"
+    return "see the question's answer_handling"
+
+
+def handoff_lines(questions: list) -> list:
+    """One printed sentence per record of every question whose answer will NOT be landed,
+    naming the record, the field, the reason and a paste-ready work/repairs.json entry (D13).
+
+    This is the usability half of D13 and it invents nothing: a question only reaches the
+    broker because it passed the materiality gate, so its answer changes something the
+    dashboard renders; "answered but not applied" spends the broker's attention and changes
+    nothing. The pressure the F18 `answer_handling` stamp was meant to apply did not land (a
+    second run wasted five of eight answers the same way), so the instruction now travels in
+    the handoff itself, at the moment the orchestrator is about to collect the answer. Nothing
+    is applied here: the value is left blank for the operator, and the lander's guards
+    (selection, type, anchor, expect) are the same ones a hand-pasted entry meets in
+    repairs.py."""
+    out = []
+    for q in questions or []:
+        if not isinstance(q, dict) or not isinstance(q.get("to_apply_by_hand"), dict):
+            continue
+        plan = q["to_apply_by_hand"]
+        reason = str(plan.get("reason") or _recorded_only_reason(q.get("answer_handling")))
+        for s in plan.get("entries") or []:
+            if not isinstance(s, dict):
+                continue
+            fld = next(iter((s.get("entry") or {}).get("set") or {}), "<field>")
+            if fld.startswith("<"):
+                fld = "(no field declared; name ONE canonical field in the entry)"
+            out.append(
+                f"(orchestrator: question {q.get('id')} on '{s.get('record')}' {fld}: the answer "
+                f"you are about to collect will be RECORDED ONLY and will NOT reach the card, "
+                f"because {reason}. To make it reach the card, paste this entry into "
+                f"work/repairs.json (a JSON list) with the value filled in and re-run; the `key` "
+                f"resolves the card by city|developer|park, so on a multi-unit park add the "
+                f"card's `id` from canonical.json beside it: "
+                f"{json.dumps(s.get('entry'), ensure_ascii=False)})")
+    return out
+
+
 def agent_doubt_questions(records: list) -> list:
     """Item 3.2: a reading agent's RECORDED doubt (`__meta.doubts`: {subject, question,
     field?/fields?, materiality?, options?, default?, why_it_matters?}) becomes a
@@ -1005,23 +1419,67 @@ def agent_doubt_questions(records: list) -> list:
     caught it. Nothing else in the tree reads `__meta.doubts`, so a doubt that leaves here
     unrecorded is gone for good.
 
-    The broker's answer is DISCLOSED via the Clarifications section; acting on it (an
-    override/repair) stays an attributed human step - a doubt answer never mutates data
-    silently."""
+    THE ANSWER NOW REACHES THE FIELD, AND THE PRINCIPLE THAT KEPT IT OUT IS EXACTLY WHAT
+    MAKES THAT SAFE. A DOUBT ANSWER STILL NEVER MUTATES DATA SILENTLY - it arrives as an
+    ATTRIBUTED correction with provenance. What it used to do was NOTHING, and that was the
+    defect: the pipeline asked a precise, field-level question, recorded the answer, and then
+    the very same value had to be supplied a SECOND time, by hand, through the correction
+    channel. `run.agent_doubt_repairs` lands it the way the two older answer bridges already
+    land theirs - one work/repairs.json entry carrying `expect`, `set`, `why` and a
+    `verified_by` that names the answer as its source, applied by the repairs stage before the
+    pre-build gates, with its own Source Ledger row and its own line in the Gaps Report. The
+    answer is therefore disclosed in the same breath as it is applied, which is the whole of
+    the principle rather than a weakening of it.
+
+    WHAT THIS PRODUCER OWES THAT BRIDGE, and why the stamps below exist. A repair must name a
+    FIELD and a PROPERTY, so a doubt that gives neither cannot be landed and is disclosed
+    exactly as it is today:
+      * `field` - stamped ONLY when the doubt DECLARES exactly one field and `known_field`
+        recognises it. Two declared fields is ambiguous (which one did the answer settle?) and
+        an unrecognised name is the near-miss a reading model writes ('area',
+        'warehouse_area'), so both fall through to disclosure. NEVER inferred from the free
+        text: the materiality heuristic may read prose to decide whether to ASK, but nothing
+        may write a value into a field on the strength of a lexicon hit.
+      * `options` - the bridge is SELECTION-FIRST (B38): an answer picks one of the strings
+        the reader itself offered, or is the NOT_STATED_TOKENS withdrawal. A doubt that names
+        a field but offers NO options is still ASKED (dropping it would hide a doubt the reader
+        took the trouble to record), but `emit` refuses to stamp it landable and the question
+        says so in `answer_handling`, because a stamp without options is a promise the lander
+        cannot keep: six of eight answers on the measured run were ignored exactly that way,
+        the broker having been asked as if they would reach the card (F18). The signal is
+        deliberately on the question the orchestrator reads, so the pressure lands where it
+        belongs - a reader that wants its doubt to be ACTIONABLE states the candidates.
+      * `source_file` - the file the doubt was recorded against, so the repair can cite it.
+      * `anchor_park` / `anchor_unit` / `anchors` - the raising RECORD'S own identity (F18),
+        read off the record here while it is still in scope; see the ANCHORS block above for
+        why `subject` cannot carry it. `anchors` holds every record a question stands for.
+      * `answer_handling` - one of ANSWER_APPLIED / ANSWER_RECORDED_*: what an answer will do.
+
+    COALESCING (F15). Two records from ONE deck on ONE park each asked which region the park
+    sits in, with near-identical wording and identical rationale; a deck marketing six units
+    would ask six times. Questions are grouped by id, and `_doubt_qid` gives a park-level
+    field's doubt an id keyed on the AMBIGUITY (source, topic, field, option set, default,
+    park) rather than on the wording, so those collapse to ONE question whose `anchors` lists
+    every record it covers and whose text names them; the lander applies the one answer to
+    each. The test for "same question" is that one answer is correct for all of them, which
+    is why the whitelist is short and per-unit fields are keyed per record instead: alike
+    wording on two units is two questions. Grouping never discards an anchor, so the Gaps
+    Report and the ledger can always say which records one answer moved."""
     qs = []
     for r in records or []:
         if not isinstance(r, dict):
             continue
         m = r.get("__meta") or {}
         subj_default = _subject(r)
+        src = str(m.get("source_file") or "")
+        a_park, a_unit = _anchor_of(r)
         for d in (m.get("doubts") or []):
             if not isinstance(d, dict) or not str(d.get("question") or "").strip():
                 continue
             subject = str(d.get("subject") or subj_default)
             q = {
                 "id": qid("agent_doubt",
-                          f"{m.get('source_file', '')}|{subject}|"
-                          f"{str(d['question'])[:60]}", ""),
+                          f"{src}|{subject}|{str(d['question'])[:60]}", ""),
                 "kind": "agent_doubt", "asked_of": KINDS["agent_doubt"],
                 "blocking": False, "subject": subject,
                 "question": f"{subject}: {str(d['question']).strip()}",
@@ -1032,18 +1490,75 @@ def agent_doubt_questions(records: list) -> list:
                 # classified from the DOUBT (a declared field/materiality) plus its own
                 # text, not from the wrapper - the reader knows what it was torn about
                 "materiality": _doubt_materiality(d, str(d["question"])),
+                # THE RECORD'S OWN IDENTITY, verbatim (F18) - never derived from `subject`
+                "anchor_park": a_park, "anchor_unit": a_unit,
+                "anchors": [{"park": a_park, "unit": a_unit}],
+                "answer_handling": ANSWER_RECORDED_NO_FIELD,
             }
             if isinstance(d.get("options"), list) and d.get("options"):
                 q["options"] = [str(o) for o in d["options"]][:6]
+            # THE ANSWER-LANDING STAMPS (see the docstring). One declared, recognised field
+            # only: `len(...) == 1` is the guard, not `[0]` on whatever came back, because a
+            # doubt about two fields answered with one string is a repair aimed at a field
+            # nobody named. Absent stamps mean "disclosed, not landed" - never "guess".
+            _decl = [f for f in _doubt_declared_fields(d) if known_field(f)]
+            if len(_decl) == 1:
+                q["field"] = _decl[0]
+                q["source_file"] = src
+                # D4 (c): on an ARITHMETIC field (one with a derived numeric companion, or one
+                # this record holds a number in) every option must LEAD WITH THE FIGURE AND ITS
+                # UNIT as printed, or the lander would write a sentence into the field and
+                # strand its number (the measured 'all three office lines combined'). Such a
+                # question is still asked, but it is stamped recorded-only, names the offending
+                # option, and `emit` refuses it the landable stamp. Nothing is computed: the
+                # test is positional, and a reader must NEVER offer a total it did not read.
+                _prose = _prose_options(_decl[0], r, q.get("options") or [])
+                if _prose:
+                    q["unlandable_options"] = _prose
+                    q["answer_handling"] = ANSWER_RECORDED_PROSE_OPTION.format(
+                        field=_decl[0], why=_arithmetic_reason(_decl[0], r), option=_prose[0])
+                else:
+                    q["answer_handling"] = (ANSWER_APPLIED if q.get("options") else
+                                            ANSWER_RECORDED_NO_OPTIONS.format(field=_decl[0]))
+                # the id decides what coalesces - see _doubt_qid
+                q["id"] = _doubt_qid(src, subject, str(d["question"]), _decl[0],
+                                     q.get("options") or [], d.get("default"), a_park, a_unit)
+            # D13: a question whose answer will NOT be landed says, ON THE QUESTION, what to do
+            # with the answer: the record, the field and a paste-ready repairs.json entry with
+            # `expect` filled in. Built now, while the record is in scope; see `handoff_lines`.
+            if not str(q["answer_handling"]).startswith("applied"):
+                q["to_apply_by_hand"] = {
+                    "reason": _recorded_only_reason(q["answer_handling"]),
+                    "entries": [_hand_repair_skeleton(r, q.get("field"), q["anchors"][0])],
+                }
             qs.append(q)
-    # dedupe by qid FIRST (two records sharing source_file+subject+question produce one
-    # question, not two slots of the cap), then MATERIAL doubts first.
-    seen_ids, deduped = set(), []
+    # GROUP by qid FIRST (one id = one ambiguity, so one question and one slot of the cap),
+    # keeping EVERY anchor the group covers - a coalesced question must be able to say which
+    # records it stands for, and the lander must be able to reach each of them (F15). Then
+    # MATERIAL doubts first.
+    by_id: dict = {}
     for q in qs:
-        if q["id"] in seen_ids:
+        prev = by_id.get(q["id"])
+        if prev is None:
+            by_id[q["id"]] = q
             continue
-        seen_ids.add(q["id"])
-        deduped.append(q)
+        for a in q["anchors"]:
+            if a not in prev["anchors"]:
+                prev["anchors"].append(a)
+                # one paste-ready entry PER ANCHOR, in anchor order (D13)
+                if isinstance(prev.get("to_apply_by_hand"), dict) \
+                        and isinstance(q.get("to_apply_by_hand"), dict):
+                    prev["to_apply_by_hand"]["entries"].extend(
+                        q["to_apply_by_hand"].get("entries") or [])
+    deduped = list(by_id.values())
+    for q in deduped:
+        q["question"] += _covers_suffix(q)
+        # the skeleton's id and attribution mirror what `run.agent_doubt_repairs` would have
+        # written for this question and anchor, so a pasted entry dedupes against a later
+        # automatic landing instead of doubling it (D13)
+        for i, s in enumerate((q.get("to_apply_by_hand") or {}).get("entries") or []):
+            s["entry"]["id"] = f"ad-{str(q['id'])[:10]}-{i}"
+            s["entry"]["verified_by"] = f"broker (exit-13 answer to {q['id']})"
     mat = [q for q in deduped if is_material(q)]
     for q in mat[MAX_DOUBT_QUESTIONS:]:
         q["over_cap"] = True     # material, but disclosed rather than asked this round
@@ -1117,39 +1632,25 @@ def dataset_unit_questions(records: list) -> list:
     }]
 
 
-def record_count_questions(deck_pages: dict, records_by_source: dict) -> list:
-    """A deck that may hold more properties than it produced records. NOT WIRED - see below.
-
-    ⚠ PAGE COUNT IS THE WRONG SIGNAL and this producer is deliberately not called by run.py.
-    A six-page brochure describing ONE property is the *normal* case, so any
-    `pages >= k * records` threshold fires on most decks. That matters more than it looks:
-    every question here costs a real exit-13 round-trip, and a channel that cries wolf trains
-    the orchestrator to skim it - which destroys the value of the questions that ARE precise.
-    Measured on the eval fixtures, the 2x threshold fired on a legitimate 2-page/2-record deck
-    and blocked the spine.
-
-    The honest signal is semantic - several distinct scheme/unit names in the deck text against
-    one emitted record - and that is a perception call Python cannot make. Kept here, unwired,
-    because the QUESTION is right and only the trigger is wrong; filed as B46. (B38/B46)"""
-    out = []
-    for src, n_pages in sorted((deck_pages or {}).items()):
-        n_rec = len(records_by_source.get(src) or [])
-        if n_pages >= 3 and n_rec and n_pages >= 2 * n_rec:
-            out.append({
-                "id": qid("record_count", src),
-                "kind": "record_count", "asked_of": KINDS["record_count"],
-                "subject": src, "source_file": src,
-                "question": (f"{src}: {n_pages} pages were read but only {n_rec} propert"
-                             f"{'y' if n_rec == 1 else 'ies'} emitted. Does this deck "
-                             f"describe more than {n_rec}? If a page shows SEVERAL "
-                             f"properties they must be separate records."),
-                "why_it_matters": ("a property collapsed into a neighbour's record is a "
-                                   "missing option on the longlist, and nothing else "
-                                   "detects it."),
-                "if_unanswered": (f"the deck ships as {n_rec} propert"
-                                  f"{'y' if n_rec == 1 else 'ies'}"),
-            })
-    return out
+# THE `record_count` PRODUCER IS GONE. It generated a question no consumer could act on, and
+# nothing called it - which is the worst of both: dead code that reads as a feature, sitting
+# there inviting the next maintainer to wire the one trigger that was measured WRONG.
+#
+# WHY NOT WIRE IT. Its trigger was `pages >= 2 * records`, and page count is not evidence: a
+# six-page brochure describing ONE property is the normal case, so it fired on most decks. On
+# the eval fixtures it fired on a legitimate 2-page/2-record deck and blocked the spine. A
+# question channel that cries wolf costs a round-trip every time AND trains the reader to skim
+# the questions that are precise, which is the one thing this module cannot afford - the
+# broker's attention is the scarcest thing in the pipeline.
+#
+# WHY DELETING IT LOSES NOTHING. Its own docstring named the honest trigger: several distinct
+# scheme or unit names in the deck TEXT against one emitted record - a perception call, which
+# is to say a job for the agent that read the deck, not for a page-count threshold in Python.
+# That channel exists, is wired, and is better: a reader records the doubt in `__meta.doubts`,
+# `_COUNT_TOKENS` recognises every paraphrase of "is this one property or two", KIND_MATERIALITY
+# classifies it "count" - the highest-stakes class, never suppressed - and `agent_doubt_questions`
+# puts it to the broker in the same batched round. The QUESTION this producer wanted asked is
+# therefore still asked; it is asked by the only thing that can tell when to ask it. (B38/B46)
 
 
 # ---------------------------------------------------------------- SOURCE AUTHORITY

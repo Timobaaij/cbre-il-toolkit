@@ -7,6 +7,100 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.11.0] — 2026-09-06
+
+Marketplace 1.11.0: **CBRE I&L Toolkit 1.8.0** and **UK I&L Toolkit 1.4.0**. Both plugins move,
+so both need updating.
+
+### Fixed — property longlist
+- **The dashboard's street map was serving tiles with "API KEY REQUIRED" printed into the
+  imagery.** The previous tile provider now bakes that watermark into what it serves on its
+  keyless endpoint, so the text reached the reader inside real map tiles on every dashboard —
+  and nothing detected it, because the tiles still return success: no console error, no failed
+  fetch, no blank tile, only a human looking at the picture, by which point the file is with
+  the client. All three map definitions (main map, modal mini-map, Flyover) now request the
+  keyless OpenStreetMap standard tiles, with the subdomain list, the dropped `{r}` retina
+  placeholder and the attribution applied identically at all three sites so they cannot drift
+  apart again. The satellite layer beside each is untouched.
+- **Two different units on one park rendered as two identical-looking cards** — in the grid,
+  the map popup, the map list, the modal, the Flyover and both sets of comparison chips, which
+  is the exact moment the broker is being asked to choose between them. A new canonical `unit`
+  field carries the source's own designator as printed ("Unit 3", "Phase 2", "Block A"), and a
+  single `titleStr(p)` helper composes every one of the nine title sites. An absent unit renders
+  the park name unchanged, a park already named "Kestrel Reach Unit 3" is not doubled, and `unit`
+  joins the search haystack, because a designator the reader can see must be typeable.
+- **The card showed a smaller building than the brochure states.** The area figure is derived
+  (warehouse + office), and a derivation reads below the printed total whenever real space sits
+  inside that total and in no summed field — mezzanine, ancillary, plant. The source's own stated
+  total now reaches the card as a sub-line beside the derived figure, never in place of it, and
+  only when the two disagree beyond the arithmetic gate's own tolerance — quoted from the gate
+  rather than re-invented, so the card and the gate cannot disagree about whether a difference
+  matters. The modal then adopted the same figure, closing a gap where card and modal showed
+  different numbers under the same "Total GLA" label.
+- **A Total rent figure now says what area it was computed on.** The stated total may include a
+  gatehouse or a plant room nobody pays warehouse rent on, so the money is unchanged and the
+  basis is printed instead — one helper qualifies the inputs, and the formula that computes and
+  the line that prints read the same components.
+- **A site plan is no longer cropped.** The plan reused the photo hero's fixed 16/7
+  `object-fit:cover` frame, which is right for a photograph and destructive for a plan, since a
+  plan is the one image whose edges carry the information: yard depths, the plot boundary,
+  dimension lines, the access road. Only the lightbox ever showed it whole. A `plan-mode` class
+  toggled at the single existing swap point contains it over a neutral letterbox.
+- **The chrome kept its own shorter vocabulary for "this value is absent".** Its private
+  six-member list lacked `n/a`, `tba`, `tbs` and every market phrase, so a value a reader shipped
+  as "TBA" rendered on the card as a real datum. It now mirrors the Python set member for member,
+  with an eval holding the two equal. A stated `none` is deliberately still data, not an absence.
+
+### Added — property longlist
+- **Exit 16 — an invalid correction entry now refuses to start the run**, listing every fault in
+  `work/overrides.json` and `work/repairs.json` in one pass, and saying plainly to fix the named
+  entries **in place** rather than append new ones — appending re-runs into the same refusal with
+  one more entry each round. `--allow-invalid-corrections` ships past a known-stale entry
+  knowingly, with whatever it was meant to correct shipping uncorrected.
+- **`--from <stage>` and `--only <stage>` narrow a re-run**, and are documented for what they
+  actually guarantee: reach, not speed. They answer "can the correction I just made even reach
+  this stage?", and the skill states outright that on a warm work dir `--from` behaves the same
+  as ordinary resume. Neither can reach the pre-build gates, the post-build gates, the freeze or
+  the QA window — those always run, so nothing ships unverified.
+- **The QA window is one review round, with no mechanism for a second.** The spine records
+  exactly one, and a review file that changes afterwards folds into it as further findings.
+  Re-dispatching a reviewer is now prohibited for any reason, and which advisories to fix is
+  stated as judgement with deliberately no threshold: one edit that changes what a reader
+  concludes gets fixed and resolved; everything else ships disclosed.
+- **The two-unnamed-units-at-one-location case is documented as expected**, not discovered. The
+  matcher correctly keeps the records apart and the card-title gate correctly refuses two cards a
+  reader cannot tell apart, so the run blocks at exit 6 and the operator sets `unit` per card from
+  what the source actually says.
+- **Around 67 new evals**, including the basemap provider extracted from the file itself, the
+  single-derivation pins for GLA and rent basis, card-title collision, sentinel parity between
+  Python and the chrome, stage-control scope, one-QA-round enforcement, over-merge guards and
+  repair survival.
+
+### Changed — UK I&L Toolkit (Kato longlist)
+- **Every property's own source documents now reach the pipeline**, named so that filename-derived
+  clustering puts one property's documents in one reader deck. This closes the worst thing the
+  skill had shipped: with no document for a property the pipeline dispatches zero document readers
+  for it, so every specification field on its card came from the tracker that same step had just
+  generated, with no page-cited evidence behind any value — nothing failed, every gate passed, and
+  the run was silently wrong rather than late. The step now **refuses (exit 2) when any longlist
+  row has no machine-readable source**, names every such row, and writes nothing.
+  `--allow-unevidenced-rows` ships anyway and records the affected rows for the Gaps Report.
+- **`project.yaml` moved out of the scanned inputs folder.** `.yaml` matches none of the
+  pipeline's accepted input types, so a copy there was classified unreadable and appeared in the
+  **client-facing** Gaps Report, advising the reader to re-save or unlock a file we generated
+  ourselves.
+- **The wrapper asserts a minimum toolkit version** (currently v40) before copying anything, and
+  refuses an older or unreadable one with the remedy. The comparison is numeric, so a future v100
+  is correctly newer than v40, and the `-kato` suffix a previous run may have stamped is reported
+  but never compared.
+- **Exit 10 and exit 13 are documented as normal**, not as breakage. Shipping each property's
+  documents means the corpus now holds more than one record source, so cross-source match
+  adjudication can fire where a tracker alone could never have triggered it. The `country` value
+  conflict expected on most properties is explained and repaired afterwards from a single market
+  constant.
+- The 12 active template patches are re-verified against template v40, each still matching its
+  anchor exactly once, with neither retired premise regressed.
+
 ## [1.10.1] — 2026-09-02
 
 Marketplace 1.10.1: **CBRE I&L Toolkit 1.7.1**. UK I&L Toolkit unchanged at 1.3.0.
@@ -759,6 +853,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.11.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.11.0
 [1.10.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.10.1
 [1.10.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.10.0
 [1.9.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.9.1

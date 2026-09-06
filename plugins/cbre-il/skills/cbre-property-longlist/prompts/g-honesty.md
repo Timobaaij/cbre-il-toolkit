@@ -31,6 +31,12 @@ Your two directions of failure, both blocking-grade when confirmed:
   sources". Check a struck-value pattern too - a figure the extract carries that canonical
   lacks is a silent strike, not an absence.
 
+## Reading a delivered workbook
+- Any claim about a delivered `.xlsx` (the Longlist or the Source Ledger workbook) is made
+  through a DECODING reader, never by grepping the zip's raw sheet XML, which carries
+  numeric character references no consumer ever sees (gates.md, "Reading a delivered
+  workbook"): `python -c "import openpyxl,sys; wb=openpyxl.load_workbook(sys.argv[1],read_only=True,data_only=True); [print(ws.title, r) for ws in wb.worksheets for r in ws.iter_rows(max_row=25, values_only=True)]" "<file>.xlsx"`
+
 ## Output
 WRITE your findings to:
 {{REVIEWS_ROUND_DIR}}/G-honesty.md

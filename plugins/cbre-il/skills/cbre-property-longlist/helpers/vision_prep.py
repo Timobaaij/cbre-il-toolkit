@@ -46,6 +46,33 @@ def _needs_vision(text: str) -> bool:
     return len(P._find_labels(text)) < 2 and len(P._find_inline_labels(text)) < 2
 
 
+def country_kv(country) -> dict:
+    """`{"country": <code>}` when the caller KNOWS the deck's country, `{}` when it does not.
+
+    THE ONE HOME of the manifest's country-absence rule (F7 / SEAM-9). interpret_prep._country_kv
+    delegates here rather than the other way round because this is the LOWER module: run.py calls
+    prepare() below DIRECTLY for a raster deck, bypassing interpret_prep's router, so a rule that
+    lived only in the router never reached a raster entry and every raster deck still handed its
+    reader `"country": "??"`. Measured on a live run: five of seven readers said, unprompted, that
+    the manifest gave `??` and derived the country from the page themselves; across seven decks
+    that produced three different outcomes (two spellings and one absence) and cost a broker
+    question. A sentinel where ABSENCE is meant makes every agent recognise and reason about it;
+    an absent key is unambiguous and needs no rule. Never `null` either: a consumer treats a
+    present key as a value (run.py renders `_d.get("country") or "??"` into the prompt slot).
+
+    The input is NOT assumed clean: run.py minted the sentinel upstream (`cl.get("country") or
+    "??"`) and a warm work dir's inventory may still carry it, so the test runs on every call.
+
+    The unknown test strips the sentinel character rather than delegating to the shared predicate
+    (normalize.looks_unknown, contract C5) ON PURPOSE: that family carries two-letter tokens
+    ("na", "nc", "sc") that are ALSO assigned ISO 3166 alpha-2 codes, so a deck whose country is
+    correctly known would lose it. The only forms that reach this parameter are a code, empty, or
+    the `??` sentinel, and stripping `?` names no sentinel SET (evals/f05_no_private_sentinel_sets
+    guards against a new private literal)."""
+    c = str(country or "").strip()
+    return {"country": c} if c.strip("?").strip() else {}
+
+
 def _largest_slide_picture(slide):
     from pptx.enum.shapes import MSO_SHAPE_TYPE
     best = None
@@ -93,7 +120,11 @@ def _stamp_current(path: Path, out_dir: Path, dpi: int) -> bool:
 def prepare(path: Path, region: str, country: str, out_dir, dpi: int = 180,
             force: bool = False) -> dict:
     """Rasterise the pages of one brochure and return a manifest entry
-    {source_file, source_type, region, country, pages:[{page_no, locator, image, reason}]}.
+    {source_file, source_type, region, country?, pages:[{page_no, locator, image, reason}]}.
+    `country` is present ONLY when the caller knows it (F7 / SEAM-9; see country_kv). There is
+    no cached entry to scrub on resume: the stamp below keys the PAGE PNGS only (source bytes +
+    dpi) and this dict is rebuilt fresh on every call, so a warm work dir cannot serve a stale
+    `"country": "??"` from here (interpret_prep caches its TEXT entry and scrubs it itself).
 
     page_no in each entry is the CANONICAL 0-BASED page index: the transcription
     agent must copy it VERBATIM into __meta.page_no (the PNG filename suffix is
@@ -197,11 +228,11 @@ def prepare(path: Path, region: str, country: str, out_dir, dpi: int = 180,
                                   "reason": f"could not rasterise: {e}"})
             doc.close()
             return {"source_file": path.name, "source_type": st, "region": region,
-                    "country": country, "pages": pages}
+                    **country_kv(country), "pages": pages}
         # FALLBACK tier (no LibreOffice): each slide's largest embedded picture
         if prs is None:
             return {"source_file": path.name, "source_type": st, "region": region,
-                    "country": country, "pages": [],
+                    **country_kv(country), "pages": [],
                     "note": "python-pptx unavailable and no LibreOffice - cannot rasterise pptx"}
         for i, slide in enumerate(prs.slides):
             # reuse the already-harvested per-slide texts (guarded); a bad slide's '' reads
@@ -221,7 +252,7 @@ def prepare(path: Path, region: str, country: str, out_dir, dpi: int = 180,
                           "reason": "no extractable text/labels (image slide)"})
 
     return {"source_file": path.name, "source_type": st, "region": region,
-            "country": country, "pages": pages}
+            **country_kv(country), "pages": pages}
 
 
 def main() -> None:

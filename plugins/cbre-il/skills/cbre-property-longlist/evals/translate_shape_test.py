@@ -123,7 +123,7 @@ def main() -> int:
     # `yardDepth` are auto-shown attributes, not canonical schema fields, so they are unknown at
     # design time. Blacklisting them by name would hard-code one client's vocabulary.
     import _common as C
-    for field, val in [("postcode", "DN11 8DB"), ("address", "MK16 0QE"),
+    for field, val in [("postcode", "QX11 8DB"), ("address", "QX16 0QE"),
                        ("postcode", "1234 AB"), ("epc", "A"), ("epc", "A+"), ("epc", "B2"),
                        ("floorLoad", "50 kN/m2"), ("floorLoad", "60 kN/m2"),
                        ("electricity", "2.4 MVA")]:

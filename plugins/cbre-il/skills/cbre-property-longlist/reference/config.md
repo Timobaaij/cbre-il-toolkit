@@ -5,26 +5,33 @@ One `project.yaml` per client project, kept in the **work dir** (`2. Work Files/
 `inputs.folder` is relative to the inputs folder itself, and every persisted path in the work dir (the inventory's relpaths, the extract filenames, the image-cache keys) is **relative or name-keyed, never an absolute project path** - which is why a project folder can be renamed or restructured into the three-folder layout without invalidating a single cached stage. The one absolute path any run writes is `<work>/.claude/launch.json` (the preview server), and it is rewritten from scratch every time it is needed.
 
 ```yaml
+# The scaffolded file opens with a header comment saying that EVERY value in it is a default
+# the scaffold guessed and that `setup.confirmed` is the ONLY thing that says otherwise (B63,
+# see "setup:" below). intake's cluster merge edits the file IN PLACE, so that header and every
+# other comment survive a re-cluster.
+setup:
+  confirmed: false             # intake writes false; the orchestrator sets true after the Stage-0 form
 client:
   name: Normal                 # display + deliverable filenames
-  confidential: true
+  confidential: true           # informational; nothing in the pipeline reads it
 market:
   title_html: "CEE logistics <em>options</em> for your next facility."  # hero <h1> (HTML allowed)
   eyebrow: "Hungary, Czech Republic & Slovakia"                          # hero eyebrow
   region_label: "CEE"          # topbar meta prefix
-  countries: ["HU", "CZ", "SK"]
+  countries: ["HU", "CZ", "SK"]  # seeded ONCE by the scaffold from the KNOWN cluster countries; informational (the dashboard derives its country filter from the records)
   lede: ""                     # optional; a sensible default is generated if blank
 output:
   filename: "CBRE_Property_Dashboard_Normal.html"
   compiled_date: "2026-04-23"  # ISO; defaults to today if blank
   language: "English"          # Stage 0 Q3: dashboard CHROME language (see "Dashboard language" below)
 inputs:
-  folder: "."
-  present_types: ["pdf", "pptx"]   # auto-filled by intake
-  clusters:                        # region -> country (auto-inferred by regex, LLM-refined at Stage 0 for ambiguous filenames, broker-confirmed; fix if wrong)
+  folder: "."                      # informational; the run takes the inputs folder from its command line
+  present_types: ["pdf", "pptx"]   # auto-filled by intake; informational (the run reads inventory.json)
+  clusters:                        # region -> ISO-2 country (auto-inferred; fix if wrong; '' = not inferred: fill it, or let --geocode resolve it)
     Pilsen: CZ
     Budapest: HU
     Bratislava: SK
+    Westford: ''                   # the city index did not know this one: BLANK, never a placeholder token
   emails:                          # Stage 0 Q2 (see SKILL.md "broker setup prompt")
     source: none                   # none | outlook | folder  (folder = .msg/.eml fallback for no-MCP)
     outlook_folder: ""             # Outlook mail FOLDER when source: outlook (e.g. Inbox, or "Normal CEE"); blank = all folders
@@ -42,7 +49,7 @@ enrichment:                    # broker opt-in; ask in plain language before run
                                # becomes the NUTS-3 area its own coordinates fall inside, disclosed
                                # in the Source Ledger and the Gaps Report. Without this extra the
                                # labels ship exactly as stated, mixed levels and all. (I11)
-  osrm_endpoint: "https://router.project-osrm.org"
+  osrm_endpoint: "https://router.project-osrm.org"   # NOT read by run.py today: enrich.py uses its own --osrm-endpoint default (the same URL), so editing this changes nothing
   ors_api_key: ""              # openrouteservice key -> TRUCKING (driving-hgv) distances/times
                                # via the ORS matrix API (1 request per property, throttled to the
                                # free tier's 40/min; falls back to the ORS_API_KEY env var).
@@ -50,7 +57,19 @@ enrichment:                    # broker opt-in; ask in plain language before run
                                # Per-project/per-user - NEVER commit a key into the shared skill.
 qa:
   fill_threshold: 0.6          # min fraction of core fields populated (non-tbd) per record (run.py passes this to the coverage gate)
+clarify:
+  mode: interactive            # the ask mode; see "clarify:" below
 ```
+
+### Which keys are read, and by what
+Not every key in the scaffold feeds a stage. Knowing which do stops a broker correcting a value that nothing will ever read:
+
+| read by the helpers | `setup.confirmed`, `client.name`, `market.title_html` / `eyebrow` / `region_label` / `lede`, `output.filename` / `compiled_date` / `language`, `inputs.emails.source`, `enrichment.geocode` / `pois` / `osrm` / `regions` / `ors_api_key`, `qa.fill_threshold`, `clarify.mode` / `assume_defaults` |
+|---|---|
+| read by the ORCHESTRATOR | `inputs.emails.outlook_folder` / `mailbox` / `query` / `folder`: they fill the slots of `prompts/outlook-ingest.md` |
+| informational only | `client.confidential`, `market.countries`, `inputs.folder`, `inputs.present_types`, `enrichment.osrm_endpoint`, and `inputs.clusters` (next line) |
+
+**`inputs.clusters` is the human-readable record of the inferred (and hand-corrected) region -> country map; it is not a data source.** The readers get each deck's country from `inventory.json`, which intake computes from the city index and the Stage-0 label cache on every pass. A country you correct in this block is preserved by every later merge (see "Auto-discovery"), but it does not reach a reader today; to change what a reader is told, fix the label cache (`work/intake_clusters.json`, `country`) or let `--geocode` resolve it.
 
 (The template version is **not** a `project.yaml` setting - the chrome is pinned by `assets/VERSION` and enforced by `gate_runner.py validate-html`, which fails the build if the template's SHA-256 drifts from the recorded `chrome_sha256`. Nothing client-specific pins it.)
 
@@ -66,9 +85,9 @@ Two safety properties hold by construction:
 Because `project.yaml` is a merge input, changing the language re-runs the cached merge (and rebuild) on the next pass.
 
 ## Auto-discovery (`intake.py`)
-Globs the folder for `*.pdf *.pptx *.xlsx *.msg *.eml` and images; infers a city/region cluster per brochure from its filename (`Normal Options - Pilsen.pdf` -> Pilsen) and the country from `assets/poi_library.json`'s `city_country` index (a CEE-seeded **convenience** - a miss leaves `??`); writes `inventory.json`; scaffolds `project.yaml` pre-filled from what was found (incl. `inputs.emails.source` defaulted to `folder` when `.msg`/`.eml` are present in the folder, else `none`). Confirm the inferred clusters and countries before extracting - and a remaining `??` is filled automatically by `enrich.py --geocode`, which reverse-geocodes the country code from the resolved coordinates (any geography, no index needed).
+Scans the folder RECURSIVELY (hidden and underscore-prefixed directories, Office `~$` lock files and the work dir itself are skipped; scanned subfolders are named in the output) for brochures (`.pdf`, `.pptx`), trackers (`.xlsx`, `.xlsm`, `.csv`), images (`.jpg`, `.jpeg`, `.png`, `.webp`, `.heic`, `.heif`) and emails (`.msg`, `.eml`); any other file is listed under `unclassified` rather than silently ignored, and a byte-identical duplicate is extracted once and listed under `skipped_duplicates`. It infers a city/region cluster per brochure from its filename in two shapes: the last spaced-dash segment (`Options - Westford.pdf` -> Westford, trailing noise like `- FINAL` / `- v2` dropped), or a NUMBERED EXPORT's remainder once its 1-3 digit index is stripped (`03_Riverside_Park.pdf` -> Riverside Park; F3). The country comes from `assets/poi_library.json`'s `city_country` index, a CEE-seeded **convenience**: **a miss leaves the country BLANK** (`Region: ''` in the scaffold), never a placeholder token, because the old `??` token travelled into the reader manifest and readers derived the country themselves, three different ways (F7). It writes `inventory.json` and scaffolds `project.yaml` pre-filled from what was found (incl. `inputs.emails.source` defaulted to `folder` when `.msg`/`.eml` are present, else `none`). A blank country is filled automatically by `enrich.py --geocode`, which reverse-geocodes the country code from the resolved coordinates (any geography, no index needed).
 
-Each cluster in `inventory.json` also carries a `confidence` (`high`/`low`) and the raw source `stems`: `low` marks the whole-stem fallback (no clean ` - ` separator and the unspaced-dash tail is not a known city, e.g. `Options-Oporto`), so the Stage-0 orchestrator can judge ONLY the ambiguous tail. This is a purely additive signal - it never changes the regex's chosen region, so an offline run is unchanged.
+Each cluster in `inventory.json` also carries a `confidence` (`high`/`low`) and the raw source `stems`: `low` marks the whole-stem fallback (no clean ` - ` separator, no numbered-export index, and the unspaced-dash tail is not a known city, e.g. `Options-Oporto`), so the Stage-0 orchestrator can judge ONLY the ambiguous tail. This is a purely additive signal - it never changes the regex's chosen region, so an offline run is unchanged. `inventory.json` also always carries a top-level `cluster_label_notes` list (empty on a regex-only run): one `{stem, region, country, note}` per cached label that recorded a close call (F16), for the Gaps Report's "Noted, not put to you".
 
 ### `work/intake_clusters.json` (the Stage-0 LLM label cache)
 For low-confidence clusters the orchestrator judges the likely city/region from the filename stem(s) and writes an **input-hashed** cache the next intake pass applies deterministically:
@@ -76,12 +95,19 @@ For low-confidence clusters the orchestrator judges the likely city/region from 
 ```json
 {"input_hash": "<copy inventory.json's `cluster_input_hash` - the BROCHURE-SET identity. Do NOT copy `input_hash`, which is the whole-corpus key (every classified input + its content) that the QA window uses; it will never match. Both key NAMES are accepted here, so `cluster_input_hash` may be used verbatim.>",
  "schema_version": 1,
- "labels": [{"stem": "Options-Oporto", "region": "Oporto", "country": "PT"}]}
+ "labels": [{"stem": "Options-Oporto", "region": "Oporto", "country": "PT",
+             "note": "<optional, one line, only for a genuine close call; capped at 400 chars>"}]}
 ```
 
-`intake.discover` applies a cached label ONLY when (a) `input_hash` matches the current brochure set, (b) the label's `stem` is a real discovered file, and (c) its `region` is non-empty and not a noise token; ANY failure discards the WHOLE cache and falls back to the regex (`infer_cluster`) verbatim. A changed brochure set changes the hash and invalidates the cache, so no stale label survives a folder change. The cache is added to `run.py`'s Stage-0 resume inputs, so writing it re-clusters and then `main()` MERGES the corrected `region -> country` into the existing (broker-confirmed) `project.yaml inputs.clusters` rather than overwriting it.
+`intake.discover` applies a cached label ONLY when (a) `input_hash` matches the current brochure set, (b) the label's `stem` is a real discovered file, and (c) its `region` is non-empty and not a noise token; ANY failure discards the WHOLE cache and falls back to the regex (`infer_cluster`) verbatim (`note` is optional and never a reason to discard). A changed brochure set changes the hash and invalidates the cache, so no stale label survives a folder change. The cache is added to `run.py`'s Stage-0 resume inputs, so writing it re-clusters and then `main()` MERGES the corrected `region -> country` map into the existing `project.yaml inputs.clusters` rather than overwriting it. The merge rules:
 
-**Absence of the cache IS the regex opt-out** - no `.SKIP` sentinel is needed (unlike the tracker map, there is no exit/dispatch to decline). A no-LLM / non-interactive / offline run simply never writes `work/intake_clusters.json`, so the deterministic regex stands and the offline evals are byte-identical. The LLM sets ONLY `inputs.clusters` (a routing/scaffold label + the `market.countries` seed); the card's displayed region/city are read from the brochure body at extraction, so a wrong cluster label can never fabricate a displayed field - the existing coverage gate (a hallucinated region maps zero brochures -> an empty cluster -> blocked) and the broker confirmation are the backstops.
+- **In place, comments kept.** Only the `clusters:` block is rewritten; every other byte of the file, every comment (the `setup.confirmed` header included), the line endings and the trailing-newline state survive. An unchanged entry is kept byte-exact, inline comment and all. The merge never deletes a comment: one that led a region that no longer exists stays where it was, for you to keep or remove.
+- **A hand-set country wins.** A non-blank country in the file is kept whatever intake infers for that region, blank or different. The index gives the same answer for the same key every pass, so a different non-blank value can only be a human correction.
+- **A blank means "not inferred yet", so it is re-filled** whenever the index or the label cache knows the region. THE LIMIT: the design cannot tell "not inferred yet" from "the broker cleared this"; there is no value that means "no country". If you want a region to carry no country, expect intake to put the inferred one back on the next re-cluster.
+- **Placeholders fold together.** `''`, a bare `Region:` (null) and the legacy `'??'` an older scaffold wrote are all "unknown"; a file whose only difference is that spelling is not rewritten at all.
+- **It refuses rather than guesses.** If the `clusters:` block cannot be located unambiguously (no or two top-level `inputs:` keys, two `clusters:` keys, an inline flow mapping `clusters: {A: XX}`, a body line that is not one `Region: country` entry), the file is left byte-identical and intake prints a `WARNING` naming the reason; the summary line then says `project.yaml exists; kept`. There is deliberately no whole-document rewrite behind that refusal, because a whole-document dump drops every comment. Fix: restore the block to the scaffold's shape, or copy `inventory.json`'s clusters in by hand.
+
+**Absence of the cache IS the regex opt-out** - no `.SKIP` sentinel is needed (unlike the tracker map, there is no exit/dispatch to decline). A no-LLM / non-interactive / offline run simply never writes `work/intake_clusters.json`, so the deterministic regex stands and the offline evals are byte-identical. The LLM sets ONLY the inventory's cluster (its routing label, and the country the readers are handed for that deck), mirrored into `project.yaml inputs.clusters` for the record; it does not touch `market.countries`, which the scaffold seeds once from the index. The card's displayed region/city are read from the brochure body at extraction, so a wrong cluster label can never fabricate a displayed field - the existing coverage gate (a hallucinated region maps zero brochures -> an empty cluster -> blocked) and the broker confirmation are the backstops.
 
 ## Stage-0 setup prompt (ONE consolidated widget form)
 At intake the orchestrator presents ONE consolidated `visualize` widget form with ALL SIX setup questions at once (client name, enrichment extras, the optional openrouteservice key as an inline field, the email scope - **a named Outlook mail folder** via the `outlook_email_search` sub-agent with `folderName`, **across all of Outlook**, or **none** - the dashboard language, and the ask mode). The verbatim form and its submission parsing are in `reference/setup-form.md`; the mandate (single widget, all six together, one submit, plain-text fallback only when the widget tool is genuinely unavailable) is SKILL.md "The broker setup prompt". (A Windows `.msg`/`.eml` folder is a no-MCP fallback only.) The answers are written to `client:`, `enrichment:`, `inputs.emails:`, `output.language` and `clarify.mode` so subsequent re-runs are non-interactive.

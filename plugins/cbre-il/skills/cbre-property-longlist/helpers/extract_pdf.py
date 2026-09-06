@@ -43,6 +43,17 @@ import coords as _CO
 # canonical label phrase -> (field, kind). kind: text | num | rent | passthru
 LABELS = [
     ("City", "city", "text"),
+    # v40: the UNIT DESIGNATOR ('Unit 3', 'Phase 2'), which the chrome now puts in the card
+    # title. Only the EXPLICIT label phrases are listed, and a bare "Unit" is deliberately
+    # ABSENT: _label_regex matches a line-initial phrase followed by a separator OR just
+    # whitespace, so "Unit" would also claim marketing prose such as "Unit sizes from 50,000
+    # sq ft to 250,000 sq ft" and put that entire clause into the largest string on the card
+    # at every title site - and unlike extract_xlsx there is no NEGATIVE table here to veto it
+    # per header. A deck that labels the row explicitly is read; one that merely heads a page
+    # "Unit 3" is left to the interpretation reader, whose contract now names the field.
+    ("Unit number", "unit", "text"),
+    ("Unit reference", "unit", "text"),
+    ("Unit no", "unit", "text"),
     ("Property Status", "status", "text"),
     ("Permitting status and timeline", "permitting", "text"),
     ("Permitting status & timeline", "permitting", "text"),

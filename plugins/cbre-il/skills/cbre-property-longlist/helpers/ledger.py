@@ -107,4 +107,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    C.force_utf8_stdout()   # D16: a non-ASCII value in printed output must not
+    #                        crash the print on a cp1252 Windows console
     main()

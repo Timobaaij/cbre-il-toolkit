@@ -70,6 +70,61 @@ def parse_verdict(text: str) -> str | None:
     return hits[-1].lower() if hits else None
 
 
+def labelled_findings(text: str) -> list:
+    """Every line `qa-round record` would INGEST as a labelled finding, by ITS OWN patterns.
+
+    ONE GRAMMAR, ONE DEFINITION. This function deliberately owns no regex. It reads
+    `gate_runner._FINDING_RE` and `gate_runner._SEVERITY_RE` - the recorder's patterns,
+    used exactly as the recorder uses them (both are `re.M`-anchored, so a `finditer`
+    over the whole file is the same scan) - because a second, hand-written copy of that
+    grammar lived here and drifted.
+
+    THE INCIDENT. The recorder was widened to ingest the forms the reviewer rubric
+    actually documents: a bulleted label whose colon is optional (`- [blocking] x`,
+    `- [blocking]: x`) and the established severity label (`- [HIGH] ...`, `- [MED] ...`,
+    mapping HIGH to blocking). The copy here was never widened; it required the label
+    word to be followed immediately by a colon, so every bracketed form failed it. A
+    reviewer using a documented format therefore had its finding RECORDED into
+    qa_state.json, `qa_blocking_open` came back EMPTY so delivery ran, and then this gate
+    refused the pack for having "no labelled findings". Measured: 4 of the 5 documented
+    forms were ingested-but-rejected. Three identical re-runs of the same command
+    produced exit 7, exit 7, exit 7 with no state change, because the printed remedy was
+    "re-dispatch the reviewer" - forbidden by SKILL.md's exit-15 row, and made
+    STRUCTURALLY impossible by the one-round window (QA_MAX_ROUNDS = 1, and `record` no
+    longer self-opens a round). Recorded, then refused to ship, with no way out: the
+    worst state this pipeline can reach, and a duplicated regex is what built it.
+
+    WHY SHARING, NOT SYNCHRONISING. Two hand-kept copies is precisely what failed here;
+    a comment saying "keep these in step" would have failed the same way. Reading the
+    recorder's own object makes divergence UNREPRESENTABLE rather than merely
+    discouraged, and evals/qa_review_ingest_test.py drives BOTH sides from one shared
+    list of example lines, so widening one alone goes red there.
+
+    IMPORTING IS NOT A NEW COUPLING. This module already imports gate_runner at module
+    scope and calls it throughout (review_file, qa_carried, qa_blocking_open,
+    enrich_signature). The only dependency the other way is gate_runner's LAZY,
+    in-function `from final_gate import parse_verdict`, so no import order is circular:
+    verified with final_gate imported first, with gate_runner imported first, and with
+    gate_runner run as __main__. A missing pattern attribute raises rather than falling
+    back to a local regex, because a fallback copy would BE the defect again and a loud
+    failure is the safe direction for a ship gate.
+
+    NOT RELAXED. This returns what the REVIEWER labelled; it never labels anything
+    itself, and a file with no ingestable finding and no explicit `FINDINGS: none` still
+    FAILS below. The gate exists to stop a pack shipping over an unread blocking finding,
+    which is the original incident in this file's own comments. Removing the false
+    negatives does not remove the net.
+    """
+    seen, out = set(), []
+    for rx in (gate_runner._FINDING_RE, gate_runner._SEVERITY_RE):
+        for m in rx.finditer(text):
+            ln = m.group(0).strip()
+            if ln not in seen:
+                seen.add(ln)
+                out.append(ln)
+    return out
+
+
 def qa_carry_consistency(deliverables, qa_state, canonical=None):
     """Does the DELIVERED Gaps Report's "Known limitations" describe the LATEST QA round?
 
@@ -302,14 +357,35 @@ def main() -> None:
             checks.append(False)
             continue
         txt = f.read_text(encoding="utf-8", errors="replace")
-        labelled = [ln for ln in txt.splitlines()
-                    if re.match(r"\s*[-*]?\s*(blocking|advisory)\s*:", ln, re.I)]
+        # The RECORDER's own grammar, shared rather than copied - see labelled_findings()
+        # for the ingested-then-refused deadlock the duplicate copy caused.
+        labelled = labelled_findings(txt)
         # A reviewer that found nothing must say so EXPLICITLY. Silence is indistinguishable from a
         # crashed, truncated or empty review, so it fails safe - the same reasoning the old
         # "no parseable VERDICT line" check used, applied to findings instead of verdict words.
         if not labelled and not re.search(r"^\s*FINDINGS:\s*none\s*$", txt, re.I | re.M):
-            print(f"  [FAIL] {g}: no labelled findings and no explicit 'FINDINGS: none' - "
-                  f"re-dispatch the reviewer")
+            # The phrase 'no labelled findings and no explicit' is pinned by qa_window_test as
+            # the proof that a silent reviewer fails safe: keep it verbatim.
+            print(f"  [FAIL] {g}: no labelled findings and no explicit 'FINDINGS: none' "
+                  f"in {f}")
+            # REMEDY, REWRITTEN. This used to print "re-dispatch the reviewer". That is forbidden
+            # by SKILL.md's exit-15 row AND unreachable: the window is ONE round (QA_MAX_ROUNDS = 1
+            # and `record` no longer self-opens one), so an operator who followed it re-ran into
+            # this same exit forever. Every branch below is an action the operator can actually
+            # take on the state in front of them, which is the property the old text lacked.
+            print(f"      FIX: the file EXISTS, so the review DID happen - make it parseable "
+                  f"instead of asking for another one.")
+            print(f"        * findings written but UNLABELLED: prefix each finding line, IN PLACE "
+                  f"in that file, with 'blocking: ' or 'advisory: ' per the rubric in "
+                  f"reference/gates.md. Add the LABEL only - leave the reviewer's own wording "
+                  f"byte-exact, and never invent, reword or drop a finding.")
+            print(f"        * the file reports a CLEAN gate in prose: add the literal line "
+                  f"'FINDINGS: none' to it. Only if it genuinely raised nothing.")
+            print(f"        * the file is EMPTY or truncated, so there is nothing to label: DELETE "
+                  f"it. An ABSENT file is that gate's FIRST dispatch (exit 14, which run.py keys "
+                  f"on the review FILES present, not on the round count), and a first dispatch is "
+                  f"allowed where asking again for an INTACT review is not.")
+            print(f"      Then re-run the SAME command. Do NOT open another QA round.")
             checks.append(False)
             continue
         print(f"  [PASS] {g}: {len(labelled)} finding(s) proposed")

@@ -43,7 +43,7 @@ p = _write([
     ["No.", "Address", "Town（城镇）", "Postcode", "Total Size (sq m)",
      "Type of build建筑类型", "Cross Dock?是否有交叉码头", "24/7",
      "Total No. Doors总计数量", "Comments", "Map地图", "备注", "Landlord房东"],
-    [1, "100 Example Road", "Northampton", "NN17 3JG", 61262,
+    [1, "100 Example Road", "Northampton", "QX41 9TN", 61262,
      "Second hand", "Yes", "Yes", 75, "internal note text", "Map", "flagged",
      "Acme REIT"],
 ])
@@ -52,7 +52,7 @@ rec = res["records"][0]
 
 # 1) new first-class homes
 check("address", rec.get("address") == "100 Example Road")
-check("postcode", rec.get("postcode") == "NN17 3JG")
+check("postcode", rec.get("postcode") == "QX41 9TN")
 check("buildtype", rec.get("buildType") == "Second hand")
 
 # 2) open capture: data columns become top-level scalars under derived keys

@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """enrich.py - Stage 3. OPTIONAL, broker-opt-in enrichment of canonical.json.
 
-  --geocode : fill missing lat/lng from the city (Nominatim, cached) with
-              coordsApprox=true; also reverse-geocodes the country code from the
-              result and fills an unknown ('??') country - so any geography works
-              without a region-specific city index. Offline -> POI-library city
-              centroid (CEE seed). Needed for the map view.
+  --geocode : fill missing lat/lng from the record's STATED POSTCODE where it states one
+              (Nominatim structured query, cached at locality level - D9; for GB, a code
+              Nominatim genuinely does not hold falls back to the ONS/Royal Mail national
+              register at api.postcodes.io - D9b), else from the
+              city (Nominatim, cached) - both with coordsApprox=true; also reverse-geocodes
+              the country code from the result and fills an unknown ('??') country - so
+              any geography works without a region-specific city index. Offline ->
+              bundled gazetteer / POI-library city centroid. A locality-level answer may
+              replace an approximate town pin on a warm work dir (D10); a coordinate the
+              source itself stated is never moved. Needed for the map view.
   --pois    : discover the GENUINE nearest port/airport/rail/border/city to each
               located property live from OSM/Overpass (cached), replacing the
               merge-seeded library (which is only the offline fallback). A type
@@ -90,23 +95,165 @@ def _coords_cc(val):
     return (None, "")
 
 
-def _cache_lookup(cache: dict, city: str, country: str):
-    """Find a cached geocode for this city: exact 'city|country' key first. The cross-country
-    prefix fallback (any entry for the same city under a DIFFERENT/unknown country) is taken
-    ONLY when this property's country is itself UNKNOWN - so a cache the orchestrator seeded
-    online as 'city|es' is still found when the property is still '??' (the sandbox-offline /
-    WebFetch pattern), but a KNOWN country never adopts a wrong-country cache entry
-    (bug #5: 'Toledo|ES' must not resolve to a cached 'Toledo|US')."""
-    hit = cache.get(f"{city}|{country}".lower())
-    if hit is not None:
-        return _coords_cc(hit)
+def _geo_key(city: str, country: str, code: str = "") -> str:
+    """The geocode cache key, and the ONLY place its shape is decided. (G1)
+
+    TWO LEVELS, distinguished by segment count:
+      * CITY     'city|country'        - the shape every cache in the wild already has,
+                                         including the read-only seed in reference/ and every
+                                         key `web_enrich.py` writes.
+      * LOCALITY 'city|country|code'   - the most specific locality the RECORD ITSELF states
+                                         (`_locality_code`), appended as a THIRD segment.
+
+    WHY THE CITY LEVEL IS A PREFIX OF THE LOCALITY LEVEL, rather than the code leading the
+    key. `_cache_lookup_key`'s unknown-country fallback matches on 'city|', so a locality key
+    that did not start with the city would drop straight out of that scan; a code-first key
+    would additionally make every legacy entry unfindable. The shape therefore only ever GROWS
+    to the RIGHT, and a reader that knows nothing about codes still resolves every key it
+    always did. This is the KEY-side of the same tolerance `_coords_cc` already gives the
+    VALUE, and it is deliberate rather than incidental: caches in the wild are city-keyed and
+    a change that orphaned them would have silently re-geocoded every existing project.
+
+    NO COUNTRY-SPECIFIC PARSING HAPPENS HERE. `code` arrives already normalised for equality
+    by `_locality_code`; this function only lower-cases the whole key, exactly as the
+    city-level key has always been lower-cased. `city` is deliberately NOT stripped, because
+    the city-level key never was, and a cache written yesterday must still be found today."""
+    base = f"{city}|{country}".lower()
+    return f"{base}|{code}".lower() if code else base
+
+
+def _key_code(k: str) -> str:
+    """The LOCALITY segment of a cache key, or "" for a city-level key. Every key in every
+    cache that exists today is city-level, so this returns "" for all of them - which is what
+    makes `_cache_lookup_key`'s scan byte-identical on a cache that carries no codes."""
+    parts = str(k).split("|", 2)
+    return parts[2] if len(parts) > 2 else ""
+
+
+_STATED_CODE = None  # memoised match._stated_postcode (lazy - see _locality_code)
+
+
+def _locality_code(p: dict) -> str:
+    """The most specific locality the RECORD ITSELF states, normalised for equality, or "" when
+    it states none - which is the ordinary case in most markets and in EVERY corpus that quotes
+    no postal codes at all. With "" everywhere, every key built below collapses to the
+    city-level key and this whole layer is inert rather than degraded.
+
+    DELEGATED to `match._stated_postcode` rather than re-implemented, because that reader is
+    already this skill's ONE answer to "what code does this record state": whitespace removed,
+    upper-cased, nothing else touched; a sentinel (tbd, n/a, ...) read as ABSENCE through the
+    shared `looks_unknown`; a numeric cell accepted (a numeric-postal-code market stores the
+    code as a number); and - the load-bearing part - NO country-specific parsing, because an
+    outward/inward split is a fact about one country and an undivided run of digits about
+    several others. A private copy here would be the fifth copy `normalize.looks_unknown`
+    warns about, and the copy that drifted would silently split one town cache in two, or fuse
+    two localities the source printed as different.
+
+    Imported LAZILY and memoised: `import match` costs a measured ~86 ms with `normalize`
+    already warm, against a stage that sleeps 1.1 s per live geocode by usage policy. It is
+    NOT gated on whether the corpus states any codes, because that gate would need a private
+    copy of `match._POSTCODE_FIELDS` - the same drift, one field further out."""
+    global _STATED_CODE
+    if _STATED_CODE is None:
+        import match as _MM
+        _STATED_CODE = _MM._stated_postcode
+    return _STATED_CODE(p)
+
+
+def _cache_lookup_key(cache: dict, city: str, country: str, code: str = "") -> str:
+    """WHICH cache entry answers this lookup, or "" for a miss - the resolution ORDER, once.
+    `_cache_lookup` reads the value at this key; a caller that must know HOW SPECIFIC the
+    answer was reads the key itself (`_key_code`). Two views of ONE resolution, the same split
+    `_region_labels_cache` / `_region_labels_answered_keys` keep for the same reason: the
+    answer and its provenance are different questions, and a second private walk of the cache
+    would drift from this one.
+
+    ORDER, most specific first:
+      1. the LOCALITY key 'city|country|code' - only when the record states a code, and only
+         when that entry actually carries a coordinate;
+      2. the CITY key 'city|country' - the coarse fallback (see below);
+      3. (UNKNOWN country only) the cross-country prefix scan: locality entries for the same
+         city and the same code first, then city-level ones.
+
+    WHERE THE COARSE FALLBACK IS LEGITIMATE, AND WHERE IT MUST NOT APPLY. Step 2 is a READ of
+    a town-level coordinate to fill a property that has no coordinate at all. That is exactly
+    what this stage has always done, the property is already labelled `coordsApprox: true`,
+    and refusing it would strip the map of every pin in every market that quotes codes - a
+    regression wearing a fix's clothes. What must NEVER happen is the WRITE-BACK: a town-level
+    answer served through step 2 must not be persisted under the LOCALITY key. Persisting it
+    would (a) assert that the geocoder answered for that locality when it answered for the
+    town, (b) lock every property in the town onto ONE identical pin with no slot left for a
+    better answer, and (c) make that permanent, because `web_enrich.plan` / `_chain_spec`
+    treat any key PRESENT in the cache as settled and never re-ask it. That is precisely the
+    "two properties in one town still get the same pin, and you have changed nothing" trap.
+
+    So every TOWN-level writer in this file keys on the CITY level, which is the level its
+    answer is actually at: a city gazetteer centroid, a city-NAME Nominatim hit, or a
+    no-such-place memo about a city NAME. The locality level is written by exactly THREE
+    sources, each of which actually answered FOR THAT LOCALITY: an operator seed
+    (`seed_geocode.py`, whose rows may carry a postcode), the web-enrichment round
+    (`web_enrich.py` emits a postcode request keyed on the locality key and `ingest` writes
+    the answer back under it), and `geocode()`'s own postcode-first step (D9), which asks the
+    geocoder for the STATED POSTCODE and persists that answer - a pin, or a negative memo -
+    under the locality key. Until D9 there was no writer at all here, and the reader below
+    resolved a level nothing ever filled.
+
+    A LOCALITY ENTRY WITH NO COORDINATE FALLS THROUGH to step 2 rather than answering. A
+    negative memo means "the geocoder was asked for this postcode and returned no such place",
+    and a locality that did not resolve should still get its town centroid - the same answer
+    it gets today. Only a locality entry carrying a coordinate may outrank the town. The
+    negative memo is deliberately a LOCALITY write, and it makes exactly ONE claim, the same
+    claim the city-level memo makes (B02): the web-enrichment round must not re-emit a request
+    the geocoder has already answered, or one unknown code would keep the run at exit 8
+    forever. It is NOT a claim on the slot. The LIVE helper re-asks it whenever it can reach
+    the geocoder, exactly as the city-level guard re-asks a city memo, because "no such place"
+    is a fact about the geocoder's coverage on the day and a postcode can be added to OSM
+    later; an operator seed overwrites it; and a web-round answer written under the same key
+    replaces it. And it is written ONLY from a real, successful "no such place" answer (an
+    HTTP 200 with an empty array): a transport failure - unreachable, blocked, rate-limited,
+    an error envelope - writes NOTHING at this level, because in Cowork the helper-side
+    network is dead by design and a negative persisted from that would have occupied every
+    locality slot in the corpus on every sandboxed run, which is the D9/D10 defect re-created
+    (the D9 repair). That is the one write at this level that carries no coordinate, and the
+    fall-through above is what makes it safe.
+
+    STEPS 2 AND 3 ARE UNCHANGED from the city-only reader, including the KNOWN-country cut-off
+    that keeps bug #5 closed (Toledo|ES must never resolve to a cached Toledo|US) and the
+    deliberate cross-country scan for an UNKNOWN one (the orchestrator seeds city|es online
+    while the property is still ??  - the sandbox-offline / WebFetch pattern). With no code
+    stated, step 1 and the locality half of step 3 cannot fire at all, `_key_code` is "" for
+    every legacy key, and this returns exactly the entry the old reader returned."""
+    if code:
+        lk = _geo_key(city, country, code)
+        lv = cache.get(lk)
+        if lv is not None and _coords_cc(lv)[0] is not None:
+            return lk
+    ck = _geo_key(city, country)
+    if cache.get(ck) is not None:
+        return ck
     if not _is_unknown_cc(country):
-        return None, ""          # KNOWN country + exact miss -> honest miss, never cross-country
+        return ""                # KNOWN country + exact miss -> honest miss, never cross-country
     pref = f"{city.strip().lower()}|"
-    for k, v in cache.items():
-        if k.startswith(pref):
-            return _coords_cc(v)
-    return None, ""
+    lcode = code.lower()
+    if lcode:
+        for k in cache:
+            if k.startswith(pref) and _key_code(k) == lcode:
+                return k
+    for k in cache:
+        if k.startswith(pref) and not _key_code(k):
+            return k
+    return ""
+
+
+def _cache_lookup(cache: dict, city: str, country: str, code: str = ""):
+    """The cached geocode for this record as `(latlng, cc)`, or `(None, "")` on a miss.
+    `_cache_lookup_key` decides WHICH entry answers and records why; this reads its value
+    through `_coords_cc`, so both cached VALUE shapes (a bare coordinate pair and a dict) and
+    a negative memo are tolerated exactly as before. `code` is the most specific locality the
+    record states (`_locality_code`) and defaults to "" so every existing three-argument
+    caller, and every corpus that quotes no codes, behaves exactly as it did."""
+    k = _cache_lookup_key(cache, city, country, code)
+    return _coords_cc(cache[k]) if k else (None, "")
 
 
 _POI_LIB_CACHE: dict | None = None  # parse poi_library.json once per process (read-only)
@@ -267,18 +414,319 @@ def _update_ledger(ledger_path: Path, updates: list[dict]) -> None:
 
 
 def _is_unknown_cc(v) -> bool:
-    return not str(v or "").strip() or str(v).strip().lower() in ("??", "tbd", "—", "none")
+    """Absence test for a country / city value, through the ONE shared predicate (contract C5).
+
+    Kept as a named wrapper because web_enrich imports it by this name. Until v41 it was a
+    private four-member literal: it read 'tbc', 'n/a' and '-' as REAL places (so a tracker's
+    "n/a" country reached the geocoder as a country) and deleted a stated "None". The family is
+    normalize.UNKNOWN_FORMS; the multilingual market phrases it adds ("a consultar", ...) are
+    never a place name, so widening here costs nothing and closes the drift."""
+    # CODE-scoped, not value-scoped: this test judges a country CODE, and three members of the
+    # shared unknown family are also assigned ISO alpha-2 codes. Using the value-scoped reader
+    # here is what moved those three countries to unknown in v41. See normalize.looks_unknown_code.
+    return C._N.looks_unknown_code(v)
 
 
 def _geocode_one(requests, city: str, country_cc: str):
     """One Nominatim lookup -> ([lat,lng], 'CC') or (None, ''). country_cc (ISO-2)
-    biases the search; '' searches globally."""
+    biases the search; '' searches globally.
+
+    THREE OUTCOMES, AND ONLY THE FIRST TWO ARE ANSWERS. This is the same rule `_geocode_postcode`
+    states in full (D9), applied here because this function had the flaw that repair was written
+    for: it read `.json()` with no status check and no type check, so a body that was not an
+    answer could still be returned as one. An empty JSON object from a rate-limited or blocked
+    endpoint is falsy, so `not arr` was True and the caller memoised a NEGATIVE about the city
+    name (B02) - "no such place" persisted from a transport failure. Because the web-enrichment
+    round treats any present cache key as settled and never re-asks it, one throttled pass could
+    settle every city in the corpus on a wrong answer. A non-2xx status and a non-list body now
+    RAISE, which is what the caller's circuit breaker already expects from this function: stop
+    asking this pass and say how to recover, rather than write a fiction into the cache."""
     params = {"q": city, "format": "json", "limit": 1, "addressdetails": 1}
     if country_cc:
         params["countrycodes"] = country_cc.lower()
-    arr = requests.get("https://nominatim.openstreetmap.org/search",
-                       params=params, headers=UA, timeout=12).json()
+    r = requests.get("https://nominatim.openstreetmap.org/search",
+                     params=params, headers=UA, timeout=12)
+    r.raise_for_status()
+    arr = r.json()
+    if not isinstance(arr, list):
+        raise ValueError("nominatim body is not a JSON array - not an answer, not memoised")
     if not arr:
+        return None, ""
+    cc = str((arr[0].get("address", {}) or {}).get("country_code", "")).upper()
+    return [float(arr[0]["lat"]), float(arr[0]["lon"])], cc
+
+
+def _postcode_query(postcode: str, country_cc: str) -> dict:
+    """The Nominatim STRUCTURED query for a stated postal code, as the parameter dict both
+    the live caller (`_geocode_postcode`) and the browser bundle (`web_enrich._chain_spec` /
+    `cmd_plan`) build their request from. ONE place, so the URL the operator's browser fetches
+    is the same request the helper would have made, and the answer lands in the same cache slot.
+
+    `postalcode` is Nominatim's structured-search field: it matches the code as a POSTCODE and
+    returns nothing for one it does not know, rather than degrading to the nearest place name
+    the way a free-text `q=` does. `countrycodes` scopes it, because a postal code is only
+    unambiguous WITHIN a country (several national formats share a five-digit shape), which is
+    also why the callers never build this query for an unknown country. `postcode` arrives as
+    `_locality_code` normalises it (whitespace removed, upper-cased); Nominatim's per-country
+    postcode patterns treat the internal space as optional, so the spaceless form matches."""
+    return {"postalcode": postcode, "countrycodes": country_cc.lower(), "format": "json",
+            "limit": 1, "addressdetails": 1}
+
+
+# ---------------------------------------------------------------------------------------------
+# THE GB NATIONAL POSTCODE REGISTER - a FALLBACK behind Nominatim, never the primary. (D9b)
+# ---------------------------------------------------------------------------------------------
+# api.postcodes.io is a free, keyless HTTP mirror of the ONS Postcode Directory - the ONS/Royal
+# Mail national register itself, not a crowd-sourced gazetteer. It is named in the ledger as
+# BOTH (register and mirror) because a reader auditing a pin needs to know which body asserted
+# the coordinate AND which service actually served it.
+_REGISTER_HOST = "https://api.postcodes.io"
+_REGISTER_FILE = "api.postcodes.io (ONS/Royal Mail GB national postcode register)"
+# A URL-PATH SAFETY GATE, NOT A POSTCODE VALIDATOR - do not read it as one. `_locality_code`
+# hands us whatever the SOURCE printed, upper-cased with whitespace removed and nothing else
+# touched (no country-specific parsing, on purpose - see its docstring). A cell holding
+# "SEE/BROCHURE" or "N-A" would otherwise be pasted straight into a URL path and could walk to a
+# different endpoint entirely. Anything that is not a plain alphanumeric run of GB-postcode
+# length is not a GB postcode, so it is never asked. Real normalised codes are 5-7 characters
+# ("M11AA" .. "EC1A1BB"); 8 is slack, so a malformed-but-harmless code is refused by the
+# register rather than by a guess made here.
+_REGISTER_CODE_OK = re.compile(r"^[A-Z0-9]{5,8}$")
+# WHICH REGISTER ANSWERED THE LAST `_geocode_postcode`, keyed 'CC|CODE' -> 'live'|'terminated'.
+#
+# WHY A MODULE-LEVEL NOTE RATHER THAN A THIRD RETURN VALUE. `_geocode_postcode` returns a
+# two-tuple and that arity is load-bearing in two places outside this function: every geocode
+# eval in the tree stubs it with a two-tuple lambda (d9_postcode_locality_test, and
+# region_locality_cache_test), and the caller unpacks it into exactly two names. Widening the
+# tuple to carry provenance would break both for a value that only ONE caller
+# (`_postcode_first`'s two call sites) ever reads, one statement later. The note is written only
+# on a register HIT and CONSUMED by `_postcode_src` one statement later, and `_geocode_postcode`
+# clears this code's slot before it asks, so the label always describes the call that just
+# happened rather than an earlier one. ONE EXCEPTION, stated because this file's comments are
+# read as guarantees: if the cache write between the hit and the consume raises, the note is
+# stranded for the rest of the pass. That is benign rather than wrong - the next
+# `_geocode_postcode` for that key clears the slot before asking, and the circuit breaker stops
+# further lookups anyway - so no ledger row can be built from a stale label, but "cannot go
+# stale" would be too strong a word for it.
+#
+# WHERE THIS FALLBACK DOES NOT RUN AT ALL, said plainly because a sibling defect was exactly
+# this. The register is reached through helper-side `requests`, so it fires only on a pass whose
+# helpers have network. In Cowork they do not, by design: geocoding goes out through
+# `web_enrich`'s browser bundle, and `cmd_ingest` memoises an empty Nominatim array with no
+# register leg. So in that sandbox D9b contributes nothing and a GB code Nominatim misses stays
+# unresolved. Teaching the browser bundle to ask the register too is a real extension and is
+# deliberately NOT taken here (it widens a shared contract for one market), but the gap it leaves
+# must be visible rather than discovered: the geocode gap line says so, and says a networked
+# re-run may still resolve the code.
+#
+# DELIBERATELY NOT PERSISTED to geocode_cache.json. The cache entry shape {'latlng','cc'} is
+# compared for equality by evals and read by `web_enrich`, so a third key would be a change to a
+# shared contract for no gain: on a warm re-run the pin is served from the cache and
+# `_coord_locator`'s "cache" branch already says so honestly ("seeded geocode cache ... locality
+# ..."), which is the truthful provenance for that pass - the register was not asked.
+_REGISTER_PROVENANCE: dict = {}
+
+
+def _register_key(postcode: str, country_cc: str) -> str:
+    """The `_REGISTER_PROVENANCE` slot for one lookup. Built from the SAME two arguments
+    `_geocode_postcode` was called with, so the writer and the reader cannot drift apart.
+
+    The code is normalised to the SPACELESS upper-case form `_postcode_register` asks the URL
+    with, and not merely stripped. In practice both sides are handed `_locality_code`'s output,
+    which is already spaceless, so today the two spellings coincide - but if a caller ever passed
+    "WA5 5TN" the note would be filed under one key and looked up under another, and the silent
+    consequence is not a crash: it is a register-answered pin carrying a ledger row that credits
+    Nominatim for a code Nominatim does not hold. A wrong provenance row is worse than a missing
+    one, so the two spellings are collapsed here rather than assumed equal."""
+    code = str(postcode or "").strip().upper().replace(" ", "")
+    return f"{str(country_cc or '').strip().upper()}|{code}"
+
+
+def _is_gb(country_cc) -> str:
+    """'GB' when this country is Great Britain / Northern Ireland, else "" - the ONE gate on the
+    register, so no other market pays a wasted round trip for a register that only holds GB.
+
+    'UK' is accepted alongside 'GB'. `normalize.country_iso` maps UK->GB upstream, so in a
+    well-formed corpus only 'GB' arrives; but if a raw 'UK' ever reaches here the NOMINATIM leg
+    is already broken for it (`countrycodes=uk` is not an ISO code and matches nothing), which is
+    precisely the case the register would rescue. Refusing the alias here would turn a rescuable
+    record into a silent town-centre pin, so the two-character widening is the honest gate."""
+    return "GB" if str(country_cc or "").strip().upper() in ("GB", "UK") else ""
+
+
+def _postcode_register(requests, postcode: str):
+    """The GB national register's coordinate for a postcode -> ([lat,lng], 'live'|'terminated')
+    or (None, ""). NEVER raises. GB only, and only ever called on Nominatim's genuine negative.
+
+    WHY THIS EXISTS, AND WHAT IT IS NOT. It is NOT the D9 rescue, and describing it as one would
+    be a fiction the ledger would then repeat. The D9 defect was motivated by NN6 7ES (the DIRFT
+    450 site that was mis-pinned to a town centre), and that code RESOLVES through Nominatim
+    today - measured, `_geocode_postcode(requests, 'NN67ES', 'GB')` returns
+    ([52.3478507, -1.1643983], 'GB'), 17 m from the ONS coordinate for it - so it never reaches
+    this function at all. What was measured instead is a narrower COVERAGE gap: Nominatim's
+    structured `postalcode` search returns a genuine empty array for GB codes the national
+    register knows perfectly well. Three measured misses: WA5 5TN, BT1 2FF and BT28 3AX. Two of
+    the three are Northern Ireland, which is the shape of the gap - OSM's GB postcode coverage is
+    thinner there - and the third turned out to be a code retired in 2001. Before this fallback
+    each of those properties silently fell back to a TOWN-CENTRE pin, which is the same
+    wrong-county / shared-pin failure class D9 exists to prevent, just reached by a different
+    route.
+
+    THE TWO ENDPOINTS, AND THEIR MEASURED SHAPES (probed live against the service):
+      * GET /postcodes/<code>            -> 200 {"status":200,"result":{... "latitude":54.601212,
+                                            "longitude":-5.927817, "quality":1 ...}}   a LIVE code
+                                        -> 404 {"status":404,"error":"Postcode not found"}
+      * GET /terminated_postcodes/<code> -> 200 {"status":200,"result":{"postcode":"WA5 5TN",
+                                            "year_terminated":2001,"month_terminated":1,
+                                            "latitude":53.414873,"longitude":-2.611994}}
+                                        -> 404 for a code that never existed
+    Latitude and longitude are top-level floats on `result` in BOTH shapes, which is why one
+    reader serves both. The live 404 body sometimes ALSO carries a `terminated` block with the
+    same pair; it is deliberately not read, because relying on an undocumented extra key in an
+    ERROR body would make a claim rest on the least stable part of the response, and the second
+    round trip only happens on a code Nominatim already missed.
+
+    A 200 IS NOT AUTOMATICALLY A COORDINATE - the case that would have shipped a fiction. Codes
+    outside the ONS grid return HTTP 200 with `"latitude": null, "longitude": null` and
+    `quality: 9`: measured on Guernsey (GY1 1WR) and Jersey (JE2 4UH), both of which a UK
+    industrial corpus can plausibly contain. A reader that trusted the status code would have
+    written a null pair onto a property card, or crashed the stage. Every field is therefore
+    coerced through `float()` inside the try, and the result is range-checked, so a null, a
+    string, a missing key or a nonsense number all land on the same answer as a network failure:
+    no claim.
+
+    FAILURES ARE SWALLOWED, NOT RAISED, and that is the whole safety argument for adding a
+    second network dependency to this stage. The value being enriched here is a Nominatim
+    negative that is ALREADY a valid, complete answer - the caller is entitled to memoise it and
+    fall through to the town-level path. So a register that is down, blocked, slow, rate-limited,
+    moved, or newly returning a shape we do not recognise must cost exactly nothing: the caller
+    gets the same (None, "") it would have got before this function existed, and the stage's
+    failure surface is unchanged. `_geocode_postcode`'s three-outcome contract stays byte for
+    byte intact because nothing in here can raise into it. The one visible cost of an unreachable
+    register is latency - a second 12 s timeout, GB only, only on a code Nominatim missed.
+
+    NO COURTESY SLEEP HERE, deliberately. The 1.1 s in `_postcode_first`'s `finally` is
+    Nominatim's usage policy (max 1 request/second to nominatim.openstreetmap.org) and it is
+    charged per Nominatim request, not per property. api.postcodes.io is a different host with no
+    such policy, and these calls sit INSIDE the same iteration, before that `finally` runs - so
+    they lengthen the gap between consecutive Nominatim requests and can never shorten it. Adding
+    a second sleep would slow every GB run for a courtesy nobody asked for."""
+    code = str(postcode or "").strip().upper().replace(" ", "")
+    if not _REGISTER_CODE_OK.match(code):
+        return None, ""
+    try:
+        r = requests.get(f"{_REGISTER_HOST}/postcodes/{code}", headers=UA, timeout=12)
+        kind = "live"
+        if int(getattr(r, "status_code", 0)) == 404:
+            # A LIVE MISS IS NOT A REGISTER MISS. A code retired since the brochure was written
+            # is still real ONS data about a real place - it is exactly how WA5 5TN behaves - so
+            # the retired register is asked before we give up. What changes is the PROVENANCE,
+            # not the confidence in the coordinate: `_coord_locator` says the code is retired.
+            r = requests.get(f"{_REGISTER_HOST}/terminated_postcodes/{code}",
+                             headers=UA, timeout=12)
+            kind = "terminated"
+        if int(getattr(r, "status_code", 0)) != 200:
+            return None, ""          # 404 on both = the register does not hold it; 5xx = down
+        res = r.json().get("result")
+        lat, lng = float(res["latitude"]), float(res["longitude"])
+    except Exception:
+        return None, ""              # unreachable, non-JSON, null coords, moved shape: no claim
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0):
+        return None, ""              # a number, but not a coordinate - still not an answer
+    return [lat, lng], kind
+
+
+def _postcode_src(postcode: str, country_cc: str) -> str:
+    """WHICH source answered the last `_geocode_postcode` for this code, as the `src` token
+    `_coord_locator` and the country-fill branch turn into ledger provenance:
+    'postcode' (Nominatim), 'postcode-register-live' or 'postcode-register-terminated'.
+
+    CONSUMES the note (pop, not get). A note exists only when the register answered, and it is
+    read exactly once, one statement after the lookup that wrote it - so a note can never be
+    inherited by the next property that happens to state the same code in another town."""
+    kind = _REGISTER_PROVENANCE.pop(_register_key(postcode, country_cc), "")
+    return f"postcode-register-{kind}" if kind else "postcode"
+
+
+def _geocode_postcode(requests, postcode: str, country_cc: str):
+    """One Nominatim lookup of a STATED POSTAL CODE -> ([lat,lng], 'CC') or (None, ''). (D9)
+
+    WHY THIS EXISTS. Not one of the seven UK industrial decks on the measured run printed a
+    coordinate - the only location handle in the whole corpus was the postcode, which is normal
+    for that market - so every property was geocoded from the CITY NAME to a town centroid.
+    Three failures came out of that, all found by blind human reviewers and none by a gate:
+    a site whose POSTAL town sits in the neighbouring county was pinned 9 km away across the
+    county line, bound to the wrong NUTS-3 area, and shipped that area's entire workforce panel;
+    a second property was pinned BYTE-IDENTICAL to its city's POI coordinate and printed a
+    "0 min / 0.0 km" self-distance; and two sites on opposite sides of a county line shared one
+    pin. Where a record states a postcode, this asks the geocoder for THAT, not for the town.
+
+    The same signature shape as `_geocode_one` (module-level, `requests` injected) so an eval
+    can stub it the way every existing geocode eval stubs `_geocode_one`, and so the network is
+    never touched from a test. A separate function rather than a keyword on `_geocode_one`
+    because evals in the wild stub that one with a fixed three-positional lambda.
+
+    THREE OUTCOMES, AND ONLY THE FIRST TWO ARE ANSWERS (the D9 repair). A non-empty array is a
+    pin; an EMPTY array on an HTTP 200 is a real, successful "no such place", the one answer
+    the caller may memoise as a negative; everything else RAISES - a non-2xx status (blocked,
+    rate-limited, down) and a body that is not a JSON array (Nominatim's error envelope is a
+    dict). The distinction matters because the caller persists a negative under the LOCALITY
+    key and the web-enrichment round treats any present key as settled: a transport failure
+    memoised as "no such postcode" would have settled every stated code in the corpus on every
+    Cowork run, where the helper-side network is dead by design. Raising is also what the
+    caller's circuit breaker already expects from `_geocode_one`, so the failure path is the
+    established one (stop asking this pass, print how to recover), not a second convention.
+    `web_enrich.cmd_ingest` applies the same rule to the browser's answer ("nominatim body is
+    not a JSON array" is skipped, never memoised).
+
+    AND THEN, FOR GB ONLY, A NATIONAL-REGISTER FALLBACK BEHIND THAT NEGATIVE. (D9b) Nominatim
+    misses GB codes the ONS register holds - WA5 5TN, BT1 2FF and BT28 3AX, all measured, two of
+    them Northern Ireland - and each of those properties was silently dropping to a TOWN-CENTRE
+    pin. `_postcode_register` is asked in the SECOND branch only, and the placement is the whole
+    design, not a convenience:
+
+      * NOT THE PRIMARY, because the three-outcome contract above is what makes this function
+        safe, and it is a contract about NOMINATIM's response. Asking the register first would
+        mean the negative the caller memoises is a register negative while the circuit breaker,
+        `web_enrich`'s browser handoff and `cmd_ingest`'s ingest rule all still reason about
+        Nominatim - two sources answering into one cache slot under one set of rules written for
+        the other. Behind the negative, the contract is untouched: the pin branch, the
+        `raise_for_status()` and the non-list `ValueError` are byte for byte what they were.
+      * ONLY BEHIND A GENUINE NEGATIVE, never behind a raise. A raise means we do not KNOW
+        whether the code exists, and the established answer to not knowing is to stop the pass,
+        not to ask somebody else and turn an unknown into a claim.
+      * AND IT CANNOT ADD A FAILURE MODE: `_postcode_register` swallows everything and returns
+        (None, "") for a register that is down, blocked or shaped differently, so the outcome is
+        the same negative the caller would have memoised anyway. That negative is a valid answer
+        already; the register can only improve it, never break it.
+
+    This is a COVERAGE improvement, not the D9 rescue. NN6 7ES - the DIRFT 450 code whose
+    mis-pinning motivated D9 - resolves through the Nominatim leg above and never reaches the
+    fallback (measured: ([52.3478507, -1.1643983], 'GB'), 17 m from the ONS coordinate)."""
+    # Clear this code's provenance slot BEFORE asking, so the label `_postcode_src` reads back
+    # can only have been written by THIS call. Costs nothing on the overwhelmingly common path
+    # (no note is ever written unless the register answers) and removes the one way a stale
+    # label could survive into a later property's ledger row.
+    _REGISTER_PROVENANCE.pop(_register_key(postcode, country_cc), None)
+    r = requests.get("https://nominatim.openstreetmap.org/search",
+                     params=_postcode_query(postcode, country_cc), headers=UA, timeout=12)
+    r.raise_for_status()
+    arr = r.json()
+    if not isinstance(arr, list):
+        raise ValueError("nominatim body is not a JSON array - not an answer, not memoised")
+    if not arr:
+        # THE GENUINE "no such place" - the one outcome the caller may memoise, and the one
+        # place the national register is asked (D9b). GB only; every other market returns here
+        # without a round trip, exactly as before.
+        if _is_gb(country_cc):
+            rll, kind = _postcode_register(requests, postcode)
+            if rll:
+                _REGISTER_PROVENANCE[_register_key(postcode, country_cc)] = kind
+                # 'GB' is a fact about the ENDPOINT, not an inference: api.postcodes.io serves
+                # the GB register and nothing else, and it is only reached through `_is_gb`.
+                # The register's own `country` field is a nation name ("Northern Ireland",
+                # "Scotland"), not an ISO code, and the terminated shape carries no country at
+                # all - so reading it would mean inventing the mapping here.
+                return rll, "GB"
         return None, ""
     cc = str((arr[0].get("address", {}) or {}).get("country_code", "")).upper()
     return [float(arr[0]["lat"]), float(arr[0]["lon"])], cc
@@ -431,12 +879,88 @@ def resolve_map_links(canonical: dict, gaps: list, updates: list | None = None) 
     return done
 
 
+def _coord_locator(src: str, city: str, code: str = "", from_centroid: bool = False):
+    """(source_file, source_type, locator) for a geocoded coordinate's ledger rows - the ONE
+    vocabulary for where a pin came from, shared by the fill of an empty coordinate and the
+    displacement of an approximate one (D10), so the same answer never carries two spellings.
+
+    `code` is the LOCALITY segment of the cache key that answered (`_key_code`), "" for a
+    city-level answer - and with "" every string below is byte-identical to the legacy locator,
+    which a corpus that quotes no postcodes still gets. A locality-level answer NAMES THE
+    POSTCODE: two properties in one town holding two different pins must not carry identical
+    provenance rows, or the audit artefact cannot tell the reader where each pin came from (G1),
+    and after D9 the reader must also be able to see that the pin is the postcode's, not the
+    town's. Every locator still says `(coordsApprox)`, because it still is - see the
+    `coordsApprox` decision in `geocode()`."""
+    if from_centroid:
+        return "assets/poi_library.json", "poi_library", f"city centroid '{city}' (coordsApprox)"
+    if src in ("gazetteer", "gazetteer-dominant"):
+        detail = "city gazetteer" if src == "gazetteer" else "city gazetteer (dominant-country)"
+        return "assets/cities_dataset.json", "dataset", f"{detail} '{city}' (coordsApprox)"
+    if src == "cache":
+        if code:
+            return ("geocode_cache.json", "cache",
+                    f"seeded geocode cache '{city}' locality '{code.upper()}' "
+                    f"(pin of the stated postcode; coordsApprox)")
+        return "geocode_cache.json", "cache", f"seeded geocode cache '{city}' (coordsApprox)"
+    if src == "postcode":
+        return ("Nominatim (OSM geocoder)", "web",
+                f"geocode of the stated postcode '{code.upper()}' in '{city}' (coordsApprox)")
+    if src in ("postcode-register-live", "postcode-register-terminated"):
+        # THE LEDGER NAMES THE REGISTER THAT ANSWERED, AND SAYS WHEN THE CODE IS RETIRED. (D9b)
+        # Both halves are load-bearing. A reader must be able to see that this pin came from the
+        # national register rather than from OSM, because the two disagree about which codes
+        # exist and that is the only reason this row is not a town centroid. And a retired code
+        # is real ONS data whose coordinate was FROZEN at termination - the unit itself no longer
+        # receives post, so the surrounding addressing may since have been redrawn. Stating that
+        # in the locator is the Data Honesty Standard applied to a source that is genuine but
+        # dated; hiding it behind the same string as a live code would overstate it.
+        retired = ("; the code is RETIRED and this is the coordinate frozen at its termination"
+                   if src.endswith("terminated") else "")
+        return (_REGISTER_FILE, "web",
+                f"geocode of the stated postcode '{code.upper()}' in '{city}' via the GB national "
+                f"postcode register, which OSM/Nominatim does not hold{retired} (coordsApprox)")
+    return "Nominatim (OSM geocoder)", "web", f"geocode '{city}' (coordsApprox)"
+
+
 def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
     """Fill missing lat/lng and reverse-geocode an unknown country. A bare city name
     is globally AMBIGUOUS (a Spanish town can also exist in Latin America/India), so
     after a first pass we take the dataset's dominant country and RE-QUERY any
     unknown-country property that landed as a far geographic outlier, constrained to
-    that country. Mode-based - no hardcoded country, works for any geography."""
+    that country. Mode-based - no hardcoded country, works for any geography.
+
+    WHERE A RECORD STATES A POSTCODE, THE POSTCODE IS GEOCODED, NOT THE TOWN (D9), and its
+    answer is persisted under the LOCALITY cache key `city|country|code` - the writer that
+    `_cache_lookup_key`'s reader was built for and that nothing filled. A locality-level answer
+    may also REPLACE a pin this function itself wrote as an approximate town centroid (D10),
+    which is what lets an operator seed, a web-round answer or a fresh postcode geocode take
+    effect on a warm work dir with a plain re-run; a coordinate the source stated is never moved.
+
+    THE `coordsApprox` DECISION. A postcode pin is flagged `coordsApprox: true`, the same as a
+    town centroid, on purpose. A postal code is an area, not a building: in a dense format it is
+    a street segment, in a sparse one it can cover a whole rural district, and a large-user or
+    terminated code can centroid to the sorting office. Claiming the pin is the site is the
+    precision-we-do-not-have failure this whole skill exists to prevent, and the flag has three
+    consumers that all want the honest answer: the map draws an approximate pin with a dashed
+    marker and the modal's approximation note (template v34), the Gaps Report discloses it, and
+    `gate_runner.py coord-provenance` checks an approximate pin against the property's own page
+    for a first-party coordinate or map link - which must still beat a postcode centroid, and
+    would be skipped if the flag were false. The LEDGER carries the finer distinction: the
+    locator names the stated postcode (`_coord_locator`), so a reader can tell a postcode pin
+    from a town pin without a new schema field.
+
+    A GB NATIONAL-REGISTER PIN IS `coordsApprox: true` TOO (D9b), and the reasoning is the same
+    one, not a weaker version of it. The ONS coordinate for a postcode unit is the mean of the
+    addresses in that unit snapped to the nearest of them - postcodes.io reports `quality: 1`
+    for exactly that - so it is a unit-level answer, never the building; a large-user code is the
+    organisation's mailroom; and a TERMINATED code's coordinate is frozen at the date it was
+    retired. All three are "an area, not a building", which is the test this flag encodes. The
+    register is a BETTER source than a town centroid, not a more PRECISE kind of thing, and
+    flipping the flag would switch off the three consumers listed above (the dashed marker, the
+    Gaps disclosure and `coord-provenance`'s hunt for a first-party coordinate) for pins that
+    still need every one of them. Where the register answered - and whether the code was retired
+    - is carried by the ledger locator, again with no new schema field."""
     import requests
     import statistics
     import normalize as _NN
@@ -449,6 +973,143 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
     todo = [p for p in props
             if not (isinstance(p.get("lat"), (int, float)) and isinstance(p.get("lng"), (int, float)))]
 
+    def _pinned(p) -> bool:
+        return isinstance(p.get("lat"), (int, float)) and isinstance(p.get("lng"), (int, float))
+
+    def _name(p) -> str:
+        return str(p.get("park") or p.get("name") or "")[:40]
+
+    # THE SECOND WORKLIST: APPROXIMATE PINS A LOCALITY-LEVEL ANSWER MAY REPLACE. (D10)
+    #
+    # `todo` above only ever fills an EMPTY coordinate. That made the locality layer inert on
+    # every warm work dir: `seed_geocode.py` promised that a row carrying a postcode is "the one
+    # way a coordinate finer than a town enters this pipeline", an operator seeded seven of
+    # them, re-ran the same command, and NOTHING changed and NOTHING was printed - the town
+    # centroid already sat in the slot, so the seed was never read. It took `--no-resume --from
+    # merge` (documented nowhere) to rebuild canonical without pins so the seed could land.
+    #
+    # THE RULE. A pin flagged `coordsApprox: true` is, by its own label, a town-level stand-in
+    # written by THIS function. A locality-level coordinate (an operator seed, a web-round
+    # answer, or a live postcode geocode below) is a finer answer to the same question and may
+    # replace it. A coordinate the SOURCE ITSELF stated (`coordsApprox` false or absent - a
+    # tracker column, a brochure's DMS, a followed first-party map link) is NEVER touched: a
+    # geocode does not override what the document says, and that one-way rule is what makes the
+    # displacement safe. Both outcomes are said out loud below, because a correction channel that
+    # reports nothing is the defect being fixed here, not the cure.
+    #
+    # `redo` also carries an approximate pin whose stated postcode has no COORDINATE under the
+    # locality key - never asked, or asked and memoised as "no such place": on a warm dir with a
+    # live network, that is the only route by which the D9 postcode fix reaches a project built
+    # before it existed. A NEGATIVE memo does NOT settle it for the live helper (the D9 repair):
+    # the memo's one job is to stop the web-enrichment round re-emitting the request (B02), and
+    # a postcode can be added to OSM later, so the live path re-asks it exactly as the city-level
+    # guard re-asks a city memo. Offline, `_postcode_first` returns nothing and the pin stays,
+    # byte for byte. An unknown country is never asked (a postal code is only unambiguous within
+    # a country).
+    redo: dict = {}  # id(p) -> normalised stated code, for a pinned-but-approximate property
+    for p in props:
+        if not _pinned(p):
+            continue
+        code = _locality_code(p)
+        if not code:
+            continue  # states no locality: the layer is inert for it, exactly as before
+        city = str(p.get("city", "")).strip()
+        country = str(p.get("country", "")).strip()
+        if not city or _is_unknown_cc(city):
+            continue
+        hit = _cache_lookup_key(cache, city, country, code)
+        loc_ll = _coords_cc(cache[hit])[0] if (hit and _key_code(hit)) else None
+        if loc_ll is not None:
+            if float(loc_ll[0]) == float(p["lat"]) and float(loc_ll[1]) == float(p["lng"]):
+                continue  # already ON the locality pin (the pass after a displacement)
+            if not p.get("coordsApprox"):
+                print(f"NOTE geocode: id={p.get('id')} '{_name(p)}' keeps its stated coordinate: "
+                      f"the cache holds a locality-level pin for its postcode '{code}', but the "
+                      f"property's own source states a precise coordinate (coordsApprox false) "
+                      f"and a geocode never overrides that. If the stated coordinate is wrong, "
+                      f"correct it through work/repairs.json.")
+                continue
+            redo[id(p)] = code
+        elif p.get("coordsApprox") and not _is_unknown_cc(country):
+            redo[id(p)] = code  # no locality PIN yet: absent, or a negative memo to re-ask
+
+    # POSTCODE FIRST. (D9) The one resolution step that writes at LOCALITY level, and the
+    # writer `_cache_lookup_key`'s docstring said was missing ("every WRITER in this file keys on
+    # the CITY level ... the locality level is filled ONLY by an operator seed"). Where the
+    # record states a postal code and its country is known, the geocoder is asked for the
+    # POSTCODE - instead of, not in addition to, the town name: one network round per property,
+    # the same 1.1 s usage-policy sleep, the same circuit breaker on the first failure. Its
+    # answer is an answer ABOUT THAT LOCALITY, so persisting it under the locality key is the
+    # one write-back that asserts exactly the precision it has. A postcode the geocoder does
+    # not know is memoised as a NEGATIVE locality entry, which `_cache_lookup_key` deliberately
+    # falls THROUGH (a locality entry with no coordinate never answers), so the property gets
+    # today's town-level answer by today's path. With no code stated, or no country, this
+    # returns immediately and the whole step is inert - a corpus that quotes no postcodes is
+    # byte-identical to before.
+    #
+    # WHAT THE NEGATIVE MEMO IS, AND IS NOT (the D9 repair). It is written from ONE thing only:
+    # a real, successful "no such place" answer, which `_geocode_postcode` returns as a None
+    # coordinate and RAISES for everything else. A transport failure writes nothing at this
+    # level: in Cowork the helper-side network is dead by design, and a negative persisted from
+    # that would have occupied every locality slot in the corpus, permanently, on every sandboxed
+    # run - the D9/D10 defect re-created. And a memo that IS written is not a claim on the slot.
+    # It stops the web-enrichment round re-emitting the request (`web_enrich._chain_spec` /
+    # `cmd_plan` treat a present key as settled - B02, the exit-8 livelock) and it is the Gaps
+    # Report's evidence that the code was asked; the LIVE helper re-asks it whenever it can reach
+    # the geocoder, exactly as the city-level guard below re-asks a city memo ("a place can be
+    # added to OSM later"), a seed overwrites it, and a web-round answer replaces it. The first
+    # version of this step treated any PRESENT key as settled and so made its own negative
+    # permanent for the pipeline's own channels; that is the asymmetry this comment exists to
+    # stop coming back.
+    #
+    # AND, FOR GB ONLY, THE NEGATIVE IS CHECKED AGAINST THE NATIONAL REGISTER BEFORE IT IS
+    # MEMOISED. (D9b) Nominatim's structured postcode search genuinely misses GB codes the ONS
+    # register holds - WA5 5TN, BT1 2FF, BT28 3AX, measured, two of them Northern Ireland - and
+    # each of those was falling through to the town centroid, which is the D9 failure class
+    # reached by a different route. `_geocode_postcode` therefore asks api.postcodes.io in its
+    # negative branch and returns a pin instead. Nothing here changes: the memo is still written
+    # from a genuine "no such place" ONLY, a transport failure still raises and still writes
+    # nothing, and a register that is unreachable is indistinguishable from one that has never
+    # heard of the code - both leave the negative exactly as it was. This is a COVERAGE fix, not
+    # the D9 rescue: NN6 7ES, the code that motivated D9, resolves through Nominatim and never
+    # reaches the register.
+    _offline_msg = ("geocoder unreachable from this sandbox (blocked/offline) - fetch each "
+                    "city's coordinates with the orchestrator's WebFetch, seed them via "
+                    "`python helpers/seed_geocode.py coords.json --cache-dir <work>` "
+                    "(SKILL.md 'Sandbox offline'), then re-run enrich --geocode")
+
+    def _postcode_first(p, city, country, known, code):
+        """([lat,lng], 'CC') freshly resolved for the record's STATED postcode, else (None, '').
+        Writes the locality-level cache entry itself: a pin, or the negative memo (a None
+        coordinate and an empty cc, exactly the pair `_geocode_postcode` returns for "no such
+        place", so the memo has one spelling and cannot drift from the answer it records).
+        Guards on the COORDINATE, never on key presence: a negative memo is re-asked when the
+        geocoder is reachable (B02). A transport failure writes nothing and trips the circuit
+        breaker, the same path `_geocode_one`'s failure takes below."""
+        nonlocal dead, dirty
+        if not code or not known:
+            return None, ""       # nothing stated, or ambiguous without a country: not asked
+        lk = _geo_key(city, country, code)
+        if _coords_cc(cache.get(lk))[0] is not None:
+            return None, ""       # a locality PIN is already there; the caller read it from the cache
+        if dead:
+            return None, ""       # offline: nothing asked, nothing written, the pin stays
+        try:
+            pll, pcc = _geocode_postcode(requests, code, country)
+            ent = {"latlng": pll, "cc": pcc}     # a pin, or the negative memo
+            if cache.get(lk) != ent:             # a re-asked memo that is still "no" is not a write
+                cache[lk] = ent
+                dirty = True
+                _save_cache(GEOCODE_CACHE, cache)  # incremental - a kill keeps progress
+            return (pll, pcc) if pll else (None, "")
+        except Exception:
+            dead = True  # offline/blocked - stop trying, serve cache + fallbacks
+            gaps.append(_offline_msg)
+            print(f"NOTE {_offline_msg}")
+            return None, ""
+        finally:
+            time.sleep(1.1)  # Nominatim usage policy - also on the failure path
+
     # PASS A: resolve each UNAMBIGUOUS city (cached, or a unique-name gazetteer/network hit).
     # An AMBIGUOUS bare name (same name in >1 country, unknown country) MISSES here - the
     # ambiguity-aware _gazetteer_lookup returns nothing without a dominant country - and is
@@ -457,12 +1118,37 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
     # seeds the cache via seed_geocode.py); the first network failure circuit-breaks.
     dead = False
     res = {}  # id(p) -> [latlng, cc, known, city, country, source]
+    # WHICH cache entry answered, per property: id(p) -> the resolved key. Kept in its OWN map
+    # rather than as a seventh element of `res`, because PASS B unpacks a `res` row positionally
+    # into exactly six names and a widened row would break there. It feeds the LEDGER locator
+    # only: two properties in one town holding two DIFFERENT pins must not carry IDENTICAL
+    # provenance rows, or the audit artefact cannot tell the reader where each pin came from.
+    # City-level (so `_key_code` -> "") for every record that states no locality code. (G1)
+    gkeys: dict = {}
     for p in todo:
         city = str(p.get("city", "")).strip()
         country = str(p.get("country", "")).strip()
         known = not _is_unknown_cc(country)
-        latlng, cc = _cache_lookup(cache, city, country)
+        # THE MOST SPECIFIC LOCALITY THIS RECORD STATES - "" in most markets, and with "" every
+        # line below is byte-identical to the city-only reader. `_cache_lookup` is taken in its
+        # two documented halves here (the KEY, then its value through `_coords_cc`) so the
+        # provenance is captured without resolving the same lookup twice. (G1)
+        code = _locality_code(p)
+        gkeys[id(p)] = _gk = _cache_lookup_key(cache, city, country, code)
+        latlng, cc = _coords_cc(cache[_gk]) if _gk else (None, "")
         src = "cache" if latlng is not None else ""
+        # POSTCODE FIRST (D9): when the cache answered at TOWN level or not at all, and the
+        # record states a postcode, ask for the postcode BEFORE accepting the town centroid.
+        # A locality-level cache hit (`_key_code(_gk)` non-empty) is already the finer answer.
+        if not _key_code(_gk):
+            pll, pcc = _postcode_first(p, city, country, known, code)
+            if pll:
+                # `_postcode_src`, not a literal "postcode": the answer may have come from the GB
+                # national register behind Nominatim's negative (D9b), and the ledger has to be
+                # able to name which one - see `_coord_locator`. It reads (and consumes) a note
+                # written one statement ago, so it must sit immediately after the lookup.
+                latlng, cc, src = pll, pcc, _postcode_src(code, country)
+                gkeys[id(p)] = _geo_key(city, country, code)
         # OFFLINE FIRST: the bundled European city gazetteer resolves real city coordinates
         # (+ country) with ZERO network, so the map works in Cowork without the exit-8
         # round-trip; the browser handoff is reserved strictly for live ROUTING.
@@ -470,6 +1156,13 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
             gll, gcc = _gazetteer_lookup(city, country)
             if gll:
                 latlng, cc, src = gll, (gcc or cc), "gazetteer"
+                # CITY-LEVEL KEY, ON PURPOSE - and the same holds for every other TOWN-level
+                # writer in this function. A city gazetteer centroid, a city-NAME geocode and a
+                # no-such-place memo are all answers about the TOWN; writing one under a
+                # LOCALITY key would assert a precision it does not have and would settle that
+                # locality forever, since any key present in the cache is never re-asked. The
+                # ONLY locality-level writer here is `_postcode_first` (D9), whose answer is
+                # about the stated postcode itself. See `_cache_lookup_key`.
                 cache[f"{city}|{country}".lower()] = {"latlng": latlng, "cc": cc}
                 dirty = True
         # never geocode a sentinel/placeholder city ('tbd', '??') - it would land a bogus
@@ -603,8 +1296,59 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
                 gaps.append(f"geocode: '{city}' (country unknown) landed far from the other "
                             f"options and could not be re-checked - verify the pin")
 
-    filled = 0
+    # THE REDO WORKLIST (D10): resolve each approximate pin's LOCALITY answer - from the cache
+    # when a locality entry already holds a coordinate (an operator seed, a web-round answer, or
+    # last pass's postcode geocode), else by asking for the stated postcode live. Runs AFTER the
+    # passes above so the unpinned properties - the primary job - get the network first and the
+    # dominant-country statistics are computed from exactly the points they always were. No
+    # city-level resolution happens here at all: the property already HAS its town pin, so a
+    # city query would be a second network round that can only repeat what is on the card.
     for p in props:
+        code = redo.get(id(p))
+        if not code:
+            continue
+        city = str(p.get("city", "")).strip()
+        country = str(p.get("country", "")).strip()
+        known = not _is_unknown_cc(country)
+        _gk = _cache_lookup_key(cache, city, country, code)
+        if _key_code(_gk):
+            latlng, cc = _coords_cc(cache[_gk])
+            src = "cache"
+        else:
+            latlng, cc = _postcode_first(p, city, country, known, code)
+            # The same provenance read as PASS A: a displaced pin must name the register that
+            # answered just as an original pin does, or the D10 correction channel would report
+            # a register answer as a Nominatim one. (D9b)
+            src = _postcode_src(code, country) if latlng else ""
+            _gk = _geo_key(city, country, code) if latlng else ""
+        gkeys[id(p)] = _gk
+        if latlng and latlng[0] is not None:
+            res[id(p)] = [latlng, cc, known, city, country, src]
+
+    filled = 0
+    displaced = 0
+    for p in props:
+        if id(p) in redo:
+            # DISPLACEMENT (D10): a locality-level coordinate replaces the approximate town pin.
+            # Said out loud, per property, naming what moved and by how much - the operator who
+            # seeded it must be able to see it land. A redo property whose postcode did NOT
+            # resolve (or could not be asked) has no `res` row and keeps its pin untouched,
+            # byte for byte; the Gaps Report line below discloses that state.
+            r = res.get(id(p))
+            if r and r[0] and r[0][0] is not None:
+                old_lat, old_lng = p["lat"], p["lng"]
+                p["lat"], p["lng"], p["coordsApprox"] = r[0][0], r[0][1], True
+                km = _haversine_km(old_lat, old_lng, p["lat"], p["lng"])
+                city = str(p.get("city", "")).strip()
+                print(f"geocode: id={p.get('id')} '{_name(p)}': approximate town pin "
+                      f"({old_lat:.5f}, {old_lng:.5f}) replaced by the locality-level coordinate "
+                      f"for its stated postcode '{redo[id(p)]}' ({p['lat']:.5f}, {p['lng']:.5f}), "
+                      f"{km:.1f} km away")
+                displaced += 1
+                if updates is not None:
+                    sf, st, loc = _coord_locator(r[5], city, _key_code(gkeys.get(id(p), "")))
+                    updates.append(_trace(p.get("id"), "lat", p["lat"], sf, loc, st))
+                    updates.append(_trace(p.get("id"), "lng", p["lng"], sf, loc, st))
         if isinstance(p.get("lat"), (int, float)) and isinstance(p.get("lng"), (int, float)):
             # P2-5 / bug #4: an already-located property (a tracker/email row that ARRIVED
             # with coords) can still have country '??'. The AUTHORITATIVE signal is its OWN
@@ -629,7 +1373,12 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
                     # trust its country when that coord agrees with the pin (or carries none), so
                     # the documented offline seed workflow still fills a city the bundled
                     # gazetteer does not carry (a small/non-European town).
-                    _ll, ccn = _cache_lookup(cache, city, "")
+                    # the record's own locality is passed through: a locality entry sits
+                    # CLOSER to the pin than the town centroid, so it is a strictly better
+                    # input to the 75 km agreement test below. No code stated -> the city
+                    # entry, exactly as before. (A country is a fact about the town either
+                    # way, so the cc this yields is unchanged.)
+                    _ll, ccn = _cache_lookup(cache, city, "", _locality_code(p))
                     if ccn and (not _ll or _ll[0] is None
                                 or _haversine_km(p["lat"], p["lng"], _ll[0], _ll[1]) <= 75):
                         cc = ccn
@@ -670,27 +1419,106 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
                         csf, cst, cloc = "assets/cities_dataset.json", "dataset", f"city gazetteer '{city}'"
                     elif src == "cache":
                         csf, cst, cloc = "geocode_cache.json", "cache", f"geocode cache '{city}'"
+                    elif src.startswith("postcode"):
+                        # A register answer fills the country from the register, not from OSM
+                        # (D9b). The value is the same 'GB' either way, but a ledger row that
+                        # credited Nominatim for a code Nominatim does not hold would be a
+                        # traceable-looking row pointing at a source that cannot corroborate it.
+                        _pc = _key_code(gkeys.get(id(p), "")).upper()
+                        # The register arm below is UNREACHABLE as the gate stands today, and is
+                        # kept deliberately rather than by oversight: this whole block only runs
+                        # when the record's country is UNKNOWN, while `_is_gb` has already
+                        # required it to be GB or UK for the register to have been asked at all.
+                        # It is here so that the ledger row stays truthful if that gate ever
+                        # widens to a market where the country IS unknown at fill time. The cost
+                        # of keeping it is four lines; the cost of dropping it is a row crediting
+                        # OSM for a coordinate only the register holds, which is the exact class
+                        # of untraceable claim the arm exists to prevent.
+                        if src.startswith("postcode-register-"):
+                            csf, cst, cloc = (_REGISTER_FILE, "web",
+                                              f"GB national postcode register entry for the "
+                                              f"stated postcode '{_pc}' ('{city}')")
+                        else:
+                            csf, cst, cloc = ("Nominatim (OSM geocoder)", "web",
+                                              f"geocode of the stated postcode '{_pc}' ('{city}')")
                     else:
                         csf, cst, cloc = "Nominatim (OSM geocoder)", "web", f"geocode of '{city}'"
                     updates.append(_trace(p.get("id"), "country", cc, csf, cloc, cst))
             filled += 1
             if updates is not None:  # trace rows so the ledger matches the deliverable
-                if from_centroid:
-                    sf, st, loc = "assets/poi_library.json", "poi_library", f"city centroid '{city}' (coordsApprox)"
-                elif src in ("gazetteer", "gazetteer-dominant"):
-                    detail = "city gazetteer" if src == "gazetteer" else "city gazetteer (dominant-country)"
-                    sf, st, loc = "assets/cities_dataset.json", "dataset", f"{detail} '{city}' (coordsApprox)"
-                elif src == "cache":
-                    sf, st, loc = "geocode_cache.json", "cache", f"seeded geocode cache '{city}' (coordsApprox)"
-                else:
-                    sf, st, loc = "Nominatim (OSM geocoder)", "web", f"geocode '{city}' (coordsApprox)"
+                sf, st, loc = _coord_locator(src, city, _key_code(gkeys.get(id(p), "")),
+                                             from_centroid=from_centroid)
                 updates.append(_trace(p.get("id"), "lat", p["lat"], sf, loc, st))
                 updates.append(_trace(p.get("id"), "lng", p["lng"], sf, loc, st))
         else:
             gaps.append(f"could not geocode '{city}' (property id={p.get('id')})")
     if dirty:
         _save_cache(GEOCODE_CACHE, cache)
-    return filled
+
+    # DISCLOSURE (D9): a property that STATES a postcode and still sits on a TOWN pin says so in
+    # the Gaps Report, in one line per cause, naming each property and its code. On the measured
+    # run the town pin was 9 km across a county line and nothing anywhere said the postcode had
+    # not been used; the Source Ledger even called the resulting region change a "harmonisation".
+    # Two causes, two remedies: a code the geocoder does not KNOW (negative memo - the operator
+    # seeds the coordinate or repairs the pin) and a code that could not be ASKED from here
+    # (offline - the web-enrichment round or a seed supplies it). Rebuilt every pass, because the
+    # geocode layer's gap bucket is the FINAL state, and the state persists until the pin moves.
+    unresolved, waiting = [], []
+    for p in props:
+        if not _pinned(p) or not p.get("coordsApprox"):
+            continue
+        code = _locality_code(p)
+        city = str(p.get("city", "")).strip()
+        country = str(p.get("country", "")).strip()
+        if not code or not city or _is_unknown_cc(city) or _is_unknown_cc(country):
+            continue
+        ent = cache.get(_geo_key(city, country, code))
+        if ent is None:
+            waiting.append(f"id={p.get('id')} '{_name(p)}' {code}")
+        elif _coords_cc(ent)[0] is None:
+            unresolved.append(f"id={p.get('id')} '{_name(p)}' {code}")
+    # THE SANDBOX HANDOFF NEEDS TO KNOW (the D9 repair). run.py asks the web-enrichment round
+    # for `--geocode` only when a property has NO coordinate at all; in Cowork the bundled
+    # gazetteer pins every European town, so every property arrives pinned and the postcode
+    # request `web_enrich.plan` builds for an approximate pin would never be handed over - the
+    # fix would be inert in exactly the sandbox it was written for. The count of stated
+    # postcodes this pass could not ask travels in `meta.enrichment`, beside `pois_live` and
+    # `osrm_done` which run.py already reads for the same exit-8 decision, so the handoff can
+    # fire on it. A settled code (a pin or a memo) is not counted: the round has nothing to ask.
+    enr_flags = canonical.setdefault("meta", {}).setdefault("enrichment", {})
+    enr_flags["postcodes_unasked"] = len(waiting)
+    if unresolved:
+        gaps.append(
+            # THIS LINE MUST NOT CLAIM WHICH SOURCES WERE ASKED, and an earlier draft did.
+            # It said "and, for GB, nor does the national postcode register", but this bucket is
+            # built from CACHE STATE alone - a locality entry whose coordinate is None - and it
+            # records nothing about who was asked. That memo can equally have been written by the
+            # web-enrichment round, whose `cmd_ingest` memoises an empty Nominatim array with NO
+            # register leg (D9b runs only in this process, behind helper-side `requests`). So on
+            # a Cowork work dir the sentence asserted an enquiry that never happened, about the
+            # one code class the register is most likely to hold, and then told the operator the
+            # remaining route was a hand-seed. That is worse than saying nothing: the clause
+            # exists to stop a pointless re-run, and there it discouraged the re-run that would
+            # have WORKED. It now states only what the bucket knows, and names the register as a
+            # route still worth trying rather than one already exhausted.
+            f"{len(unresolved)} property(ies) state a postcode that resolved to no coordinate, "
+            f"so their pin is the TOWN centre (coordsApprox): " + ", ".join(unresolved[:8]) +
+            ". Verify each pin against the brochure. For a GB code, check whether this pass could "
+            "reach the national postcode register (D9b asks it only from a run with helper-side "
+            "network, never through the web-enrichment round), because a re-run WITH network may "
+            "resolve it. Otherwise supply the site's coordinate: seed it with `python "
+            "helpers/seed_geocode.py coords.json --cache-dir <work>` using a row that carries the "
+            "postcode, or record the pin in work/repairs.json, then re-run.")
+    if waiting:
+        gaps.append(
+            f"{len(waiting)} property(ies) state a postcode that could not be asked from this "
+            f"sandbox (geocoder unreachable), so their pin is the town centre until the "
+            f"web-enrichment round or a seed supplies the postcode coordinate: "
+            + ", ".join(waiting[:8]) + ".")
+    if displaced:
+        print(f"geocode: {displaced} approximate town pin(s) replaced by locality-level "
+              f"coordinates (see the lines above)")
+    return filled + displaced
 
 
 OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter"
@@ -1413,8 +2241,8 @@ def _region_labels_answered_keys() -> set:
 
 
 def _ok_region_city(c) -> bool:
-    return isinstance(c, str) and bool(c.strip()) and \
-        c.strip().lower() not in ("tbd", "tbc", "??", "—", "-", "n/a", "na")
+    # the shared family (C5); this was an eighth private literal that every count missed
+    return isinstance(c, str) and bool(c.strip()) and not C._N.looks_unknown(c)
 
 
 def _property_country_cc(p: dict) -> str:
@@ -1495,7 +2323,121 @@ def region_label_candidates(ds: dict | None, country_ccs) -> list:
     return out
 
 
-def bind_region_codes(canonical: dict, ds: dict | None) -> None:
+def _stated_region_label(p: dict, ds: dict, prior: dict | None = None) -> str:
+    """The region the RECORD ITSELF states, for the cross-check below, or "" when it states
+    none. Three sources, in order:
+
+      1. the ORIGINAL stated label `harmonise_regions` recorded in `meta.regionHarmonised`,
+         when that harmonisation is still in force. THIS IS LOAD-BEARING, not belt-and-braces:
+         once `harmonise_regions` has rewritten `p['region']` to the bound NUTS-3 name, the
+         record no longer carries what its SOURCE said, so a SECOND `--regions` pass would
+         find the bound name agreeing with the bound code and the disclosure would silently
+         vanish on every re-run. That is the exact defect recorded in that function's
+         IDEMPOTENT DISCLOSURE note, and a disclosure that disappears when you re-run is worse
+         than none. "Still in force" is tested the same way that function tests it - the
+         property must still carry the bound name the record claims - so a label edited since
+         is not resurrected from a stale record;
+      2. `p['region']`, through `_stated_region`, so a sentinel is ABSENCE and not a level;
+      3. a `regionCode` that is a LABEL rather than a dataset code. merge.py derives
+         `regionCode` from the stated label for a property with no coordinates, so on that
+         path the label is the only place the record's own claim survives. A `regionCode` that
+         IS a real dataset key is excluded, because that is not a claim the record made in
+         prose and the bind is about to overwrite it by design."""
+    if prior:
+        rec = prior.get(p.get("id"))
+        cur_norm = _norm_region(_stated_region(p))
+        if rec and rec[1] and cur_norm == rec[1]:
+            return rec[0]
+    lab = _stated_region(p)
+    if lab:
+        return lab
+    cur = p.get("regionCode")
+    if _ok_region_city(cur) and str(cur).strip() not in (ds.get("regions") or {}):
+        return str(cur).strip()
+    return ""
+
+
+def _region_conflict(ds: dict, stated: str, bound: str):
+    """Does a record's own stated region GENUINELY contradict the code its own coordinates were
+    bound to, or is it merely the same place named at a coarser administrative level? Returns
+    the resolved profile of the stated label when the two CONFLICT, else None. (G2)
+
+    THE RULE, in one sentence: resolve the stated label the way everything else in this file
+    resolves one (`_dataset_region`, so a province name, a bilingual variant and a curated
+    broad alias all count), take its `nuts` code, and compare LINEAGE - if either code is a
+    prefix of the other, the two labels name the SAME place at two levels and there is nothing
+    to disclose.
+
+    WHY A PREFIX TEST IS LINEAGE AND NOT A COINCIDENCE. NUTS codes are hierarchical by
+    construction: a code's leading substring IS its parent area. So 'East Midlands' resolving
+    to the UKF aggregate against a bind of UKF25 is a property whose brochure is CORRECT, just
+    coarser - and `_aggregate_nuts` exists for precisely that case, so this reuses its prefix
+    instead of inventing a second hierarchy. Without this test the disclosure would fire on
+    the ordinary shape of this data (a county from one source, the wider region from another -
+    `harmonise_regions`' founding incident) and would be ignored inside a day.
+
+    AN UNRESOLVABLE LABEL IS NOT A CONFLICT, and that is the decision that keeps this quiet
+    enough to be worth reading. 'Northamptonshire' resolves to nothing in the bundled NUTS-3
+    dataset (MEASURED: `_dataset_region` returns None for it), and neither does any label in a
+    market the dataset does not cover at all, which is most of them. Firing there would be
+    claiming a contradiction that cannot be demonstrated: two labels that cannot both be
+    placed on the same map cannot be shown to disagree. Silence is the honest answer, and it
+    is also what makes this whole check INERT outside the dataset's coverage rather than
+    degraded - the same discipline `_postcode_conflict` applies to a market that quotes no
+    codes.
+
+    A CROSS-BOUNDARY MARKETING LABEL DOES FIRE, on purpose, and it is the reason this exists.
+    A label naming a NEIGHBOURING region (the corridor name a broker puts on a shed just over
+    an administrative border) resolves to a code in a DIFFERENT lineage, so it is not a level
+    difference in any sense: it is a different place, the workforce profile that ships is the
+    bound area's and not the named one's, and the reader is entitled to know which they got."""
+    prof = _dataset_region(ds, stated) if stated else None
+    scode = str((prof or {}).get("nuts") or "")
+    if not scode or not bound:
+        return None
+    if bound.startswith(scode) or scode.startswith(bound):
+        return None          # one lineage, two levels - `_aggregate_nuts`' own case
+    return prof
+
+
+def _disclose_region_bind(p: dict, ds: dict, bound: str, gaps: list,
+                          prior: dict | None = None) -> None:
+    """One Gaps-Report line when a property's OWN stated region contradicts the region its OWN
+    coordinates were bound to. WARN ONLY, and the polygon still wins: `bind_region_codes` binds
+    the point-in-polygon code either way, for the measured reason in its docstring (a centroid
+    picks the NEIGHBOUR for an edge-of-province town; point-in-polygon does not). Nothing here
+    reads or writes `regionCode`.
+
+    WHY THIS IS WORTH A LINE. A supplied coordinate wrong by a few hundred metres is invisible
+    on a map and can fall the wrong side of a simplified administrative boundary. The bind then
+    attaches a wholly different area's workforce profile - population, labour force,
+    unemployment, manufacturing and transport employment - and every one of those figures
+    ships cited and looking sourced, because it IS sourced; it is just about somewhere else.
+    The record's own stated region is the only independent witness this pipeline has, so when
+    it disagrees the disagreement IS the finding, not something to settle silently in either
+    direction.
+
+    ROUTED THROUGH THE CALLER'S `gaps` LIST, which is the regions layer's own bucket in
+    `meta.enrichmentGapsByLayer` and therefore reaches the Gaps Report by the path
+    `merge_regions`' unresolved-code line and `harmonise_regions`' level line already take.
+    Nothing new was invented to carry it. `gaps=None` (every existing two-argument caller,
+    including the evals) leaves the bind untouched and says nothing."""
+    stated = _stated_region_label(p, ds, prior)
+    prof = _region_conflict(ds, stated, bound)
+    if not prof:
+        return
+    bname = str((_dataset_region(ds, bound) or {}).get("name") or bound)
+    sname = str(prof.get("name") or stated)
+    gaps.append(
+        f"region conflict: id={p.get('id')} states '{stated}' (resolves to "
+        f"{prof.get('nuts')} {sname}) but its OWN coordinates ({p.get('lat')}, "
+        f"{p.get('lng')}) fall inside {bound} ({bname}). The coordinates decide the bind, so "
+        f"the workforce profile shipped is {bound}'s - VERIFY THE PIN: a coordinate wrong by "
+        f"a few hundred metres can cross an administrative boundary and attach the wrong "
+        f"area's figures. These are different areas, not the same one at two levels.")
+
+
+def bind_region_codes(canonical: dict, ds: dict | None, gaps: list | None = None) -> None:
     """Bind each property to its workforce region by its LOCATION - exact point-in-polygon
     on the property's coordinates - so a brochure's broad/wrong text region label ('Yorkshire
     And North East', which is no NUTS-3 province) never breaks the bind. Precedence:
@@ -1517,11 +2459,26 @@ def bind_region_codes(canonical: dict, ds: dict | None) -> None:
     point-in-polygon result wins and the cached resolution is never consulted; the LLM fills
     ONLY properties PIP left unbound. The cached code is NEVER bound directly - it is verified
     through `_dataset_region` exactly like a None lookup, so an unknown/stale code is discarded,
-    and the difflib gap in merge_regions remains the fallback when the resolution is null."""
+    and the difflib gap in merge_regions remains the fallback when the resolution is null.
+
+    THE BIND IS NOW CROSS-CHECKED AGAINST WHAT THE RECORD ITSELF STATES (G2). Nothing ever
+    asked whether the polygon's answer AGREED with the property's own region label, so a
+    supplied coordinate wrong by a few hundred metres could fall the wrong side of a simplified
+    boundary, bind the property to the neighbouring area, and ship that area's entire workforce
+    profile with it - cited, sourced and about somewhere else - with nothing flagged. When
+    `gaps` is supplied, a GENUINE disagreement (not a mere level difference: see
+    `_region_conflict`) is disclosed there. The polygon is still authoritative and is still
+    what gets bound; the disclosure changes no value in the dataset."""
     if not ds:
         return
     geo = _regions_geo()
     label_cache = _region_labels_cache()  # {} when work/extract/region_labels.json is absent
+    # the ORIGINAL stated label per property id, for a canonical `harmonise_regions` has
+    # already rewritten - see `_stated_region_label` for why reading it back matters
+    prior = {}
+    for _e in ((canonical.get("meta") or {}).get("regionHarmonised") or []):
+        if isinstance(_e, dict) and _e.get("stated"):
+            prior[_e.get("id")] = (str(_e["stated"]), _norm_region(str(_e.get("bound") or "")))
 
     def _ok_city(c):
         return _ok_region_city(c)
@@ -1531,6 +2488,11 @@ def bind_region_codes(canonical: dict, ds: dict | None) -> None:
         if geo and isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
             code = _region_for_point(lat, lng, geo)
             if code and _dataset_region(ds, code):  # the polygon's code must have a profile
+                # BEFORE the overwrite: `_stated_region_label` may need to read the incoming
+                # `regionCode` (merge.py puts the stated LABEL there for a property that had
+                # no coordinates), and this line is about to replace it.
+                if gaps is not None:
+                    _disclose_region_bind(p, ds, code, gaps, prior)
                 p["regionCode"] = code
                 continue
         cur = p.get("regionCode")
@@ -1801,7 +2763,9 @@ def main() -> None:
         # coordinates (exact point-in-polygon on the NUTS-3 boundaries), then a resolving
         # label, then the city - BEFORE matching profiles - so a broad/wrong text region
         # label no longer breaks the workforce bind.
-        bind_region_codes(canonical, _regions_dataset())
+        # `g` is the regions layer's OWN gap bucket, so the bind's stated-vs-polygon
+        # disclosure reaches the Gaps Report by the same path the layer's other lines take.
+        bind_region_codes(canonical, _regions_dataset(), g)
         # I11: with each property bound to the area its coordinates PROVE it is in, a
         # dataset whose `region` labels sit at different administrative levels (a county
         # from one source, the wider region from another) is harmonised to that bind.

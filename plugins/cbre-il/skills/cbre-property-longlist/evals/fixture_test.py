@@ -119,8 +119,16 @@ def fixture_records(work: Path) -> list[Path]:
                        "locator_base": "page 2 (summary table)",
                        "prov": {"park": "page 2", "warehouseArea": "page 2"}},
         },
-        {  # same park, materially different area = a distinct phase, stays its own card
-            "park": "Alpha Park", "developer": "CTP", "city": "Pilsen", "country": "CZ",
+        {  # same park, materially different area = a distinct phase, stays its own card.
+           # THE PHASE NAMES ITSELF, and it has to (A14c). It used to read plain "Alpha Park",
+           # identical to the detail page above, so the two shipped as two cards under ONE
+           # heading - indistinguishable on the grid and, worse, side by side in the
+           # comparison view. `gate_runner.py coverage` now BLOCKS that, correctly: this
+           # fixture is meant to be a dataset that ships clean, so the phase carries the
+           # designator a real source states for it. The seam being tested is unchanged - two
+           # same-source records with materially different areas must stay two cards - and
+           # `_same_source_verdict` still refuses them on the area, as the count below asserts.
+            "park": "Alpha Park Phase II", "developer": "CTP", "city": "Pilsen", "country": "CZ",
             "status": "Under construction", "warehouseArea": 80000, "photo": _px((40, 70, 110)),
             "warehouseRent": "€58 / sq m / year", "warehouseRentVal": 58.0,
             "__meta": {"source_file": "Brochure A.pdf", "source_type": "pdf",

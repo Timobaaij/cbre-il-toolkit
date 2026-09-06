@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -81,53 +82,82 @@ def _doc_title(hero: dict, meta: dict) -> str:
     return base if "cbre" in base.lower() else base + " — CBRE"
 
 
+def _dominant_country(props: list[dict]) -> str:
+    """The ISO country most properties state ("" when none does), for the D11 rent-basis
+    fallback on a canonical whose meta.units predates the key. Mirrors merge.dominant_country
+    on canonical properties (already ISO after merge; names still normalise)."""
+    from collections import Counter
+    c = Counter(C._N.country_iso(p.get("country")) for p in props
+                if isinstance(p, dict) and p.get("country")
+                and not C._N.looks_unknown_code(p.get("country")))
+    return c.most_common(1)[0][0] if c else ""
+
+
 def compute_kpis(props: list[dict], regions: dict, units: dict | None = None,
                  ui: dict | None = None) -> dict:
     # ui = the localised chrome dict (i18n.ui_for); the three sub-labels below are
     # CHROME (localised), the figures/enumerations they wrap are DATA (untouched).
     ui = ui or {}
 
-    # the unknown sentinels, in one place: 'tbd' is a TRUTHY STRING, so a truthiness-only
-    # filter counts every unknown as a real value. `countries` and `region_codes` below were
-    # each fixed for this (with audit references); `developers` was not, and shipped
+    # the unknown sentinels, through the ONE shared predicate: 'tbd' is a TRUTHY STRING, so a
+    # truthiness-only filter counts every unknown as a real value. `countries` and `region_codes`
+    # below were each fixed for this (with audit references); `developers` was not, and shipped
     # "Developers 3 / Major landlords" for a two-landlord longlist - a FABRICATED count in the
     # client-facing KPI band. Worse, `reconcile` "validates" the hero KPI by re-running THIS
     # function, so the gate agreed with the wrong number. Filter once, use everywhere.
-    _UNKNOWN = {"??", "tbd", "tbc", "n/a", "na", "none", "—", "-", ""}
+    #
+    # v41 (F5): this function used to carry TWO private sentinel literals of its own, and the
+    # one guarding the country KPI lacked 'n/a', 'na' and 'tbc', so a source writing `n/a` for a
+    # country was counted as a real country in the headline KPI while every other consumer read
+    # it as absent. Both now delegate to normalize.looks_unknown (contract C5), which also stops
+    # deleting a stated "None": the extraction contract names that as DATA. Note the direction
+    # for the KPI: a stated negative is a real value and now counts, exactly as the card shows it.
+    def _known(v) -> bool:
+        return bool(v) and not C._N.looks_unknown(v)
 
-    def distinct(key):
-        return [v for v in {p.get(key) for p in props if p.get(key)}
-                if str(v).strip().lower() not in _UNKNOWN]
+    def distinct(key, code_like=False):
+        keep = (lambda v: not C._N.looks_unknown_code(v)) if code_like else _known
+        return [v for v in {p.get(key) for p in props if p.get(key)} if keep(v)]
 
     # dataset unit convention (merge meta.units; source units are KEPT). The hero
     # rent range only aggregates rents quoted in the DOMINANT convention - a lone
     # €/m² figure in a £/sq ft dataset keeps its own honest unit on its card and
     # sits out the strip (currencies are never converted, FX would be invention).
     units = units or {}
-    rent_unit = units.get("rent") or "€/sq m/yr"
     area_unit = units.get("area") or "sq m"
+    # D11: merge writes meta.units.rent on every canonical it produces (the market-derived
+    # default when no source states a unit, disclosed in meta.unitAssumptions). The fallback
+    # here is for a canonical that predates that key, and it is the SAME derivation - the
+    # dominant area unit and the dominant country of the properties - never a fixed "€/sq m/yr":
+    # that constant is what put "per sq m / year" in euros on the hero KPI of a UK sq ft run.
+    rent_unit = units.get("rent") or C._N.default_rent_unit(area_unit, _dominant_country(props))
     cur = rent_unit.split("/")[0] or "€"
     per = rent_unit.split("/")[1] if "/" in rent_unit else "sq m"
 
     areas = [p["warehouseArea"] for p in props
              if isinstance(p.get("warehouseArea"), (int, float))]
+    # D11: only a rent whose OWN source states the dataset convention aggregates into the
+    # headline range. A unit-silent figure (numeric, no rentUnit) used to be counted as if it
+    # were quoted in the default convention, so the strip could print "£8.5" over a number
+    # whose source named no currency - the same invention B06 removed from the card, which
+    # renders that figure "8.5 (unit not stated)". It sits out the strip like a minority unit.
     rents = [p["warehouseRentVal"] for p in props
              if isinstance(p.get("warehouseRentVal"), (int, float))
-             and (p.get("rentUnit") or "€/sq m/yr") == rent_unit]
+             and p.get("rentUnit") == rent_unit]
 
     # P2-5: the '??' / unknown sentinel must never appear in the hero KPI strip (it is
-    # an honest per-card gap, not a "country") - filter it from the count and the list
-    countries = [c for c in distinct("country")
-                 if str(c).strip().upper() not in ("??", "TBD", "—", "-", "")]
+    # an honest per-card gap, not a "country") - filter it from the count and the list.
+    # distinct() already applies the shared predicate, so no second filter is stated here.
+    # code-scoped: `country` holds an ISO alpha-2 code after merge, and three members of the
+    # shared unknown family are also assigned codes. Filtering this list with the value-scoped
+    # reader would drop those countries out of the headline count. (normalize.looks_unknown_code)
+    countries = distinct("country", code_like=True)
     country_set = set(countries)  # #55: derive once, reuse for the count AND the sorted sub-label
     # regions: prefer regionCode, else region label
     # exclude the unknown-region sentinel ('tbd'/'??') so it never inflates the KPI,
-    # mirroring the countries filter above (audit S5-15)
-    _unk = {"??", "tbd", "—", "-", "", "none"}
-    region_codes = [c for c in (p.get("regionCode") for p in props)
-                    if c and str(c).strip().lower() not in _unk]
-    region_labels = [r for r in (p.get("region") for p in props)
-                     if r and str(r).strip().lower() not in _unk]
+    # mirroring the countries filter above (audit S5-15) - same predicate, same verdicts
+    region_codes = [c for c in (p.get("regionCode") for p in props) if _known(c)]
+    region_labels = [r for r in (p.get("region") for p in props) if _known(r)]
     n_regions = len(set(region_codes)) or len(set(region_labels)) or len(regions)
 
     kpis = {
@@ -148,6 +178,94 @@ def compute_kpis(props: list[dict], regions: dict, units: dict | None = None,
     return kpis
 
 
+def stated_total_tolerance(total: float) -> float:
+    """The ARITHMETIC GATE'S OWN tolerance, quoted rather than re-invented.
+
+    `gate_runner.cmd_arithmetic` writes exactly
+
+        tol = max(50.0, 0.005 * total)
+
+    and that gate is the only other place in the pipeline that compares a source's printed
+    total against the chrome's derived GLA. Two independently chosen thresholds would mean a
+    card that flags a difference the gate calls noise - or, far worse, a card that stays silent
+    about one the gate blocks on - so the card and the gate must share the expression, not just
+    the intent. `evals/statedtotal_card_test.py` extracts the expression from BOTH files and
+    fails if they ever diverge, which is the only thing that keeps a quotation honest.
+    """
+    return max(50.0, 0.005 * total)
+
+
+def _attach_stated_totals(props: list[dict], meta: dict) -> None:
+    """Surface each source's OWN printed total area, for the card to show beside the derived one.
+
+    THE DEFECT. `merge` already lifts every source's stated total into
+    `canonical.meta.statedTotals` (keyed by property id), and until now the arithmetic gate was
+    its ONLY consumer: the figure reached neither this builder nor the template. Meanwhile the
+    card's area figure is DERIVED - the chrome sums components (`glaVal` = warehouseArea +
+    officeAreaVal) - and a derivation reads BELOW the source's own printed total whenever real
+    space sits inside that total and in no summed field: mezzanine, ancillary, plant. The client
+    saw a smaller building than the brochure states, with nothing on the page to say so.
+
+    WHERE IT IS PUT, and why not on the property itself. `preBaked` is the pipeline-assigned
+    render container (it already carries `distances`/`isochrones`), it is in
+    `run._PIPELINE_ASSIGNED_FIELDS`, `extract_xlsx._OPEN_DENY`, `merge._OV_FORBIDDEN` and
+    `deliver`'s deny list, and `_common.canonical_property_fields()` already declares it - so the
+    figure rides to the chrome without becoming a reader-fillable name, without appearing in a
+    deliverable's columns, and without tripping the render-boundary gate that blocks a
+    non-canonical OBJECT on a property. A top-level scalar is exactly what
+    `extract_xlsx` refuses for this value and records the reason for: the record top level is
+    client-facing surface and a raw figure would print there uninvited.
+
+    WHEN IT IS ATTACHED. Only when the two figures differ by more than
+    `stated_total_tolerance()`, the arithmetic gate's own expression, so agreement renders
+    nothing at all and the card can never disagree with the gate about whether a difference
+    matters. Every skip mirrors the gate's own skips exactly (no stated total, a non-numeric or
+    absent contributor, a total <= 0, a warehouseArea `glaVal` would refuse), and no unit
+    reconciliation is attempted HERE for the same reason the gate attempts none:
+    `merge.stated_total_for` already refuses to record an un-converted record, so a figure in a
+    foreign unit cannot reach this point.
+
+    WHAT THE CHROME THEN DOES WITH IT (v41, F26). Before v41 the card printed this stated total
+    as a qualifier while the modal's and the compare matrix's "Total GLA" row still printed the
+    derived sum, so ONE label carried TWO figures on the same page whenever the source's total
+    included space the two summed fields do not hold. The chrome's `glaVal()` now ADOPTS the
+    stated total whenever this attach has placed one and falls back to warehouse + office only
+    when it has not; the derivation above is therefore glaVal()'s fallback branch, and the
+    tolerance comparison decides only whether the stated figure is surfaced at all.
+
+    Mutates the SHALLOW property copies render() made; `preBaked` is rebuilt as a new dict so
+    the caller's canonical object is never touched. Derived from canonical alone, so
+    validate-html's byte-identity re-render is unaffected.
+    """
+    stated = meta.get("statedTotals") or {}
+    if not isinstance(stated, dict) or not stated:
+        return
+
+    def _num(v):
+        """The chrome's own test, and the gate's: a finite number, bool excluded."""
+        return v if (isinstance(v, (int, float)) and not isinstance(v, bool)
+                     and math.isfinite(v)) else None
+
+    for p in props:
+        st = stated.get(str(p.get("id")))
+        if not isinstance(st, dict):
+            continue
+        total = _num(st.get("value"))
+        if total is None or total <= 0:
+            continue                     # no comparable stated total -> nothing to surface
+        wa = _num(p.get("warehouseArea"))
+        if wa is None:
+            continue                     # glaVal() returns null here, so there is no derivation
+        oa = _num(p.get("officeAreaVal"))
+        gla = wa + (oa if (oa is not None and oa > 0) else 0)      # exactly glaVal()'s FALLBACK
+        if abs(gla - total) <= stated_total_tolerance(total):
+            continue                     # they agree - the derived figure already tells the truth
+        pb = dict(p.get("preBaked") or {})
+        pb["statedTotal"] = {"value": total,
+                             "unit": str(st.get("unit") or p.get("areaUnit") or "")}
+        p["preBaked"] = pb
+
+
 def render(data: dict, strict: bool = True) -> tuple[str, dict]:
     """Pure substitution: return (html, tokens). No file I/O. Used by both build()
     and gate_runner.py validate-html (which re-runs render and asserts byte-equality)."""
@@ -159,6 +277,10 @@ def render(data: dict, strict: bool = True) -> tuple[str, dict]:
     regions = data.get("regions", {})
     meta = data.get("meta", {}) or {}
     hero = meta.get("hero", {}) or {}
+
+    # v40: the source's own printed total area, for the card to show where it disagrees with the
+    # derived figure. Reads canonical.meta only, so validate-html's re-render stays byte-stable.
+    _attach_stated_totals(props, meta)
 
     # v19 localisation: resolve the chosen language -> a COMPLETE chrome dict (EN-
     # filled per key) + a BCP-47 locale. Missing language / missing key both fall
@@ -315,4 +437,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    C.force_utf8_stdout()   # D16: a non-ASCII value in printed output must not
+    #                        crash the print on a cp1252 Windows console
     main()
