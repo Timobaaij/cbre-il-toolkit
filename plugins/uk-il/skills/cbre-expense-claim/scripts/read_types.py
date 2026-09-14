@@ -9,7 +9,7 @@ claim.json as a second argument to fold both columns back into it, so a rebuild
 does not lose them.
 
 This script does not interpret the attendee text. It is free text a person
-wrote, and turning "Harry Goodman (Indurent)" into the "Surname,Firstname" plus
+wrote, and turning "John Doe (Hillwood)" into the "Surname,Firstname" plus
 company that PeopleSoft wants is a reading job, not a regex job: names carry
 middle initials, particles, double-barrels and inconsistent separators, and a
 parser that guesses wrong files a real person's name incorrectly. Read the cell

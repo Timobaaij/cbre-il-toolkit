@@ -13,7 +13,7 @@ Claim JSON shape:
     {
       "date": "2026-07-24",
       "time": "13:00",                 # optional, omit if the receipt has none
-      "merchant": "Crisp Pizza Mayfair",
+      "merchant": "Example Bistro",
       "description": "Dinner",
       "receipt_amount": 51.61,         # null when there is no receipt
       "receipt_ccy": "GBP",            # null when there is no receipt
@@ -82,8 +82,8 @@ TYPE_HINT = "\n".join([
 ATTENDEE_HINT = "\n".join([
     "Who was there, besides you. You are added automatically.",
     "",
-    "Example: Harry Goodman (Indurent)",
-    "Several people: Harry Goodman (Indurent); Alex Selwood (Panattoni)",
+    "Example: John Doe (Hillwood)",
+    "Several people: John Doe (Hillwood); Jane Roe (Panattoni)",
     "",
     "Required on every Client or Staff Entertaining line.",
 ])

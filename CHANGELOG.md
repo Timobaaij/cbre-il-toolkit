@@ -7,6 +7,37 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.12.1] — 2026-09-14
+
+Marketplace 1.12.1: **UK I&L Toolkit 1.5.1**. CBRE I&L Toolkit unchanged at 1.8.0.
+
+### Security
+- **All personal data is out of `cbre-expense-claim`.** The skill was written from one
+  person's own claims, and it shipped their traces: the attendee examples used a real named
+  person at a real company (in `SKILL.md`, `read_types.py`, and both the header note and the
+  in-cell prompt of the generated spreadsheet), the PeopleSoft playbook named the account
+  holder in the prefilled attendee row, and the references cited three real expense report IDs
+  with their totals, a real client name, specific trips and a named merchant against a real
+  card charge.
+
+  Every attendee example is now an obvious placeholder name at a real UK logistics
+  real-estate investor — `John Doe (Hillwood)`, and `John Doe (Hillwood); Jane Roe
+  (Panattoni)` for the multi-person case — so the format still reads as realistic without
+  naming anyone. Report IDs are described rather than quoted, the prefilled attendee row is
+  documented as "the signed-in user (`Surname,Firstname` / `CBRE Ltd.`)", the approval email
+  signs off with `<your first name>`, and trip, client and merchant references are replaced
+  with neutral illustrations. The technical evidence that earned its place is kept: the
+  exchange-rate lesson (853.88 PLN landing at £175.31, an effective 4.871 against a quoted
+  5.01) and the compression measurements now read as illustrations rather than as one
+  person's record.
+- **The skill no longer assumes who installed it.** It described its owner in the third person
+  throughout ("he fills Expense Type", "his call"), which was both a personal detail and
+  simply wrong for everyone else installing from a public marketplace. All 29 such references
+  now read as the user.
+
+*Note: these values were present in the 1.12.0 commit, so they remain in this repository's
+git history. Only the current tree is clean.*
+
 ## [1.12.0] — 2026-09-14
 
 Marketplace 1.12.0: **UK I&L Toolkit 1.5.0** gains a third skill. CBRE I&L Toolkit unchanged
@@ -903,6 +934,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.12.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.12.1
 [1.12.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.12.0
 [1.11.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.11.0
 [1.10.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.10.1

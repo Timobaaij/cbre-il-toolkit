@@ -1,7 +1,6 @@
 # PeopleSoft expense report playbook
 
-Verified end to end on reports `0005236081` (13 lines, £383.64) and
-`0005263886` (9 lines, £252.05).
+Verified end to end on two live reports, one of 13 lines and one of 9.
 
 Entry point:
 
@@ -68,7 +67,7 @@ Header:
 |---|---|---|
 | Empl ID | `PTS_CFG_CL_WRK_PTS_ADD_BTN` is the Add button | prefilled from the signed-in user - take it as it stands, never type or hard-code one |
 | Business Purpose | `EX_SHEET_HDR_BUSINESS_PURPOSE` | `CLBUS` = Client/Business Meeting |
-| Report Description | `EX_SHEET_HDR_SHEET_NAME` | free text, e.g. `Client Meeting Poland` |
+| Report Description | `EX_SHEET_HDR_SHEET_NAME` | free text, e.g. `Client Meetings, September` |
 | Default Location | `EX_LOCATION_VW2_DESCR` | type `United Kingdom`, pick `GBR01` from the autocomplete |
 
 Per line, `$N` is the zero-based row index:
@@ -117,7 +116,7 @@ Lunches, `TOLLCNG` Tolls/Congestion Charge, `PHONECM` Phone/Comms,
 
 Codes come from column K of `Expenses.xlsx`, never from a guess here. The
 default mapping that prefills that column is in `SKILL.md`; whether a meal is
-Subsistence, Client Entertaining or Staff Entertaining is his call alone.
+Subsistence, Client Entertaining or Staff Entertaining is the user's call alone.
 
 Billing types: `NRP` Non - Reimbursable Producer (the default),
 `BP` Billable Producer, `NRNP` Non - Reimburse Non Prod.
@@ -201,8 +200,8 @@ live (see below).
 | OK | `PSFT_CLOSE_MODAL$0`, plain `.click()` |
 | Cancel | `#ICCancel` |
 
-- Row `$0` comes **prefilled** with `Baaij,Timo` / `CBRE Ltd.`. Leave it and add
-  the guest as row `$1`.
+- Row `$0` comes **prefilled** with the signed-in user (`Surname,Firstname` /
+  `CBRE Ltd.`). Leave it and add the guest as row `$1`.
 - Name format is `Surname,Firstname`. The field has a lookup prompt
   (`EX_SHEET_ATT_NAME$prompt$N`) but free text posts fine, which is what
   external client names need.
@@ -232,22 +231,22 @@ The report number is not labelled `Report ID` in the page text. Match a bare
    trick, Save, clear the attendee modal, verify the amount reads back.
 6. Read back every row and check the line count and total against the
    spreadsheet before telling the user it is done.
-7. Hand over. He attaches the receipts.
+7. Hand over. The user attaches the receipts.
 8. **Stop there.** Summary and Submit sends the report for approval. Never fire
    it without the user explicitly asking in this session.
 
 ## Never automated
 
-**Summary and Submit**, and attaching receipts. Both are his.
+**Summary and Submit**, and attaching receipts. Both are the user's.
 
-Expense types and attendees are his judgement, made in columns K and L of
+Expense types and attendees are the user's judgement, made in columns K and L of
 `Expenses.xlsx` before PeopleSoft is opened. Type in what those columns say;
 never substitute your own reading.
 
 ### Changing an expense type blanks the Merchant
 
 Editing `EXPENSE_TYPE$N` on a saved line clears `MERCHANT$N`. Setting the type
-on the first pass does not, so this only bites when he edits a type in the
+on the first pass does not, so this only bites when they edit a type in the
 browser afterwards. The refill procedure is in `SKILL.md`; the rule that matters
 is to write only to cells that are actually empty, matching rows on date plus
 amount rather than row index.

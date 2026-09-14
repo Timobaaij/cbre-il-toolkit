@@ -1,6 +1,6 @@
 ---
 name: cbre-expense-claim
-description: Turn a folder of expense receipts (iOS scans, phone photos, Uber and airline email screenshots, AMEX and Revolut app screenshots) into a CBRE expense claim: a reconciled Expenses.xlsx and a page-stamped Consolidated Expenses.pdf, then file the lines into PeopleSoft. Use whenever the user wants their expenses done, receipts turned into a spreadsheet, a consolidated receipt PDF built, or an expense report prepared and filed. Trigger even when the need is only described ("do my expenses", "sort out the Warsaw receipts", "turn this folder into a claim").
+description: Turn a folder of expense receipts (iOS scans, phone photos, Uber and airline email screenshots, AMEX and Revolut app screenshots) into a CBRE expense claim: a reconciled Expenses.xlsx and a page-stamped Consolidated Expenses.pdf, then file the lines into PeopleSoft. Use whenever the user wants their expenses done, receipts turned into a spreadsheet, a consolidated receipt PDF built, or an expense report prepared and filed. Trigger even when the need is only described ("do my expenses", "sort out last week's receipts", "turn this folder into a claim").
 ---
 
 # CBRE expense claim
@@ -9,14 +9,14 @@ Two stages, each ending in a **hard stop**. Never roll past a stop. The
 judgement calls that matter to the user happen in the gap between them.
 
 ```
-1. Read receipts -> Excel + consolidated PDF  ==> STOP, he fills Expense Type
+1. Read receipts -> Excel + consolidated PDF  ==> STOP, they fill Expense Type
                                                     and Attendees in the Excel
 2. Read those two columns back, file every    ==> STOP, hand back
    line in PeopleSoft, verify the total
 ```
 
-He then attaches the receipts and submits the report himself. Do not attach,
-and never fire Summary and Submit.
+The user then attaches the receipts and submits the report themselves. Do not
+attach, and never fire Summary and Submit.
 
 ---
 
@@ -49,7 +49,7 @@ Receipts routinely get rescanned in a later batch.
 
 **Group into claim lines.** One line per transaction. Match card evidence to a
 receipt on **amount and date**, never on the card descriptor:
-`PeP*PAUL~LOTNISKO~CHOPI` is a Lagardere breakfast and `UBER TRIP HTTPS://HELP.UB`
+`PeP*CAFE~T2~AIRSIDE` is an airport breakfast and `UBER TRIP HTTPS://HELP.UB`
 is a taxi. A card charge with no receipt (a TfL daily travel charge) is still a
 line, with the receipt fields left null.
 
@@ -57,8 +57,8 @@ line, with the receipt fields left null.
 
 - **Card evidence exists** → `card_gbp` is the GBP figure read verbatim off the
   card screen. Never compute it from the printed exchange rate; the rate does not
-  reliably reproduce the charge. Munja: 853.88 PLN became £175.31, an effective
-  rate of 4.871 against the 5.01 shown elsewhere that day.
+  reliably reproduce the charge. 853.88 PLN can land as £175.31, an effective
+  rate of 4.871 where 5.01 was quoted elsewhere the same day.
 - **The GBP charge already includes the non-sterling transaction fee**, and that
   fee is claimed. Confirmed by the user.
 - **No card evidence** → the claim stays in the receipt currency. Never invent an
@@ -75,7 +75,7 @@ line, with the receipt fields left null.
 - `description` is terse: `Dinner`, `Drinks`, `Lunch`, `Breakfast`, `Snack`,
   `Tube Travel`, `In-flight WiFi`. Infer it from the line items and the time of
   day, not from the merchant name. Add ` - context` only where the approver needs
-  it, as in `Taxi - Warsaw Airport to hotel` or a split bill.
+  it, as in `Taxi - airport to hotel` or a split bill.
 - `time` is the printed receipt timestamp, `HH:MM`, and is documentation only.
   **Order within a date is whatever order you write into `claim.json`.** The
   script sorts by date alone and is stable. Put an untimed daily travel charge
@@ -139,18 +139,18 @@ Two rules that matter more than the setting:
 - **Never quietly shrink a file that fits.** The stated budget is the only reason
   to touch it.
 
-Measured on the Prague/Budapest batch (53 pages, 14.18 MB, scans at 150 to 257
-effective dpi): native q80 gave 9.73 MB and native q78 gave 9.40 MB, both with
-every pixel intact. An SSIM sweep against the source pixels put every rung within
+Measured on a 53-page batch (14.18 MB, scans at 150 to 257 effective dpi):
+native q80 gave 9.73 MB and native q78 gave 9.40 MB, both with every pixel
+intact. An SSIM sweep against the source pixels put every rung within
 0.003 of the others, so the target decides the outcome, not the rung.
 
-## The two columns he fills
+## The two columns the user fills
 
-`Expenses.xlsx` carries two cream-filled columns that are his to complete:
+`Expenses.xlsx` carries two cream-filled columns that are theirs to complete:
 
 - **Expense Type** (K), a dropdown of all twenty codes as `CODE - Label`,
-  prefilled with the default mapping below. He overrides the food and drink
-  lines to `CLENT` or `STFENT` here.
+  prefilled with the default mapping below. The user overrides the food and
+  drink lines to `CLENT` or `STFENT` here.
 - **Attendees** (L), free text, client and colleague names. Both columns carry
   a tooltip and a header note showing the format, so the sheet explains itself
   to anyone who opens it.
@@ -169,7 +169,7 @@ a rebuild keeps them. It errors on a blank or unrecognised type, and on an
 entertaining line with no attendee, since PeopleSoft will refuse to save that.
 
 **Read the attendee text, do not parse it.** The cell is prose a person wrote.
-Turning `Harry Goodman (Indurent)` into the `Surname,Firstname` plus company
+Turning `John Doe (Hillwood)` into the `Surname,Firstname` plus company
 PeopleSoft wants is a reading job: names carry middle initials, particles,
 double-barrels and inconsistent separators, and a parser that guesses wrong
 files a real person's name incorrectly. The deterministic scripts exist to
@@ -193,16 +193,16 @@ what the spend was.
 
 Prefill food and drink as `SUBSIST`. Whether a given meal is really Client
 Entertaining or Staff Entertaining turns on who was at the table, which no rule
-can infer, so it is his call in column K. Never pre-empt it, and never widen
+can infer, so it is their call in column K. Never pre-empt it, and never widen
 this table to cover it.
 
 Attendee names reach the spreadsheet and this session by design. Do not treat
 them as something to keep out of the transcript.
 
 > ### STOP 1
-> Report the totals, line count, page count and the PDF size. Show him the two
-> files and **wait**. He approves the numbers and fills columns K and L. Do not
-> open a browser.
+> Report the totals, line count, page count and the PDF size. Show the user the
+> two files and **wait**. They approve the numbers and fill columns K and L. Do
+> not open a browser.
 
 ---
 
@@ -244,16 +244,16 @@ save.
 
 > ### STOP 2
 > Report the Report ID, the line count, the total and the per-line table. Hand
-> back. He attaches the receipts and submits.
+> back. The user attaches the receipts and submits.
 > **Never fire Summary and Submit.**
 
 ---
 
-# If he changes an expense type in the browser
+# If the user changes an expense type in the browser
 
 Editing `EXPENSE_TYPE$N` after a line is saved blanks that line's `MERCHANT$N`.
 Setting the type on the first pass does not, so this is a contingency, not a
-routine step. If he does change one and asks you to tidy up:
+routine step. If they do change one and ask you to tidy up:
 
 1. Read the current state of every row.
 2. Match each row against the spreadsheet on **date plus amount**, not row
@@ -261,15 +261,15 @@ routine step. If he does change one and asks you to tidy up:
    ambiguous keys and unmatched rows first, and stop and ask if any turn up.
 3. Write **only to cells that are actually empty**. A non-empty cell is a
    deliberate edit; never overwrite one.
-4. Restore Merchant only. Leave types, descriptions and amounts as he left them.
+4. Restore Merchant only. Leave types, descriptions and amounts as they left them.
 5. Save, then confirm zero blanks, the line count and the total.
 
 ---
 
 # After submission: the approval email
 
-When he asks for the email to his manager, follow
-`reference/approval-email.md`. It is his own voice, captured verbatim, and it is
+When the user asks for the email to their manager, follow
+`reference/approval-email.md`. It is their own voice, captured verbatim, and it is
 shorter and barer than a helpful draft wants to be. Under 100 words: the ask,
 the total, the two largest items in the currency they are claimed in, one
 sweep-up line, sign off. No report ID, no line count, no coding, no analysis, no
@@ -282,6 +282,6 @@ caveats about conversion. Write the draft into chat; never send it.
 - Never invent a number. Every amount traces to a page you read.
 - Report totals and page counts plainly. If something did not reconcile, say
   which line and by how much.
-- Expense type overrides and attendees are always his own call, made in the
-  spreadsheet. On the Poland batch his choices diverged from the default mapping
-  on 5 of 13 lines, in ways no rule could infer.
+- Expense type overrides and attendees are always the user's own call, made in
+  the spreadsheet. On one 13-line batch those choices diverged from the default
+  mapping on 5 lines, in ways no rule could infer.

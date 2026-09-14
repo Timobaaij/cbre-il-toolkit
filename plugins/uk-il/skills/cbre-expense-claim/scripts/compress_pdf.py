@@ -19,7 +19,7 @@ any on quality:
   3. only if a 150 dpi cap still does not fit: q82 then q80 at 150 dpi
   4. still too big -> fail loudly rather than ship an illegible claim
 
-Measured on the Prague/Budapest batch (53 pages, 14.18 MB, scans at 150-257
+Measured on a 53-page batch (14.18 MB, scans at 150-257
 effective dpi): native q80 landed at 9.73 MB with every pixel intact. An SSIM
 sweep against the source pixels put every rung of this ladder within 0.003 of
 the others (0.991-0.994), so the size target, not the rung, decides the outcome.
