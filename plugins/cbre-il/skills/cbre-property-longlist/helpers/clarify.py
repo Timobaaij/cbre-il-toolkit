@@ -152,6 +152,10 @@ DISPLAY_FIELDS = frozenset({
     "photo", "plan", "plotArea", "preBaked", "region", "regionCode", "reit", "rentFree",
     "rentUnit", "serviceCharge", "sprinklers", "status", "truckParking", "unit", "warehouseArea",
     "warehouseRent", "warehouseRentVal",
+    # v45: the four fields the chrome gained. `displayName` becomes the card TITLE when a
+    # source states one, and the three links each render as their own chip in the modal, so
+    # all four are card slots and a question about them is material.
+    "displayName", "videoLink", "websiteLink", "streetViewLink",
 })
 
 # Per-kind materiality. A producer may override it per question by stamping `materiality`.

@@ -82,8 +82,10 @@ def main() -> int:
        "glaVal() adopts the stated total first...")
     ck("p.officeAreaVal" in gv and "return w + o;" in gv,
        "...and falls back to warehouse + office (the arithmetic gate's derivation)")
-    ck("function glaStr(p){ const g = glaVal(p); return g == null ? \"\\u2014\" : fmt(g) + \" \" + glaUnit(p); }" in tpl,
-       "glaStr() prints glaVal() in glaUnit()")
+    # v45: the null branch prints BLANK, the chrome's one absence token, where it used to
+    # print a long dash of its own. The derivation and the unit are byte-identical to v41.
+    ck("function glaStr(p){ const g = glaVal(p); return g == null ? BLANK : fmt(g) + \" \" + glaUnit(p); }" in tpl,
+       "glaStr() prints glaVal() in glaUnit(), and BLANK when there is neither")
     sth = tpl.split("function statedTotalHTML(p){", 1)[-1][:300]
     ck("${fmt(glaVal(p))} ${glaUnit(p)}" in sth,
        "the CARD qualifier prints glaVal()/glaUnit(): the same call as the modal row")

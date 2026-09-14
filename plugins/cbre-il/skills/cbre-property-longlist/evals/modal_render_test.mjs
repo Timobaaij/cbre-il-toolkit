@@ -86,7 +86,19 @@ must(!rich.includes('Commune'), 'a scalar with no curated row renders nowhere, h
 // Bug 2 - the thin property shows NO row and NO placeholder for fields it lacks
 must(!thin.includes('Soil Contamination Risk'), 'thin property has NO row for the invented field');
 must(!thin.includes('Additional Details'), 'thin property has no Additional Details section either');
-must(!rich.includes('>TBC<') && !thin.includes('>TBC<'), 'no "TBC" placeholder text anywhere');
+// v45: the FOUR RENT ROWS print the blank token by design - the rent is the number the
+// reader came for, and a vanished row reads as "rent does not apply" rather than "not yet
+// quoted". v21's rule (omit, never placeholder-fill) still governs every other row, so this
+// checks per ROW rather than per section: the exception cannot widen without failing here.
+const RENT_ROWS = ['Warehouse rent', 'Warehouse rent (monthly)', 'Total annual rent',
+                   'Total monthly rent'];
+const placeholderRows = h =>
+  [...h.matchAll(/<div class="spec-k">([\s\S]*?)<\/div><div class="spec-v">([\s\S]*?)<\/div>/g)]
+    .filter(m => m[2].trim() === 'TBC' && !RENT_ROWS.includes(m[1].trim()))
+    .map(m => m[1].trim());
+must(placeholderRows(rich).length === 0 && placeholderRows(thin).length === 0,
+     `no placeholder text outside the four rent rows (v21) ${JSON.stringify(
+        [...placeholderRows(rich), ...placeholderRows(thin)])}`);
 must(!rich.toLowerCase().includes('val_tbc') && !thin.toLowerCase().includes('val_tbc'), 'no val_tbc key leaked');
 
 // differing spec-row counts, each matching its OWN data

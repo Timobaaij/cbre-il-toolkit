@@ -36,8 +36,11 @@ def ck(ok, msg):
 def main() -> int:
     t = C.load_template()
     print("== hero heading ==")
-    ck(I18N.EN["hero_title_html"].startswith("Logistics "),
-       "the EN hero heading is capitalised")
+    # v45: the headline opens on the {client} placeholder, so the capitalisation this
+    # eval guards is now on the word that FOLLOWS it - and the placeholder itself must
+    # still be there, or the heading would name no occupier.
+    ck(I18N.EN["hero_title_html"].startswith("{client} - Industrial "),
+       "the EN hero heading names the client, then a capitalised asset class")
     ck("logistics <em>" not in I18N.EN["hero_title_html"],
        "the lower-case form is gone")
 

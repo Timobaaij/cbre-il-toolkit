@@ -14,6 +14,7 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "helpers"))
 import deliver  # noqa: E402
+import normalize as _N  # noqa: E402  (the owner of the blank token)
 from openpyxl import load_workbook  # noqa: E402
 
 
@@ -63,6 +64,8 @@ rows = {r[headers.index("Property / Park")]: r
         for r in ([c.value for c in row] for row in ws.iter_rows(min_row=2))}
 check("v-crossdock", rows["Alpha Park"][headers.index("Cross dock")] == "Yes")
 check("v-buildtype", rows["Alpha Park"][headers.index("Build type")] == "Second hand")
-check("v-tbd", rows["Beta Park"][headers.index("Cross dock")] == "tbd")
+# v45: the workbook's blank is normalize.BLANK, read from the module so this stays a
+# check on the VALUE landing in the right column rather than on the spelling.
+check("v-tbd", rows["Beta Park"][headers.index("Cross dock")] == _N.BLANK)
 
 print("LONGLIST OPEN COLUMNS TEST: PASS")

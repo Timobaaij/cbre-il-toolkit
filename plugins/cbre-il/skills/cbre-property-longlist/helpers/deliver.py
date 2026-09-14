@@ -100,7 +100,8 @@ CLOSE = {
 #  * INTERNAL / DERIVED - ids, media, the numeric twins of a display string, unit labels.
 #  * THE PIPELINE'S OWN "not applicable" MARKERS - `landPrice` and `reit`. merge.py carves
 #    both out of unknown-handling (twice, with the identical `field not in ("landPrice",
-#    "reit")` line) and _common.fill_render_sentinels writes landPrice = "—". Listing them
+#    "reit")` line) and _common.fill_render_sentinels writes landPrice = BLANK (v45; it
+#    used to write a long dash of its own). Listing them
 #    would report a missing land price and a missing REIT flag for EVERY property in EVERY
 #    lease-only longlist - measured: 2 of 11 phantom chases on a well-sourced UK property.
 #  * `country`/`region` - ENRICHMENT DERIVES these (enrich.py fills an unknown country from
@@ -758,13 +759,16 @@ _WIDE = {"park", "__rent_annual", "__rent_monthly", "__total_annual", "__total_m
 
 def _cell(v):
     """Keep numbers numeric (so the sheet sorts), pass strings through, and turn an
-    empty/None into an explicit 'tbd' (the honesty standard - never a blank guess)."""
+    empty/None into the explicit blank (the honesty standard - never a blank guess).
+
+    v45: that blank is _common.BLANK (normalize.BLANK), the one token the dashboard prints
+    too, so a cell in the client workbook and the row it came from on the page read alike."""
     if v is None:
-        return "tbd"
+        return C.BLANK
     if isinstance(v, bool):
         return str(v)
     if isinstance(v, str) and v.strip() == "":
-        return "tbd"
+        return C.BLANK
     return v
 
 
@@ -780,7 +784,7 @@ def _rent_monthly(p: dict, default_ru: str | None = None) -> str:
     signature for any caller that still passes it; it is no longer read."""
     v = p.get("warehouseRentVal")
     if not isinstance(v, (int, float)) or isinstance(v, bool) or v <= 0:
-        return "tbd"
+        return C.BLANK
     if not p.get("rentUnit"):
         return f"{v / 12:.2f} / mo (unit not stated)"
     ru = str(p["rentUnit"]).split("/")
@@ -796,9 +800,9 @@ def _total_rent(p: dict, monthly: bool = False) -> str:
     rate/area. Same currency only (no FX); areas are already aligned by merge."""
     wr, wa = p.get("warehouseRentVal"), p.get("warehouseArea")
     if not isinstance(wr, (int, float)) or isinstance(wr, bool) or wr <= 0:
-        return "tbd"
+        return C.BLANK
     if not isinstance(wa, (int, float)) or isinstance(wa, bool) or wa <= 0:
-        return "tbd"
+        return C.BLANK
     oa = p.get("officeAreaVal")
     oa = oa if isinstance(oa, (int, float)) and not isinstance(oa, bool) and oa > 0 else 0
     orr = p.get("officeRentVal")

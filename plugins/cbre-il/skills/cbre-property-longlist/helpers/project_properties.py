@@ -150,8 +150,8 @@ def rebuild_command(work, source_dir=None, image_cache=None) -> str:
 
 
 def _shown(v) -> str:
-    """A value for notes.md prose: the honest `tbd` for any unknown form, else as stated."""
-    return "tbd" if _N.looks_unknown(v) else str(v)
+    """A value for notes.md prose: the honest blank for any unknown form, else as stated."""
+    return _N.BLANK if _N.looks_unknown(v) else str(v)
 
 
 def _rmtree(path: Path, retries: int = 2, pause: float = 0.4) -> list:

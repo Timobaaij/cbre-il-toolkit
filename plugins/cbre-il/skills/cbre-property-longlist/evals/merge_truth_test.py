@@ -53,6 +53,7 @@ ROOT = Path(__file__).resolve().parent.parent
 HELPERS = ROOT / "helpers"
 sys.path.insert(0, str(HELPERS))
 import images as IMG    # noqa: E402
+import normalize as _N  # noqa: E402  (the unknown family)
 import ledger as LG     # noqa: E402
 import merge as M       # noqa: E402
 
@@ -183,8 +184,8 @@ def a9() -> None:
         rc, out, canon, led = build(td, [rec("tracker.xlsx", "xlsx", "Longlist!r2",
                                              clearHeight="45 m")])
         p, mt = prop(canon), meta_of(canon)
-        ck(p.get("clearHeight") == "tbd",
-           f"the SAME value UNLOCKED is still struck to tbd (got {p.get('clearHeight')!r})")
+        ck(_N.looks_unknown(p.get("clearHeight")),
+           f"the SAME value UNLOCKED is still STRUCK (got {p.get('clearHeight')!r})")
         line = next((c for c in (mt.get("conflicts") or []) if "clearHeight" in c), "")
         ck("falls outside the clearHeight plausibility band" in line,
            "and still carries the T1 strike note (names the parse, never accuses the source)")
@@ -219,7 +220,7 @@ def a10() -> None:
         ck(str(p.get("loadingDocks")) == "12",
            f"the NUMERIC count wins the count field (got {p.get('loadingDocks')!r}) even though "
            f"the prose came from the higher-ranked brochure")
-        ck(p.get("loadingDocks") != "tbd",
+        ck(not _N.looks_unknown(p.get("loadingDocks")),
            "so the field is not struck either - the answer was in the pack all along")
         note = next((c for c in mt["conflicts"] if "loadingDocks" in c), "")
         ck(PROSE in note and "brochure.pdf" in note,
@@ -231,7 +232,7 @@ def a10() -> None:
         # the field OUTSIDE the count set: identical shape, untouched behaviour. The failing
         # top-ranked value still wins precedence and is still struck - which is also the proof
         # that source rank alone WOULD have shipped the prose above.
-        ck(p.get("clearHeight") == "tbd",
+        ck(_N.looks_unknown(p.get("clearHeight")),
            f"a field OUTSIDE _COUNT_GATE_FIELDS is unaffected: the failing brochure value still "
            f"wins and is still struck (got {p.get('clearHeight')!r})")
         ck([s["value"] for s in (mt.get("struck") or [])] == ["400 m"],

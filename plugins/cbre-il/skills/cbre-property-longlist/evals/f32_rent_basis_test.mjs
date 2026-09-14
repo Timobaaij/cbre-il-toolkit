@@ -10,7 +10,7 @@ if (!htmlPath) { console.error('usage: node f32_rent_basis_test.mjs <built_html>
 const html = fs.readFileSync(htmlPath, 'utf8');
 
 const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)].map(m => m[1]);
-const NAMES = ['PROPS', 'glaVal', 'glaStr', 'rentBasis', 'rentBasisStr', 'totalAnnualRent', 'totalRentStr',
+const NAMES = ['PROPS', 'BLANK', 'glaVal', 'glaStr', 'rentBasis', 'rentBasisStr', 'totalAnnualRent', 'totalRentStr',
                'totalRentHTML', 'detailHTML', 'compareHTML', 'AREA_UNIT', 'T'];
 const code = scripts.join('\n;\n') + '\n;\n' +
   NAMES.map(n => `__capture__(${JSON.stringify(n)}, typeof ${n} !== "undefined" ? ${n} : undefined);`).join('\n') + '\n';
@@ -33,7 +33,7 @@ const ctx = vm.createContext(new Proxy(target, {
 try { vm.runInContext(code, ctx, { filename: 'built.inline.js' }); }
 catch (e) { console.error('FAIL: template script threw during eval:', e && e.message); process.exit(1); }
 
-const { PROPS: props, glaVal, glaStr, rentBasis, rentBasisStr, totalAnnualRent, totalRentStr, totalRentHTML,
+const { PROPS: props, BLANK, glaVal, glaStr, rentBasis, rentBasisStr, totalAnnualRent, totalRentStr, totalRentHTML,
         detailHTML, compareHTML, AREA_UNIT, T } = target;
 for (const [n, f] of Object.entries({ glaVal, glaStr, rentBasis, rentBasisStr, totalAnnualRent, totalRentStr,
                                       totalRentHTML, detailHTML, T })) {
@@ -99,9 +99,13 @@ ck(basisO && basisO[1] === `20,000 ${AREA_UNIT} × £ 9.50 / sq ft`,
    `warehouse area alone, no guessed office (${JSON.stringify(basisO && basisO[1])})`);
 ck(totalAnnualRent(ounk) === 20000 * 9.5, 'and the money matches it');
 
-console.log('\n-- an unknown rent stays tbd: no total, no basis, no row --');
+console.log('\n-- an unknown rent stays unknown: no total, no basis, no figure --');
 const mR = detailHTML(runk);
-ck(rowHtml(mR, ANNUAL) === null && rowHtml(mR, MONTHLY) === null, 'both Total rent rows are omitted');
+// v45: the commercial block always prints, so the two rows are PRESENT and carry the blank
+// token. What this eval has always guarded is that no FIGURE and no BASIS is invented for a
+// property with no stated rate, and that is asserted below on the helpers themselves.
+ck(rowHtml(mR, ANNUAL) === BLANK && rowHtml(mR, MONTHLY) === BLANK,
+   'both Total rent rows print the blank token, not a figure');
 ck(!/rent-basis/.test(mR), 'no basis sub-line anywhere in that modal');
 ck(totalAnnualRent(runk) === null && rentBasis(runk) === null && rentBasisStr(runk) === null && totalRentHTML(runk, false) === null,
    'every helper returns null rather than a figure');

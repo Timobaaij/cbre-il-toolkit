@@ -912,9 +912,12 @@ class AnswerRepairs:
 
 def _prop_label(prop: dict) -> str:
     """'park / unit' for a refusal sentence; the unit only when it is a real designator."""
+    import normalize as _N                    # local, as everywhere else in this module
     park = str((prop or {}).get("park") or "").strip()
     unit = str((prop or {}).get("unit") or "").strip()
-    if unit and unit.lower() != "tbd":
+    # v45: the unknown FAMILY, not one spelling - the render sentinel is normalize.BLANK now
+    # and a canonical produced before v45 still carries 'tbd'.
+    if unit and not _N.looks_unknown(unit):
         return f"{park} / {unit}" if park else unit
     return park or f"id {(prop or {}).get('id')}"
 
@@ -2248,7 +2251,8 @@ def _coerce_repaired_scalars(canonical, cleared: dict | None = None) -> int:
     right at the RENDER boundary - build_dashboard and the gates call it on a COPY - and wrong
     here, where it runs on canonical ITSELF. The `unset` verb clears a field by REMOVING the
     key (repairs.py: "CLEARING IS REMOVAL", so the ledger row cannot claim the repair SET a
-    value), and this pass then put every removed chrome-read key straight back as "tbd". The two
+    value), and this pass then put every removed chrome-read key straight back as the blank
+    sentinel. The two
     changes cancelled exactly: `unset` did not work on ANY chrome-read field, while the repair
     reported CLEARED, printed a CLEARED line and wrote a CLEARED Source Ledger row. A withdrawal
     an operator can see confirmed in three places and cannot see happen is worse than one that
@@ -4071,12 +4075,13 @@ def main() -> None:
                 "en_sha": want_sha,
                 "instructions": (
                     f"Translate EVERY value in `strings` to {lang}. Keep the JSON KEYS exactly; "
-                    "keep the {area}/{unit}/{count} placeholders (hero_lede_fmt carries "
-                    "{count}), the ONE <em>...</em> pair in hero_title_html, the "
+                    "keep the {area}/{unit}/{client} placeholders (hero_title_html carries "
+                    "{client}, the client name, and a separator in front of it if your "
+                    "language wants one), the ONE <em>...</em> pair in hero_title_html, the "
                     "&amp;/&lt;/&gt; HTML entities, any "
                     "leading glyph (e.g. the '●' bullet), and the invariants CBRE / OSRM / "
                     "BREEAM / HGV / PPS / EU27 / REIT / km verbatim. Do NOT translate DATA or the "
-                    "'tbd'/'—' sentinel. Add a top-level \"_en_sha\":\"" + want_sha + "\" key, "
+                    "unknown sentinel (normalize.BLANK). Add a top-level \"_en_sha\":\"" + want_sha + "\" key, "
                     f"write the flat {{key: value}} (+ _en_sha) to work/i18n/{code}.json, then re-run "
                     "the SAME command. (Or `type nul > work/i18n/" + code + ".SKIP` to fall back to "
                     "English.) Blind-verify it as G-i18n (an ISOLATED reviewer, not the translator) "

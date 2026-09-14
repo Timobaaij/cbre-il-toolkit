@@ -52,6 +52,9 @@ const rHtml = detailHTML(rich);
 const lHtml = detailHTML(lean);
 
 // --- the rule: a curated variable renders for the property that HAS it, and for no other ---
+// The rule this guards - a row appears only where there is something to say - governs every
+// row here. v45's one exception is the FOUR RENT rows (a vanished rent reads as "does not
+// apply" rather than "not yet quoted"), and none of these four labels is one of them.
 const CURATED = [
   ['Sprinklers', 'sprinklers'],
   ['Permitting', 'permitting'],
@@ -67,10 +70,20 @@ const specCount = h => (h.match(/class="spec-k"/g) || []).length;
 ck(specCount(rHtml) > specCount(lHtml),
    `modal: per-property row counts differ (rich ${specCount(rHtml)} > lean ${specCount(lHtml)})`);
 
-// no empty rows anywhere: every rendered spec value must be a real value
-const emptyRow = /<div class="spec-v">\s*(tbd|tbc|—|-|)\s*<\/div>/i;
-ck(!emptyRow.test(rHtml), 'modal: the rich property renders no tbd/empty spec row');
-ck(!emptyRow.test(lHtml), 'modal: the lean property renders no tbd/empty spec row');
+// no empty rows anywhere EXCEPT the four rent rows, which v45 prints blank on purpose: a
+// vanished rent row reads as "rent does not apply here" rather than "nobody has quoted yet".
+// Asserted per ROW rather than per section, so the exception cannot widen unnoticed.
+const RENT_ROWS = ['Warehouse rent', 'Warehouse rent (monthly)', 'Total annual rent',
+                   'Total monthly rent'];
+const blankish = v => /^(tbd|tbc|—|-|)$/i.test(v.trim());
+const emptyRowsOutsideRent = h =>
+  [...h.matchAll(/<div class="spec-k">([\s\S]*?)<\/div><div class="spec-v">([\s\S]*?)<\/div>/g)]
+    .filter(m => blankish(m[2]) && !RENT_ROWS.includes(m[1].trim()))
+    .map(m => m[1].trim());
+ck(emptyRowsOutsideRent(rHtml).length === 0,
+   `modal: the rich property renders no blank spec row outside the rent rows (${emptyRowsOutsideRent(rHtml)})`);
+ck(emptyRowsOutsideRent(lHtml).length === 0,
+   `modal: the lean property renders no blank spec row outside the rent rows (${emptyRowsOutsideRent(lHtml)})`);
 
 // --- a variable no curated row owns renders NOWHERE, however real its value ---
 const UNCURATED = ['Yard Rent', 'yardRent', 'Rail Siding', 'railSiding'];

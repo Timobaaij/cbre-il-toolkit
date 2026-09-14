@@ -303,7 +303,7 @@ def main() -> int:
     p1 = props_of(w)[0]
     ck(len(rep["applied"]) == 1 and "region" not in p1,
        "a chrome-read field clears out of canonical")
-    ck(C.fill_render_sentinels(dict(p1)).get("region") == "tbd",
+    ck(C.fill_render_sentinels(dict(p1)).get("region") == C.BLANK,
        "...and the RENDER boundary re-fills its honest sentinel, so the card is never blank")
 
     # THE REQUIRED-FIELD CLEAR GUARD, THROUGH BOTH DOORS. It is deliberately duplicated in

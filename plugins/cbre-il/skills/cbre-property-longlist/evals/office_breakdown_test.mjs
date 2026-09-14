@@ -11,6 +11,7 @@ const html = fs.readFileSync(htmlPath, 'utf8');
 const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)].map(m => m[1]);
 const code = scripts.join('\n;\n') +
   '\n;\n__capture__("PROPS", typeof PROPS !== "undefined" ? PROPS : undefined);' +
+  '\n__capture__("BLANK", typeof BLANK !== "undefined" ? BLANK : undefined);' +
   '\n__capture__("officeAreaHTML", typeof officeAreaHTML !== "undefined" ? officeAreaHTML : undefined);' +
   '\n__capture__("officeAreaStr", typeof officeAreaStr !== "undefined" ? officeAreaStr : undefined);' +
   '\n__capture__("detailHTML", typeof detailHTML !== "undefined" ? detailHTML : undefined);' +
@@ -33,7 +34,7 @@ const ctx = vm.createContext(new Proxy(target, { get: (t, p) => (p in t ? t[p] :
 try { vm.runInContext(code, ctx, { filename: 'built.inline.js' }); }
 catch (e) { console.error('FAIL: template script threw during eval:', e && e.message); process.exit(1); }
 
-const { PROPS: props, officeAreaHTML, officeAreaStr, detailHTML, compareHTML } = target;
+const { PROPS: props, BLANK, officeAreaHTML, officeAreaStr, detailHTML, compareHTML } = target;
 if ([officeAreaHTML, officeAreaStr, detailHTML, compareHTML].some(f => typeof f !== 'function')
     || !Array.isArray(props)) {
   console.error('FAIL: could not capture officeAreaHTML/officeAreaStr/detailHTML/compareHTML/PROPS');
@@ -99,8 +100,9 @@ const COUNT = (h, s) => h.split(s).length - 1;
 // ---------------------------------------------------------------- the plain shapes: byte-identical
 for (const [name, want] of [['Plain Number', '24,230 sq ft'],
                             ['Plain Unit', '8,547 sq ft'],
-                            ['Tbd Park', 'tbd'],
-                            ['No Office Park', 'tbd']]) {
+                            // v45: fill_render_sentinels writes BLANK, so the card reads it
+                            ['Tbd Park', BLANK],
+                            ['No Office Park', BLANK]]) {
   const p = P(name);
   const h = officeAreaHTML(p);
   ck(h === officeAreaStr(p),

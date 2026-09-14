@@ -68,7 +68,10 @@ def main() -> int:
           "modal renders a curated Certification row")
 
     # ---- COMPARE: the row renders certStr, and epc is claimed only when it survives ----
-    check("[T('cmp_certification'), p=>certStr(p) || '—', 'breeam']" in t,
+    # v45: the empty fallback is BLANK, the chrome's one absence token, where this cell used
+    # to print a long dash of its own. What the check is for - the cell renders certStr(),
+    # not p.breeam alone - is unchanged.
+    check("[T('cmp_certification'), p=>certStr(p) || BLANK, 'breeam']" in t,
           "compare Certification row renders certStr, not p.breeam alone")
     check("[T('row_land_price'), p=>p.landPrice, 'landPrice']" in t
           and "[T('row_incentives'), p=>p.incentives, 'incentives']" in t

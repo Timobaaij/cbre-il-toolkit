@@ -24,13 +24,12 @@
         "hero": {
           "type": "object",
           "description": "Fills the project-specific {{tokens}} in the template. KPI tokens are computed by build_dashboard.py and need not be supplied here.",
-          "required": ["topbar_meta", "eyebrow", "title_html", "lede", "footer_copyright"],
+          "required": ["topbar_meta", "eyebrow", "title_html", "footer_copyright"],
           "additionalProperties": true,
           "properties": {
             "topbar_meta": {"type": "string"},
             "eyebrow": {"type": "string"},
-            "title_html": {"type": "string"},
-            "lede": {"type": "string"},
+            "title_html": {"type": "string", "description": "The hero <h1>. HTML allowed; one <em> pair carries the accent colour. Blank -> the localised default, which composes meta.client into it (v45)."},
             "footer_copyright": {"type": "string"}
           }
         },
@@ -67,6 +66,7 @@
         "id": {"type": "integer", "minimum": 1},
         "country": {"type": "string", "minLength": 2, "maxLength": 3, "x-reader-format": "the 2-letter ISO country code (e.g. 'DE') ONLY when the deck itself states the country; otherwise OMIT the field - never infer it from the manifest or the language"},
         "park": {"type": "string", "minLength": 1},
+        "displayName": {"type": "string", "description": "v45. The CLIENT'S OWN name for this option, exactly as their tracker prints it ('Titan, Knowsley Business Park'). titleStr() prefers it over the park + unit composition, because it is the name the occupier uses in their own meetings. Carried only from a source that states it; never composed from park and unit."},
         "unit": {"type": "string", "description": "The unit / phase / block designator the source itself PRINTS for this option within its park (e.g. 'Unit 3', 'Phase 2', 'Block A'), written exactly as printed - never composed, renumbered or inferred by the pipeline. Optional; 'tbd' when the source names only the park. The chrome's titleStr() appends it to the park name at every title site (card, map popup, map list, modal, compare column head, both compare chip sets, Flyover slide and tooltip) and suppresses it when the park name already states it, so two genuinely different units on one park no longer render as two identical-looking cards."},
         "developer": {"type": "string", "minLength": 1},
         "landlord": {"type": "string", "description": "The owner / asset manager / freeholder of an existing building - a DISTINCT party from the developer. Optional (a property may have only a developer, or only a landlord); 'tbd' when unknown. Surfaced in the detail modal + compare table, gated by FIELD_PRESENT so it renders nowhere when no input carried it."},
@@ -115,6 +115,9 @@
         "motorway": {"type": "string"},
         "mapLink": {"type": "string"},
         "brochureLink": {"type": "string", "description": "URL of the agent/landlord brochure or listing page for THIS property. Rendered as a View brochure link in the detail modal; never invented, only carried from a source that states it."},
+        "videoLink": {"type": "string", "description": "v45. URL of a video, flythrough or video tour of THIS property. Rendered as its own chip in the detail modal, beside the brochure; never invented, only carried from a source that states it."},
+        "websiteLink": {"type": "string", "description": "v45. URL of the property's own website or microsite. Rendered as its own chip in the detail modal; never invented, only carried from a source that states it."},
+        "streetViewLink": {"type": "string", "description": "v45. URL of a Street View or 360 view of THIS property. Rendered as its own chip in the detail modal; never invented, and never composed from the coordinates - a generated pano link is a claim about what the camera shows."},
         "description": {"type": "string"},
         "photo": {"type": "string", "description": "data:image/...;base64,... or a placeholder data URI. This is the HERO (gallery[0])."},
         "gallery": {"type": "array", "items": {"type": "string"}, "description": "Up to GALLERY_MAX photo data URIs for the carousel, best-first (photographic_score), hero first. PAGE-SCOPED so a multi-property deck contributes only this property's photos. Always contains at least [photo]; the carousel falls back to [photo] when absent."},

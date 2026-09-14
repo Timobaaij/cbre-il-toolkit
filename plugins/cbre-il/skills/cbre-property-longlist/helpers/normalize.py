@@ -105,7 +105,16 @@ def clean_value(s: str) -> str:
 #   "bts"         built to suit, a real status (strike_disclosure_test pins it).
 #   "null"        appears only in run.py's import-failure fallback; never written by a reader.
 # The dash sentinel is spelled by its code point so this file never carries the character in
-# prose; it is the value fill_render_sentinels writes for landPrice.
+# prose. Up to v44 it was also the value fill_render_sentinels wrote for landPrice; v45 writes
+# BLANK there like everywhere else, and the form stays in this set because sources print it.
+# v45: the ONE token the pipeline WRITES when a source states nothing, and the one the
+# dashboard prints. It is a MEMBER of UNKNOWN_FORMS below (case-folded), which is what keeps
+# every reader that already asks looks_unknown() correct without a second thought: a field
+# carrying this value still reads as absent, still counts as a gap in coverage, still fails a
+# trace requirement. The internal vocabulary is unchanged - 'tbd' remains a recognised form,
+# so a canonical produced before v45, a broker's `expect: {"f": "tbd"}` and every reader's
+# own wording all still resolve to absence. This constant only decides what the CLIENT reads.
+BLANK = "TBC"
 UNKNOWN_FORMS = frozenset({
     "", "tbd", "tbc", "tba", "tbs", "??", "?", "\u2014", "-", "n/a", "na", "n.a", "poa",
     "to be confirmed",
@@ -188,14 +197,15 @@ def looks_unknown(s) -> bool:
 
 
 def sentinel(s, field=None):
-    """Map an unknown to the canonical sentinel. landPrice uses '—'; reit None; else 'tbd'."""
+    """Map an unknown to the canonical sentinel: reit None, everything else BLANK (v45 -
+    landPrice used to carry a long dash of its own, making four spellings of "not stated")."""
     if not looks_unknown(s):
         return clean_value(s)
     if field == "landPrice":
-        return "—"
+        return BLANK
     if field == "reit":
         return None
-    return "tbd"
+    return BLANK
 
 
 # --- rent normalisation (shared by extract_pdf and merge) ---------------------- #

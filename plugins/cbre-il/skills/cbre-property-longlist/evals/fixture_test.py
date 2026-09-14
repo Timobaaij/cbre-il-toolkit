@@ -585,8 +585,10 @@ def main() -> int:
           "v14: office area joins total GLA at the warehouse rate when no separate office rate")
     check(deliver._total_rent({"warehouseRentVal": 60.0, "warehouseArea": 40000, "officeAreaVal": 5000, "officeRentVal": 100.0, "rentUnit": "€/sq m/yr"}) == "€ 2,900,000 / yr",
           "v14: a separate office rate SPLITS the calc (40000x60 + 5000x100 = 2,900,000)")
-    check(deliver._total_rent({"warehouseArea": 40000, "rentUnit": "€/sq m/yr"}) == "tbd",
-          "v14: total rent is tbd without a warehouse rate")
+    # v45: the workbook prints the same blank token the dashboard does (deliver reads it
+    # from _common, so this compares against the owner rather than restating the spelling).
+    check(deliver._total_rent({"warehouseArea": 40000, "rentUnit": "€/sq m/yr"}) == deliver.C.BLANK,
+          "v14: total rent is the blank token without a warehouse rate")
     check(deliver._total_rent({"warehouseRentVal": 60.0, "warehouseArea": 40000, "rentUnit": "€/sq m/yr"}, monthly=True) == "€ 200,000 / mo",
           "v14: total monthly = total annual / 12")
 

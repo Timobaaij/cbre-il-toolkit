@@ -9,8 +9,8 @@ if (!htmlPath) { console.error('usage: node f26_gla_single_derivation_test.mjs <
 const html = fs.readFileSync(htmlPath, 'utf8');
 
 const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)].map(m => m[1]);
-const NAMES = ['PROPS', 'glaVal', 'glaStr', 'glaUnit', 'statedTotal', 'statedTotalHTML', 'cardHTML',
-               'detailHTML', 'compareHTML', 'totalAnnualRent', 'AREA_UNIT', 'T'];
+const NAMES = ['PROPS', 'BLANK', 'glaVal', 'glaStr', 'glaUnit', 'statedTotal', 'statedTotalHTML',
+               'cardHTML', 'detailHTML', 'compareHTML', 'totalAnnualRent', 'AREA_UNIT', 'T'];
 const code = scripts.join('\n;\n') + '\n;\n' +
   NAMES.map(n => `__capture__(${JSON.stringify(n)}, typeof ${n} !== "undefined" ? ${n} : undefined);`).join('\n') + '\n';
 
@@ -32,8 +32,8 @@ const ctx = vm.createContext(new Proxy(target, {
 try { vm.runInContext(code, ctx, { filename: 'built.inline.js' }); }
 catch (e) { console.error('FAIL: template script threw during eval:', e && e.message); process.exit(1); }
 
-const { PROPS: props, glaVal, glaStr, glaUnit, statedTotal, statedTotalHTML, cardHTML, detailHTML,
-        compareHTML, totalAnnualRent, AREA_UNIT, T } = target;
+const { PROPS: props, BLANK, glaVal, glaStr, glaUnit, statedTotal, statedTotalHTML, cardHTML,
+        detailHTML, compareHTML, totalAnnualRent, AREA_UNIT, T } = target;
 for (const [n, f] of Object.entries({ glaVal, glaStr, glaUnit, statedTotal, statedTotalHTML, cardHTML, detailHTML, T })) {
   if (typeof f !== 'function') { console.error(`FAIL: could not capture ${n}() from the built chrome`); process.exit(1); }
 }
@@ -83,8 +83,10 @@ ck(glaVal(unstated) === 20000 && rowValue(detailHTML(unstated)) === `20,000 ${AR
 ck(statedTotal({}) === null && statedTotal({ preBaked: { statedTotal: { value: 'tbd' } } }) === null
    && statedTotal({ preBaked: { statedTotal: { value: 0 } } }) === null,
    'statedTotal() refuses a missing, sentinel or non-positive figure');
-ck(glaVal({ warehouseArea: 'tbd' }) === null && glaStr({ warehouseArea: 'tbd' }) === '\u2014',
-   'no numeric warehouse area and no stated total -> null / the dash, exactly as before');
+// v45: glaStr()'s null branch prints BLANK, the chrome's one absence token, where it used to
+// print a long dash of its own. glaVal() is unchanged - it still returns null.
+ck(glaVal({ warehouseArea: 'tbd' }) === null && glaStr({ warehouseArea: 'tbd' }) === BLANK,
+   'no numeric warehouse area and no stated total -> null / BLANK');
 ck(glaVal({ warehouseArea: 1000, officeAreaVal: -5 }) === 1000 && glaVal({ warehouseArea: 1000, officeAreaVal: 250 }) === 1250,
    'the fallback keeps the > 0 office guard the arithmetic gate replicates');
 

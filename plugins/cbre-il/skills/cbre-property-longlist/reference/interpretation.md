@@ -129,6 +129,15 @@ This is checked: the `prov-containment` gate verifies that a value citing a page
 in that page's extracted text, and this marker is the sanctioned way to declare a value it cannot
 verify. Use it honestly and only when true - it is an admission, not a bypass.
 
+**The four v45 fields, and what NOT to do with them.** `displayName` is the CLIENT'S OWN name
+for the option and appears only on a client tracker or schedule ("Titan, Knowsley Business
+Park"): copy it verbatim when a source prints one, and leave it absent otherwise - never
+compose one from the park and the unit, because the chrome already does exactly that when this
+field is absent. `videoLink`, `websiteLink` and `streetViewLink` each take ONE `http(s)` URL a
+source states, and nothing else. Do NOT build a Street View URL from the coordinates: a
+generated pano link is a claim about what the camera shows. The chrome renders a chip only for
+a stated URL, so a composed one is both invention and wasted work.
+
 **Return the unit the source states for THAT figure.** Whenever you return an area, return its
 unit. If one figure uses a different unit from the rest of the deck - a site area in acres inside
 a sq ft brochure, which is the normal UK shape - set `<field>Unit` alongside it, e.g.
@@ -156,14 +165,14 @@ records matching `templates/record_schema.json`:
 - **Fill EVERY field the page states. The manifest's `fields` array is the canonical
   registry and it is NOT a limit** - it is generated at run time from
   `_common.canonical_property_fields()`, so it is always the live set the pipeline
-  carries (47 reader-fillable names: `areaUnit, breeam, brochureLink, carParking,
-  city, clearHeight, country, description, developer, district, districtProfile,
-  divisibleFrom, earlyAccess, electricity, epc, expansionBuilding, expansionPark,
-  floorLoad, incentives, landPrice, landlord, lat, leaseTerm, lng, loadingDocks,
-  mapLink, motorway, officeArea, officeRent, overheadDoors, park, permitting,
-  plotArea, postcode, region, reit, rentFree, rentUnit, serviceCharge, sprinklers,
-  status, truckParking, unit, warehouseArea, warehouseAreaSqm, warehouseRent,
-  warehouseRentVal`). Read `fields` from
+  carries (51 reader-fillable names: `areaUnit, breeam, brochureLink, carParking,
+  city, clearHeight, country, description, developer, displayName, district,
+  districtProfile, divisibleFrom, earlyAccess, electricity, epc, expansionBuilding,
+  expansionPark, floorLoad, incentives, landPrice, landlord, lat, leaseTerm, lng,
+  loadingDocks, mapLink, motorway, officeArea, officeRent, overheadDoors, park,
+  permitting, plotArea, postcode, region, reit, rentFree, rentUnit, serviceCharge,
+  sprinklers, status, streetViewLink, truckParking, unit, videoLink, warehouseArea,
+  warehouseAreaSqm, warehouseRent, warehouseRentVal, websiteLink`). Read `fields` from
   the manifest rather than trusting this copy. Each entry is an OBJECT `{name, type,
   fills, format?}` (an older manifest carries bare names): `type` is the JSON shape the
   pipeline validates the value against, `format` says how to write it where the type

@@ -87,8 +87,8 @@ def main() -> int:
        "...so the degraded (jsonschema-less) path type-checks it too")
     ck("unit" in C._COERCE_STR,
        "...and a tracker's bare numeric designator is coerced to a string, not a schema failure")
-    ck(C.fill_render_sentinels({"unit": None}).get("unit") == "tbd",
-       "an unstated unit becomes the honest 'tbd' sentinel, never an invented value")
+    ck(C.fill_render_sentinels({"unit": None}).get("unit") == C.BLANK,
+       "an unstated unit becomes the honest blank sentinel, never an invented value")
     ck(C.fill_render_sentinels({"unit": 3}).get("unit") == "3",
        "a bare numeric designator is coerced to '3'")
 

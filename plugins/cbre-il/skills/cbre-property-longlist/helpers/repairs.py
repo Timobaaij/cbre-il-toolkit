@@ -101,8 +101,10 @@ not land:
   * `expect` is compared against the property's CURRENT values; any mismatch -> SUPERSEDED.
     This is what makes the entry safe across a re-match: if identity moved under it, the
     guard fires instead of the value. Absence is one bucket for this comparison: a field a
-    gate struck holds None but reads `tbd` everywhere a human looks, so `expect: {"f": "tbd"}`
-    matches it (see `_expect_same`).
+    gate struck holds None but reads as the blank sentinel everywhere a human looks, so
+    `expect: {"f": "tbd"}` matches it (see `_expect_same`) - and still does after v45 changed
+    the sentinel, because 'tbd' remains a recognised unknown FORM even though it is no longer
+    the one written.
   * a denied field -> INVALID. `id`/`photo`/`gallery`/`plan`/`preBaked` are structural or
     media (media has its own key); `areaUnit`/`rentUnit` are denied for the same reason
     overrides deny them - they relabel every figure at once, which is the 10.76x error class.
@@ -634,7 +636,7 @@ def _render_boundary_form(field: str, value):
     run.py's `_coerce_repaired_scalars` re-runs that function over canonical ITSELF once the
     repairs stage has written (A3a), so a repaired value meets it exactly as an override does
     pre-merge. Two of its effects matter here: a value that reads as an unknown form in a
-    chrome-read field is replaced by the field's sentinel ("to be confirmed" -> "tbd"), and a
+    chrome-read field is replaced by the field's sentinel ("to be confirmed" -> BLANK), and a
     numeric in a string-typed field is coerced to text (12 -> "12"). The first is a value the
     operator wrote and the card will not show; the second reads back as the same value under
     `_same` and is benign. Computed on a scratch dict so nothing here touches the property."""
@@ -1233,7 +1235,9 @@ def apply(canonical: dict, entries: list, base_dir: Path | None = None,
                 # a value now removed is answered by the repair's own cleared row - marking it
                 # [RESOLVED ... the card now ships ...] would put a claim about a shipped value
                 # next to a field that no longer ships one.
-                if ch.get("cleared") or ch["to"] in (None, "tbd"):
+                # v45: the family, not one spelling - the render sentinel is now
+                # normalize.BLANK and a pre-v45 canonical still carries 'tbd'.
+                if ch.get("cleared") or ch["to"] is None or _N.looks_unknown(ch["to"]):
                     continue  # nothing to correct the note WITH - the field is still unknown
                 prefix = f"id {pid} {field}:"
                 # Two stale-note shapes precede this repair: a plausibility-band STRIKE

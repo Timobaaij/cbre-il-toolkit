@@ -630,7 +630,9 @@ _LOC_QUOTED_RE = re.compile(
 _LOC_NUM_RE = re.compile(r"(?<![A-Za-z0-9.,])(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(?![A-Za-z0-9])")
 # fields whose value is media, a coordinate or an id: a figure inside them is not a stated datum
 _LOC_SKIP_FIELDS = frozenset({"photo", "plan", "gallery", "preBaked", "lat", "lng", "id",
-                              "coordsApprox", "regionCode", "mapLink", "brochureLink"})
+                              "coordsApprox", "regionCode", "mapLink", "brochureLink",
+                              # v45: a figure inside a URL is part of the URL
+                              "videoLink", "websiteLink", "streetViewLink"})
 
 
 def _figures(text) -> set:
@@ -2499,18 +2501,19 @@ def cmd_i18n(args) -> int:
             issues.append("kpi_wh_area_sub_fmt lost its {area} placeholder in the resolved UI")
         if "{unit}" not in str(ui.get("kpi_rent_sub_fmt", "")):
             issues.append("kpi_rent_sub_fmt lost its {unit} placeholder in the resolved UI")
-        # hero_lede_fmt's {count} is deliberately an ADVISORY NOTE, not an issue. The two
-        # clauses above guard a CRASH (compute_kpis .format()s them); losing {count} only
-        # costs the lede its property count, and build_dashboard._hero_copy already
-        # self-heals to the EN string. Blocking here would be an UNCLEARABLE exit 7 for a
-        # bundled language: cmd_i18n runs POST-build, and a bundled pack is a shipped,
-        # integrity-tracked asset with no runtime override - the only "remedy" would be
-        # hand-editing it, which SKILL.md forbids. evals/i18n_test.py is the dev-time
-        # tripwire that catches a pack losing it.
-        if "{count}" not in str(ui.get("hero_lede_fmt", "")):
-            print("  [note] hero_lede_fmt lost its {count} placeholder in the resolved UI - "
-                  "the lede falls back to the English default so it still states the count; "
-                  "fix the pack's hero_lede_fmt when convenient (advisory, not blocking)")
+        # v45: the advisory note follows the placeholder. hero_lede_fmt's {count} went with
+        # the lede paragraph; hero_title_html's {client} replaced it as the one placeholder a
+        # pack can lose without crashing anything. It stays ADVISORY for the reason the old
+        # clause was: the two clauses above guard a CRASH (compute_kpis .format()s them),
+        # while losing {client} only costs the headline the occupier's name. Blocking would
+        # be an UNCLEARABLE exit 7 for a bundled language - cmd_i18n runs POST-build and a
+        # bundled pack is a shipped, integrity-tracked asset with no runtime override, so the
+        # only "remedy" would be hand-editing it, which SKILL.md forbids. evals/i18n_test.py
+        # is the dev-time tripwire that catches a pack losing it.
+        if "{client}" not in str(ui.get("hero_title_html", "")):
+            print("  [note] hero_title_html lost its {client} placeholder in the resolved UI - "
+                  "the headline ships the pack's own wording without the client name; "
+                  "fix the pack's hero_title_html when convenient (advisory, not blocking)")
 
     if issues:
         for i in issues:

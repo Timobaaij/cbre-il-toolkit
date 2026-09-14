@@ -37,7 +37,7 @@ Rules honoured here:
     field simply omits its row - so there is no 'val_tbc' chrome key any more.
   - Values are free of {{double-brace}} sequences (would trip find_leftover_tokens).
     Single-brace placeholders appear ONLY in the two KPI-sub format strings ({area},
-    {unit}, consumed by .format()) and in hero_lede_fmt ({count}, consumed by
+    {unit}, consumed by .format()) and in hero_title_html ({client}, consumed by
     .replace() in build_dashboard._hero_copy - deliberately NOT .format(), so a
     translator's stray brace degrades the lede instead of crashing the build).
 """
@@ -74,15 +74,16 @@ EN = {
     # are the localised DEFAULT only: a non-blank market.eyebrow / title_html / lede in
     # project.yaml still ships VERBATIM (the broker's own words win, in any language).
     # hero_title_html carries ONE <em>...</em> pair - the accent colour hangs off it.
-    # hero_lede_fmt's {count} is single-brace and is filled by .replace(), NOT .format(),
-    # so a translator's stray brace cannot crash the build; a pack that loses {count}
-    # self-heals to the EN string in build_dashboard._hero_copy.
-    "hero_eyebrow": "Property Shortlist",
-    "hero_title_html": "Logistics <em>options</em> for your next facility.",
-    "hero_lede_fmt": ("{count} logistics development opportunities. Switch between the map "
-                      "and grid, filter by country, city, developer or scale, and compare "
-                      "properties side-by-side with drive-time estimates to the main ports, "
-                      "rail terminals, airports and border crossings."),
+    # v45: it also carries {client}, filled by .replace() (never .format()) in
+    # build_dashboard._hero_copy, so the largest text on the page names the OCCUPIER the
+    # longlist was built for rather than describing the asset class in the abstract. A
+    # blank meta.client drops the placeholder AND the separator in front of it, so no
+    # dashboard ever ships a headline opening on a dangling dash; a pack that loses the
+    # placeholder ships its own wording unchanged, exactly as before.
+    # The REGION is deliberately NOT in the headline: one longlist regularly spans two of
+    # them, and a stated region that the option set then outgrows is worse than no region.
+    "hero_eyebrow": "Property Longlist",
+    "hero_title_html": "{client} - Industrial &amp; Logistics <em>opportunities</em>",
 
     # --- View tabs ----------------------------------------------------------
     "tab_grid": "Grid",
@@ -153,7 +154,6 @@ EN = {
     "poi_port": "Seaports",
     "poi_rail": "Rail terminals",
     "poi_air": "Airports",
-    "poi_border": "Border crossings",
     "poi_city": "Major cities",
 
     # --- Compare tray -------------------------------------------------------
@@ -198,7 +198,7 @@ EN = {
     "row_warehouse": "Warehouse",
     "row_clear_height": "Clear height",
     "row_status": "Status",
-    "row_early_access": "Early access",
+    "row_early_access": "Available date",
     "card_alert_max_compare": "You can compare up to 4 properties at a time.",
     "tray_remove": "Remove",
 
@@ -212,9 +212,13 @@ EN = {
     # --- Modal: hero / head -------------------------------------------------
     "img_toggle_photo": "Aerial / Render",
     "img_toggle_plan": "Site Plan",
-    "modal_early_access_prefix": "Early access",
+    "modal_early_access_prefix": "Available",
     "modal_open_maps": "Open in Google Maps ↗",
     "modal_open_brochure": "View brochure ↗",
+    # v45: one chip each, emitted only for a stated http(s) URL (detailHTML.linkChip).
+    "modal_open_video": "Watch video ↗",
+    "modal_open_website": "Visit website ↗",
+    "modal_open_streetview": "Street View ↗",
     "modal_approx_note": ("Coordinates are approximate — exact site location to be "
                           "confirmed by developer."),
 
@@ -235,7 +239,7 @@ EN = {
     "row_landlord": "Landlord",
     "row_property_status": "Property status",
     "row_permitting": "Permitting",
-    "row_early_access_date": "Early access date",
+    "row_early_access_date": "Available date",
     "row_floor_load": "Floor load",
     "row_sprinklers": "Sprinklers",
     "row_loading_docks": "Loading docks",
@@ -260,7 +264,7 @@ EN = {
     "cmp_developer": "Developer",
     "cmp_motorway": "Motorway",
     "cmp_status": "Status",
-    "cmp_early_access": "Early access",
+    "cmp_early_access": "Available date",
     "cmp_certification": "Certification",
     # --- Distance table -----------------------------------------------------
     "dist_th_destination": "Destination",
@@ -324,10 +328,8 @@ EN = {
     # --- Compare modal ------------------------------------------------------
     "cmp_side_by_side": "Side-by-side comparison",
     "cmp_properties_compared_suffix": "properties compared",
-    "cmp_highlight_note": "Largest warehouse and lowest rent highlighted",
     "cmp_attribute": "Attribute",
     "cmp_nearest_city": "Nearest major city",
-    "cmp_nearest_border": "Nearest border",
     "cmp_nearest_airport": "Nearest airport",
     "cmp_nearest_rail": "Nearest rail",
     "cmp_nearest_seaport": "Nearest seaport",

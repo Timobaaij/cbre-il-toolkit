@@ -370,7 +370,7 @@ def _ov_absent_like(v) -> bool:
     A stated "none"/"None" is DATA (contract C5). Two `expect` outcomes MOVE here as a result,
     both deliberate and both mirrored in repairs: `expect: tbd` against a record holding "none"
     now SUPERSEDES (the card shows "none"), and `expect: none` against a struck field (None) now
-    supersedes (the card shows "tbd"). Two WIDEN: `expect: TBA` and `expect: ??` against a struck
+    supersedes (the card shows the blank sentinel). Two WIDEN: `expect: TBA` and `expect: ??` against a struck
     field now match. Imported inside the function so merge's import graph does not change."""
     import repairs as _RP
     return _RP._absent_like(v)
@@ -380,8 +380,10 @@ def _ov_expect_same(cur, want) -> bool:
     """`expect` equality where BOTH SIDES ABSENT is a match (the twin of repairs._expect_same).
 
     A field an extractor left unset holds None, while the ledger, the Gaps Report and the card
-    all render it `tbd`. Comparing str(None) to 'tbd' made the documented `expect` form refuse
-    every such entry as SUPERSEDED, so the guard fired on its own correct premise.
+    all render it as an unknown (the card's word for that is normalize.BLANK since v45; the
+    ledger and the report still say 'tbd'). Comparing str(None) to a sentinel spelling made the
+    documented `expect` form refuse every such entry as SUPERSEDED, so the guard fired on its
+    own correct premise.
     """
     if isinstance(cur, (int, float)) and not isinstance(cur, bool):
         try:
@@ -1193,7 +1195,7 @@ def _pick_gate_verdict(field: str, value, rent_unit: str | None = None,
         a client card that way.
 
     The enum/count/height gates below are deliberately conservative, because a gate that fires now
-    strikes a field to "tbd": `breeam` passes on CONTAINING a band word (so "Target BREEAM
+    strikes a field to the blank sentinel: `breeam` passes on CONTAINING a band word (so "Target BREEAM
     Excellent" and "Excellent (targeted)" are fine and only a non-band fails), and an eaves height
     stated in FEET returns "none" rather than being judged against a metre band.
 
@@ -4089,7 +4091,7 @@ def load_hero(project_yaml: Path | None, properties: list[dict], default_date: s
     compiled = out.get("compiled_date") or default_date or _dt.date.today().isoformat()
     # HERO COPY: carry ONLY what the broker authored. The eyebrow / headline / lede
     # DEFAULTS are no longer English literals here - they live in i18n.py as
-    # hero_eyebrow / hero_title_html / hero_lede_fmt and are applied by
+    # hero_eyebrow / hero_title_html (v45 removed hero_lede_fmt) and are applied by
     # build_dashboard._hero_copy in the dashboard's own language. Two consequences,
     # both deliberate:
     #   * a BLANK value stays blank through merge and picks up the LOCALISED default at
@@ -4104,7 +4106,6 @@ def load_hero(project_yaml: Path | None, properties: list[dict], default_date: s
         "topbar_meta": (f"{region_label} · {compiled}".strip(" ·")) or compiled,
         "eyebrow": market.get("eyebrow") or "",
         "title_html": market.get("title_html") or "",
-        "lede": market.get("lede") or "",
         "footer_copyright": f"© {compiled[:4]} CBRE · {client} shortlist compiled {compiled}",
     }
     return hero

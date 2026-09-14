@@ -212,6 +212,9 @@ def force_utf8_stdout() -> None:
 # drift. (Honest limit: detectable, not unremovable - see NOTICE.)
 OWNER_NOTICE = "© 2026 Timo Baaij (timo.baaij@cbre.com). All rights reserved."
 OWNER_MARK = "cbre-property-longlist::owner=timo.baaij@cbre.com::2026"
+# v45: re-exported so the ~20 modules that already `import _common as C` reach the one
+# definition (normalize.BLANK) without a second import line each. ONE token, one owner.
+BLANK = _N.BLANK
 OWNER_FINGERPRINT = "tb-cpl-7f3a9e2c"
 OWNER_CANARY = "\u200b\u200c\u200b\u200c\u200c\u200b\u200c\u200b"  # ZW provenance canary (escape sequences -> no invisible bytes in source)
 
@@ -226,7 +229,11 @@ DATA_MARKERS = {
 # BCP-47 {{locale}}; the template's app <script> reads `const UI = {{ui_json}}` and
 # `const LOCALE = "{{locale}}"`, then localises chrome at render via data-i18n*/T().
 CONFIG_TOKENS = [
-    "topbar_meta", "eyebrow", "title_html", "lede", "footer_copyright", "doc_title",
+    # v45: `lede` is gone. The hero paragraph it filled was removed from the template:
+    # the KPI strip states the count the lede restated, and the filters it described are
+    # visible two rows below it, so it cost a screenful above the first card and said
+    # nothing the reader could not already see.
+    "topbar_meta", "eyebrow", "title_html", "footer_copyright", "doc_title",
     "kpi_properties", "kpi_countries", "kpi_regions",     "kpi_wh_area", "kpi_rent", "kpi_countries_sub", "kpi_regions_sub",
     "kpi_wh_area_sub", "kpi_rent_sub", "dist_mode", "ui_json", "locale",
 ]
@@ -442,7 +449,7 @@ def _structural_errors(data: dict) -> list[str]:
                 if v is None or f not in p:
                     continue
                 if _N.looks_unknown(v):
-                    continue  # 'tbd'/'??' is the honest unknown, not a type error
+                    continue  # the blank sentinel / '??' is the honest unknown, not a type error
                 if isinstance(v, bool) or not isinstance(v, (int, float)):
                     errors.append(f"property id={pid} field {f} must be a number, "
                                   f"got {type(v).__name__} ({str(v)[:24]!r})")
@@ -541,6 +548,13 @@ STRING_FIELDS = [
     # canonical home for it at all, so two genuinely different units on one park rendered as
     # two identical-looking cards, in the grid and in both sets of compare chips.
     "unit",
+    # v45: `displayName` - the CLIENT'S OWN name for this option, exactly as their tracker
+    # prints it ('Titan, Knowsley Business Park'). It is on this list rather than only in the
+    # schema for the same three reasons `unit` is: an unstated one fills the honest blank (and
+    # titleStr() renders nothing for a sentinel, falling back to park + unit); a tracker's bare
+    # numeric is coerced to a string instead of hard-failing validate-data; and a populated one
+    # must carry a ledger row, which is right - it becomes the largest string on the card.
+    "displayName",
 ]
 
 
@@ -550,8 +564,11 @@ STRING_FIELDS = [
 # validate-data with "'<field>' is a required property". Coverage still counts
 # these as unfilled (it tests for non-'tbd'), so a thin record is still surfaced -
 # the sentinel only prevents the schema crash, it never masks a gap.
-REQUIRED_TEXT_SENTINELS = {"developer": "tbd", "city": "tbd", "park": "tbd",
-                           "status": "tbd", "country": "??"}
+# v45: the text sentinel is normalize.BLANK (one definition, shared with the chrome's own
+# BLANK). `country` keeps "??" - it holds an ISO alpha-2 CODE, and the chrome's flag lookup
+# and the country KPI both read it as a code, not as prose.
+REQUIRED_TEXT_SENTINELS = {"developer": _N.BLANK, "city": _N.BLANK, "park": _N.BLANK,
+                           "status": _N.BLANK, "country": "??"}
 
 # chrome fields the schema types as string; an honest numeric value from ANY
 # extractor (e.g. loadingDocks: 12 from a tracker/vision record) is coerced to a
@@ -614,7 +631,9 @@ IDENTIFIER_FIELDS = frozenset({
     "officeArea", "divisibleFrom", "earlyAccess",
     # addresses/postcodes are identifiers, never prose (a translated address is a wrong
     # address); link display-texts are stubs
-    "address", "postcode", "brochureLink",
+    # v45: the three media links join brochureLink for the same reason - a URL is an
+    # identifier, and a translated one is a broken one.
+    "address", "postcode", "brochureLink", "videoLink", "websiteLink", "streetViewLink",
 })
 # B53: the unit class admits DIGITS, so "50 kN/m2" and "2.4 MVA" read as figure+unit rather than
 # prose. A space inside the tail still fails the match, so "2 storey office" stays translatable.
@@ -721,7 +740,7 @@ def fill_render_sentinels(p: dict) -> dict:
     """Fill every chrome-read key with its sentinel (honest unknown, never invented)."""
     for f in STRING_FIELDS:
         if _N.looks_unknown(p.get(f)):
-            p[f] = "tbd"
+            p[f] = _N.BLANK
     for f, sentinel in REQUIRED_TEXT_SENTINELS.items():
         # CODE-SCOPED for a field holding a CODE. `country` holds an ISO alpha-2 code after
         # merge, and three members of the shared unknown family are also ASSIGNED alpha-2 codes
@@ -738,7 +757,7 @@ def fill_render_sentinels(p: dict) -> dict:
         if unknown:
             p[f] = sentinel
     if _N.looks_unknown(p.get("landPrice")):
-        p["landPrice"] = "—"
+        p["landPrice"] = _N.BLANK
     if "reit" not in p:
         p["reit"] = None
     if _N.looks_unknown(p.get("mapLink")):

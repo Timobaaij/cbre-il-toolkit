@@ -38,34 +38,64 @@ def _fmt_thousands_k(lo: float, hi: float) -> str:
     return f"{one(lo)} - {one(hi)}k"
 
 
-def _hero_copy(hero: dict, ui: dict, n: int) -> dict:
-    """The three hero CONFIG TOKENS (eyebrow / title_html / lede), localised.
+#: POI types the chrome renders. v45 retired the BORDER category from every surface (the
+#: filter chips, Location and Reach, the modal mini-map, Compare and the Flyover), so a border
+#: crossing would ship as a row of data that nothing on the page can show. Filtering HERE, at
+#: the render boundary, rather than in enrich: the border dataset, its selection and its
+#: coverage checks are all still correct and still tested, and re-enabling the category is a
+#: one-line change in both places. A POI with no stated type is KEPT - dropping records on a
+#: missing field is how a filter becomes a silent data loss.
+DISPLAY_POI_TYPES = frozenset({"air", "port", "rail", "city"})
+
+
+def _display_pois(pois: list) -> list:
+    out = []
+    for q in (pois or []):
+        t = str((q or {}).get("type") or "").strip().lower()
+        if t and t not in DISPLAY_POI_TYPES:
+            continue
+        out.append(q)
+    return out
+
+
+def _hero_copy(hero: dict, ui: dict, client: str = "") -> dict:
+    """The two hero CONFIG TOKENS (eyebrow / title_html), localised.
 
     Precedence: whatever the broker authored in project.yaml ships VERBATIM (in any
     language, unmodified - no English prefix is composed onto it any more); a BLANK value
-    falls back to the dashboard language's default from the i18n table. These three used
-    to be hard-coded English literals in merge.load_hero, which is why the largest text on
-    the page rendered in English in all 12 supported languages.
+    falls back to the dashboard language's default from the i18n table. These used to be
+    hard-coded English literals in merge.load_hero, which is why the largest text on the
+    page rendered in English in all 12 supported languages.
 
-    {count} is filled with .replace(), NOT .format(): a translator's stray brace must
-    degrade the lede, never crash the build. And a pack whose hero_lede_fmt LOST {count}
-    self-heals to the EN string rather than shipping a lede with no number - the graceful
-    path matters because cmd_i18n runs POST-build, so a blocking check here would be an
-    unclearable exit 7 for a bundled language (its pack is a shipped, integrity-tracked
-    asset with no runtime override). Everything here is derived from canonical + the
-    resolved UI, so validate-html's byte-identity re-render is unaffected."""
-    lede_fmt = str(ui.get("hero_lede_fmt") or "")
-    if "{count}" not in lede_fmt:
-        lede_fmt = str(I18N.EN.get("hero_lede_fmt", ""))
+    v45: the DEFAULT headline names the occupier - "{client} - Industrial & Logistics
+    opportunities" - so the biggest text on the page says who the longlist is FOR instead
+    of describing the asset class to the person who commissioned it. Three details:
+      * {client} is filled with .replace(), NOT .format(), for the reason the removed
+        lede's {count} was: a translator's stray brace must degrade the headline, never
+        crash the build. A pack that carries no placeholder ships its wording untouched.
+      * a BLANK client drops the placeholder AND the separator standing in front of it, so
+        no dashboard opens on a dangling dash. The separator is matched as a CLASS rather
+        than as the EN " - ", because a pack is free to join the two halves its own way and
+        the dangling-punctuation problem is identical in every language.
+      * an AUTHORED title_html is never touched: a broker who wrote their own headline did
+        not ask for a client name to be composed into it.
+    The v44 `lede` token is gone with the paragraph it filled (_common.CONFIG_TOKENS).
+    Everything here is derived from canonical + the resolved UI, so validate-html's
+    byte-identity re-render is unaffected."""
+    authored = str(hero.get("title_html") or "").strip()
+    title = authored or str(ui.get("hero_title_html") or "")
+    if not authored and "{client}" in title:
+        name = str(client or "").strip()
+        title = (title.replace("{client}", name) if name
+                 else re.sub(r"^\s*\{client\}\s*[-\u2013\u2014\u00b7:,|]?\s*", "", title)
+                        .replace("{client}", ""))
     return {
         "eyebrow": str(hero.get("eyebrow") or "").strip() or str(ui.get("hero_eyebrow") or ""),
-        "title_html": (str(hero.get("title_html") or "").strip()
-                       or str(ui.get("hero_title_html") or "")),
-        "lede": str(hero.get("lede") or "").strip() or lede_fmt.replace("{count}", str(n)),
+        "title_html": title,
     }
 
 
-def _doc_title(hero: dict, meta: dict) -> str:
+def _doc_title(hero: dict, meta: dict, authored: dict | None = None) -> str:
     """The browser-tab <title> ({{doc_title}}). An explicit hero.doc_title wins (authored
     per project, in the chosen language); else DERIVE from the eyebrow / headline / client
     so the tab ALWAYS adapts to the project instead of the old hardcoded 'CEE ... Shortlist'
@@ -76,10 +106,23 @@ def _doc_title(hero: dict, meta: dict) -> str:
     explicit = strip(hero.get("doc_title"))
     if explicit:
         return explicit
-    base = strip(hero.get("eyebrow")) or strip(hero.get("title_html")) or strip(meta.get("client"))
+    # v45: AUTHORED first, then the resolved default, and the HEADLINE ahead of the eyebrow
+    # within each. Two rules meet here and the order is what keeps both:
+    #   * v20 - the tab adapts to the PROJECT. A broker who wrote an eyebrow (often the only
+    #     hero string they write, and often the market: "Lista de naves ... Espana") must see
+    #     it in the tab, so an authored string of either kind outranks any default.
+    #   * v45 - with nothing authored, the DEFAULT headline now names the occupier
+    #     ("Matalan - Industrial & Logistics opportunities"), which identifies the file among
+    #     nine open tabs far better than an eyebrow that reads the same on every project.
+    # `authored` is the raw project.yaml hero; `hero` is that merged with the resolved copy,
+    # so the two are only distinguishable by passing both (see the call site).
+    a = authored or {}
+    base = (strip(a.get("title_html")) or strip(a.get("eyebrow"))
+            or strip(hero.get("title_html")) or strip(hero.get("eyebrow"))
+            or strip(meta.get("client")))
     if not base:
-        return "CBRE Property Shortlist"
-    return base if "cbre" in base.lower() else base + " — CBRE"
+        return "CBRE Property Longlist"
+    return base if "cbre" in base.lower() else base + " · CBRE"
 
 
 def _dominant_country(props: list[dict]) -> str:
@@ -164,12 +207,12 @@ def compute_kpis(props: list[dict], regions: dict, units: dict | None = None,
         "kpi_properties": str(len(props)),
         "kpi_countries": str(len(country_set)),
         "kpi_regions": str(n_regions),
-        "kpi_wh_area": _fmt_thousands_k(min(areas), max(areas)) if areas else "tbd",
+        "kpi_wh_area": _fmt_thousands_k(min(areas), max(areas)) if areas else C.BLANK,
         "kpi_rent": ((f"{cur}{min(rents):g}" if min(rents) == max(rents)
-                      else f"{cur}{min(rents):g} - {max(rents):g}") if rents else "tbd"),
+                      else f"{cur}{min(rents):g} - {max(rents):g}") if rents else C.BLANK),
         "kpi_wh_area_sub": (ui.get("kpi_wh_area_sub_fmt") or "{area} per building").format(area=area_unit),
         "kpi_rent_sub": (ui.get("kpi_rent_sub_fmt") or "per {unit} / year").format(unit=per),
-        "kpi_countries_sub": " · ".join(sorted(country_set)) if countries else "tbd",
+        "kpi_countries_sub": " · ".join(sorted(country_set)) if countries else C.BLANK,
         # ALWAYS static: region labels are often derived from source-file names
         # (intake clustering), so enumerating them leaked filename junk into the
         # hero KPI strip on a real run. The count carries the information.
@@ -308,18 +351,21 @@ def render(data: dict, strict: bool = True) -> tuple[str, dict]:
     # merge.load_hero, so the biggest text on the page was English in every language);
     # a broker-authored value ships verbatim. Derived from canonical + the resolved UI,
     # so validate-html's byte-identity re-render is unaffected.
-    hero_copy = _hero_copy(hero, ui, len(props))
+    # v45: the CLIENT is passed in (not the property count the removed lede needed), so the
+    # default headline can name the occupier this longlist was built for.
+    hero_copy = _hero_copy(hero, ui, meta.get("client", ""))
     tokens = {
         "topbar_meta": hero.get("topbar_meta", ""),
         "eyebrow": hero_copy["eyebrow"],
         "title_html": hero_copy["title_html"],
-        "lede": hero_copy["lede"],
         "footer_copyright": hero.get("footer_copyright", ""),
         # browser-tab <title> ({{doc_title}}): adapts per project + language (was a
         # hardcoded "CEE Logistics Property Shortlist" default baked into the template).
         # Fed the RESOLVED hero so the tab derives from the localised eyebrow/headline
         # instead of the now-blank merge value.
-        "doc_title": _doc_title({**hero, **hero_copy}, meta),
+        # `hero` (raw, as authored) is passed alongside the merge so _doc_title can tell an
+        # authored string from a localised default - see its docstring.
+        "doc_title": _doc_title({**hero, **hero_copy}, meta, authored=hero),
     }
     # dist_mode reflects the BUILD-time enrichment state so the dashboard can label
     # the distance/drive-time columns honestly (est. = straight-line, car / HGV =
@@ -370,7 +416,7 @@ def render(data: dict, strict: bool = True) -> tuple[str, dict]:
         return f"const {name} = {body};"
 
     out = out.replace(C.DATA_MARKERS["PROPS"], block("PROPS", props))
-    out = out.replace(C.DATA_MARKERS["POIS"], block("POIS", pois))
+    out = out.replace(C.DATA_MARKERS["POIS"], block("POIS", _display_pois(pois)))
     out = out.replace(C.DATA_MARKERS["REGIONS"], block("REGIONS", regions))
 
     # --- 3. integrity ---------------------------------------------------------
@@ -415,7 +461,11 @@ def build(canonical_path: Path, out_path: Path) -> dict:
         "template_chrome_sha256": version.get("chrome_sha256"),
         "output": str(out_path),
         "output_bytes": len(out.encode("utf-8")),
-        "counts": {"properties": len(props), "pois": len(pois), "regions": len(regions)},
+        # v45: the POI count is what SHIPPED, not what canonical carried - _display_pois
+        # drops a type the chrome has no surface for (see DISPLAY_POI_TYPES), and a report
+        # that counted the input would disagree with the file it describes.
+        "counts": {"properties": len(props), "pois": len(_display_pois(pois)),
+                   "regions": len(regions)},
         "config_tokens": tokens,
     }
     report_path = out_path.with_suffix(".build_report.json")
@@ -423,7 +473,8 @@ def build(canonical_path: Path, out_path: Path) -> dict:
 
     mb = report["output_bytes"] / (1024 * 1024)
     print(f"OK built {out_path} ({mb:.2f} MB) | "
-          f"{len(props)} properties, {len(pois)} POIs, {len(regions)} regions")
+          f"{len(props)} properties, {len(_display_pois(pois))} POIs, "
+          f"{len(regions)} regions")
     print(f"   report: {report_path}")
     return report
 

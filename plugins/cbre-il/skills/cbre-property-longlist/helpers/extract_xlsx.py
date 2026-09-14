@@ -137,6 +137,18 @@ COLUMN_MAP = {
     "brochureLink": ["brochure", "online brochure", "online brochure link",
                       "brochure link", "brochure url", "particulars",
                       "marketing brochure", "listing link", "listing url"],
+    # v45: three more stated links, each rendered as its own chip in the modal. Kept
+    # NARROW on purpose - a tracker column headed "link" alone is ambiguous and stays
+    # unbound rather than being guessed into one of these.
+    "videoLink": ["video", "video link", "video url", "flythrough", "fly-through",
+                  "drone video", "walkthrough video", "video tour"],
+    "websiteLink": ["website", "web site", "website link", "website url", "microsite",
+                    "property website", "scheme website", "unit website"],
+    "streetViewLink": ["street view", "streetview", "street view link", "street view url",
+                       "google street view", "360 tour", "360 view"],
+    # v45: the client's own short name for the option, as their tracker prints it.
+    "displayName": ["display name", "displayname", "short name", "option name",
+                    "property name", "building name", "scheme name"],
     "latlng": ["latitude, longitude", "lat, long", "lat/long", "coordinates",
                "lat lng", "latlong", "lat long", "long lat", "lat & long",
                "lat lon", "gps"],

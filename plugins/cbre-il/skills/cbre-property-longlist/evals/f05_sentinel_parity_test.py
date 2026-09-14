@@ -188,8 +188,11 @@ def main() -> int:
     print("== the consequences the contract names ==")
     ck(N.sentinel("None") == "None" and N.sentinel("none") == "none",
        "sentinel() ships a stated 'None' verbatim (a stated negative is DATA)")
-    ck(N.sentinel("TBA") == "tbd" and N.sentinel("TBS") == "tbd" and N.sentinel("??") == "tbd",
-       "sentinel() maps TBA / TBS / ?? to the honest 'tbd'")
+    # v45: the token is normalize.BLANK, read from the module rather than restated here, so
+    # this stays a parity check between the readers and the ONE owner of the spelling.
+    ck(N.sentinel("TBA") == N.BLANK and N.sentinel("TBS") == N.BLANK
+       and N.sentinel("??") == N.BLANK,
+       f"sentinel() maps TBA / TBS / ?? to the honest {N.BLANK}")
     ck(C.fill_render_sentinels({"country": "TBA"})["country"] == "??",
        "a country a reader shipped as TBA renders as the honest '??', never as a country")
     ck(C.fill_render_sentinels({"sprinklers": "None"}).get("sprinklers") == "None",

@@ -15,11 +15,10 @@ client:
   name: Normal                 # display + deliverable filenames
   confidential: true           # informational; nothing in the pipeline reads it
 market:
-  title_html: "CEE logistics <em>options</em> for your next facility."  # hero <h1> (HTML allowed)
+  title_html: ""               # hero <h1> (HTML allowed). BLANK renders the localised default, which names the client: "<client> - Industrial & Logistics opportunities". Keep ONE <em>..</em> pair for the accent colour
   eyebrow: "Hungary, Czech Republic & Slovakia"                          # hero eyebrow
   region_label: "CEE"          # topbar meta prefix
   countries: ["HU", "CZ", "SK"]  # seeded ONCE by the scaffold from the KNOWN cluster countries; informational (the dashboard derives its country filter from the records)
-  lede: ""                     # optional; a sensible default is generated if blank
 output:
   filename: "CBRE_Property_Dashboard_Normal.html"
   compiled_date: "2026-04-23"  # ISO; defaults to today if blank
@@ -64,7 +63,7 @@ clarify:
 ### Which keys are read, and by what
 Not every key in the scaffold feeds a stage. Knowing which do stops a broker correcting a value that nothing will ever read:
 
-| read by the helpers | `setup.confirmed`, `client.name`, `market.title_html` / `eyebrow` / `region_label` / `lede`, `output.filename` / `compiled_date` / `language`, `inputs.emails.source`, `enrichment.geocode` / `pois` / `osrm` / `regions` / `ors_api_key`, `qa.fill_threshold`, `clarify.mode` / `assume_defaults` |
+| read by the helpers | `setup.confirmed`, `client.name`, `market.title_html` / `eyebrow` / `region_label`, `output.filename` / `compiled_date` / `language`, `inputs.emails.source`, `enrichment.geocode` / `pois` / `osrm` / `regions` / `ors_api_key`, `qa.fill_threshold`, `clarify.mode` / `assume_defaults` |
 |---|---|
 | read by the ORCHESTRATOR | `inputs.emails.outlook_folder` / `mailbox` / `query` / `folder`: they fill the slots of `prompts/outlook-ingest.md` |
 | informational only | `client.confidential`, `market.countries`, `inputs.folder`, `inputs.present_types`, `enrichment.osrm_endpoint`, and `inputs.clusters` (next line) |
@@ -148,7 +147,7 @@ both modes, because a question that cannot change the deliverable is not worth a
 interruption in either.
 
 ## Empty-string handling
-Blank `project.yaml` strings fall back to defaults (today's date, a generated lede, a generic eyebrow) - the build never emits empty hero text.
+Blank `project.yaml` strings fall back to defaults (today's date, the localised eyebrow, and the localised headline with `client.name` composed into it) - the build never emits empty hero text. A `market.lede` key is accepted and ignored: v45 removed the paragraph it filled.
 
 ## Correcting a datum - `work/overrides.json` (the full contract)
 

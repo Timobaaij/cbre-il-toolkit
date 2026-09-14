@@ -308,7 +308,9 @@ def main() -> int:
     mnl = re.search(r"const PROPS = (.*?);(?:\n|$)", html, re.DOTALL)
     if mnl:
         try:
-            if any(str(pp.get("landlord", "tbd")).strip().lower() not in ("tbd", "", "—")
+            # v45: the render sentinel is normalize.BLANK; read the FAMILY rather than a
+            # tuple of spellings, so this asserts "no real landlord shipped" as it always did.
+            if any(not C._N.looks_unknown(pp.get("landlord"))
                    for pp in json.loads(mnl.group(1))):
                 fails.append("v18: the no-landlord fixture unexpectedly carries a real landlord value")
         except Exception:
@@ -328,10 +330,24 @@ def main() -> int:
     import copy as _copy20
     es_variant = _copy20.deepcopy(CANON)
     es_hero = es_variant["meta"].setdefault("hero", {})
-    es_hero["eyebrow"] = "Lista de naves logísticas · España"; es_hero.pop("doc_title", None)
+    # v45: _doc_title prefers an AUTHORED hero string over a resolved default, and the
+    # HEADLINE over the eyebrow within each tier - so this variant blanks the fixture's
+    # authored title_html to test what the assertion says: the eyebrow reaches the tab when
+    # it is the hero string the broker actually wrote. The authored-headline case is the
+    # second assertion below, so v45 widened this guard rather than narrowing it.
+    es_hero["eyebrow"] = "Lista de naves logísticas · España"
+    es_hero["title_html"] = ""; es_hero.pop("doc_title", None)
     m_es = re.search(r"<title>(.*?)</title>", build_dashboard.render(es_variant)[0], re.DOTALL)
     if not (m_es and "España" in m_es.group(1)):
         fails.append("v20: <title> does not adapt to the project (Spanish eyebrow did not reach the tab title)")
+    hl_variant = _copy20.deepcopy(CANON)
+    hl_hero = hl_variant["meta"].setdefault("hero", {})
+    hl_hero["title_html"] = "Naves <em>logísticas</em> para Acme"
+    hl_hero["eyebrow"] = "Lista de naves logísticas · España"; hl_hero.pop("doc_title", None)
+    m_hl = re.search(r"<title>(.*?)</title>", build_dashboard.render(hl_variant)[0], re.DOTALL)
+    if not (m_hl and "Acme" in m_hl.group(1) and "<em>" not in m_hl.group(1)):
+        fails.append("v45: an AUTHORED headline reaches the tab title ahead of the eyebrow, "
+                     f"tags stripped (got {m_hl.group(1) if m_hl else None!r})")
 
     # the modal renders CURATED rows only, each omitted when the property lacks it.
     # No key is auto-labelled and no row is derived from a property's own key set.

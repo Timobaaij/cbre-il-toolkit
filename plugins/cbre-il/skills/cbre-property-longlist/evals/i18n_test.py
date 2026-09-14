@@ -91,10 +91,11 @@ def _canon(language=None):
 # EN keys consumed in Python only (compute_kpis .format()/phrase), not referenced
 # in the template by data-i18n*/T() - they must NOT be flagged as orphans.
 # Keys consumed in PYTHON, never by a data-i18n* attribute or a T('...') call in the
-# template. The hero_* three are CONFIG TOKENS ({{eyebrow}}/{{title_html}}/{{lede}}) filled
-# by build_dashboard._hero_copy, so the template legitimately never references them by key.
+# template. The hero_* two are CONFIG TOKENS ({{eyebrow}}/{{title_html}}) filled by
+# build_dashboard._hero_copy, so the template legitimately never references them by key.
+# v45: hero_lede_fmt left with the lede paragraph it filled.
 PY_ONLY_KEYS = {"kpi_wh_area_sub_fmt", "kpi_rent_sub_fmt", "kpi_regions_sub",
-                "hero_eyebrow", "hero_title_html", "hero_lede_fmt"}
+                "hero_eyebrow", "hero_title_html"}
 
 
 def _template_keys(tpl: str):
@@ -137,12 +138,13 @@ def main() -> int:
         check("{area}" in I18N.TABLE[lang].get("kpi_wh_area_sub_fmt", "")
               and "{unit}" in I18N.TABLE[lang].get("kpi_rent_sub_fmt", ""),
               f"{lang}: kpi-sub format strings preserve the {{area}}/{{unit}} placeholders")
-        # The hero lede's {count} is filled by .replace() in build_dashboard._hero_copy.
-        # Losing it ships a lede with no property count. render() self-heals to EN rather
-        # than blocking (cmd_i18n runs post-build, so a block there is an unclearable
+        # v45: the headline's {client} replaced the removed lede's {count} as the one
+        # placeholder a pack can lose without crashing anything. Losing it ships a headline
+        # that does not name the occupier the longlist was built for. cmd_i18n notes it
+        # rather than blocking (it runs post-build, so a block there is an unclearable
         # exit 7 for a bundled pack) - THIS is the dev-time tripwire that catches it.
-        check("{count}" in I18N.TABLE[lang].get("hero_lede_fmt", ""),
-              f"{lang}: hero_lede_fmt preserves the {{count}} placeholder")
+        check("{client}" in I18N.TABLE[lang].get("hero_title_html", ""),
+              f"{lang}: hero_title_html preserves the {{client}} placeholder")
         check("<em>" in I18N.TABLE[lang].get("hero_title_html", "")
               and "</em>" in I18N.TABLE[lang].get("hero_title_html", ""),
               f"{lang}: hero_title_html keeps its <em>...</em> pair (the accent colour)")
@@ -425,11 +427,15 @@ def main() -> int:
     # (a) a BLANK hero picks up the table default rather than rendering empty
     bh_canon = _blank_hero("English")
     bh_html, bh_tok = build_dashboard.render(bh_canon)
+    # v45: the headline default carries {client}, so the comparison fills it the way
+    # _hero_copy does rather than expecting the raw table string.
     check(bh_tok["eyebrow"] == I18N.EN["hero_eyebrow"]
-          and bh_tok["title_html"] == I18N.EN["hero_title_html"],
-          f"blank hero falls back to the i18n default (got {bh_tok['eyebrow']!r})")
-    check("{count}" not in bh_tok["lede"] and "1" in bh_tok["lede"],
-          f"blank lede fills {{count}} from the property count (got {bh_tok['lede'][:60]!r})")
+          and bh_tok["title_html"] == I18N.EN["hero_title_html"].replace("{client}", "I18nCo"),
+          f"blank hero falls back to the i18n default (got {bh_tok['eyebrow']!r} / "
+          f"{bh_tok['title_html'][:48]!r})")
+    # v45: the lede token is gone; the headline is the string that composes a value in.
+    check("{client}" not in bh_tok["title_html"] and "I18nCo" in bh_tok["title_html"],
+          f"a blank headline fills {{client}} from meta.client (got {bh_tok['title_html'][:60]!r})")
     check(not C.find_leftover_tokens(bh_html),
           "a blank-hero build leaves no unfilled {{token}}")
 
@@ -451,22 +457,28 @@ def main() -> int:
     check(auth_tok["title_html"] == "Mein <em>eigener</em> Titel.",
           "a broker-authored title_html ships verbatim, not the table default")
 
-    # (d) SELF-HEAL: a pack whose hero_lede_fmt lost {count} must still state the count,
-    # never ship a countless lede. cmd_i18n runs POST-build, so a block there would be an
-    # unclearable exit 7 for a bundled pack - the graceful path is the design.
+    # (d) A LOST PLACEHOLDER DEGRADES, never blocks and never leaks. v45 retargeted this
+    # from the removed hero_lede_fmt {count} to hero_title_html {client}. The two behaviours
+    # that matter are unchanged: the build still ships, and no reader ever sees a raw
+    # placeholder. What differs is the remedy - the headline keeps the PACK'S OWN wording
+    # rather than self-healing to English, because a pack that wrote its own headline said
+    # what it wanted the headline to be; only the client name is lost.
+    # cmd_i18n runs POST-build, so a block there would be an unclearable exit 7 for a
+    # bundled pack - the graceful path is the design.
     heal = _blank_hero("Danish")
     # a REALISTIC translated pack (every value differs from EN, so the separate
-    # silent-fallback clause is satisfied) whose hero_lede_fmt has lost its {count}
+    # silent-fallback clause is satisfied) whose hero_title_html has lost its {client}
     heal["meta"]["ui_overrides"] = {**{k: f"DA_{v}" for k, v in I18N.EN.items()},
-                                    "hero_lede_fmt": "Ingen antal her."}
+                                    "hero_title_html": "Logistik <em>muligheder</em>."}
     heal_html, heal_tok = build_dashboard.render(heal)
-    check("1" in heal_tok["lede"] and heal_tok["lede"] != "Ingen antal her.",
-          f"a hero_lede_fmt missing {{count}} self-heals to the EN default "
-          f"(got {heal_tok['lede'][:50]!r})")
+    check(heal_tok["title_html"] == "Logistik <em>muligheder</em>.",
+          f"a hero_title_html missing {{client}} ships the pack's own wording "
+          f"(got {heal_tok['title_html'][:50]!r})")
+    check("{client}" not in heal_html, "and no raw placeholder reaches the page")
     rc_heal, out_heal = _run_gate(gate_runner.cmd_i18n, heal_html, heal)
-    check(rc_heal == 0, "the {count} loss is ADVISORY - cmd_i18n still passes (no exit-7 deadlock)")
-    check("[note]" in out_heal and "hero_lede_fmt" in out_heal,
-          "cmd_i18n prints a [note] naming hero_lede_fmt")
+    check(rc_heal == 0, "the {client} loss is ADVISORY - cmd_i18n still passes (no exit-7 deadlock)")
+    check("[note]" in out_heal and "hero_title_html" in out_heal,
+          "cmd_i18n prints a [note] naming hero_title_html")
 
     # (e) the localised default is byte-stable across two renders (validate-html's premise)
     check(build_dashboard.render(_blank_hero("de"))[0]
@@ -513,7 +525,7 @@ def main() -> int:
           "Phase 2: SUPPORTED/fallback resolution, en_sha, ui_for(overrides=), "
           "load_fallback_cache, merge bake, validate-html byte-identity WITH ui_overrides, "
           "G-i18n floor PASS/FAIL cases, schema accepts ui_overrides; hero copy "
-          "table-driven + verbatim + {count} self-heal)")
+          "table-driven + verbatim + {client} fill and its advisory loss path)")
     return 0
 
 

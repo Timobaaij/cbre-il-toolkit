@@ -67,14 +67,11 @@ const shown = P.filter(p => keep(p, 90000));
 ck(shown.length === 1 && shown[0].park === "Charlie",
    `"N properties shown" is now truthful at a 90,000 floor (${shown.length}, was 2)`);
 
-// Compare's largest-warehouse highlight index
-const minSizeIdx = P.reduce((best, p, i) =>
-  (NUMOK(p.warehouseArea) && (best < 0 || p.warehouseArea > P[best].warehouseArea)) ? i : best, -1);
-ck(P[minSizeIdx] && P[minSizeIdx].park === "Charlie",
-   "the 'largest warehouse' highlight lands on a REAL area, not on the 'tbd' at index 0");
-const noneNumeric = [{ id: 9, park: "Solo" }].reduce((best, p, i) =>
-  (NUMOK(p.warehouseArea) && (best < 0 || p.warehouseArea > 0)) ? i : best, -1);
-ck(noneNumeric === -1, "with no numeric area at all the highlight is -1 (nothing flagged)");
+// v45 removed Compare's largest-warehouse / lowest-rent highlight, so the two assertions
+// that stood here - that the flag lands on a REAL area rather than on the sentinel at index
+// 0, and that it is -1 when no area is numeric - no longer describe any code in the chrome.
+// They were deleted rather than retargeted: the NUMOK guard they exercised is the same one
+// the filter and sort assertions above still cover, on live chrome.
 
 console.log(`\n${fails.length ? "FAIL" : "OK"} numguard_test: ${fails.length} failure(s)`);
 process.exit(fails.length ? 1 : 0);

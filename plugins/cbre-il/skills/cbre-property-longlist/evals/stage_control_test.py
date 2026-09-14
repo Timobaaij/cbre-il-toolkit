@@ -1280,8 +1280,8 @@ def main() -> int:
         f.write_text(json.dumps(_canonical([_pu])), encoding="utf-8")
         R._coerce_repaired_scalars(f)
         ck(json.loads(f.read_text(encoding="utf-8"))["properties"][0].get("loadingDocks")
-           == "tbd",
-           "control: with no report the fill puts it back as `tbd` - correct at the render "
+           == C.BLANK,
+           "control: with no report the fill puts it back as the blank - correct at the render "
            "boundary, and the defect on canonical")
         # and the new parameter must not reach a field nothing cleared
         f.write_text(json.dumps(_canonical([_prop(2, loadingDocks=12)])), encoding="utf-8")

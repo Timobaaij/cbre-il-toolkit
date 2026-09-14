@@ -7,6 +7,100 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.13.0] — 2026-09-14
+
+Marketplace 1.13.0: **CBRE I&L Toolkit 1.9.0** — dashboard template v43 → **v45**. UK I&L
+Toolkit unchanged at 1.5.1.
+
+### Fixed — property longlist
+- **The street basemap moves off OpenStreetMap and onto Esri, because last release's fix
+  failed in the same shape.** v1.11.0 moved the three street maps *to* OSM's keyless standard
+  tiles to escape a provider that had started baking an "API KEY REQUIRED" watermark into its
+  imagery. OSM has now blocked it, worse: its tile usage policy requires a request attributable
+  to a named application, and a dashboard built by this template cannot supply one — the file
+  opens from a `file://` path, so the request carries no usable `Referer`, and a page cannot
+  set its own `User-Agent`. The server answers **403 with an HTML "Access blocked" page as the
+  body**, which Leaflet paints into the tile grid as a readable wall of text telling the client
+  the app breaks the rules — again with no console error, no failed fetch and no blank tile,
+  because the response *succeeds*. The block is also plausibly against the whole corporate
+  egress IP rather than any one file, and an office of readers opening longlists is the "heavy
+  use" the policy forbids outright, so no amount of tuning the request would have fixed it.
+
+  A keyed OSM reseller was rejected for one reason: the key would sit in plain text inside a
+  file that gets emailed to clients, and key domain-locking cannot bind to a `file://` origin.
+  Esri needs no key and already serves the satellite layer beside each of these three, which
+  makes it a known quantity rather than a fresh bet. Three details are pinned identically at
+  all three sites because each fails silently: the path order is **`{z}/{y}/{x}`**, not the
+  OSM-style `{z}/{x}/{y}` — Esri takes row before column, and transposing them serves tiles of
+  the wrong *place* rather than an error; the `{s}` subdomain placeholder is dropped, since
+  Esri serves from one host; and the attribution is one byte-identical string crediting Esri
+  alone, because three drifting variants of a credit is how the previous definitions came
+  apart. The satellite layers are untouched.
+
+  **Stated because it cannot be tested:** this is the second keyless provider to change its
+  terms under this template, the failure mode returned HTTP success both times, and no
+  automated check can read a watermark or a block page baked into imagery. The QA screenshot
+  review is the only thing that catches a third time, and it takes a human looking at the
+  picture.
+- **The page carried four different words for "not stated".** The pipeline wrote `tbd` into
+  unfilled fields, the chrome's own fallbacks wrote `tbd` or a long dash, three commercial rows
+  printed a long dash, and land price had a long dash of its own — so a reader comparing two
+  modals saw three spellings of the same fact, and the dashes read as values rather than
+  absences. `normalize.BLANK` (`TBC`) is now the single owner, mirrored once in the chrome.
+  Three properties make the swap safe rather than sweeping: the token is a member of
+  `UNKNOWN_FORMS`, so coverage, the trace gate and the Gaps Report are untouched; `tbd` remains
+  a recognised form, so an older canonical and a broker's own wording still resolve to absence;
+  and `country` keeps its own sentinel because it holds an ISO code, not prose. An old
+  canonical rebuilt today ships the new token with no migration.
+- **The four rent rows now always print, blank included** — the only rows on any surface that
+  do. The rent is the number the reader came for: a vanished rent row reads as "rent does not
+  apply here" rather than "nobody has quoted yet", and it made two modals different *shapes* at
+  exactly the four lines being compared. Every other row still omits when a source states
+  nothing; printing eleven blanks to catch four would bury them.
+- **The card's party line is labelled.** It printed a bare developer name beside the motorway,
+  which read as a location fact and said nothing when the developer was unfilled. The label now
+  follows the value — `landlord` wins because it is the party to the lease, `developer` is the
+  fallback under its *own* label, and neither stated prints a labelled blank, because a
+  developer printed under a "Landlord" label is a false statement about who the reader would
+  sign with.
+- The modal's meta chips are sentinel-guarded, so a chip never reads `TBC` in a row of facts.
+
+### Changed — property longlist
+- **Four surfaces removed from the dashboard**, each followed through all five places a removal
+  leaves debris (the template, the config tokens, the EN table, the twelve bundled language
+  packs, and the data the builder injects): the **hero lede paragraph**, which restated the KPI
+  strip's count and described the filters two rows below it for a screenful above the first
+  card; the **border POI category**, filtered at the render boundary so the dataset and its
+  coverage checks stay correct and re-enabling is a one-line change; **Compare's best-value
+  highlight**, because a longlist is read across many attributes at once and flagging two puts
+  the dashboard's thumb on the scale of the reader's decision; and the **POI layers now start
+  off**, so the map opens on the properties rather than twenty-two pins nobody asked for.
+- **The headline names the occupier** — `{client} - Industrial & Logistics opportunities`,
+  filled by replacement rather than formatting so a translator's stray brace degrades the
+  headline instead of crashing the build. The region is deliberately absent: one longlist
+  regularly spans two, and a stated region the option set outgrows is worse than none.
+- **`displayName`** — the client's own name for an option as their tracker prints it — is a new
+  canonical field that the card title prefers. Precedence, never replacement: it is absent on
+  most datasets, so the existing park-plus-unit rules still carry those.
+- **Three more media links** (video, website, Street View), each a chip beside the brochure,
+  emitted only for a stated `http(s)` URL. That guard is load-bearing rather than defensive: the
+  sentinel in an unfilled field is a *string*, so a truthiness test would have shipped a live
+  link to the sentinel on every property with no video. Nothing is composed from a name or from
+  coordinates — a generated Street View link is a claim about what the camera shows.
+- The availability field reads as a date in English; the twelve packs keep their own wording
+  until revised.
+
+### Added
+- `evals/chrome_v45_test.py` + `.mjs` — holds the chrome's blank token equal to the Python
+  owner, executes the title, party-line, card and modal renderers in a node sandbox, and checks
+  each removal in all five of its places. Fourteen existing evals that pinned the old spelling
+  or the old omission were **re-pointed at the owner of the value** rather than loosened.
+
+### Fixed — documentation
+- The template contract's current-version line now agrees with `assets/VERSION` (both v45),
+  which clears the one eval failure flagged in 1.11.0. The `v43` label was never a documented
+  template revision — the sequence runs v42 → v44 → v45.
+
 ## [1.12.1] — 2026-09-14
 
 Marketplace 1.12.1: **UK I&L Toolkit 1.5.1**. CBRE I&L Toolkit unchanged at 1.8.0.
@@ -934,6 +1028,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.13.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.13.0
 [1.12.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.12.1
 [1.12.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.12.0
 [1.11.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.11.0

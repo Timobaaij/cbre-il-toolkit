@@ -458,11 +458,10 @@ client:
   name: {client}
   confidential: true
 market:
-  title_html: ""                 # headline; blank renders the localised default. Keep ONE <em>..</em> pair for the accent colour
+  title_html: ""                 # headline; blank renders the localised default, which names the client. Keep ONE <em>..</em> pair for the accent colour
   eyebrow: ""                    # e.g. "Property Shortlist · Spain"; blank renders the localised default. A value ships VERBATIM (write the full eyebrow)
   region_label: ""
   countries: {json.dumps(countries)}
-  lede: ""                       # optional; blank renders the localised default (in the dashboard's language)
 output:
   filename: "CBRE_Property_Dashboard_{client}.html"
   compiled_date: ""              # ISO date; defaults to today

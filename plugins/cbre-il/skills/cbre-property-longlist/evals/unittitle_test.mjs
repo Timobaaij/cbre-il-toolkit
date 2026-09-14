@@ -12,6 +12,7 @@ const html = fs.readFileSync(htmlPath, 'utf8');
 const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)].map(m => m[1]);
 const code = scripts.join('\n;\n') +
   '\n;\n__capture__("PROPS", typeof PROPS !== "undefined" ? PROPS : undefined);' +
+  '\n__capture__("BLANK", typeof BLANK !== "undefined" ? BLANK : undefined);' +
   '\n__capture__("titleStr", typeof titleStr !== "undefined" ? titleStr : undefined);' +
   '\n__capture__("cardHTML", typeof cardHTML !== "undefined" ? cardHTML : undefined);' +
   '\n__capture__("detailHTML", typeof detailHTML !== "undefined" ? detailHTML : undefined);' +
@@ -38,7 +39,7 @@ const ctx = vm.createContext(new Proxy(target, {
 try { vm.runInContext(code, ctx, { filename: 'built.inline.js' }); }
 catch (e) { console.error('FAIL: template script threw during eval:', e && e.message); process.exit(1); }
 
-const { PROPS: props, titleStr, cardHTML, detailHTML, compareHTML, propPopupHTML } = target;
+const { PROPS: props, BLANK, titleStr, cardHTML, detailHTML, compareHTML, propPopupHTML } = target;
 for (const [n, v] of Object.entries({ titleStr, cardHTML, detailHTML, compareHTML, propPopupHTML })) {
   if (typeof v !== 'function') { console.error(`FAIL: could not capture ${n}() from the built chrome`); process.exit(1); }
 }
@@ -75,7 +76,9 @@ for (const [where, read] of SITES) {
   const t = read(none);
   ck(t === 'Solo Park', `${where}: reads exactly the park name ${JSON.stringify(t)}`);
 }
-ck(none.unit === 'tbd', 'the fixture really does carry the sentinel (not merely a missing key)');
+// v45: fill_render_sentinels writes normalize.BLANK; captured from the chrome so this stays a
+// check that the FIXTURE carries a sentinel rather than a check on its spelling.
+ck(none.unit === BLANK, 'the fixture really does carry the sentinel (not merely a missing key)');
 ck(titleStr(none) === 'Solo Park', 'titleStr(): the sentinel renders NOTHING');
 ck(!/tbd|tbc|\?\?/i.test(titleStr(none)), 'titleStr(): no word for unknown reaches the title');
 ck(!/[\s·,\-]$/.test(titleStr(none)), 'titleStr(): no trailing separator or space');

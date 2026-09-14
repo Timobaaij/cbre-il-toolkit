@@ -732,7 +732,6 @@ header.topbar{background:var(--brand);color:#fff;padding:14px 0;position:sticky;
 .eyebrow::before{content:"";width:28px;height:1px;background:var(--brand)}
 h1.title{font-family:var(--font-display);font-weight:400;font-variation-settings:"opsz" 144;font-size:clamp(40px,5.5vw,68px);line-height:1.02;letter-spacing:-.02em;margin:0 0 20px;color:var(--ink);max-width:18ch}
 h1.title em{font-style:italic;color:var(--brand-2);font-weight:300}
-.lede{max-width:62ch;color:var(--muted);font-size:17px;line-height:1.6;margin:0 0 36px}
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin-top:12px}
 .kpi{padding:20px 24px 22px;border-right:1px solid var(--line)}
 .kpi:last-child{border-right:0}
@@ -827,7 +826,6 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;background:var(--bran
 .poi-dot.port{background:#1e88e5}
 .poi-dot.rail{background:#8e24aa}
 .poi-dot.air{background:#fb8c00}
-.poi-dot.border{background:#546e7a}
 .poi-dot.city{background:#6d4c41}
 .poi-dot.prop-hu{background:var(--hu)}
 .poi-dot.prop-cz{background:var(--cz)}
@@ -1005,7 +1003,6 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;background:var(--bran
 .cmp-table td{background:#fff}
 .cmp-table thead th{font-family:var(--font-display);font-size:15px;letter-spacing:0;color:var(--ink);text-transform:none;font-weight:500;background:#fff;padding:14px;border-bottom:2px solid var(--ink)}
 .cmp-table thead .cmp-city{display:block;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);font-family:var(--font-body);font-weight:400;margin-top:2px}
-.cmp-highlight{color:var(--brand);font-weight:600}
 
 footer{margin-top:80px;padding:32px 0 40px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
 footer .container{display:flex;flex-wrap:wrap;gap:14px;justify-content:space-between;align-items:center}
@@ -1013,7 +1010,7 @@ footer .disclaimer{max-width:80ch;line-height:1.5}
 
 @media (max-width:1100px){.map-layout{grid-template-columns:1fr}#map{height:500px}.map-list{max-height:300px}}
 @media (max-width:900px){.toolbar{grid-template-columns:1fr 1fr}.kpi-value{font-size:24px}.modal-body{padding:28px 22px}.modal-title{font-size:28px}.cmp-table-wrap{margin:0 -22px;padding:0 22px}.loc-layout{grid-template-columns:1fr}}
-@media (max-width:600px){.container{padding:0 18px}.toolbar{grid-template-columns:1fr}h1.title{font-size:38px}.lede{font-size:15px}.kpi{padding:14px 16px}.grid{grid-template-columns:1fr}.modal-hero{aspect-ratio:16/10}}
+@media (max-width:600px){.container{padding:0 18px}.toolbar{grid-template-columns:1fr}h1.title{font-size:38px}.kpi{padding:14px 16px}.grid{grid-template-columns:1fr}.modal-hero{aspect-ratio:16/10}}
 @media print{header.topbar,.toolbar,.compare-tray,.compare-toggle,.view-btn,.view-tabs{display:none}.card{break-inside:avoid;page-break-inside:avoid}}
 </style>
 
@@ -1022,7 +1019,7 @@ footer .disclaimer{max-width:80ch;line-height:1.5}
 body{ font-family:var(--font-body); color:var(--dark-grey); background:var(--white); }
 
 /* Keep body prose grey while serif titles stay CBRE green (--ink) */
-.lede,.desc,.spec-v,.spec-v.small,.dist-name,.dist-note,.district-note,
+.desc,.spec-v,.spec-v.small,.dist-name,.dist-note,.district-note,
 .region-notes,.poi-popup .poi-note,.popup-meta,.cmp-table td,.dist-table td,
 .region-sub,.kpi-sub{ color:var(--dark-grey); }
 
@@ -1055,7 +1052,6 @@ h1.title{ font-family:var(--font-display); font-weight:500; color:var(--white);
 h1.title em{ font-style:normal; color:var(--accent); font-weight:500; }
 .los{ display:block; width:72px; height:5px; background:var(--accent);
   margin:34px 0 26px; }
-.hero .lede{ color:var(--light-grey); max-width:72ch; }
 
 /* ---- KPI band: dark-green stat band, big accent serif numbers ---- */
 .kpis{ background:var(--dark-green); border:0; margin:8px 0 0;
@@ -1170,7 +1166,6 @@ input[type=range]::-moz-range-thumb{ background:var(--cbre-green); }
 .cmp-table th{ background:var(--bg-soft); }
 .cmp-table thead th{ font-family:var(--font-display); color:var(--cbre-green);
   border-bottom:2px solid var(--cbre-green); }
-.cmp-highlight{ color:var(--cbre-green); }
 
 /* ---- Footer: dark-green band, mono light text ---- */
 footer{ background:var(--dark-green); color:var(--light-grey); border-top:0;
@@ -1198,7 +1193,6 @@ footer .container{ color:var(--light-grey); }
     <div class="eyebrow">{{eyebrow}}</div>
     <h1 class="title">{{title_html}}</h1>
     <span class="los" aria-hidden="true"></span>
-    <p class="lede">{{lede}}</p>
 
     <div class="kpis">
       <div class="kpi"><div class="kpi-label" data-i18n="kpi_properties_label">Properties</div><div class="kpi-value">{{kpi_properties}}</div><div class="kpi-sub" data-i18n="kpi_properties_sub">Longlist</div></div>
@@ -1365,17 +1359,24 @@ async function fetchOsrmRoute(lat1, lng1, lat2, lng2){
   } catch(e) {}
   return null;
 }
-const state = { filters: { q:"", country:"", city:"", dev:"", size:0 }, sort:"id", compare: new Set(), view:"grid", poiFilter: new Set(["port","rail","air","border","city"]), iso:"0", focusedId:null };
+const state = { filters: { q:"", country:"", city:"", dev:"", size:0 }, sort:"id", compare: new Set(), view:"grid", poiFilter: new Set(), iso:"0", focusedId:null };
 
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 // "is this a REAL number I may rank, compare or feed to a map?" - the one guard for every
 // numeric consumer. An unknown is JSON null (warehouseRentVal), an absent key (warehouseArea)
 // or the literal "tbd", and JS coerces all three into arithmetic silently: null - 4.2 === -4.2,
-// undefined < n === false, +"tbd" === NaN. fmt/nfmt/initSizeSlider/minRentIdx/the Flyover map
-// each guarded this inline; the sorters, the size filter and the main map did not.
+// undefined < n === false, +"tbd" === NaN. fmt/nfmt/initSizeSlider/the Flyover map each
+// guarded this inline; the sorters, the size filter and the main map did not.
 const NUMOK = v => typeof v === "number" && isFinite(v);
-const fmt = n => (typeof n === "number" && isFinite(n)) ? n.toLocaleString(LOCALE) : (n == null ? "tbd" : n);
+/* v45: ONE word for "this is not stated", used by every render helper below and by the
+   always-printed commercial rows. The pipeline writes the same token into every unfilled
+   field (_common.fill_render_sentinels), so the page and the data agree; UNKNOWN_FORMS
+   already carries 'tbc', which is why isAbsent() still reads it as absent and row() still
+   omits on it. Client-facing, so it is a CONSTANT rather than eleven literals: the eleven
+   literals are how 'tbd' and 'TBC' came to be mixed on one page in the first place. */
+const BLANK = "TBC";
+const fmt = n => (typeof n === "number" && isFinite(n)) ? n.toLocaleString(LOCALE) : (n == null ? BLANK : n);
 const nfmt = (n, mn, mx) => (typeof n === "number" && isFinite(n))
   ? n.toLocaleString(LOCALE, {minimumFractionDigits: mn, maximumFractionDigits: mx}) : n;
 
@@ -1402,7 +1403,7 @@ function distToPoi(p, poi){
   return { km: Math.round(km), min: estDriveMin(km), real: false };
 }
 function groupedDistances(p){
-  const categories = ["city","border","air","rail","port"];
+  const categories = ["city","air","rail","port"];
   const result = {};
   categories.forEach(cat => {
     const items = POIS.filter(x=>x.type===cat).map(poi => ({
@@ -1433,7 +1434,6 @@ function populateFilters(){
     {t:"port", label:T("poi_port")},
     {t:"rail", label:T("poi_rail")},
     {t:"air",  label:T("poi_air")},
-    {t:"border", label:T("poi_border")},
     {t:"city", label:T("poi_city")},
   ];
   const tog = $("#poi-toggles");
@@ -1550,7 +1550,7 @@ function filterList(){
   // (null - 4.2) === -4.2 used to sort the UNPRICED option to the TOP of "Rent (lowest)" - the
   // slot a broker reads as best value - and the same for "Area (largest)". NUMSORT keeps every
   // unknown at the BOTTOM regardless of direction (it is not cheapest and not biggest; it is
-  // unknown). initSizeSlider / minRentIdx / the Flyover map already guarded this way.
+  // unknown). initSizeSlider / the Flyover map already guarded this way.
   // ALWAYS called as NUMSORT(a.field, b.field, dir) - never with the arguments swapped to get
   // a descending order, or the sink logic inverts and floats unknowns to the TOP. Direction is
   // applied ONLY to the numeric comparison; an unknown sorts last in BOTH directions, because
@@ -1615,7 +1615,7 @@ function cardHTML(p){
       </label>
     </div>
     <div class="card-body">
-      <div class="dev-line">${p.developer} · ${p.motorway}</div>
+      <div class="dev-line">${partyLine(p)}</div>
       <h3 class="card-title">${titleStr(p)}</h3>
       <div class="spec-row">
         <div class="spec"><div class="spec-k">${T("row_warehouse")}</div><div class="spec-v">${areaStr(p.warehouseArea)}${statedTotalHTML(p)}</div></div>
@@ -1652,25 +1652,34 @@ let map, propMarkers = {}, poiMarkers = {}, isoLayers = [], miniMap = null;
 function initMap(){
   if(map) return;
   map = L.map("map", { zoomControl: true, scrollWheelZoom: true }).setView([49.0, 16.0], 5);
-  /* v40: the streets basemap moves to the KEYLESS OpenStreetMap standard tiles. The previous
-     provider now bakes an "API KEY REQUIRED" watermark INTO the imagery it serves on its keyless
-     endpoint, so that text reached the client inside real map tiles on every dashboard this
-     template builds - and nothing detects it, because the tiles still return success. Three
-     details are load-bearing and are applied IDENTICALLY at all three map sites (this map, the
-     modal mini-map, the Flyover):
-       - `subdomains` is STATED. Standard tiles are served from THREE hosts (a/b/c) and the
-         fourth does not exist, so the old 'abcd' would have failed one request in four; the
-         Flyover definition carried no subdomains key at all and would have silently taken
-         Leaflet's default. Stating it on all three is what stops them drifting apart again.
-       - the `{r}` retina placeholder is DROPPED. The standard tile server serves no @2x
-         variant, so keeping it would 404 every tile on a high-DPI screen - the exact class of
-         failure being fixed here, only louder.
-       - the attribution names the new provider only, because it is now the only one serving
-         these tiles; asserting a provider that no longer serves them would be a false credit.
-     The satellite (Esri) layer beside each of the three is deliberately UNTOUCHED. */
-  const streetsLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-    subdomains: 'abc', maxZoom: 19
+  /* v44: the streets basemap moves OFF the OpenStreetMap standard tiles and onto Esri's
+     keyless World_Street_Map. OSM's tile usage policy requires a request the Foundation can
+     attribute to a named application, and a dashboard built by this template cannot supply
+     one: it is opened from a `file://` path, so the request carries no usable Referer, and a
+     page cannot set its own User-Agent. Their servers answer such requests with a 403 whose
+     BODY is an HTML "Access blocked" page, which Leaflet paints into the grid as a wall of
+     readable text - the v40 watermark failure again, in a louder form, and on the client's
+     screen. A whole office of readers opening longlists is also the "heavy use" the policy
+     forbids, so complying was never a matter of tuning the request.
+     Esri is chosen over a keyed OSM reseller (MapTiler, Stadia, Thunderforest) for one
+     reason: a key would have to sit in plain text inside a file that gets emailed out, and
+     key domain-locking cannot work from `file://`. Esri needs no key and is already the
+     provider of the satellite layer beside each of these three.
+     Three details are load-bearing and are applied IDENTICALLY at all three map sites (this
+     map, the modal mini-map, the Flyover):
+       - the path order is `{z}/{y}/{x}`, NOT the `{z}/{x}/{y}` of the OSM-style URL it
+         replaces. Esri's REST tile endpoint takes row before column; transposing them
+         returns tiles from the wrong place rather than an error anyone would notice.
+       - `subdomains` is DROPPED, along with the `{s}` placeholder v40 fed it. Esri serves
+         from one host, so a retained `{s}` would request a subdomain that does not resolve.
+       - the attribution is the same BYTE-IDENTICAL string at all three sites, and it credits
+         Esri only. Crediting OSM for imagery Esri now serves is a false claim, not a
+         courtesy, and three drifting variants of a credit is how the v40 sites came apart.
+     The satellite (Esri World_Imagery) layer beside each of the three is UNTOUCHED: this
+     change is scoped to the streets basemap. */
+  const streetsLayer = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", {
+    attribution: 'Tiles &copy; Esri. Sources: Esri, HERE, Garmin, USGS, NGA',
+    maxZoom: 19
   });
   const satelliteLayer = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
     attribution: 'Tiles &copy; Esri, Maxar, Earthstar Geographics, CNES/Airbus DS, USDA, USGS, AeroGRID, IGN, and the GIS User Community',
@@ -1800,10 +1809,10 @@ function switchView(v){
 // the file is opened online; never a preloaded stand-in. Offline / blocked /
 // CORS -> silent no-op (keeps baked POIs and honest tbd), no console error.
 const POI_RESOLVED = new Set();
-const POI_CAP_KM = { air:600, port:800, rail:300, border:400, city:300 };
+const POI_CAP_KM = { air:600, port:800, rail:300, city:300 };
 async function ensureNearestPois(p){
   if(!p || typeof p.lat !== "number" || typeof p.lng !== "number") return false;
-  const need = ["air","port","rail","border","city"].filter(t =>
+  const need = ["air","port","rail","city"].filter(t =>
     !POIS.some(q => q.type===t && haversine(p.lat,p.lng,q.lat,q.lng) <= POI_CAP_KM[t]));
   if(!need.length) return false;
   const R = 120000;
@@ -2161,7 +2170,7 @@ function glaVal(p){
   return w + o;
 }
 function glaUnit(p){ const st = statedTotal(p); return st ? st.unit : AREA_UNIT; }
-function glaStr(p){ const g = glaVal(p); return g == null ? "\u2014" : fmt(g) + " " + glaUnit(p); }
+function glaStr(p){ const g = glaVal(p); return g == null ? BLANK : fmt(g) + " " + glaUnit(p); }
 /* v40: ONE way to render a property TITLE - the same single-point-of-truth discipline as
    areaStr() below, and landed for the same kind of reason. There was no composed title
    anywhere: every title and label site interpolated `p.park` ALONE, so two genuinely different
@@ -2174,8 +2183,8 @@ function glaStr(p){ const g = glaVal(p); return g == null ? "\u2014" : fmt(g) + 
      - A SENTINEL IS NOT A DESIGNATOR. isAbsent() drops 'tbd'/'tbc'/'??' and the two dash
        sentinels exactly as the rest of the chrome does, so an absent unit renders NOTHING: not
        the word for unknown, and not a trailing separator either - the return is the park name
-       byte-for-byte. (fill_render_sentinels writes 'tbd' into every unfilled string field, so
-       "absent" arrives here as that sentinel far more often than as undefined.)
+       byte-for-byte. (fill_render_sentinels writes the BLANK token into every unfilled string
+       field, so "absent" arrives here as that sentinel far more often than as undefined.)
      - NO DOUBLE-PRINTING. A park name that ALREADY carries the designator (which is how many
        trackers name the row) must not become 'Kestrel Reach Unit 3 Unit 3'. The test reduces
        both sides to alphanumeric WORDS and looks for a whole-token run, so 'Unit 3' is found
@@ -2186,8 +2195,32 @@ function glaStr(p){ const g = glaVal(p); return g == null ? "\u2014" : fmt(g) + 
    The join is a single SPACE, not a punctuation separator: the designator is part of how the
    source names the place ('Kestrel Reach Unit 3'), and a middle dot in an <h3> reads as a
    breadcrumb of two facts rather than one name. */
+/* v45: the card names the PARTY on the other side of the deal, labelled, with the honest
+   blank when no source states one - it used to print a bare developer name beside the
+   motorway, which read as a location fact rather than a party and said nothing at all when
+   the developer was unfilled.
+   The label follows the VALUE rather than the reverse: `landlord` and `developer` are
+   DISTINCT parties in this schema (the template's own STRING_FIELDS note says so), so a
+   developer printed under a "Landlord" label would be a false statement about who the
+   reader would be signing with. Landlord wins when stated because it is the party to the
+   lease; the developer is the fallback; neither stated prints the label plus BLANK, because
+   "no party named" is itself what the reader needs to know here. */
+function partyLine(p){
+  if(!isAbsent(p.landlord)) return T("row_landlord") + ": " + p.landlord;
+  if(!isAbsent(p.developer)) return T("row_developer") + ": " + p.developer;
+  return T("row_landlord") + ": " + BLANK;
+}
 const tsWords = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 function titleStr(p){
+  /* v45: the CLIENT'S OWN name for this option wins, when a source states one. A tracker
+     column headed 'Display Name' carries the name the occupier uses in their own meetings
+     ('Titan, Knowsley Business Park'), which is the name that should appear on the card; the
+     park + unit composition below stays as the fallback for every source that states no such
+     column. Precedence, never replacement: `displayName` is absent on most datasets, and the
+     v40 park + unit rules (sentinel handling, whole-token de-duplication) are what carry
+     those. */
+  const shown = isAbsent(p.displayName) ? "" : String(p.displayName).trim();
+  if(shown) return shown;
   const name = isAbsent(p.park) ? "" : String(p.park).trim();
   const unit = isAbsent(p.unit) ? "" : String(p.unit).trim();
   if(!unit) return name;
@@ -2229,7 +2262,7 @@ function statedTotalHTML(p){
    NUMOK is the v26 numeric guard and the Flyover already got this right at v24; this is
    that pattern, hoisted so every caller shares it. (B11) */
 function areaStr(p, blank){ return NUMOK(p) ? fmt(p) + " " + AREA_UNIT
-                                            : (p == null || p === "" ? (blank === undefined ? "tbd" : blank)
+                                            : (p == null || p === "" ? (blank === undefined ? BLANK : blank)
                                                                      : String(p)); }
 /* v32: officeArea is the ONE area canonical stores as a STRING, with officeAreaVal as its numeric
    twin (warehouseArea and plotArea are numbers). areaStr passes a string through untouched - which
@@ -2351,11 +2384,23 @@ function detailHTML(p){
   const row = (label,v) =>
     isTbd(v) ? `` :               // v21: omit absent rows entirely (was a val_tbc placeholder)
       `<div class="spec"><div class="spec-k">${label}</div><div class="spec-v">${v}</div></div>`;
+  /* v45: the FOUR RENT ROWS always print, BLANK included, and they are the only rows that
+     do - every other row on every other surface still omits when a source states nothing
+     (row(), unchanged).
+     The rent is the number the reader came for. A vanished rent row lets them read the
+     property as one where rent does not apply rather than one where nobody has quoted yet,
+     and it makes two modals different SHAPES at exactly the four lines they are comparing.
+     A missing service charge, land price or lease term carries none of that: it is an
+     ordinary unstated attribute, and printing eleven blanks to catch four would bury them.
+     Nothing is invented either way: the value printed is the one absence token the rest of
+     the page uses. */
+  const rowAlways = (label,v) =>
+    `<div class="spec"><div class="spec-k">${label}</div><div class="spec-v">${isTbd(v) ? BLANK : v}</div></div>`;
   const d = groupedDistances(p);
-  const catMeta = { city:T("poi_city"), border:T("poi_border"), air:T("poi_air"), rail:T("poi_rail"), port:T("poi_port") };
+  const catMeta = { city:T("poi_city"), air:T("poi_air"), rail:T("poi_rail"), port:T("poi_port") };
   const poiIdx = (name) => POIS.findIndex(x => x.name === name);
   const allBaked = !!(p.preBaked && p.preBaked.distances);
-  const distSection = ["city","border","air","rail","port"].map(cat => `
+  const distSection = ["city","air","rail","port"].map(cat => `
     <tr><td colspan="3" class="dist-cat">${catMeta[cat]}</td></tr>
     ${d[cat].map(it => `
       <tr data-poi-idx="${poiIdx(it.name)}">
@@ -2372,10 +2417,20 @@ function detailHTML(p){
     : T("dist_status_est");
   const reg = REGIONS[p.regionCode] || null;
   const dist = p.districtProfile || null;
-  const rNum = v => (v == null || (typeof v === 'number' && isNaN(v))) ? 'tbd'
+  const rNum = v => (v == null || (typeof v === 'number' && isNaN(v))) ? BLANK
     : (typeof v === 'number' ? v.toLocaleString(LOCALE) : v);
-  const rK = v => (typeof v === 'number' && isFinite(v)) ? Math.round(v/1000).toLocaleString(LOCALE) + 'k' : 'tbd';
-  const rStr = v => (v == null || v === '') ? 'tbd' : v;
+  const rK = v => (typeof v === 'number' && isFinite(v)) ? Math.round(v/1000).toLocaleString(LOCALE) + 'k' : BLANK;
+  const rStr = v => (v == null || v === '') ? BLANK : v;
+  /* v45: one chip per stated link. Four of these now sit side by side (brochure, video,
+     website, Street View), and a chip is emitted ONLY for an http(s) URL a source actually
+     stated: the sentinel a pipeline writes into an unfilled field is a STRING, so a
+     truthiness test alone would have shipped `href="TBC"` as a live link on every property
+     that has no video. Absent stays absent, and nothing is composed from the property's
+     name or coordinates. */
+  const linkChip = (href, label) =>
+    (typeof href === "string" && /^https?:\/\//i.test(href))
+      ? `<span><a class="map-link" href="${href}" target="_blank" rel="noopener">${label}</a></span>`
+      : '';
   /* v8: maps link - brochure's own link wins; else derive from the traced coordinates; else no link at all (an empty href reloaded this page) */
   const mapHref = (typeof p.mapLink === "string" && /^https?:\/\//i.test(p.mapLink)) ? p.mapLink
     : ((typeof p.lat === "number" && typeof p.lng === "number") ? `https://www.google.com/maps?q=${p.lat},${p.lng}` : null);
@@ -2389,16 +2444,19 @@ function detailHTML(p){
     </div>
     <div class="modal-body">
       <div class="modal-head">
-        <div class="modal-dev"><span class="flag ${p.country.toLowerCase()}"></span>${p.developer} · ${p.country} · № ${String(p.id).padStart(2,'0')}</div>
+        <div class="modal-dev"><span class="flag ${p.country.toLowerCase()}"></span>${isTbd(p.developer) ? '' : p.developer + ' · '}${p.country} · № ${String(p.id).padStart(2,'0')}</div>
         <h2 class="modal-title">${titleStr(p)}</h2>
         <div class="modal-meta">
           <span>${p.city}</span>
-          <span>${p.motorway}</span>
-          <span>${p.status}</span>
-          <span>${T("modal_early_access_prefix")} ${p.earlyAccess}</span>
-          ${p.breeam ? `<span>${p.breeam}</span>` : ''}
+          ${isTbd(p.motorway) ? '' : `<span>${p.motorway}</span>`}
+          ${isTbd(p.status) ? '' : `<span>${p.status}</span>`}
+          ${isTbd(p.earlyAccess) ? '' : `<span>${T("modal_early_access_prefix")} ${p.earlyAccess}</span>`}
+          ${isTbd(p.breeam) ? '' : `<span>${p.breeam}</span>`}
           ${mapHref ? `<span><a class="map-link" href="${mapHref}" target="_blank" rel="noopener">${T("modal_open_maps")}</a></span>` : ''}
-          ${p.brochureLink ? `<span><a class="map-link" href="${p.brochureLink}" target="_blank" rel="noopener">${T("modal_open_brochure")}</a></span>` : ''}
+          ${linkChip(p.brochureLink, T("modal_open_brochure"))}
+          ${linkChip(p.videoLink, T("modal_open_video"))}
+          ${linkChip(p.websiteLink, T("modal_open_website"))}
+          ${linkChip(p.streetViewLink, T("modal_open_streetview"))}
         </div>
       </div>
 
@@ -2433,10 +2491,10 @@ function detailHTML(p){
       ].join(''))}
 
       ${(rowsHtml => rowsHtml ? `<h3 class="section-title">${T("sec_commercial")}</h3><div class="spec-grid">${rowsHtml}</div>` : '')([
-        row(T('row_warehouse_rent'), p.warehouseRent),
-        row(T('row_warehouse_rent_monthly'), rentMonthlyStr(p) || '—'),
-        row(T('row_total_annual_rent'), totalRentHTML(p,false) || '—'),
-        row(T('row_total_monthly_rent'), totalRentHTML(p,true) || '—'),
+        rowAlways(T('row_warehouse_rent'), p.warehouseRent),
+        rowAlways(T('row_warehouse_rent_monthly'), rentMonthlyStr(p)),
+        rowAlways(T('row_total_annual_rent'), totalRentHTML(p,false)),
+        rowAlways(T('row_total_monthly_rent'), totalRentHTML(p,true)),
         row(T('row_office_rent'), p.officeRent),
         row(T('row_service_charge'), p.serviceCharge),
         row(T('row_land_price'), p.landPrice),
@@ -2542,10 +2600,11 @@ function initModalMap(p){
     el.innerHTML = `<p class="desc" style="padding:12px;color:var(--muted)">${T('map_not_confirmed')}</p>`;
     return; }
   miniMap = L.map("modal-map", { zoomControl: true, scrollWheelZoom: false }).setView([p.lat, p.lng], 9);
-  // v40: keyless OSM standard tiles - same URL, subdomains and attribution provider as
-  // initMap's streetsLayer (see the WHY there); the mini-map's Esri layer below is untouched.
-  const mStreets = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    attribution: '&copy; OpenStreetMap', subdomains: 'abc', maxZoom: 19
+  // v44: Esri keyless World_Street_Map - same URL, {z}/{y}/{x} order and byte-identical
+  // attribution as initMap's streetsLayer (see the WHY there); the mini-map's Esri satellite
+  // layer below is untouched.
+  const mStreets = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", {
+    attribution: 'Tiles &copy; Esri. Sources: Esri, HERE, Garmin, USGS, NGA', maxZoom: 19
   });
   const mSatellite = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
     attribution: 'Esri', maxZoom: 19
@@ -2558,7 +2617,7 @@ function initModalMap(p){
   const ring30 = L.circle([p.lat, p.lng], { radius: 30000, color:"#17E88F", fillColor:"#17E88F", fillOpacity:0.08, weight:1.5, dashArray:"4 4" }).addTo(miniMap);
   const ring60 = L.circle([p.lat, p.lng], { radius: 60000, color:"#003F2D", fillColor:"#003F2D", fillOpacity:0.05, weight:1.5, dashArray:"4 4" }).addTo(miniMap);
   miniMap._ringLayers.push(ring30, ring60);
-  const catOrder = ["city","border","air","rail","port"];
+  const catOrder = ["city","air","rail","port"];
   catOrder.forEach(cat => {
     POIS.filter(x=>x.type===cat).map(x=>({...x, km:haversine(p.lat,p.lng,x.lat,x.lng)})).sort((a,b)=>a.km-b.km).slice(0, cat==="city"?2:cat==="port"?2:2).forEach(poi => {
       const icon2 = L.divIcon({ className:"", html:`<div class="cm ${poi.type}"></div>`, iconSize:[14,14], iconAnchor:[7,7] });
@@ -2666,58 +2725,43 @@ function compareHTML(items){
     [T('row_truck_parking'), p=>p.truckParking, 'truckParking'],
     [T('row_car_parking'), p=>p.carParking, 'carParking'],
     [T('row_warehouse_rent'), p=>p.warehouseRent, 'warehouseRent'],
-    [T('row_warehouse_rent_monthly'), p=>rentMonthlyStr(p) || '—', 'warehouseRent'],
-    [T('row_total_annual_rent'), p=>totalRentHTML(p,false) || '—', 'warehouseRent'],
-    [T('row_total_monthly_rent'), p=>totalRentHTML(p,true) || '—', 'warehouseRent'],
+    [T('row_warehouse_rent_monthly'), p=>rentMonthlyStr(p) || BLANK, 'warehouseRent'],
+    [T('row_total_annual_rent'), p=>totalRentHTML(p,false) || BLANK, 'warehouseRent'],
+    [T('row_total_monthly_rent'), p=>totalRentHTML(p,true) || BLANK, 'warehouseRent'],
     [T('row_office_rent'), p=>p.officeRent, 'officeRent'],
     [T('row_service_charge'), p=>p.serviceCharge, 'serviceCharge'],
     [T('row_land_price'), p=>p.landPrice, 'landPrice'],
-    [T('row_lease_term'), p=>p.leaseTerm || '—', 'leaseTerm'],
-    [T('row_rent_free'), p=>p.rentFree || '—', 'rentFree'],
+    [T('row_lease_term'), p=>p.leaseTerm || BLANK, 'leaseTerm'],
+    [T('row_rent_free'), p=>p.rentFree || BLANK, 'rentFree'],
     [T('row_incentives'), p=>p.incentives, 'incentives'],
     [T('row_reit'), p=>p.reit, 'reit'],
-    [T('cmp_certification'), p=>certStr(p) || '—', 'breeam'],
+    [T('cmp_certification'), p=>certStr(p) || BLANK, 'breeam'],
   ].filter(r => !r[2] || FIELD_PRESENT[r[2]]);
   const distRows = [
-    [T('cmp_nearest_city'), p=>{ const d = groupedDistances(p).city[0]; if(!d) return 'tbd'; return `${d.name.replace(/\s*\([^)]*\)\s*$/,'')} · ${d.km} km (~${fmtMin(d.min)})`; }],
-    [T('cmp_nearest_border'), p=>{ const d = groupedDistances(p).border[0]; if(!d) return 'tbd'; return `${d.name.replace(/\s*\([^)]*\)\s*$/,'')} · ${d.km} km (~${fmtMin(d.min)})`; }],
-    [T('cmp_nearest_airport'), p=>{ const d = groupedDistances(p).air[0]; if(!d) return 'tbd'; return `${d.name.replace(/\s*\([^)]*\)\s*$/,'')} · ${d.km} km (~${fmtMin(d.min)})`; }],
-    [T('cmp_nearest_rail'), p=>{ const d = groupedDistances(p).rail[0]; if(!d) return 'tbd'; return `${d.name.replace(/\s*\([^)]*\)\s*$/,'')} · ${d.km} km (~${fmtMin(d.min)})`; }],
-    [T('cmp_nearest_seaport'), p=>{ const d = groupedDistances(p).port[0]; if(!d) return 'tbd'; return `${d.name.replace(/\s*\([^)]*\)\s*$/,'')} · ${d.km} km (~${fmtMin(d.min)})`; }],
+    [T('cmp_nearest_city'), p=>{ const d = groupedDistances(p).city[0]; if(!d) return BLANK; return `${d.name.replace(/\s*\([^)]*\)\s*$/,'')} · ${d.km} km (~${fmtMin(d.min)})`; }],
+    [T('cmp_nearest_airport'), p=>{ const d = groupedDistances(p).air[0]; if(!d) return BLANK; return `${d.name.replace(/\s*\([^)]*\)\s*$/,'')} · ${d.km} km (~${fmtMin(d.min)})`; }],
+    [T('cmp_nearest_rail'), p=>{ const d = groupedDistances(p).rail[0]; if(!d) return BLANK; return `${d.name.replace(/\s*\([^)]*\)\s*$/,'')} · ${d.km} km (~${fmtMin(d.min)})`; }],
+    [T('cmp_nearest_seaport'), p=>{ const d = groupedDistances(p).port[0]; if(!d) return BLANK; return `${d.name.replace(/\s*\([^)]*\)\s*$/,'')} · ${d.km} km (~${fmtMin(d.min)})`; }],
   ];
   const allRows = [...rows, ...distRows];
-  // largest warehouse among NUMERIC areas only. Seeded at index 0 with no type guard, an
-  // area-less property at index 0 stayed "best" (undefined > n is false), so the CBRE-green
-  // "largest warehouse" flag landed on a cell rendering 'tbd' - and it self-triggered, because
-  // Compare is fed filterList(): "sort by largest, then compare" put it at index 0 every time.
-  // -1 means there is no numeric area to highlight (mirrors minRentIdx below).
-  const minSizeIdx = items.reduce((best,p,i)=>
-    (NUMOK(p.warehouseArea)
-      && (best < 0 || p.warehouseArea > items[best].warehouseArea)) ? i : best, -1);
-  // lowest rent among NUMERIC rents only - a tbd/null rent must never count as 0 and
-  // "win" lowest (null < n is true in JS); -1 means no numeric rent to highlight.
-  const minRentIdx = items.reduce((best,p,i)=>
-    (typeof p.warehouseRentVal === 'number' && isFinite(p.warehouseRentVal)
-      && (best < 0 || p.warehouseRentVal < items[best].warehouseRentVal)) ? i : best, -1);
+  /* v45: Compare presents every cell NEUTRALLY. The green "largest warehouse / lowest
+     rent" flag and the note that explained it are both gone, at the client's request: a
+     longlist is read across many attributes at once, and flagging two of them puts the
+     dashboard's thumb on the scale of a decision that belongs to the reader. The cell is
+     still the widest column in the chrome, so nothing is lost by leaving it plain. */
   return `
     <button class="modal-close" onclick="closeModal()" aria-label="${T('a11y_close')}">×</button>
     <div class="modal-body">
       <div class="modal-head">
         <div class="modal-dev">${T("cmp_side_by_side")}</div>
         <h2 class="modal-title">${items.length} ${T("cmp_properties_compared_suffix")}</h2>
-        <div class="modal-meta"><span>${T("cmp_highlight_note")}</span></div>
       </div>
       <div class="cmp-table-wrap">
         <table class="cmp-table">
           <thead><tr><th style="min-width:170px">${T("cmp_attribute")}</th>${items.map(p=>`<th>${titleStr(p)}<span class="cmp-city">${p.country} · ${p.city} · ${p.developer}</span></th>`).join('')}</tr></thead>
           <tbody>
             ${allRows.map(([label, fn])=>`
-              <tr><th>${label}</th>${items.map((p,i)=>{
-                let hl = '';
-                if(label===T('row_warehouse_area') && i===minSizeIdx) hl='cmp-highlight';
-                if((label===T('row_warehouse_rent') || label===T('row_warehouse_rent_monthly')) && i===minRentIdx) hl='cmp-highlight';
-                return `<td class="${hl}">${fn(p)}</td>`;
-              }).join('')}</tr>
+              <tr><th>${label}</th>${items.map(p=>`<td>${fn(p)}</td>`).join('')}</tr>
             `).join('')}
           </tbody>
         </table>
@@ -2809,10 +2853,16 @@ document.addEventListener("keydown", e => {
       if (/terminal|rail/i.test(name)) return "rail";
       return "city";
     }
-    var icon = { air: "✈", rail: "▣", port: "⚓", border: "⚑", city: "◉" };
+    var icon = { air: "✈", rail: "▣", port: "⚓", city: "◉" };
     Object.keys(d).forEach(function (name) {
       var o = d[name] || {}, c = cat(name);
       if (typeof o.min !== "number") return;
+      // v45: the border category is not displayed anywhere in this chrome, and the Flyover is
+      // the one surface that reads preBaked.distances by NAME rather than the POIS array - so
+      // the filter that keeps border out of the injected POIs cannot reach it. cat() still
+      // RECOGNISES a border crossing (so a legacy canonical's entry is not mistaken for a
+      // city) and this drops it, which is why the slide cannot show an unlabelled row.
+      if (c === "border") return;
       if (!picks[c] || o.min < picks[c].min) {
         picks[c] = { name: name, min: o.min, km: o.km, cat: c, ic: icon[c] };
       }
@@ -2852,7 +2902,7 @@ document.addEventListener("keydown", e => {
     var dts = driveHighlights(p);
     var dtHtml = "";
     if (dts.length) {
-      var catLabel = { air: T("poi_air"), rail: T("poi_rail"), port: T("poi_port"), border: T("poi_border"), city: T("poi_city") };
+      var catLabel = { air: T("poi_air"), rail: T("poi_rail"), port: T("poi_port"), city: T("poi_city") };
       dtHtml = '<div class="fo-dt"><div class="fo-dt-title">' + esc(T("flyover_dt_title")) + '</div>';
       dts.forEach(function (e) {
         dtHtml += '<div class="fo-dt-row" title="' + esc((catLabel[e.cat] || "") + ": " + e.name) + '">' +
@@ -3026,11 +3076,12 @@ document.addEventListener("keydown", e => {
       maxZoom: 19, pane: "overlayPane"
     });
     var hybrid = L.layerGroup([imagery, transport, places]);
-    // v40: keyless OSM standard tiles (see initMap for the WHY). This definition is the one
-    // that carried NO subdomains key, so it is stated here too - all three sites now request
-    // from the same three hosts, which is the only way they stay in step.
-    var streets = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 19, subdomains: "abc", attribution: "&copy; OpenStreetMap"
+    // v44: Esri keyless World_Street_Map (see initMap for the WHY). Written as a FULL literal
+    // rather than ESRI + path like the hybrid layers above it, so that the basemap eval's
+    // extractor - which reads the URL out of the L.tileLayer call itself - can see this site
+    // too. That is the check that caught the three definitions drifting apart before.
+    var streets = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", {
+      maxZoom: 19, attribution: "Tiles &copy; Esri. Sources: Esri, HERE, Garmin, USGS, NGA"
     });
     hybrid.addTo(flyoverMap);
     var layerCtl = {};
