@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""version_check.py - best-effort "is a newer CBRE I&L Toolkit available?" nudge.
+"""version_check.py - best-effort "is a newer UK I&L Toolkit available?" nudge.
 
 Compares THIS installed plugin's version (the uk-il `plugin.json`) against the
 latest version published on the marketplace's main branch, and - only if the
@@ -100,17 +100,17 @@ def main() -> int:
     if not remote or not _is_newer(remote, local):
         return 0  # current, or offline/unknown -> stay silent
     print(
-        f"[update] CBRE I&L Toolkit {remote} is available (you have {local}).",
+        f"[update] UK I&L Toolkit {remote} is available (you have {local}).",
         file=sys.stderr,
     )
     print(
-        "[update] In Cowork: Customize -> Plugins -> CBRE I&L Toolkit -> Update. "
+        "[update] In Cowork: Customize -> Plugins -> UK I&L Toolkit -> Update. "
         "If it stays on the old version, remove the marketplace and add it again "
         "(Timobaaij/cbre-il-toolkit), which always lands the latest.",
         file=sys.stderr,
     )
     print(
-        f"[update] In the CLI: /plugin update cbre-il-toolkit@cbre-il-toolkit "
+        f"[update] In the CLI: /plugin update uk-il-toolkit@cbre-il-toolkit "
         f"(or re-add the marketplace). More: {UPDATE_DOC}",
         file=sys.stderr,
     )

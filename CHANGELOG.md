@@ -7,6 +7,56 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.12.0] — 2026-09-14
+
+Marketplace 1.12.0: **UK I&L Toolkit 1.5.0** gains a third skill. CBRE I&L Toolkit unchanged
+at 1.8.0.
+
+### Added
+- **`cbre-expense-claim` — receipts to a filed CBRE expense claim.** Reads a folder of mixed
+  evidence with vision (iOS multi-page scans, phone photos, Uber and airline email
+  screenshots, AMEX and Revolut app screens), deduplicates rescans, groups the pages into one
+  claim line per transaction, and produces two files: a reconciled `Expenses.xlsx` and a
+  page-stamped `Consolidated Expenses.pdf` whose navy band carries the line number and
+  `{TYPE} - {Merchant} ({CCY} {amount})` on every page of a multi-page line. It then files the
+  lines into PeopleSoft one at a time and reads every row back against the spreadsheet.
+
+  The shape is two **hard stops**, and the judgement that matters happens in the gap between
+  them. Stop 1 hands over the two files so the user sets **Expense Type** and **Attendees** in
+  the spreadsheet's two cream columns — whether a given meal is Subsistence, Client
+  Entertaining or Staff Entertaining turns on who was at the table, which no rule can infer, so
+  the skill prefills `SUBSIST` and never pre-empts the call. Stop 2 hands back the Report ID
+  and the per-line table. **Attaching receipts and Summary and Submit are never automated**,
+  and MFA is never attempted — the sign-in number goes to the user.
+
+  Where a wrong value would be silent and untraceable, the work is deterministic: a Python
+  script builds both files and performs no judgement, amounts are never computed from a printed
+  exchange rate (a real 853.88 PLN charge landed at £175.31, an effective 4.871 against the
+  5.01 quoted that day), a split bill claims the payment block rather than the headline total,
+  and a line with no card evidence stays in the receipt currency for PeopleSoft to convert.
+  Attendee names are deliberately **read, not parsed** — names carry middle initials,
+  particles and double-barrels, and a parser that guesses wrong files a real person's name
+  incorrectly.
+
+  The consolidated PDF has to stay attachable, so a companion script holds it under 9.5 MB and
+  protects legibility in the right order: it walks JPEG quality from 92 down to 78 at **native
+  resolution**, giving up no pixels, before it will consider resampling, then caps effective
+  dpi from 240 to 150 — and fails loudly rather than ship an illegible claim. It leaves a file
+  that already fits byte-identical, and refuses to be run twice on the same file.
+
+### Fixed
+- **Both existing UK skills' update notices named the wrong plugin.** They correctly read the
+  UK I&L Toolkit's own version, but the message said "CBRE I&L Toolkit" and the CLI line gave
+  `cbre-il-toolkit@cbre-il-toolkit`, so a UK user acting on the nudge would update the other
+  plugin and the notice would never clear. All three UK skills now name **UK I&L Toolkit** and
+  `uk-il-toolkit@cbre-il-toolkit`. The seven CBRE skills are unaffected.
+
+### Security
+- The PeopleSoft playbook shipped with a hard-coded **employee ID** and a Windows profile path
+  containing a **username**. Both are personal to one person and wrong for anyone else
+  installing from a public repository, so the Empl ID is now documented as prefilled from the
+  signed-in user ("never type or hard-code one") and the profile path as `%USERPROFILE%\…`.
+
 ## [1.11.0] — 2026-09-06
 
 Marketplace 1.11.0: **CBRE I&L Toolkit 1.8.0** and **UK I&L Toolkit 1.4.0**. Both plugins move,
@@ -853,6 +903,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.12.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.12.0
 [1.11.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.11.0
 [1.10.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.10.1
 [1.10.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.10.0
