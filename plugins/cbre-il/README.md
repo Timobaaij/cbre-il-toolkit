@@ -9,7 +9,7 @@ memorize.
 | Skill | What it does for you |
 |-------|----------------------|
 | **Corporate decks** | Builds a polished, fully CBRE-branded PowerPoint deck from your content — the right fonts, colours, and editorial layout, story-led by default. |
-| **Account briefings** | Turns your research into a sharp Industrial & Logistics account-briefing deck. |
+| **Occupier brief** | Turns research on a target company into a short, dense, internal pre-meeting brief — a CBRE-branded A4 document, a Source Ledger where every figure traces to a retrievable source, and a Verification Sheet. |
 | **Property longlist** | Turns a folder of brochures, emails, and spreadsheets into one interactive, filterable longlist dashboard — card grid, map, and side-by-side comparison. |
 | **CBRE voice** | Rewrites or reviews any copy so it reads unmistakably like CBRE. |
 

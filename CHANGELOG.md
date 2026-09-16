@@ -7,6 +7,49 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.14.0] — 2026-09-16
+
+Marketplace 1.14.0: **CBRE I&L Toolkit 1.10.0** gains a skill and loses one. UK I&L Toolkit
+unchanged at 1.5.1.
+
+### Added
+- **`cbre-il-occupier-brief` — a traceable pre-meeting brief on a target company.** Internal
+  enablement rather than a client deliverable: its job is to make the room fluent enough to
+  hold a credible, forward-looking conversation, and the governing move in every section is to
+  lead with the client's business problem rather than with a building.
+
+  It runs a **four-way parallel research fan-out under a hard 60-search budget** (allocated per
+  workstream and enforced by a script that reads the run's own search ledger, so a workstream
+  that hits its cap stops and reports the gap instead of quietly overspending), then **one**
+  independent QA round by a sub-agent that did not write the draft — the orchestrator
+  implements every finding and records each disposition, with no second reviewer and no
+  re-review. Three artefacts ship: a CBRE-branded A4 DOCX, a **Source Ledger where every
+  material figure traces to a retrievable source** with the figure as the source states it and
+  a publication date, and a **Verification Sheet** listing every time-sensitive or
+  low-confidence claim with an action. Where the target's network is growing it also carries a
+  ranked, falsifiable forecast of where the next distribution node goes, with its own audit
+  trail so somebody can re-run or disagree with it.
+
+  Required sections include the three persona reads — what is likely on the mind of the Head of
+  Real Estate, the Head of Supply Chain and the CEO. UK English throughout, with em and en
+  dashes rejected by a deterministic gate rather than by a style note.
+
+  **Named `cbre-il-occupier-brief`.** It was authored as `cbre-il-pursuit-brief`; the skill, its
+  directory, its heading, the artefact it produces and the DOCX filename all now read *Occupier
+  Brief*. "Pursuit brief" and "pursuit intelligence brief" are kept as trigger phrases, so
+  anyone still asking for the old name reaches the skill.
+
+### Removed
+- **`cbre-il-account-briefing` is no longer in the marketplace.** It shipped deck-length account
+  briefings; the occupier brief covers the pre-meeting need it was most often used for, and a
+  deck-length account plan is better built as a `cbre-corporate-pptx` deck on the occupier
+  brief's own research. Every live pointer to it has been repointed: the outreach-angles
+  description and its "use this, not the..." note, three hand-off lines inside the new skill,
+  the README tables, and both plugin descriptions.
+
+  **If you use it, it stays on disk until you update** — updating the plugin removes it. The
+  skill's own history remains in this repository if it needs to come back.
+
 ## [1.13.0] — 2026-09-14
 
 Marketplace 1.13.0: **CBRE I&L Toolkit 1.9.0** — dashboard template v43 → **v45**. UK I&L
@@ -1028,6 +1071,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.14.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.14.0
 [1.13.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.13.0
 [1.12.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.12.1
 [1.12.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.12.0

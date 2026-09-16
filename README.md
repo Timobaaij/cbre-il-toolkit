@@ -1,7 +1,7 @@
 # CBRE I&L Toolkit
 
 CBRE Industrial & Logistics skills for [Claude](https://www.claude.com/) — branded
-decks, account briefings, outreach angles, property longlists, site-tour apps,
+decks, occupier briefs, outreach angles, property longlists, site-tour apps,
 warehouse-network maps, and on-brand writing. Packaged as a Claude plugin so the whole
 team can install it in a couple of clicks.
 
@@ -10,7 +10,7 @@ team can install it in a couple of clicks.
 | Skill | What it does |
 |-------|--------------|
 | **Corporate decks** | Polished, CBRE-branded PowerPoint decks built from your content. |
-| **Account briefings** | Industrial & Logistics account-briefing decks built from your research. |
+| **Occupier brief** | A short, dense, internal pre-meeting brief on a target company: a CBRE-branded A4 document, a Source Ledger where every figure traces to a retrievable source, and a Verification Sheet. Runs a four-way research fan-out under a hard search budget, then one independent QA round. |
 | **Outreach angles** | A ranked sheet of evidence-backed reasons to contact a company now — each with a trigger, a way in, and a ready-to-send email hook — as a shareable CBRE-branded HTML file. |
 | **Property longlist** | An interactive longlist dashboard from a folder of brochures, emails, and spreadsheets. |
 | **Site tour app** | A self-contained, CBRE-branded itinerary web app for a site visit — a day-by-day timeline over an embedded map with numbered stops, tap-through property detail and Google Maps deep links. Mobile-first for the field, sticky map beside the timeline on a laptop. |

@@ -1,0 +1,27 @@
+# Stage 0: fill this in before dispatching any research. Save to working/variables.yaml.
+
+company: ""                 # exact legal entity, e.g. "Testco plc"
+short_name: ""              # what the brief calls it, e.g. "Testco"
+ticker: ""                  # or "private" / "PE-owned, <sponsor>"
+today: ""                   # YYYY-MM-DD, used for retrieved_date and staleness
+geography: ""               # UK / UK and Ireland / Europe / a named market
+
+trigger_event: ""           # the RFP, mandate, lease expiry, deal close, planning decision, meeting
+trigger_date: ""            # the date that makes it urgent
+angle: ""                   # network study | disposition | stay versus go | first capabilities conversation
+
+meeting:
+  who: ""                   # names and titles CBRE is meeting
+  when: ""                  # YYYY-MM-DD
+  context: ""               # who arranged it, what they think it is about
+
+cbre:
+  existing_relationship: "" # none | instructed on X | pitched and lost in <year> | held by another line of business
+  team: ""                  # who is walking in
+  incumbent_advisers: ""    # who is already in the account, if known
+
+materials_provided: []      # paths or URLs the user handed over. A starting point, never a substitute for research.
+
+# Do not change these without saying why in the delivery note.
+search_budget_total: 60
+language: "UK English"

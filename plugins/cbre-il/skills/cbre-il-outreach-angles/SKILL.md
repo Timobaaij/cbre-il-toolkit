@@ -1,6 +1,6 @@
 ---
 name: cbre-il-outreach-angles
-description: Produce a CBRE Industrial & Logistics OUTREACH OPPORTUNITIES sheet: a single ranked list of evidence-backed reasons to contact a company now, ranked by how developable each opportunity is, each labelled for trigger strength (a dated event or a structural inefficiency) and send-now or verify-first, written plain-English-first with a jargon buster for non-specialist brokers, and shipped with a ready-to-use email hook. Delivered as a self-contained, CBRE-branded HTML file. Use when the user wants a reason to reach out, a hook, an opening angle, a way in, or an in with a company; is prospecting a retailer, manufacturer, distributor, e-commerce or omnichannel business; asks "why would I call X", "what is my angle on X", or "give me an in with X"; or names a company and a market and wants a credible reason to make contact. Trigger even when the need is only described. For a full deck-length company profile, use cbre-il-account-briefing instead.
+description: Produce a CBRE Industrial & Logistics OUTREACH OPPORTUNITIES sheet: a single ranked list of evidence-backed reasons to contact a company now, ranked by how developable each opportunity is, each labelled for trigger strength (a dated event or a structural inefficiency) and send-now or verify-first, written plain-English-first with a jargon buster for non-specialist brokers, and shipped with a ready-to-use email hook. Delivered as a self-contained, CBRE-branded HTML file. Use when the user wants a reason to reach out, a hook, an opening angle, a way in, or an in with a company; is prospecting a retailer, manufacturer, distributor, e-commerce or omnichannel business; asks "why would I call X", "what is my angle on X", or "give me an in with X"; or names a company and a market and wants a credible reason to make contact. Trigger even when the need is only described. For a full pre-meeting company profile, use cbre-il-occupier-brief instead.
 ---
 
 # CBRE I&L Outreach Angles
@@ -11,7 +11,7 @@ This skill turns a target company into an **outreach sheet built as a single ran
 
 It is a **prospecting and triage tool**. It tells you what to say, why it matters now, and which trigger makes the contact credible. It gives you the email hook to build on, but does **not** write the full outreach email, recommend a site or a strategy, or invent figures.
 
-**Use this, not the account brief, when** the question is *why call them and what to lead with*: a fast, pre-contact triage. If the user wants the full picture of who the company is, how its supply chain works and where its property sits (a deck-length deliverable), that is `cbre-il-account-briefing`, not this skill.
+**Use this, not the occupier brief, when** the question is *why call them and what to lead with*: a fast, pre-contact triage. If the user wants the full picture of who the company is, how its supply chain works and where its property sits, that is `cbre-il-occupier-brief`, not this skill.
 
 ## What it is and is not
 
