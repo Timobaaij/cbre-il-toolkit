@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""setup_gate_test.py - the broker is ASKED the Stage-0 six questions. (B63)
+"""setup_gate_test.py - the broker is ASKED the Stage-0 five questions. (B63)
 
 THE LIVE FAILURE. A colleague's run on an up-to-date install asked nothing at the opening.
 The cause was not the model. `intake.scaffold_yaml` writes a COMPLETE project.yaml on the
 first pass - client name from --client, `output.language: English`,
-`inputs.emails.source: none`, the enrichment flags, `clarify.mode: interactive` - i.e. all
-six Stage-0 answers pre-filled with guesses, BEFORE anything told the orchestrator to ask.
+`inputs.emails.source: none`, the enrichment flags - i.e. all five Stage-0 answers pre-filled
+with guesses, BEFORE anything told the orchestrator to ask.
 SKILL.md then said to skip the form when "project.yaml already carries the answers". It
 always did. So skipping the form was the COMPLIANT behaviour, and runs shipped English
 dashboards with no email ingestion and car drive-times to brokers who were never offered a
@@ -63,12 +63,21 @@ ck((sc.get("setup") or {}).get("confirmed") is False,
 # the scaffold DOES carry every Stage-0 key - which is exactly why presence cannot be the test
 for _k, _path in (("client", ("client", "name")), ("language", ("output", "language")),
                   ("emails", ("inputs", "emails", "source")),
-                  ("enrichment", ("enrichment", "geocode")),
-                  ("ask mode", ("clarify", "mode"))):
+                  ("enrichment", ("enrichment", "geocode"))):
     _v = sc
     for _seg in _path:
         _v = (_v or {}).get(_seg)
     ck(_v is not None, f"the scaffold pre-fills {_k} (so 'carries the answers' is always true)")
+# THE ASK MODE IS NO LONGER A QUESTION (owner, 2026-09-19). The scaffold still writes
+# clarify.mode, but as a policy constant rather than an answer, so it must NOT appear in the
+# form, in the hand-off text, or in the list of keys the orchestrator is told to write. The
+# headless path stays reachable from the sentinel and from nowhere else.
+FORM = (ROOT / "reference" / "setup-form.md").read_text(encoding="utf-8", errors="replace")
+ck('data-name="ask_mode"' not in FORM, "the form has no ask-mode pill group")
+for _gone in ("Ask me when unsure", "Decide sensibly"):
+    ck(f'data-value="{_gone}"' not in FORM, f"...and no '{_gone}' pill")
+ck(FORM.count("elicit-group") == 5, "the form asks FIVE groups, not six")
+
 ck(RUN.setup_pending(sc, work_with(scaffold)) is True,
    "a scaffolded project.yaml leaves setup PENDING - values are not consent")
 ck(RUN.setup_pending(_Y.safe_load(scaffold.replace("confirmed: false", "confirmed: true")),
@@ -106,6 +115,10 @@ for _needle, _why in (("show_widget", "names the widget tool"),
                       ("is a GUESS", "warns that the file's values are guesses"),
                       ("clarify.SKIP_ALL", "names the headless decline")):
     ck(_needle in pref, f"...and it {_why}")
+ck("ask mode)" not in pref and "dashboard language, ask mode" not in pref,
+   "...and it no longer names an ask-mode question the form does not have")
+ck("`clarify.mode`)" not in pref,
+   "...and does not tell the orchestrator to write clarify.mode from an answer")
 ck("FIRST PASS?" not in pref,
    "the old conditional phrasing is gone (it was read as optional and skipped)")
 ck(RUN.setup_prefix(
@@ -121,7 +134,7 @@ ck(_pref_calls >= 2,
 ck("setup_pending(cfg, work)" in RSRC, "run.py gates on setup_pending (not dead wiring)")
 ck('"setup_form"' in RSRC and "SETUP_QID_SUBJECT" in RSRC,
    "the standalone stop emits a setup_form question")
-# the stop must sit AFTER the no-usable-inputs exit: six questions then "nothing to read"
+# the stop must sit AFTER the no-usable-inputs exit: five questions then "nothing to read"
 # would be the wrong order for the broker
 ck(RSRC.index("SETUP IS A FIRST-PASS INVARIANT") > RSRC.index("No property sources extracted"),
    "the setup stop comes after the no-usable-inputs exit, not before it")
@@ -130,7 +143,7 @@ ck(_sites == 3, f"exit-3 site count unchanged ({_sites}) - a new one needs the p
 # ----------------------------------------------- 5. the question itself
 ck(CQ.KINDS.get("setup_form") == "broker", "setup_form is a BROKER question")
 ck("setup_form" in CQ.BLOCKING_KINDS,
-   "...and BLOCKING: the scaffold's six guesses are exactly the damage")
+   "...and BLOCKING: the scaffold's five guesses are exactly the damage")
 ck(CQ.is_material({"kind": "setup_form"}),
    "...and material, so the materiality filter can never suppress it")
 w5 = work_with(scaffold)

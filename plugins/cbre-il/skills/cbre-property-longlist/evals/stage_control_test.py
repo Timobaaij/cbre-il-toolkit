@@ -128,7 +128,7 @@ import run as R         # noqa: E402
 # The FROZEN vocabulary, restated here on purpose: an eval that imported the constant it is
 # checking would pass on any rename, including a rename that breaks every operator's muscle
 # memory and every re-entry hint already printed into a work dir's logs.
-FROZEN = ["folder scan", "extract", "merge", "enrichment", "repairs", "projection",
+FROZEN = ["folder scan", "extract", "master list", "merge", "enrichment", "repairs", "projection",
           "gates:pre", "build", "gates:post", "deliver", "qa"]
 NEVER_SKIP = ["gates:pre", "gates:post", "qa"]
 

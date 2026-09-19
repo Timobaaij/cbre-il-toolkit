@@ -20,6 +20,24 @@ from common import (load_config, requirement_id, sanitize, property_folder,
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
 
+
+def doc_filename(d, basename):
+    """A document filename that keeps its extension.
+
+    Kato's `name` on a document is a human label, not a filename, and it regularly arrives
+    with no extension at all ("Vantage Park Brochure"). Saved verbatim that produced an
+    extensionless file which every downstream step then ignored: step 7a only copies .pdf and
+    .pptx into the pipeline's inputs folder, so the property silently lost its only source
+    document and step 7a's unevidenced-row refusal fired on a brochure that was sitting on
+    disk the whole time. The record carries `ext`, so use it, and fall back to the extension
+    on the URL path.
+    """
+    fn = sanitize(d.get("name") or basename) or "file"
+    if os.path.splitext(fn)[1]:
+        return fn
+    ext = (d.get("ext") or os.path.splitext(basename)[1] or "").strip().lstrip(".").lower()
+    return "%s.%s" % (fn, ext) if ext else fn
+
 def login_cookies(email, password, headless):
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
@@ -158,7 +176,7 @@ def main():
                       "group_position": li.get("group_position")})
         # queue media (documents as-is; images resized at source with a size ladder)
         for d in rec["documents"]:
-            fn = sanitize(d.get("name") or os.path.basename(urllib.parse.urlparse(d["url"]).path)) or "file"
+            fn = doc_filename(d, os.path.basename(urllib.parse.urlparse(d["url"]).path))
             media_jobs.append((d["url"], os.path.join(pdir, "media", fn), "doc"))
         for j, im in enumerate(rec["images"], 1):
             nm = sanitize(im.get("name") or f"image-{j}")

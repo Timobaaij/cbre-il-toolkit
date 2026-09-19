@@ -137,8 +137,10 @@ matters, because most of the data needs no network at all:
   `PyYAML`, `requests`, plus a PDF engine - `PyMuPDF` (fitz) preferred, otherwise `pypdfium2`
   + `pdfplumber` via `fitz_shim` (automatic; see "No network / no pip needed" - the bundled
   wheel usually makes this moot).
-- Optional: `pillow-heif` (HEIC images; degrades silently if absent), `extract-msg` (only the
-  `.msg` email fallback), `playwright` (only `render_qa.py`'s headless screenshots), and
+- Optional: `pillow-heif` (HEIC images; degrades silently if absent), `extract-msg` (a
+  preferred-if-present reader for `.msg`; when it is absent `helpers/msg_reader.py` reads the
+  OLE2/CFB container with the standard library alone, attachment bytes included, so a `.msg`
+  folder is a first-class input with no pip and no network), `playwright` (only `render_qa.py`'s headless screenshots), and
   **LibreOffice** (headless `soffice` - the only reliable PPTX slide renderer: with it, vision
   rasterisation and slide heroes cover vector/text-only slides too; without it both degrade to
   the slides' embedded pictures).

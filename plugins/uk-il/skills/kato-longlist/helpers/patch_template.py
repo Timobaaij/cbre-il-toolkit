@@ -51,14 +51,6 @@ NUMERO = "№"   # the '№' glyph already used in the modal header
 
 # Each patch: (name, old, new, marker_new). marker_new present => already applied (skip).
 PATCHES = [
-    # --- P3: card eyebrow (cardHTML; isTbd is NOT in scope here, so the check is self-contained)
-    (
-        "P3 card eyebrow",
-        '      <div class="dev-line">${p.developer} ' + MIDDOT + ' ${p.motorway}</div>',
-        "      <div class=\"dev-line\">${(()=>{const d=(p.developer||'').toString().trim().toLowerCase();"
-        "return (d&&d!=='tbd'&&d!=='—'&&d!=='-'&&d!=='n/a')?p.developer:(p.city||p.region||'');})()}</div>",
-        "const d=(p.developer||'').toString().trim().toLowerCase()",
-    ),
     # --- P2: card 4th spec cell -> Electricity
     (
         "P2 card power cell",
@@ -135,16 +127,6 @@ PATCHES = [
         "    const _df = document.getElementById('f-dev'); if(_df){ const _fw = _df.closest('.field'); if(_fw) _fw.style.display='none'; }",
         "const _df = document.getElementById('f-dev')",
     ),
-    # --- P13: drop the 'TBD' developer token from the modal header (same as the card eyebrow)
-    (
-        "P13 modal-dev drop tbd developer",
-        '        <div class="modal-dev"><span class="flag ${p.country.toLowerCase()}"></span>'
-        '${p.developer} ' + MIDDOT + ' ${p.country} ' + MIDDOT + ' ' + NUMERO + " ${String(p.id).padStart(2,'0')}</div>",
-        '        <div class="modal-dev"><span class="flag ${p.country.toLowerCase()}"></span>'
-        "${isTbd(p.developer) ? '' : `${p.developer} " + MIDDOT + ' `}'
-        '${p.country} ' + MIDDOT + ' ' + NUMERO + " ${String(p.id).padStart(2,'0')}</div>",
-        "${isTbd(p.developer) ? '' : `${p.developer}",
-    ),
     # --- P14: stop the 'Min warehouse area >= NN sq ft' filter label truncating (it ellipsises)
     (
         "P14 size filter label wrap",
@@ -163,6 +145,22 @@ PATCHES = [
 #
 #   (name, why it is unnecessary, predicate that must hold of the template)
 RETIRED = [
+    (
+        "P3 card eyebrow",
+        "v45 renders the card eyebrow through partyLine(p), which returns the landlord, else the "
+        "developer, else 'Landlord: <blank>' - so the dangling-separator case P3 existed to fix "
+        "cannot occur any more. Old anchor, kept for archaeology: "
+        "<div class=\"dev-line\">${p.developer} " + MIDDOT + " ${p.motorway}</div>",
+        lambda t: "function partyLine(p){" in t and '<div class="dev-line">${partyLine(p)}</div>' in t,
+    ),
+    (
+        "P13 modal-dev drop tbd developer",
+        "the modal header itself now guards the developer token: v45 renders "
+        "${isTbd(p.developer) ? '' : p.developer + ' " + MIDDOT + " '} inline, which is exactly what "
+        "P13 used to insert, so applying it would be a no-op at best and a double guard at worst.",
+        lambda t: "modal-dev\"><span class=\"flag ${p.country.toLowerCase()}\"></span>"
+                  "${isTbd(p.developer) ? '' : p.developer +" in t,
+    ),
     (
         "P7 deny injected fields",
         "the template has no auto 'Additional Details' field loop at all, so brochureUrl / videoUrl "

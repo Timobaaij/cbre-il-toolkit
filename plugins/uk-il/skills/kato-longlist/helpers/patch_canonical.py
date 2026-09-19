@@ -169,12 +169,31 @@ def main():
                 cp[field] = val
                 counts[field] += 1
                 ledger(pid, field, val)
-        # breeam: OVERWRITE the toolkit's (EPC-corrupted) value; only a real rating survives.
+        # breeam: REPAIR the EPC-corrupted value, never blank a real one.
+        #
+        # This used to overwrite unconditionally and fall back to "tbd", on the premise that
+        # whatever the toolkit put in `breeam` was the EPC column its dictionary folds in
+        # there. That premise only holds when the toolkit's value is NOT a BREEAM rating.
+        # Where a brochure states one and our own enrichment happens not to, the blanket
+        # overwrite replaced page-cited evidence with "tbd" - on this run that struck 11 of
+        # 21 properties, and the honesty review caught every card claiming no BREEAM for a
+        # field 13 decks state with a page citation. So: prefer ours, keep a valid rating the
+        # pipeline already read, and only then say tbd.
         managed.add((pid, "breeam"))
         raw_br = spec.get("breeam")
         good_br = raw_br if (raw_br and breeam_core(raw_br) in VALID_BREEAM) else None
-        cp["breeam"] = good_br or "tbd"
+        if not good_br:
+            existing = cp.get("breeam")
+            if existing and breeam_core(existing) in VALID_BREEAM:
+                # The pipeline's own page-cited rating. Leave it exactly as it is and claim
+                # no ledger row for it: it is not ours to attribute.
+                managed.discard((pid, "breeam"))
+                good_br = None
+                raw_br = None
+            else:
+                cp["breeam"] = "tbd"
         if good_br:
+            cp["breeam"] = good_br
             counts["breeam"] += 1
             ledger(pid, "breeam", good_br)
         # country: repair the sentinel, never overrule a real code. A two-letter code the

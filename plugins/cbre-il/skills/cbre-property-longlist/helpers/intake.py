@@ -227,7 +227,202 @@ def _is_own_output(rel: str) -> bool:
             or bool(_OWN_OUTPUT.search(p.name)))
 
 
-def discover(folder: Path, cluster_cache=None, exclude_dir=None) -> dict:
+# ---------------------------------------------------------------- containers (zip, email)
+# A broker forwards their whole option folder as ONE .zip, and an Outlook export of a filed
+# mail folder is a .zip of .msg files. Both used to land in `unclassified`: the run printed
+# "1 file could not be classified" and then "no readable property sources", over a zip holding
+# nine brochures. Nobody reads that as data loss, because nothing was lost from the FOLDER;
+# it was lost from the RUN. So a zip is now a first-class input, opened here before anything
+# is classified, and what comes out is classified exactly as if the broker had dropped the
+# loose files in themselves.
+_ARCHIVE_EXT = (".zip",)
+_UNPACK_SUFFIX = "_unpacked"
+_UNPACK_MARKER = ".unpacked.json"
+# ONE level of nesting. A zip of zips is a real shape (one archive per city), a zip of zips of
+# zips is not, and an unbounded recursion here is a zip bomb with a polite name.
+_UNPACK_MAX_DEPTH = 1
+# Refusal thresholds, not tuning knobs. 2 GB uncompressed and 5000 members are both far above
+# any real option folder (the largest measured broker export was 310 MB / 94 files) and far
+# below the point at which the sandbox's disk or the Windows directory walk gives out. A zip
+# past either is REFUSED WITH A REASON rather than half-extracted: a half-extracted archive is
+# the worst outcome, because the run then ships some of the options and says nothing.
+_ZIP_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+_ZIP_MAX_MEMBERS = 5000
+
+
+def _zip_signature(zf) -> str:
+    """A cheap, content-derived identity for a zip: every member's name, size and CRC.
+
+    Read from the CENTRAL DIRECTORY, so it costs no decompression and no whole-file read.
+    Deliberately not the zip's mtime: the resume guard rewrites inventory.json whenever the
+    inputs folder's mtime moves, so an mtime key would re-extract a 300 MB export on every
+    pass of a run that already exits and re-enters a dozen times.
+    """
+    return hashlib.sha1("\n".join(
+        f"{i.filename}|{i.file_size}|{i.CRC}" for i in zf.infolist()
+    ).encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _safe_extract_target(root: Path, member_name: str):
+    """The resolved path a zip member may be written to, or None if it escapes `root`.
+
+    ZIP-SLIP. A member named `../../../../Users/x/AppData/Roaming/...` is extracted by a naive
+    extractall straight outside the inputs folder, and the classic malicious payload is a
+    Windows startup-folder script. This is not hypothetical for us: the inputs of this skill
+    are archives forwarded by third parties through email, which is precisely the untrusted
+    channel the attack assumes. Absolute members and drive-letter members escape the same way
+    and are refused by the same test, because both resolve outside `root`.
+    """
+    name = str(member_name or "").replace("\\", "/").lstrip("/")
+    if not name or name.endswith("/"):
+        return None
+    try:
+        target = (root / name).resolve()
+        target.relative_to(root.resolve())
+    except (ValueError, OSError):
+        return None
+    return target
+
+
+def _unpack_one(zpath: Path, folder: Path) -> dict:
+    """Unpack ONE zip into `<zipname>_unpacked` beside it. Idempotent, never destructive."""
+    import zipfile
+    rel = zpath.relative_to(folder).as_posix()
+    dest = zpath.parent / (zpath.stem + _UNPACK_SUFFIX)
+    rec = {"archive": rel, "unpacked_to": dest.relative_to(folder).as_posix() if dest != folder
+           else "", "members": 0, "skipped_unsafe": [], "status": "unpacked"}
+    try:
+        with zipfile.ZipFile(zpath) as zf:
+            infos = zf.infolist()
+            sig = _zip_signature(zf)
+            marker = dest / _UNPACK_MARKER
+            if marker.exists():
+                try:
+                    prev = json.loads(marker.read_text(encoding="utf-8-sig"))
+                except (OSError, ValueError):
+                    prev = {}
+                if prev.get("signature") == sig:
+                    # Already unpacked and CURRENT. Say so and touch nothing: re-extracting
+                    # would rewrite every brochure's mtime, which invalidates the per-file
+                    # extract cache and makes a resumed run re-read decks it already read.
+                    rec.update({"status": "current",
+                                "members": int(prev.get("members") or 0)})
+                    return rec
+            total = sum(max(0, i.file_size) for i in infos)
+            if len(infos) > _ZIP_MAX_MEMBERS or total > _ZIP_MAX_TOTAL_BYTES:
+                rec.update({"status": "refused",
+                            "reason": f"{len(infos)} members / {total // (1024 * 1024)} MB "
+                                      f"uncompressed exceeds the {_ZIP_MAX_MEMBERS} member / "
+                                      f"{_ZIP_MAX_TOTAL_BYTES // (1024 ** 3)} GB cap - nothing "
+                                      f"was extracted; unzip it by hand if it is genuine"})
+                return rec
+            dest.mkdir(parents=True, exist_ok=True)
+            n = 0
+            for info in infos:
+                if info.is_dir():
+                    continue
+                target = _safe_extract_target(dest, info.filename)
+                if target is None:
+                    rec["skipped_unsafe"].append(info.filename)
+                    continue
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if target.exists() and target.stat().st_size == info.file_size:
+                        n += 1
+                        continue   # already there, same size: leave the mtime alone
+                    with zf.open(info) as src:
+                        target.write_bytes(src.read())
+                    n += 1
+                except OSError as e:
+                    rec.setdefault("errors", []).append(f"{info.filename}: {e}")
+            rec["members"] = n
+            try:
+                marker.write_text(json.dumps({"signature": sig, "members": n},
+                                             ensure_ascii=False), encoding="utf-8")
+            except OSError:
+                pass   # no marker means the next run re-extracts, which is merely slow
+    except Exception as e:
+        rec.update({"status": "refused", "reason": f"not a readable zip: {e}"})
+    return rec
+
+
+def unpack_archives(folder: Path, exclude_dir=None) -> list:
+    """Unpack every zip in the inputs folder (one level of nesting), idempotently.
+
+    Runs BEFORE classification so the contents are discovered on the SAME run. Returns one
+    record per archive; the caller publishes them in inventory.json so a refused or
+    partially-extracted archive is visible to the broker and to the gates instead of being a
+    file that quietly produced nothing.
+    """
+    out: list = []
+    if not folder.is_dir():
+        return out
+    try:
+        excl = Path(exclude_dir).resolve() if exclude_dir else None
+    except OSError:
+        excl = None
+
+    def _eligible(p: Path) -> bool:
+        if p.suffix.lower() not in _ARCHIVE_EXT or not p.is_file():
+            return False
+        parts = p.relative_to(folder).parts
+        # Same skip rules the classifier uses, so an archive parked in `_originals/` stays
+        # parked: a leading underscore is the documented way to take a duplicate out of scope,
+        # and unpacking one would put the duplicate straight back in.
+        if any(s.startswith((".", "_")) for s in parts) or p.name.startswith("~$"):
+            return False
+        if _is_own_output("/".join(parts)):
+            return False
+        if excl is not None:
+            try:
+                p.resolve().relative_to(excl)
+                return False
+            except (ValueError, OSError):
+                pass
+        return True
+
+    seen: set = set()
+    frontier = [p for p in sorted(folder.rglob("*")) if _eligible(p)]
+    for depth in range(_UNPACK_MAX_DEPTH + 1):
+        nxt: list = []
+        for z in frontier:
+            key = z.resolve().as_posix() if z.exists() else z.as_posix()
+            if key in seen:
+                continue
+            seen.add(key)
+            rec = _unpack_one(z, folder)
+            rec["depth"] = depth
+            out.append(rec)
+            if depth < _UNPACK_MAX_DEPTH and rec["status"] in ("unpacked", "current"):
+                sub = z.parent / (z.stem + _UNPACK_SUFFIX)
+                if sub.is_dir():
+                    nxt += [p for p in sorted(sub.rglob("*")) if _eligible(p)]
+        frontier = nxt
+        if not frontier:
+            break
+    return out
+
+
+def harvest_email_attachments(folder: Path, enabled: bool = True) -> list:
+    """Save every .msg/.eml attachment beside its email, before classification.
+
+    Delegated to `extract_email.harvest_folder` so there is ONE implementation of the inline
+    filter, the naming and the sidecar; intake owns only the decision to run it. `enabled` is
+    False when project.yaml says `inputs.emails.source: none`, which is what the kato-longlist
+    wrapper sets after doing this work itself - reading the same export twice writes a second
+    copy of every brochure, and the second copy does not merge with the first, it clusters as
+    its own option and the client sees the same building on two cards.
+    """
+    try:
+        import extract_email as EM
+    except Exception as e:
+        return [{"email": "(all)", "declared": None, "saved": [], "skipped_inline": [],
+                 "error": f"extract_email could not be imported: {e}"}]
+    return EM.harvest_folder(Path(folder), save_attachment_bytes=enabled)
+
+
+def discover(folder: Path, cluster_cache=None, exclude_dir=None,
+             email_attachments: bool = True) -> dict:
     """Recursive discovery (hidden/underscore dirs skipped). EVERY brochure is kept:
     a cluster's brochures are LISTS (`pdfs`/`pptxs`) - the old one-slot-per-type
     layout silently overwrote "Options - Madrid.pdf" with "New stock - Madrid.pdf"
@@ -239,11 +434,24 @@ def discover(folder: Path, cluster_cache=None, exclude_dir=None) -> dict:
     orchestrator's LLM-refined filename->region labels. It OVERRIDES infer_cluster's
     region for the named stems ONLY when its input_hash matches the current brochure
     set and every label passes _verified_cluster_overrides; ANY failure (or absence)
-    falls back to infer_cluster VERBATIM, so an offline / no-LLM run is unchanged."""
+    falls back to infer_cluster VERBATIM, so an offline / no-LLM run is unchanged.
+
+    CONTAINERS ARE OPENED FIRST. Zips are unpacked and email attachments are saved BEFORE
+    the walk, so a brochure that arrived inside an archive or stapled to a .msg is
+    discovered, clustered and read on THIS run. Doing either afterwards would mean the file
+    needed a second run to appear, and a silent two-run requirement is how an option goes
+    missing from a pack nobody re-ran."""
+    archives = unpack_archives(folder, exclude_dir=exclude_dir)
+    email_atts = harvest_email_attachments(folder, enabled=email_attachments)
     lib = _poi_lib()
     cc = lib.get("city_country", {})
     inv = {"folder": str(folder), "clusters": {}, "xlsx": [], "images": [],
            "emails": [], "present_types": [], "subfolders": [], "skipped_outputs": [],
+           # The containers, published so a refused archive or a failed attachment save is
+           # visible to the broker AND to gate_runner's input-accounting. An archive that
+           # produced nothing used to be indistinguishable from an archive nobody sent.
+           "archives": archives, "email_attachments": email_atts,
+           "email_attachments_enabled": bool(email_attachments),
            "skipped_duplicates": [], "skipped_hash_oversize": [],
            # A file whose extension matches NO branch below. It used to fall off the end of the
            # classifier silently - not a brochure, not a tracker, not an image, not an email, and
@@ -365,6 +573,13 @@ def discover(folder: Path, cluster_cache=None, exclude_dir=None) -> dict:
             inv["images"].append(rel)
         elif ext in (".msg", ".eml"):
             inv["emails"].append(rel)
+        elif ext in _ARCHIVE_EXT:
+            # A CONTAINER, not an input. It was opened by unpack_archives above and its
+            # contents are being classified individually in this same loop, so listing it
+            # under `unclassified` would report a file the run in fact read, and counting it
+            # as an input would make input-accounting BLOCK on a zip that can never carry a
+            # ledger row of its own. It is accounted for in inv["archives"].
+            continue
         else:
             inv["unclassified"].append({"file": rel, "ext": ext or "(none)"})
     # PASS 2: cluster the kept brochures. The cluster INPUT is the sorted brochure
@@ -488,10 +703,12 @@ enrichment:                      # broker opt-in; ask in plain language before r
 qa:
   fill_threshold: 0.6
 clarify:
-  mode: interactive              # the STANDARD: ask the broker when a judgement call
-                                 # affects what a card shows. 'headless' (or
-                                 # assume_defaults: true / the SKIP_ALL sentinel) keeps
-                                 # the default-honestly-and-disclose contract instead
+  mode: interactive              # FIXED BY POLICY, not a Stage-0 question and not a guess
+                                 # like the values above it: the run always asks the broker
+                                 # when a judgement call affects what a card shows.
+                                 # 'headless' (or assume_defaults: true / the SKIP_ALL
+                                 # sentinel) keeps the default-honestly-and-disclose
+                                 # contract, and exists only for a run with no human in it
 """
 
 
@@ -761,6 +978,26 @@ def _merge_clusters_into_yaml(yml: Path, inv: dict) -> bool:
         return False
 
 
+def _emails_source(outdir: Path) -> str:
+    """`inputs.emails.source` from an EXISTING project.yaml, or "" when there is none.
+
+    Read defensively and never fatally: this decides only whether attachments are harvested,
+    and a malformed project.yaml already has a louder reporter than intake. Returning "" on
+    any doubt keeps the DEFAULT behaviour (harvest), because the failure of not harvesting is
+    a brochure missing from the pack, while the failure of harvesting when the wrapper already
+    did is a duplicate the match stage surfaces loudly.
+    """
+    p = Path(outdir) / "project.yaml"
+    if not p.exists():
+        return ""
+    try:
+        import yaml
+        cfg = yaml.safe_load(p.read_text(encoding="utf-8-sig")) or {}
+        return str((((cfg.get("inputs") or {}).get("emails") or {}).get("source")) or "").strip().lower()
+    except Exception:
+        return ""
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("folder", nargs="?", help="inputs folder (or pass --folder)")
@@ -780,7 +1017,14 @@ def main() -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     # The orchestrator's LLM-refined labels (work/intake_clusters.json) override the
     # regex per stem when present + verified; absence forces the deterministic regex.
-    inv = discover(folder, cluster_cache=_load_cluster_cache(outdir), exclude_dir=outdir)
+    # `inputs.emails.source: none` is the wrapper-skill contract (kato-longlist unzips the
+    # export and saves its attachments in its own email step before this skill ever runs).
+    # Harvesting them again here would write a SECOND copy of every brochure into the inputs
+    # folder, and the second copy does not merge with the first: it clusters as its own
+    # option and the client sees the same building twice. Absent project.yaml means a first
+    # pass on a plain folder, where harvesting is exactly what is wanted.
+    inv = discover(folder, cluster_cache=_load_cluster_cache(outdir), exclude_dir=outdir,
+                   email_attachments=_emails_source(outdir) != "none")
     C.atomic_write_text(outdir / "inventory.json", json.dumps(inv, ensure_ascii=False, indent=2))
     yml = outdir / "project.yaml"
     if not yml.exists():
@@ -796,6 +1040,35 @@ def main() -> None:
     print(f"OK inventory: {len(inv['clusters'])} clusters / {n_brochures} brochures "
           f"({', '.join(inv['clusters'])}), {len(inv['xlsx'])} xlsx, "
           f"{len(inv['images'])} images, {len(inv['emails'])} emails{scaffolded}")
+    for a in inv.get("archives") or []:
+        if a.get("status") == "refused":
+            print(f"WARNING: {a['archive']} was NOT unpacked: {a.get('reason')}. Nothing inside "
+                  f"it is in this run.")
+        elif a.get("status") == "current":
+            print(f"NOTE: {a['archive']} already unpacked and unchanged -> "
+                  f"{a.get('unpacked_to')}/ ({a.get('members')} file(s), left untouched)")
+        else:
+            print(f"NOTE: unpacked {a['archive']} -> {a.get('unpacked_to')}/ "
+                  f"({a.get('members')} file(s){', nested' if a.get('depth') else ''})")
+        if a.get("skipped_unsafe"):
+            # A member whose path escapes the inputs folder is refused and NAMED. Silence here
+            # would be the wrong trade twice over: a benign archive built with odd relative
+            # paths looks fine while losing files, and a hostile one gets to try again quietly.
+            print(f"WARNING: {len(a['skipped_unsafe'])} member(s) of {a['archive']} name paths "
+                  f"OUTSIDE the inputs folder and were refused (zip-slip): "
+                  f"{', '.join(a['skipped_unsafe'][:4])}")
+    _ea = inv.get("email_attachments") or []
+    _n_saved = sum(len(e.get("saved") or []) for e in _ea)
+    _n_inline = sum(len(e.get("skipped_inline") or []) for e in _ea)
+    if _n_saved or _n_inline:
+        print(f"NOTE: saved {_n_saved} email attachment(s) beside their emails and skipped "
+              f"{_n_inline} inline image(s) (signature logos). The saved files are classified "
+              f"and routed in this same run, exactly like a brochure dropped in the folder.")
+    for e in _ea:
+        if e.get("error"):
+            print(f"WARNING: {e.get('email')}: attachments NOT extracted - {e['error']}. Any "
+                  f"brochure attached to this email is NOT in the run; input-accounting blocks "
+                  f"on it rather than letting the body's records stand in for the file.")
     if inv.get("subfolders"):  # nothing silently invisible: name what was scanned
         print(f"NOTE: scanned {len(inv['subfolders'])} subfolder(s) too: "
               f"{', '.join(inv['subfolders'][:8])}")

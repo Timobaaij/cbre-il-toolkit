@@ -1,6 +1,6 @@
-# The Stage-0 broker setup form (ONE `visualize` widget, all six questions)
+# The Stage-0 broker setup form (ONE `visualize` widget, all five questions)
 
-The broker setup is presented as **ONE `visualize` elicitation widget** — a single box with **all six
+The broker setup is presented as **ONE `visualize` elicitation widget**: a single box with **all five
 questions at once**, submitted together. **Do NOT use `AskUserQuestion`, and NEVER split the questions
 into a single-question / one-at-a-time flow or a follow-up.** This is a hard requirement: the broker
 answers everything in one form and the run proceeds with zero further setup prompts.
@@ -12,36 +12,48 @@ answers everything in one form and the run proceeds with zero further setup prom
    **inferred client name** into the two `{{CLIENT}}` spots (from the inputs folder / `project.yaml`
    `client:`; if genuinely unknown, use a best-guess label — the broker can still pick "Other").
    Title stays `Property longlist details`.
-3. Show ALL SIX groups every time — even a field you could infer (e.g. the client name) is shown as a
+3. Show ALL FIVE groups every time: even a field you could infer (e.g. the client name) is shown as a
    confirmable pill. No shortcuts, no omitted groups.
 4. SKIP the whole widget ONLY when `project.yaml` already carries the answers (a non-interactive
-   re-run), OR when the `visualize` tool is genuinely unavailable in this environment — in that one
-   fallback case present all six in ONE consolidated plain-text message (a single elicitation), still
+   re-run), OR when the `visualize` tool is genuinely unavailable in this environment. In that one
+   fallback case present all five in ONE consolidated plain-text message (a single elicitation), still
    never one question at a time.
 
 ## The submitted answer
 On submit the broker's answers arrive as your next message on one line, e.g.:
-`Property longlist details — Client: Acme Retail · Extras: Drive-time maps, Logistics landmarks · Ors key: (blank) · Emails: Normal CEE · Language: English · Ask mode: Ask me when unsure`
+`Property longlist details — Client: Acme Retail · Extras: Drive-time maps, Logistics landmarks · Ors key: (blank) · Emails: Normal CEE · Language: English`
 (`(Skipped the form — proceed with defaults or ask me in plain text)` if they skip.) Parse it and
 record into `project.yaml` per the mapping in SKILL.md "The broker setup prompt": Client→`client:`,
 Extras→`enrichment:` flags, Ors key→`enrichment.ors_api_key`, Emails→`inputs.emails:`
 (folder name = the "(other)" text; "Across all of Outlook" = no `folderName`; "No" = skip), Language→
-`output.language`, Ask mode→`clarify.mode` ("Ask me when unsure" = `interactive`, the STANDARD;
-"Decide sensibly" = `headless`). **Then set `setup.confirmed: true` in the same file** - that
+`output.language`. `clarify.mode` is NOT in the mapping and is not asked: the run always asks the
+broker when it is unsure (see below). **Then set `setup.confirmed: true` in the same file** - that
 flag, and nothing else, is what tells the spine a human answered; without it every hand-off
 keeps leading with this form and a pass with no other hand-off stops at exit 13. Then proceed
 to extraction with no further setup questions.
 
 Do NOT read the scaffolded `project.yaml` as evidence that the form was answered. Intake
-writes it on the first pass with all six values pre-filled (the client name from `--client`,
-`output.language: English`, `inputs.emails.source: none`, the enrichment flags,
-`clarify.mode: interactive`), so it always looks answered. That is exactly how live runs
-shipped English dashboards with no email ingestion to brokers who were never asked (B63).
+writes it on the first pass with all five values pre-filled (the client name from `--client`,
+`output.language: English`, `inputs.emails.source: none`, the enrichment flags), so it always
+looks answered. That is exactly how live runs shipped English dashboards with no email
+ingestion to brokers who were never asked (B63).
 
-"Ask me when unsure" is not "ask me about everything": a question reaches the broker only when
-the answer would change a value, photo or label the dashboard RENDERS, or how many options ship
+## Asking when unsure is FIXED, not a question
+
+The run ALWAYS asks the broker when it is genuinely uncertain: `clarify.mode: interactive` is
+policy, not a preference, so there is no sixth pill for it and there must never be one again.
+It was a form question until 2026-09-19; it was removed because the one answer that made the
+run cheaper to operate was also the answer that shipped a guess to a client, and offering that
+trade to the person least able to see the cost is not a real choice.
+
+"Asks when unsure" is not "asks about everything": a question reaches the broker only when the
+answer would change a value, photo or label the dashboard RENDERS, or how many options ship
 (`reference/evidence-standard.md` rule 4). Everything else is disclosed in the Gaps Report under
-"Noted, not put to you". Do not soften the pill labels to promise more than that.
+"Noted, not put to you".
+
+The headless contract still exists for a run with NO HUMAN IN IT (cron, eval, batch): the
+`work/clarify.SKIP_ALL` sentinel or `clarify.assume_defaults: true`, set deliberately by whoever
+launches such a run. Neither is reachable from this form, which is the point.
 
 ## The form (pass verbatim to `show_widget`; only `{{CLIENT}}` is substituted)
 ```html
@@ -101,14 +113,6 @@ the answer would change a value, photo or label the dashboard RENDERS, or how ma
         <button type="button" class="elicit-pill" data-value="Other" data-other>Another European language</button>
       </div>
       <input type="text" class="elicit-other" data-for="language" placeholder="Name it (e.g. German, Polish, Danish)" hidden>
-    </div>
-
-    <div class="elicit-group">
-      <label class="elicit-question">When the run hits a judgement call your files can't settle, should it ask you? It only asks when the answer would change what the dashboard shows, or how many options are on it.</label>
-      <div class="elicit-pills" data-name="ask_mode" data-multi="false">
-        <button type="button" class="elicit-pill" data-value="Ask me when unsure" aria-pressed="true">Ask me when unsure (recommended)</button>
-        <button type="button" class="elicit-pill" data-value="Decide sensibly">Decide sensibly and list it in the Gaps Report</button>
-      </div>
     </div>
 
   </div>

@@ -7,6 +7,61 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.15.0] — 2026-09-19
+
+Marketplace 1.15.0: **CBRE I&L Toolkit 1.11.0** and **UK I&L Toolkit 1.6.0**. Both plugins
+move, so update both.
+
+### Added
+- **The Master List — the user decides what the run builds, before a single brochure is read.**
+  A new **exit 17** in the property longlist, and step 2.5 in the Kato longlist, sharing the
+  same two helpers. The run inventories every candidate option it can see, writes them to
+  `Master List.xlsx`, and **stops**. The user marks each row **Yes** or **No** and can leave
+  free-text notes for the run. Only the Yes rows reach the deck readers.
+
+  It sits between the cheap reads and the expensive ones on purpose: the sheet is built from
+  trackers, emails and brochure clusters, and the brochures are only read afterwards, for the
+  options that survived. The run refuses to guess — `master_list_read.py` **exits 2 on any row
+  that is not Yes or No and names them**, and the skill is explicit that the orchestrator must
+  never fill the column in, never infer it from the duplicate groups, and never proceed on a
+  partly answered sheet. This is the one point in the run where scope is decided, and the
+  options struck off are named in the Gaps Report rather than silently dropped.
+
+  On the Kato side it closes a real defect: options arrive by three overlapping routes that
+  nothing reconciled — the Kato longlist raises one match **per broker**, so the same unit
+  arrives two or three times under different agencies; the broker emails re-send options
+  already on Kato and name others that are on nobody's Kato; and the user drops in further
+  files. The run used to take every Kato match, silently merge whatever shared a postal code
+  and an exact floor area, and never see an email-only option at all — the user found out what
+  had been decided by reading the finished dashboard. The workbook now carries three tabs
+  (Master list, Duplicate check, Unmatched files), the agent's own duplicate adjudication wins
+  over a blunt postal-code sweep that is labelled `(auto)` with its looseness stated, and
+  re-running carries existing decisions forward by a hidden row id, so a second email export
+  does not cost the user their decisions.
+
+- **A saved email folder and a zip are first-class inputs to the property longlist.** A `.zip`
+  is unpacked once into `<zipname>_unpacked` beside itself, and a `.msg`/`.eml` has its
+  attachments saved under `<yyyy-mm-dd>_<subject>_attachments/`, both inside the inputs folder,
+  both idempotent and never escaping it — so a brochure that arrived stapled to an offer email
+  is clustered and read on the **same run**, exactly like a file dropped in by hand. Inline
+  images (signature logos, `cid:` images, anything under 20 KB) are excluded. The skill now
+  says plainly to move the zip and the email folder in **as they are**: unpacking by hand loses
+  the `.from_email.json` sidecar and with it the ledger's record of which email carried which
+  brochure. Reading the prose stays an LLM step — Python opens the container, the agent reads
+  the offer.
+
+- Property longlist: `master_list_test`, `master_list_external_test`, `email_folder_test` and
+  `email_attachment_provenance_test`, all passing.
+
+### Known issue
+- **`cowork_sim` does not yet answer exit 17.** The simulator's Responder has no branch for the
+  new round-trip, so it aborts with its own message: *"UNHANDLED exit 17: extend the Responder
+  to cover it (this is a simulator gap, not necessarily a skill bug)."* The spine behaved
+  correctly in that run — it stopped at exit 17 with a complete four-step handoff and clean
+  input accounting. `conformance_sim_test`, the other scripted-orchestrator check, **was**
+  updated for exit 17 and passes, so the exit table still has coverage. The Responder needs
+  extending.
+
 ## [1.14.1] — 2026-09-19
 
 Marketplace 1.14.1: **CBRE I&L Toolkit 1.10.1** and **UK I&L Toolkit 1.5.2**. Both plugins
@@ -1107,6 +1162,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.15.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.15.0
 [1.14.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.14.1
 [1.14.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.14.0
 [1.13.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.13.0

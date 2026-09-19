@@ -97,6 +97,36 @@ def main() -> int:
         elif rc == 12:
             (work / "i18n").mkdir(parents=True, exist_ok=True)
             (work / "i18n" / "data_translate.SKIP").touch()
+        elif rc == 17:
+            # THE MASTER LIST. The handoff prints both commands verbatim and states what the
+            # user does between them, so a no-recall orchestrator can drive it from the handoff
+            # alone - which is the whole point of this eval. The sim stands in for the human at
+            # step 3 and answers Yes on every row (a clean single-source fixture has nothing to
+            # strike off); step 1, the candidates sub-agent, is OPTIONAL by design, so skipping
+            # it is the same decline this sim makes at every other agentic step.
+            mb = re.search(r"`python (helpers[\\/]master_list_build\.py) --work \"(.+?)\"`", out)
+            mr = re.search(r"`python (helpers[\\/]master_list_read\.py) --work \"(.+?)\"`", out)
+            check("exit-17 handoff names the build command", mb)
+            check("exit-17 handoff names the read-back command", mr)
+            _b = _run([str(SKILL / mb.group(1)), "--work", mb.group(2)])
+            check(f"master_list_build ran ({_b.returncode}): {_b.stderr[-200:]}",
+                  _b.returncode == 0)
+            from openpyxl import load_workbook as _lwb
+            _wbp = Path(mb.group(2)) / "Master List.xlsx"
+            check("the build wrote the workbook the handoff named", _wbp.exists())
+            _wb = _lwb(_wbp)
+            _ws = _wb["Master list"]
+            _hdr = {str(_ws.cell(4, c).value).strip(): c
+                    for c in range(1, _ws.max_column + 1) if _ws.cell(4, c).value}
+            check("the sheet has the two columns the handoff names",
+                  "Include?" in _hdr and "Row ID" in _hdr)
+            for _r in range(5, _ws.max_row + 1):
+                if _ws.cell(_r, _hdr["Row ID"]).value:
+                    _ws.cell(_r, _hdr["Include?"], "Yes")
+            _wb.save(_wbp)
+            _rr = _run([str(SKILL / mr.group(1)), "--work", mr.group(2)])
+            check(f"master_list_read accepted the answered sheet ({_rr.returncode}): "
+                  f"{_rr.stderr[-200:]}", _rr.returncode == 0)
         elif rc == 13:
             (work / "clarify.SKIP_ALL").touch()
         elif rc == 14:

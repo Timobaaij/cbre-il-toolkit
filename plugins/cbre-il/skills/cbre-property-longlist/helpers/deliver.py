@@ -212,6 +212,130 @@ def _close_note(field: str, struck: dict | None = None) -> str:
                             "sender if it is decision-relevant")
 
 
+def _email_attachments_skipped(work_dir: Path | None) -> list:
+    """Markdown lines for attachments the email reader REFUSED as inline images.
+
+    extract_email drops an attachment that carries a Content-ID with no filename, or that is
+    under 20 KB, because a broker signature block is five to twenty logos, award badges and
+    social icons per email and every one of them otherwise lands in the inputs folder as a
+    candidate hero photo. The rules are blunt on purpose and they are right almost always -
+    but "almost" is doing real work there. A one-page floor plan exported thin, a site plan
+    saved as a 14 KB PNG, a unit plan a broker screenshotted: each is a genuine document that
+    this filter throws away, and until now the refusal was recorded in inventory.json and
+    nowhere a human reads. The client got a dashboard with no site plan and no line anywhere
+    saying one had arrived and been refused, which is precisely the silent-drop failure the
+    rest of this report exists to prevent. So the refusals are printed: subject, filename,
+    size and the rule, which is enough for a reader to say "that is a brochure" and fetch it.
+
+    ABSENT-TOLERANT like every other work-dir read here: no inventory, an old inventory with
+    no attachment record, or a malformed one yields no section rather than costing the report.
+    """
+    inv_p = (Path(work_dir) / "inventory.json") if work_dir else None
+    if not inv_p or not inv_p.exists():
+        return []
+    try:
+        inv = json.loads(inv_p.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return []
+    out: list = []
+    for e in (inv.get("email_attachments") or []):
+        if not isinstance(e, dict):
+            continue
+        who = str(e.get("subject") or "").strip() or str(e.get("email") or "").strip() or "(email)"
+        for s in (e.get("skipped_inline") or []):
+            if not isinstance(s, dict):
+                continue
+            try:
+                kb = f"{int(s.get('bytes') or 0) / 1024:.1f} KB"
+            except (TypeError, ValueError):
+                kb = "size unknown"
+            out.append(f"- **{who}** - `{s.get('name') or '(unnamed)'}` ({kb}): "
+                       f"{s.get('why') or 'refused by the inline-image filter'}")
+    if not out:
+        return []
+    return (["## Email attachments not read",
+             "Refused by the inline-image filter, which exists to keep signature logos and "
+             "award badges out of the run. Almost all of these are exactly that. Check the "
+             "list anyway: a thin floor plan or a screenshotted unit plan is a real document "
+             "that trips the same rule, and if one is listed below it is NOT in the "
+             "dashboard. Forward it separately and re-run to include it."]
+            + out + [""])
+
+
+def master_list_lines(work_dir) -> list:
+    """The Gaps Report's account of the MASTER LIST: what the user struck off, or that nobody
+    was asked.
+
+    An option removed from a client's own longlist must be VISIBLE. The exclusions here are the
+    most defensible ones in the whole run - a named person looked at a named option and said no -
+    and they are also the easiest to forget, because the option leaves before any card exists, so
+    nothing downstream has a shape to report. Named here, by name and with the reason the sheet
+    carried, so a reader comparing the dashboard against their own shortlist can see why an
+    option they remember is not on it.
+
+    The headless case gets its own paragraph rather than silence. A cron run cannot put a sheet
+    to anybody, so it includes everything - which is the run's honest pre-master-list behaviour,
+    but a reader who knows the sheet exists would otherwise assume somebody answered it.
+    """
+    if not work_dir:
+        return []
+    # SCOPE SETTLED UPSTREAM. A wrapper skill that owns the scope decision (project.yaml
+    # `master_list: {mode: external}`) declines this skill's stop, so there is no sheet here to
+    # report on and no exclusions of this skill's making to name. ONE line, not a section: a
+    # reader comparing the dashboard against their own shortlist still needs to know where the
+    # options were chosen and by whom, and silence would read as "nobody chose", which is the
+    # exact misreading the headless paragraph below exists to prevent.
+    try:
+        _ext = json.loads((Path(work_dir) / "master_list_external.json")
+                          .read_text(encoding="utf-8-sig"))
+    except Exception:
+        _ext = None
+    if isinstance(_ext, dict) and str(_ext.get("mode") or "") == "external":
+        return [f"Scope for this longlist was settled before this run, not on a sheet here: "
+                f"{_ext.get('confirmed_by') or 'the calling skill'}.", ""]
+    try:
+        ml = json.loads((Path(work_dir) / "master_list.json").read_text(encoding="utf-8-sig"))
+    except Exception:
+        return []
+    if not isinstance(ml, dict) or not ml.get("rows"):
+        return []
+    out: list = []
+    if ml.get("skipped"):
+        out.append("## Scope was not put to you (the run decided)")
+        out.append("This run was set to decide sensibly rather than ask, so the master list - "
+                   "the sheet where you choose which options are built - was never put to "
+                   "anyone, and EVERY option found in your files is on the dashboard: "
+                   f"{(ml.get('counts') or {}).get('rows', '?')} of them. Reason on record: "
+                   f"{ml.get('reason') or 'headless run'}. Re-run interactively to choose.")
+        out.append("")
+        return out
+    rows = [r for r in ml.get("rows") or [] if isinstance(r, dict)]
+    excluded = [r for r in rows if str(r.get("include") or "") == "No"]
+    if not excluded:
+        return out
+    out.append("## Options excluded by the master list")
+    out.append("You were shown every option this run found, on one sheet, before the brochures "
+               "were read. These are the ones you marked **No**, so they were not built - their "
+               "brochures were not read and they are not on the dashboard. Nothing failed. To "
+               "bring one back, set its Include? to Yes on `Master List.xlsx`, re-read the sheet "
+               "and re-run.")
+    for r in sorted(excluded, key=lambda x: str(x.get("property") or "")):
+        src = str(r.get("source") or "; ".join(r.get("source_files") or []) or "?")
+        why = []
+        if r.get("deleted_from_workbook"):
+            why.append("the row was DELETED from the workbook rather than answered, which is "
+                       "indistinguishable from a botched sort, so it was treated as No")
+        if r.get("duplicate_group"):
+            why.append(f"in duplicate group {r['duplicate_group']}")
+        note = str(r.get("run_notes") or "").strip()
+        if note:
+            why.append(f"your note: {note}")
+        out.append(f"- **{r.get('property') or '(unnamed row)'}** ({r.get('source_type') or '?'})"
+                   f" - found in: {src}" + (f". {'; '.join(why)}." if why else "."))
+    out.append("")
+    return out
+
+
 def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str:
     props = canonical["properties"]
     meta = canonical.get("meta", {})
@@ -564,6 +688,10 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
                              f"the card currently shows only its own source's value.")
         lines.append("")
 
+    # The user's own scope decision, immediately after the run's derived one, because a reader
+    # asking "why is X not here?" should find both answers in one place.
+    lines += master_list_lines(work_dir)
+
     ov = meta.get("overrides", {}) or {}
     applied = ov.get("applied") or []
     if applied:
@@ -687,6 +815,8 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
             lines.append("")
 
     # unreadable / skipped input files (run.py writes <work>/unreadable.json) - the
+    lines += _email_attachments_skipped(work_dir)
+
     # honesty standard: a corrupt/encrypted/empty input is a named gap, never a silent drop
     ur = (Path(work_dir) / "unreadable.json") if work_dir else None
     if ur and ur.exists():

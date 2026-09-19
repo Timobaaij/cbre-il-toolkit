@@ -85,7 +85,12 @@ GROUPS = [
         ("BREEAM", lambda r: (r.get("spec") or {}).get("breeam"), 13, None, None),
     ]),
     ("Overview", [
-        ("Summary", lambda r: r.get("summary"), 55, None, None),
+        # The curated description first: it is the 3-4 sentence prose the model authored for
+        # this run from the listing, the brochure and the location text, and it is what the
+        # dashboard card shows. Falling straight through to Kato's own one-line `summary`
+        # meant the spreadsheet and the dashboard described the same building in different
+        # words, and the shorter one was the marketing strapline.
+        ("Summary", lambda r: r.get("curated_description") or r.get("summary"), 55, None, None),
     ]),
     ("Media (online)", [
         ("Brochure", lambda r: (r.get("media") or {}).get("brochure_url"), 9, None, "url"),
@@ -103,7 +108,13 @@ BANDFILL = PatternFill("solid", fgColor="0E3320")
 LINKFONT = Font(name="Arial", size=10, color="0563C1", underline="single")
 THIN = Side(style="thin", color="D9D9D9")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-WRAP = {"Loading", "Availability", "Agent", "Contact", "Area", "Property", "Basis"}
+# "Summary" joined this set when the column switched from Kato's one-line strapline to the
+# curated description: at 500 to 650 characters in an unwrapped 55-wide cell, Excel showed
+# roughly the first line and clipped the rest, with no spillover because the Brochure cell
+# beside it is occupied. Wrapping without a row height would leave one visible line, so the
+# data rows are given a height too (see ROW_H).
+WRAP = {"Loading", "Availability", "Agent", "Contact", "Area", "Property", "Basis", "Summary"}
+ROW_H = 92
 
 def write_sheet(ws, records, props_root, overrides=None):
     """`overrides` is {property name: {column header: literal value}} - a client-edited sheet
@@ -146,6 +157,10 @@ def write_sheet(ws, records, props_root, overrides=None):
                                        horizontal=("right" if numfmt else "left"))
             if val is not None and numfmt:
                 cell.number_format = numfmt
+    # Give the data rows enough height for the wrapped Summary. Without this the wrap is
+    # cosmetic: Excel shows one line of a 600-character description and hides the rest.
+    for r in range(3, 3 + len(records)):
+        ws.row_dimensions[r].height = ROW_H
     ws.freeze_panes = "C3"
     ws.auto_filter.ref = f"A2:{get_column_letter(len(cols))}2"
     ws.sheet_view.showGridLines = False

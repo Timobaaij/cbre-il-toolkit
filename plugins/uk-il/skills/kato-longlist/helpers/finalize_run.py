@@ -16,6 +16,14 @@ DELIBERATELY CONSERVATIVE. It moves terminal deliverables (nothing downstream re
 nothing outside JUNK. Working data stays exactly where the other helpers expect it, so running this does
 not break a re-run of any earlier stage. Idempotent: run it as often as you like.
 
+ONE EXCEPTION TO "DELETES NOTHING OUTSIDE JUNK", stated here because it is a file the user can
+care about. When a deliverable arriving from a re-run collides with a file of the same name
+already in OUTPUT/, the OLDER of the two is replaced, so re-running converges on one copy of
+each deliverable instead of accumulating "<name> (newer)" siblings. Modified time decides:
+a copy in OUTPUT/ that is NEWER than the incoming build is assumed to be one the user edited
+after the last pass, and that one is never deleted - the incoming file takes the suffix
+instead. Nothing on either path touches the disk before --dry-run has been honoured.
+
 Usage:
   python finalize_run.py --config run.yaml
   python finalize_run.py --config run.yaml --dry-run      # show what would happen, change nothing
@@ -124,16 +132,42 @@ def relocate(work, out_dir, dry_run):
                 continue
             seen.add(real)
             dest = os.path.join(out_dir, os.path.basename(src))
-            if os.path.exists(dest) and os.path.realpath(dest) != real:
+            # A NAME COLLISION, and it is not always a stale copy of what is arriving.
+            #
+            # Re-running this step is meant to CONVERGE: leaving "<name>" beside
+            # "<name> (newer)" is the confusion the step exists to remove, because the user
+            # opens OUTPUT and has to date-compare two dashboards to find the one to send.
+            # But an existing file can also be one the USER edited after the last pass, and
+            # that must not be destroyed to tidy the folder. Modified time separates the two:
+            # a stale artefact of an earlier pass is OLDER than the build now arriving, while
+            # anything a person touched since is newer and keeps the suffix.
+            #
+            # The decision is deliberately made BELOW the dry-run guard. An earlier revision
+            # of this block deleted above it, so --dry-run - which SKILL.md tells the operator
+            # to use to preview - permanently emptied OUTPUT. Nothing here may touch the disk
+            # until dry_run has been honoured.
+            collision = os.path.exists(dest) and os.path.realpath(dest) != real
+            supersede = collision and os.path.getmtime(dest) <= os.path.getmtime(src)
+            if collision and not supersede:
                 stem, ext = os.path.splitext(os.path.basename(src))
                 dest = os.path.join(out_dir, f"{stem} (newer){ext}")
             if dry_run:
-                placed.append((os.path.basename(dest), description, os.path.getsize(src), "would move"))
+                note = ("would move, replacing the older copy already there" if supersede
+                        else "would move" if not collision
+                        else "would move under a '(newer)' name: the copy in OUTPUT is more "
+                             "recent than this build, so it looks edited")
+                placed.append((os.path.basename(dest), description, os.path.getsize(src), note))
                 continue
             os.makedirs(out_dir, exist_ok=True)
+            how = "moved"
             try:
-                shutil.move(src, dest)
-                how = "moved"
+                # Stage beside the target, then one atomic replace. Deleting the old copy
+                # first meant a locked or unmovable source left OUTPUT holding NEITHER file.
+                tmp = dest + ".part"
+                shutil.move(src, tmp)
+                os.replace(tmp, dest)
+                if supersede:
+                    how = "moved, replaced the older copy"
             except Exception:
                 shutil.copy2(src, dest)
                 how = "copied (move refused - is it open in another program?)"

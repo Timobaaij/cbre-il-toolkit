@@ -19,9 +19,14 @@ rendered prompt.
   of strings) and do NOT set `lat`/`lng`/`mapLink` yourself - the shared resolver
   (`extract_pdf.backfill_link_coords`) parses it post-merge, so a first-party pin beats the
   town-centre geocode and no coordinate is ever model-invented. Falls back to a `.msg`/`.eml`
-  folder (`extract_email.py`) when the MCP is absent - the fallback lists attachment names
-  only and does not yet save or re-route their bytes (full byte-routing stays on the Outlook
-  MCP path).
+  folder (`extract_email.py`) when the MCP is absent, **and the fallback now saves and routes
+  attachment bytes like the Outlook path does**: intake writes each email's attachments into
+  `<yyyy-mm-dd>_<subject>_attachments/` beside it before classification, so by the time you
+  are dispatched they are ordinary decks in the manifest with their own page citations. You do
+  not have to fetch or describe them. Inline images (under 20 KB, or a Content-ID with no
+  filename) are already excluded. If an email's attachments could NOT be extracted,
+  `input-accounting` BLOCKS and names it - do not paper over that by summarising the body
+  instead, because the body's records are exactly what made the loss invisible before.
 - **Brochure interpretation (text or raster):** when `run.py` writes `work/vision/manifest.json`
   (and exits 3), dispatch an isolated interpretation sub-agent. Each deck carries a `mode`:
   for **`text`** decks it reads the page `text` from the manifest and structures records

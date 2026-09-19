@@ -619,7 +619,10 @@ def part_f(td: Path, deck: Path) -> None:
 #       the only test there was (`kind != 'photo' and score < MODEST_PHOTO`), and smooth gradient
 #       art classifies as 'photo' anyway.
 #   (c) NO RESOLUTION FLOOR - the carousel used the HERO floor (320x200), so 323x215 thumbnails
-#       shipped on a client-facing card.
+#       shipped on a client-facing card. The carousel got its own 640x400 floor, and the HERO
+#       floor has SINCE been raised to the same 640x400: the hero is gallery[0], so a hero the
+#       carousel would refuse was a standing contradiction. Both floors now catch the thumbnail,
+#       and G-c below pins that rather than the old asymmetry.
 # The fixture reproduces all three in one deck, and the assertions pin each floor to the ONE
 # signal that catches it (each rejected image clears every OTHER admission test, so a floor
 # silently going missing fails here rather than passing for the wrong reason).
@@ -707,8 +710,11 @@ def part_g(td: Path) -> None:
     ck(IMG.detail_score(decor) < IMG.MIN_GALLERY_DETAIL <= IMG.detail_score(good),
        "G-b: only detail_score separates flat decoration from a real photograph")
     ck(IMG.photographic_score(thumb) >= IMG.MODEST_PHOTO and IMG.classify_image(thumb) == "photo"
-       and thumb.size[0] >= IMG.MIN_HERO_W and thumb.size[1] >= IMG.MIN_HERO_H,
-       "G-c: the 323x215 thumbnail clears the HERO floor and every quality test")
+       and thumb.size[0] < IMG.MIN_HERO_W and thumb.size[1] < IMG.MIN_HERO_H,
+       "G-c: the 323x215 thumbnail clears every QUALITY test yet is now caught by the HERO floor too")
+    ck((IMG.MIN_HERO_W, IMG.MIN_HERO_H) == (IMG.MIN_GALLERY_W, IMG.MIN_GALLERY_H),
+       "G-c: the hero floor IS the carousel floor - gallery[0] cannot be admissible as a hero and "
+       "inadmissible as the first carousel image")
     ck(thumb.size[0] < IMG.MIN_GALLERY_W or thumb.size[1] < IMG.MIN_GALLERY_H,
        "G-c: ...and is refused by the CAROUSEL's own resolution floor")
     ck(not IMG.gallery_admissible({"kind": "photo", "w": 900, "h": 600}),
@@ -792,15 +798,18 @@ def part_g(td: Path) -> None:
     plA = sorted(pl[0].get(str(two), set()))
     plB = sorted(pl[1].get(str(two), set()))
     # PARK-LEVEL IMAGERY ON A SHARED DECK (broker-approved). Page 5 names no claimant at all -
-    # it is the park's own page, and both cards may show it. Everything that protected a
-    # neighbour's building still holds: page 1 is A's spread, page 3 is B's, page 4 names BOTH
-    # and reaches neither, and page 6 prints a size that is neither claimant's.
-    ck(gA == [1, 5] and gB == [3, 5],
-       f"G: shared deck - own spread PLUS the park-level page, and nothing else (A={gA}, B={gB})")
+    # it is the park's own page, and both cards may show it. Page 4 names BOTH units, and it now
+    # reaches BOTH: the shared spread a multi-unit brochure leads with (the schedule of Units 1-3
+    # beside the aerial) used to be refused for everyone as "not park-level, not theirs", which
+    # starved exactly the page most worth having. Units of one park in one brochure may share
+    # photographs. Everything that protected a NEIGHBOUR still holds: page 1 is A's spread alone,
+    # page 3 is B's alone, and page 6 prints a size that is neither claimant's.
+    ck(gA == [1, 4, 5] and gB == [3, 4, 5],
+       f"G: shared deck - own spread, the page naming BOTH, and the park-level page (A={gA}, B={gB})")
     ck(plA == [5] and plB == [5],
        f"G: the park-level pages are DISCLOSED separately per property (A={plA}, B={plB})")
-    ck(4 not in gA + gB,
-       "G: on a shared deck a page naming BOTH units reaches NEITHER carousel")
+    ck(4 in gA and 4 in gB,
+       "G: on a shared deck a page naming BOTH units reaches BOTH carousels, not neither")
     ck(6 not in gA + gB,
        "G: a page printing a THIRD scheme's unit-scale size is still refused (no neighbour's "
        "building, which is the protection that had to survive)")

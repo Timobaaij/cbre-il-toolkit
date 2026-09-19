@@ -600,14 +600,22 @@ def is_decline(v) -> bool:
 def clarify_mode(work, cfg: dict | None = None) -> str:
     """'interactive' | 'headless' - how eagerly this run asks the broker.
 
-    INTERACTIVE IS THE STANDARD MODE (user-set, 2026-08-24): a judgement the pipeline
-    cannot settle that affects what a card shows is PUT TO THE BROKER during the run -
-    an unsure match verdict, a forbidden-pair figure conflict, an uncertain photo, a
-    sub-agent's recorded doubt. HEADLESS keeps the original contract (default honestly
-    + disclose in the Gaps Report) and is selected by `project.yaml clarify.mode:
-    headless`, `clarify.assume_defaults: true`, or the SKIP_ALL sentinel - so a
-    cron/eval run never blocks on a human. The pre-existing question kinds behave
-    identically in both modes; the mode only gates the interactive-era kinds."""
+    INTERACTIVE IS FIXED BY POLICY (owner, 2026-09-19) and is what an absent value
+    means: a judgement the pipeline cannot settle that affects what a card shows is
+    PUT TO THE BROKER during the run - an unsure match verdict, a forbidden-pair
+    figure conflict, an uncertain photo, a sub-agent's recorded doubt.
+
+    HEADLESS keeps the original contract (default honestly + disclose in the Gaps
+    Report) and still resolves from `project.yaml clarify.mode: headless`,
+    `clarify.assume_defaults: true`, or the SKIP_ALL sentinel - but ONLY as the escape
+    for a run with no human in it (cron, eval, batch), never as something a broker is
+    offered. It was the sixth Stage-0 form question until 2026-09-19; that question is
+    gone, because the answer that saves the broker an interruption is the same answer
+    that ships them an unreviewed guess. These branches must stay reachable from the
+    sentinel and unreachable from the form.
+
+    The pre-existing question kinds behave identically in both modes; the mode only
+    gates the interactive-era kinds."""
     if skip_all(work):
         return "headless"
     c = (cfg or {}).get("clarify") or {}

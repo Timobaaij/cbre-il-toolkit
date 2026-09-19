@@ -66,11 +66,18 @@ GALLERY_MAX = 6  # max photos attached per property for the carousel (hero + up 
 #                  a brochure holds 2-10 distinct photographs (median 5) so the 7th is a
 #                  near-duplicate elevation, and 6-per-property lands the self-contained HTML at
 #                  ~19 MB - already the edge of emailable, where 8 would push ~24 MB.
-MIN_HERO_W, MIN_HERO_H = 320, 200  # reject logos/icons (PHOTO hero floor)
-# --- CAROUSEL (gallery) floors - STRICTER than the hero's, and for different reasons ------- #
-# The hero floor exists to reject logos/icons; anything above it can lead a card because the
-# alternative is the placeholder. A CAROUSEL entry has a real alternative - not being there -
-# so it is held to what the card actually RENDERS. The card thumb is
+# PHOTO hero floor. Was 320x200, chosen to reject logos and icons and nothing else, on the
+# argument that anything above it can lead a card because the alternative is the placeholder.
+# That argument stopped holding once the card rendered the hero at ~432x270 CSS px (see the
+# carousel note below) and the modal larger still: a 320x200 raster is UPSCALED on every card it
+# leads, and the broker saw it. Raised to the carousel floor, for the same reason the carousel
+# has one: the hero IS gallery[0], so a hero the carousel would refuse is a contradiction. The
+# alternative is not the placeholder either - the ladder in page_hero_and_plan falls to a
+# photographic crop of the page render, then an image-only page render, before it gives up.
+MIN_HERO_W, MIN_HERO_H = 640, 400
+# --- CAROUSEL (gallery) floors - the SAME as the hero's since the hero floor was raised --- #
+# A CAROUSEL entry has a real alternative - not being there - so it is held to what the card
+# actually RENDERS, and the hero is now held to the same. The card thumb is
 # `repeat(auto-fill,minmax(340px,1fr))` in a 1400px container (~432 CSS px wide) at
 # `aspect-ratio:16/10` => ~432x270 CSS px. 640x400 is that box at 1.5x device-pixel-ratio: never
 # upscaled on a standard display, still sharp on a HiDPI laptop, 2x the linear size of the
@@ -1555,6 +1562,47 @@ def _crop_stats(crop) -> tuple[float, float]:
 _CROPS_CACHE: dict[tuple, list] = {}
 
 
+def _native_px_by_box(pdf_path: Path, page_index: int) -> list[tuple]:
+    """[((x0, top, x1, bot), w_px, h_px)] for the page's placed rasters: the PLACEMENT box in
+    page-relative top-left points beside the EMBEDDED image's OWN pixel dimensions. Native
+    engine only (`get_image_info` carries `width`/`height` alongside `bbox`); [] when the
+    engine cannot answer, which callers must read as "unknown", never as "no raster here"."""
+    try:
+        page = _get_doc(pdf_path)[page_index]
+        r = page.rect
+        ox, oy = float(r.x0), float(r.y0)
+        out: list[tuple] = []
+        for it in (page.get_image_info(xrefs=True) or []):
+            bb = it.get("bbox")
+            w, h = int(it.get("width") or 0), int(it.get("height") or 0)
+            if not bb or w <= 0 or h <= 0:
+                continue
+            out.append(((float(bb[0]) - ox, float(bb[1]) - oy,
+                         float(bb[2]) - ox, float(bb[3]) - oy), w, h))
+        return out
+    except Exception:
+        return []
+
+
+def _source_px_for_box(natives: list[tuple], bbox) -> tuple | None:
+    """The SOURCE pixel size (w, h) of the single embedded raster behind a placement box, or
+    None when no one raster accounts for it: vector art, a collage of tiles, a clipped bleed,
+    or an engine that cannot say. Matched by AREA OVERLAP, and deliberately only when one
+    native placement covers at least 60%% of the box, because a partial match would let a
+    postage-stamp logo sitting inside a big vector panel dictate that panel's resolution."""
+    x0, top, x1, bot = bbox
+    area = max(0.0, x1 - x0) * max(0.0, bot - top)
+    if area <= 0:
+        return None
+    best, best_ov = None, 0.0
+    for (nx0, ntop, nx1, nbot), w, h in natives:
+        ov = (max(0.0, min(x1, nx1) - max(x0, nx0))
+              * max(0.0, min(bot, nbot) - max(top, ntop)))
+        if ov > best_ov:
+            best, best_ov = (w, h), ov
+    return best if best is not None and best_ov >= 0.6 * area else None
+
+
 def _page_crops(pdf_path: Path, page_index: int, dpi: int = 150,
                 cache_dir: Path | str | None = None) -> list[dict]:
     """The page's content-image regions cropped from the render: each candidate
@@ -1588,6 +1636,12 @@ def _page_crops(pdf_path: Path, page_index: int, dpi: int = 150,
     if not pw:
         return []
     scale = raster.width / pw
+    # SOURCE resolution per box, alongside the rendered crop. Needed because the crop is cut
+    # from a 150 dpi render (scale ~2.08 px/pt) while the floors were written for embedded
+    # rasters at their own native size - see the note on `src` in `bbox_crop_hero`. Read once
+    # per page (`get_image_info` is ~ms) and carried on the memo, which is in-process only,
+    # so no on-disk geometry cache changes shape and nothing needs a schema bump.
+    natives = _native_px_by_box(pdf_path, page_index)
     out = []
     for b in boxes:
         x0, top, x1, bot = b["bbox"]
@@ -1607,6 +1661,7 @@ def _page_crops(pdf_path: Path, page_index: int, dpi: int = 150,
         white, balance = _crop_stats(crop)
         out.append({"crop": crop, "map": b["map"], "score": photographic_score(crop),
                     "white": white, "balance": balance,
+                    "src": _source_px_for_box(natives, b["bbox"]),
                     "rank": balance * math.sqrt(crop.width * crop.height)})
     _CROPS_CACHE[memo_key] = out
     return out
@@ -1621,9 +1676,29 @@ def bbox_crop_hero(pdf_path: Path, page_index: int, dpi: int = 150,
     scoring >= MODEST_PHOTO, or None."""
     if Image is None:
         return None  # no Pillow: no geometry crops
-    cands = [c for c in _page_crops(pdf_path, page_index, dpi, cache_dir)
-             if not c["map"] and c["crop"].width >= MIN_HERO_W
-             and c["crop"].height >= MIN_HERO_H]  # photo candidacy keeps the photo floor
+    # THE FLOOR IS MEASURED IN SOURCE PIXELS, NOT RENDER PIXELS. The crop is cut out of the
+    # page render, which is drawn at 150 dpi = ~2.08 px per point, so a placement box only has
+    # to be ~308 x 192 pt for its crop to come back over 640 x 400 - and the raster actually
+    # sitting in that box can be a 320 x 200 thumbnail whose every pixel the renderer has
+    # UPSCALED more than twice over. That is the live defect: raising MIN_HERO from 320x200 to
+    # 640x400 closed the front door on thumbnails bound directly, and tier B walked one
+    # straight back in through the side, measured against pixels the renderer invented. The
+    # effective resolution of what actually ships is the SMALLER of the two: what the render
+    # produced, and what the source contained. Both must clear the floor.
+    #
+    # When `src` is None the box has no single embedded raster behind it (vector art, a tiled
+    # collage, or a backend that cannot report native sizes) and the render IS the source, so
+    # the render measurement stands alone - correct rather than merely permissive, because a
+    # vector drawing genuinely has no resolution of its own to be upscaled from.
+    cands = []
+    for c in _page_crops(pdf_path, page_index, dpi, cache_dir):
+        if c["map"]:
+            continue
+        src = c.get("src")
+        w = min(c["crop"].width, src[0]) if src else c["crop"].width
+        h = min(c["crop"].height, src[1]) if src else c["crop"].height
+        if w >= MIN_HERO_W and h >= MIN_HERO_H:  # photo candidacy keeps the photo floor
+            cands.append(c)
     best = max(cands, key=lambda c: c["score"], default=None)
     return best["crop"] if best and best["score"] >= MODEST_PHOTO else None
 
@@ -1958,7 +2033,7 @@ def _page_has_dominant_photo(path: Path, page_index: int) -> bool:
     """True if the page carries a sizable EMBEDDED raster the CLASSIFIER reads as continuous-tone
     'photo' - a property/photo page, never a site plan. Uses classify_image (TONE), NOT the
     colourfulness photographic_score (a low-colour warehouse photo scores ~3.7, below any useful
-    colourfulness floor), and scans ALL embedded rasters >= 200x200 (not only the >=320x200 hero
+    colourfulness floor), and scans ALL embedded rasters >= 200x200 (not only the >=640x400 hero
     list), so a sub-hero-width portrait photo is still seen. A logo/legend/north-arrow classifies
     'logo'/'plan', not 'photo', so it does NOT disqualify (the point of relaxing the image-light gate).
 

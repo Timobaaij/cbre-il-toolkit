@@ -26,6 +26,25 @@ import zipfile
 from urllib.parse import urlparse
 
 
+
+def doc_filename(d, basename):
+    """A document filename that keeps its extension.
+
+    Kato's `name` on a document is a human label, not a filename, and it regularly arrives
+    with no extension at all ("Vantage Park Brochure"). Saved verbatim that produced an
+    extensionless file which every downstream step then ignored: step 7a only copies .pdf and
+    .pptx into the pipeline's inputs folder, so the property silently lost its only source
+    document and step 7a's unevidenced-row refusal fired on a brochure that was sitting on
+    disk the whole time. The record carries `ext`, so use it, and fall back to the extension
+    on the URL path.
+    """
+    from common import sanitize
+    fn = sanitize(d.get("name") or basename) or "file"
+    if os.path.splitext(fn)[1]:
+        return fn
+    ext = (d.get("ext") or os.path.splitext(basename)[1] or "").strip().lstrip(".").lower()
+    return "%s.%s" % (fn, ext) if ext else fn
+
 def _load_common(explicit=None):
     """common.py lives in the skill's helpers dir. Support running from anywhere."""
     here = os.path.dirname(os.path.abspath(__file__))
@@ -274,7 +293,7 @@ def main():
             report["media"]["ok"] += 1
 
         for d in rec["documents"]:
-            fn = sanitize(d.get("name") or posixpath.basename(urlparse(d["url"]).path)) or "file"
+            fn = doc_filename(d, posixpath.basename(urlparse(d["url"]).path))
             place(d["url"], os.path.join(pdir, "media", fn), "doc")
 
         for j, im in enumerate(rec["images"], 1):

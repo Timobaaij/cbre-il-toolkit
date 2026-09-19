@@ -1407,7 +1407,10 @@ def prewarm_resume_cases() -> None:
     except Exception as e:
         check(False, f"prewarm: setup import failed ({e})"); return
 
-    def _noise(seed, w=340, h=240):
+    # 700x460 native, ABOVE the 640x400 hero floor. It was 340x240, which the floor raise
+    # (320x200 -> 640x400, because the card renders the hero at ~432x270 CSS px) now
+    # correctly refuses: the index came back EMPTY and the resume comparison went vacuous.
+    def _noise(seed, w=700, h=460):
         _r.seed(seed); im = _Img.new("RGB", (w, h))
         im.putdata([(_r.randint(0, 255), _r.randint(0, 255), _r.randint(0, 255)) for _ in range(w * h)])
         b = _io.BytesIO(); im.save(b, "JPEG", quality=80); return b.getvalue()
@@ -1669,10 +1672,53 @@ def _photo_page_pdf(td: Path) -> Path:
     y = 60
     for ln in ("City", "Pilsen", "Developer", "CTP", "Warehouse Area", "40 000 sq m"):
         pg.insert_text((40, y), ln, fontsize=12); y += 20
-    pg.insert_image(fitz.Rect(60, 320, 360, 489), stream=_noise_photo_jpeg())
+    # 360 x 202 pt (was 300 x 169). The old box cropped to 625 x 352 render px, under the
+    # raised 640x400 hero floor, so the tier-B assertion below stopped testing the TIER and
+    # started testing the floor. Same aspect (1.78), same 800x450 source, now over the floor.
+    pg.insert_image(fitz.Rect(60, 320, 420, 522), stream=_noise_photo_jpeg())
     f = td / "photo_page.pdf"
     doc.save(f); doc.close()
     return f
+
+
+def _crop_floor_source_pixels_cases(td: Path) -> None:
+    """THE SIDE DOOR ROUND THE RAISED HERO FLOOR. `bbox_crop_hero` cuts its crop out of the
+    PAGE RENDER, drawn at 150 dpi = ~2.08 px per point, so a placement box of only ~308 x 192
+    pt yields a crop over 640 x 400 whatever the raster inside it actually is. A 320 x 200
+    thumbnail placed at 400 x 250 pt therefore came back as an 833 x 520 crop of pixels the
+    RENDERER invented and sailed through the floor that was just raised to keep it out.
+    Two pages, identical geometry, differing only in the SOURCE raster: the thumbnail page
+    must be refused and the full-resolution page must still bind, so a fix that simply
+    tightened the floor for everyone would fail the second half rather than pass the first."""
+    import fitz
+    for tag, (sw, sh), want in (("thumb", (320, 200), False), ("full", (1600, 1000), True)):
+        doc = fitz.open()
+        pg = doc.new_page()  # 595 x 842 pt
+        pg.insert_text((40, 60), "UNIT 1    250,000 sq ft", fontsize=12)
+        pg.insert_image(fitz.Rect(60, 200, 460, 450), stream=_noise_photo_jpeg(sw, sh))
+        f = td / f"srcfloor_{tag}.pdf"
+        doc.save(f)
+        doc.close()
+        IMG._CROPS_CACHE.clear()
+        IMG._PLACED_CACHE.clear()
+        IMG.close_doc_cache()
+        raw = [c for c in IMG._page_crops(f, 0) if not c["map"]]
+        big = [c for c in raw if c["crop"].width >= IMG.MIN_HERO_W
+               and c["crop"].height >= IMG.MIN_HERO_H]
+        check(bool(big),
+              f"crop floor ({tag}): the 400x250 pt box renders OVER the floor "
+              f"({[c['crop'].size for c in raw]}) - the side door is open in render pixels")
+        check(any(c.get("src") == (sw, sh) for c in raw),
+              f"crop floor ({tag}): the crop carries its SOURCE size {sw}x{sh}, matched by "
+              f"bbox overlap ({[c.get('src') for c in raw]})")
+        got = IMG.bbox_crop_hero(f, 0)
+        check((got is not None) is want,
+              f"crop floor ({tag}): a {sw}x{sh} source is "
+              f"{'BOUND' if want else 'REFUSED'} however large the render makes it "
+              f"(got {None if got is None else got.size})")
+    IMG._CROPS_CACHE.clear()
+    IMG._PLACED_CACHE.clear()
+    IMG.close_doc_cache()
 
 
 def tedi_cases() -> None:
@@ -1708,6 +1754,7 @@ def tedi_cases() -> None:
         check(crop is not None and 1.4 < crop.width / crop.height < 2.2
               and IMG.photographic_score(crop) >= IMG.MODEST_PHOTO,
               "Fix1: bbox-crop tier recovers the photo region without decoding streams")
+        _crop_floor_source_pixels_cases(td)
         IMG.close_doc_cache()
 
         # Fix 1 (shim tiers): pdfplumber-ONLY backend still extracts the photo;
@@ -5198,7 +5245,9 @@ def image_reuse_memo_cases() -> None:
         check(False, f"#21/#38/#39: setup import failed ({e})")
         return
     png = _io.BytesIO()
-    _Img.new("RGB", (400, 300), (30, 120, 200)).save(png, "PNG")
+    # 800x600: 400x300 is under the raised 640x400 hero floor, so candidates_for_page
+    # returned nothing and the "equivalent on repeat" check compared two empty lists.
+    _Img.new("RGB", (800, 600), (30, 120, 200)).save(png, "PNG")
     png = png.getvalue()
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)

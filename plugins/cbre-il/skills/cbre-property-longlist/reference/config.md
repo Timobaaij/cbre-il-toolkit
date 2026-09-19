@@ -32,7 +32,11 @@ inputs:
     Bratislava: SK
     Westford: ''                   # the city index did not know this one: BLANK, never a placeholder token
   emails:                          # Stage 0 Q2 (see SKILL.md "broker setup prompt")
-    source: none                   # none | outlook | folder  (folder = .msg/.eml fallback for no-MCP)
+    source: none                   # none | outlook | folder  (folder = .msg/.eml fallback for no-MCP;
+                                   #   a folder of them, or a ZIP of them, dropped straight into
+                                   #   1. Input is unpacked and its attachments saved + routed by
+                                   #   intake. `none` ALSO switches that off, for a wrapper skill
+                                   #   that already did it - see "Auto-discovery" below)
     outlook_folder: ""             # Outlook mail FOLDER when source: outlook (e.g. Inbox, or "Normal CEE"); blank = all folders
     mailbox: ""                    # optional shared/delegated mailbox email
     query: ""                      # subject/keyword text (combine with a date window)
@@ -57,7 +61,7 @@ enrichment:                    # broker opt-in; ask in plain language before run
 qa:
   fill_threshold: 0.6          # min fraction of core fields populated (non-tbd) per record (run.py passes this to the coverage gate)
 clarify:
-  mode: interactive            # the ask mode; see "clarify:" below
+  mode: interactive            # FIXED BY POLICY, not a broker choice; see "clarify:" below
 ```
 
 ### Which keys are read, and by what
@@ -84,7 +88,7 @@ Two safety properties hold by construction:
 Because `project.yaml` is a merge input, changing the language re-runs the cached merge (and rebuild) on the next pass.
 
 ## Auto-discovery (`intake.py`)
-Scans the folder RECURSIVELY (hidden and underscore-prefixed directories, Office `~$` lock files and the work dir itself are skipped; scanned subfolders are named in the output) for brochures (`.pdf`, `.pptx`), trackers (`.xlsx`, `.xlsm`, `.csv`), images (`.jpg`, `.jpeg`, `.png`, `.webp`, `.heic`, `.heif`) and emails (`.msg`, `.eml`); any other file is listed under `unclassified` rather than silently ignored, and a byte-identical duplicate is extracted once and listed under `skipped_duplicates`. It infers a city/region cluster per brochure from its filename in two shapes: the last spaced-dash segment (`Options - Westford.pdf` -> Westford, trailing noise like `- FINAL` / `- v2` dropped), or a NUMBERED EXPORT's remainder once its 1-3 digit index is stripped (`03_Riverside_Park.pdf` -> Riverside Park; F3). The country comes from `assets/poi_library.json`'s `city_country` index, a CEE-seeded **convenience**: **a miss leaves the country BLANK** (`Region: ''` in the scaffold), never a placeholder token, because the old `??` token travelled into the reader manifest and readers derived the country themselves, three different ways (F7). It writes `inventory.json` and scaffolds `project.yaml` pre-filled from what was found (incl. `inputs.emails.source` defaulted to `folder` when `.msg`/`.eml` are present, else `none`). A blank country is filled automatically by `enrich.py --geocode`, which reverse-geocodes the country code from the resolved coordinates (any geography, no index needed).
+Scans the folder RECURSIVELY (hidden and underscore-prefixed directories, Office `~$` lock files and the work dir itself are skipped; scanned subfolders are named in the output) for brochures (`.pdf`, `.pptx`), trackers (`.xlsx`, `.xlsm`, `.csv`), images (`.jpg`, `.jpeg`, `.png`, `.webp`, `.heic`, `.heif`) and emails (`.msg`, `.eml`); any other file is listed under `unclassified` rather than silently ignored, and a byte-identical duplicate is extracted once and listed under `skipped_duplicates`. **Containers are opened before anything is classified, so their contents are discovered on the SAME run.** A `.zip` is unpacked into `<zipname>_unpacked/` beside itself and listed under `archives` (never under `unclassified`, and never counted as an input of its own - a container can carry no ledger row): idempotent by the archive's central-directory signature so an unchanged zip is left untouched with its mtimes intact, one level of nesting (a zip of per-city zips), members naming a path outside the inputs folder refused as zip-slip and NAMED, and archives over 5000 members or 2 GB uncompressed refused with a reason rather than half-extracted. Every `.msg`/`.eml` then has its attachment BYTES written to `<yyyy-mm-dd>_<sanitised subject>_attachments/` beside it (the date and subject are in the folder name because two brokers both send `Brochure.pdf`), with a `.from_email.json` sidecar naming the sending email; the saved files are classified and routed through the PDF/PPTX/image extractors exactly like a brochure dropped in the folder by hand. Inline images are excluded: an attachment under 20 KB, or one carrying a Content-ID and no filename, is a signature logo and is recorded under `skipped_inline` rather than saved. Both steps are reported per item under `archives` and `email_attachments`, and both are SKIPPED when `inputs.emails.source` is `none` (`email_attachments_enabled: false`), which is the wrapper-skill contract - kato-longlist unzips the export and extracts its attachments in its own email step, and doing it twice writes a second copy of every brochure that clusters as its own option and puts the same building on two cards. It infers a city/region cluster per brochure from its filename in two shapes: the last spaced-dash segment (`Options - Westford.pdf` -> Westford, trailing noise like `- FINAL` / `- v2` dropped), or a NUMBERED EXPORT's remainder once its 1-3 digit index is stripped (`03_Riverside_Park.pdf` -> Riverside Park; F3). The country comes from `assets/poi_library.json`'s `city_country` index, a CEE-seeded **convenience**: **a miss leaves the country BLANK** (`Region: ''` in the scaffold), never a placeholder token, because the old `??` token travelled into the reader manifest and readers derived the country themselves, three different ways (F7). It writes `inventory.json` and scaffolds `project.yaml` pre-filled from what was found (incl. `inputs.emails.source` defaulted to `folder` when `.msg`/`.eml` are present, else `none`). A blank country is filled automatically by `enrich.py --geocode`, which reverse-geocodes the country code from the resolved coordinates (any geography, no index needed).
 
 Each cluster in `inventory.json` also carries a `confidence` (`high`/`low`) and the raw source `stems`: `low` marks the whole-stem fallback (no clean ` - ` separator, no numbered-export index, and the unspaced-dash tail is not a known city, e.g. `Options-Oporto`), so the Stage-0 orchestrator can judge ONLY the ambiguous tail. This is a purely additive signal - it never changes the regex's chosen region, so an offline run is unchanged. `inventory.json` also always carries a top-level `cluster_label_notes` list (empty on a regex-only run): one `{stem, region, country, note}` per cached label that recorded a close call (F16), for the Gaps Report's "Noted, not put to you".
 
@@ -109,14 +113,14 @@ For low-confidence clusters the orchestrator judges the likely city/region from 
 **Absence of the cache IS the regex opt-out** - no `.SKIP` sentinel is needed (unlike the tracker map, there is no exit/dispatch to decline). A no-LLM / non-interactive / offline run simply never writes `work/intake_clusters.json`, so the deterministic regex stands and the offline evals are byte-identical. The LLM sets ONLY the inventory's cluster (its routing label, and the country the readers are handed for that deck), mirrored into `project.yaml inputs.clusters` for the record; it does not touch `market.countries`, which the scaffold seeds once from the index. The card's displayed region/city are read from the brochure body at extraction, so a wrong cluster label can never fabricate a displayed field - the existing coverage gate (a hallucinated region maps zero brochures -> an empty cluster -> blocked) and the broker confirmation are the backstops.
 
 ## Stage-0 setup prompt (ONE consolidated widget form)
-At intake the orchestrator presents ONE consolidated `visualize` widget form with ALL SIX setup questions at once (client name, enrichment extras, the optional openrouteservice key as an inline field, the email scope - **a named Outlook mail folder** via the `outlook_email_search` sub-agent with `folderName`, **across all of Outlook**, or **none** - the dashboard language, and the ask mode). The verbatim form and its submission parsing are in `reference/setup-form.md`; the mandate (single widget, all six together, one submit, plain-text fallback only when the widget tool is genuinely unavailable) is SKILL.md "The broker setup prompt". (A Windows `.msg`/`.eml` folder is a no-MCP fallback only.) The answers are written to `client:`, `enrichment:`, `inputs.emails:`, `output.language` and `clarify.mode` so subsequent re-runs are non-interactive.
+At intake the orchestrator presents ONE consolidated `visualize` widget form with ALL FIVE setup questions at once (client name, enrichment extras, the optional openrouteservice key as an inline field, the email scope - **a named Outlook mail folder** via the `outlook_email_search` sub-agent with `folderName`, **across all of Outlook**, or **none** - and the dashboard language). The verbatim form and its submission parsing are in `reference/setup-form.md`; the mandate (single widget, all five together, one submit, plain-text fallback only when the widget tool is genuinely unavailable) is SKILL.md "The broker setup prompt". (A Windows `.msg`/`.eml` folder is a no-MCP fallback only.) The answers are written to `client:`, `enrichment:`, `inputs.emails:` and `output.language` so subsequent re-runs are non-interactive. **`clarify.mode` is NOT one of the questions** (it was the sixth until 2026-09-19): the run always asks when unsure.
 
 ## setup: - did a HUMAN answer the Stage-0 form? (B63)
 ```yaml
 setup:
   confirmed: false   # intake writes false; the orchestrator sets true after the form
 ```
-The one flag that separates "the scaffold guessed these six values" from "the broker chose
+The one flag that separates "the scaffold guessed these five values" from "the broker chose
 them". `intake.scaffold_yaml` fills every Stage-0 key with a default on the first pass, so
 the presence of values proves nothing: the old rule ("skip the widget when project.yaml
 carries the answers") was therefore true on every run, and the form was skipped every time.
@@ -124,19 +128,28 @@ While `confirmed` is not true, `run.py` leads every hand-off with the setup inst
 on a pass with no other hand-off, stops at exit 13 (`setup_form`, blocking). The headless
 escapes clear it as a recorded decision: `work/clarify.SKIP_ALL` or `clarify.assume_defaults`.
 
-## clarify: - the ask mode (workstream 3; INTERACTIVE IS THE STANDARD)
+## clarify: - INTERACTIVE IS FIXED BY POLICY (workstream 3)
 ```yaml
 clarify:
-  mode: interactive   # the STANDARD: judgement calls the files cannot settle become
-                      # exit-13 broker questions (unsure match/pick verdicts, photo
+  mode: interactive   # FIXED: judgement calls the files cannot settle become exit-13
+                      # broker questions (unsure match/pick verdicts, photo
                       # confirmations, reader doubts, excluded-figure conflicts).
-                      # "headless": decide-sensibly-and-disclose - every new kind
-                      # resolves to today's safe default, attributed in its reason.
-  # assume_defaults: true   # also forces headless (as does work/clarify.SKIP_ALL)
+                      # Not a broker choice and not a form question. Absent = interactive.
+  # assume_defaults: true   # HEADLESS ESCAPE for a run with NO human in it (cron, eval,
+                            # batch): decide-sensibly-and-disclose - every kind resolves
+                            # to today's safe default, attributed in its reason.
+                            # work/clarify.SKIP_ALL does the same.
 ```
-`clarify_mode()` resolves it: an explicit `mode` wins; `assume_defaults: true` or the
-`work/clarify.SKIP_ALL` sentinel force headless; absent = interactive. Headless behaviour
-is unchanged from before the mode existed.
+`clarify_mode()` resolves it: an explicit `mode: headless` wins; `assume_defaults: true` or
+the `work/clarify.SKIP_ALL` sentinel also force headless; absent = interactive. Headless
+behaviour is unchanged from before the mode existed.
+
+**Who may set headless.** Only the operator of an unattended run, by hand or by sentinel. It
+was offered to the broker as a sixth Stage-0 form pill until 2026-09-19 and is not offered
+any more: the answer that spares them a mid-run question is the same answer that ships them
+an unreviewed guess, and the person choosing is the one least placed to price that. The
+branches in `run.py` stay because a cron/eval run is real; they are simply unreachable from
+the form.
 
 **Interactive does not mean chatty.** A question is only put to the broker when its answer
 would change what the DASHBOARD SHOWS - a rendered value, photo or label, or how many options
@@ -145,6 +158,52 @@ run was unsure about is recorded and printed in the Gaps Report under "Noted, no
 you", with the value that shipped instead. There is no config for this: it is the standard in
 both modes, because a question that cannot change the deliverable is not worth an
 interruption in either.
+
+**Headless also skips the MASTER LIST stop** (exit 17, `reference/master-list.md`). There is
+nobody to hand `Master List.xlsx` to, so the run includes every candidate option it found and
+writes `work/master_list.json` with `skipped: true`. That flag matters: a skipped sheet is NOT
+read as a scope decision anywhere, so the exit-13 source-authority question is still asked on
+the next interactive pass rather than being silently pre-answered by a cron run, and the Gaps
+Report prints "Scope was not put to you (the run decided)" with the option count. There is no
+config key for the master list itself in an ordinary run - it is on in interactive runs and off
+in headless ones, which is the same policy as every other exit-13 question and for the same
+reason. The one exception is a wrapper skill that owns the decision, below.
+
+## `master_list:` - scope settled by a wrapper skill
+
+```yaml
+master_list:
+  mode: external                       # absent | interactive (default) | external
+  confirmed_by: "kato-longlist step 2.5, workbook answered by the operator"
+```
+
+`mode: external` makes the spine SKIP the exit-17 stop entirely. It exists for one shape of
+caller: a wrapper skill that has already put its own scope sheet to the same person and then
+generates this skill's `project.yaml` and inputs folder from the rows that survived
+(`kato-longlist`, step 2.5). Firing exit 17 there would hand that operator a second sheet listing
+the options they had just finished striking off, with nothing new on it. A gate that visibly
+re-asks an answered question is answered "Yes to everything" from the second time onwards, and
+then it protects nothing on the run where it would have mattered.
+
+**It declines the stop and does nothing else.** This is not an answer and is not stored as one:
+no `work/master_list.json` is written, so none of the four consumers in
+`reference/master-list.md` can read one. Concretely, for that run:
+
+| | With `mode: external` |
+|---|---|
+| Exit 17 | never fires; `master_candidates_auto.json` and the workbook are not built |
+| Source authority | NOT derived. The exit-13 source-authority question is asked exactly as it was before the master list existed |
+| Match decisions | nothing seeded; exit 10 asks about every grey pair as before |
+| Deck reader dispatch | every cluster is prepped and read, as before |
+| Gaps Report | ONE line naming where scope was settled and who confirmed it - no master-list section |
+
+Everything else in the run is byte-identical to the pre-master-list spine. `confirmed_by` is free
+text and is printed verbatim in that Gaps Report line, so the provenance of a scope decision taken
+outside this skill is still on the deliverable; leaving it blank prints that it was not stated.
+
+**Absent means interactive, and so does anything unparseable.** A missing key, a `master_list:`
+that is not a mapping, or a misspelt mode all leave the stop in place. The acceptable failure of a
+scope gate is that it fires when it need not; a typo that silently switches it off is not.
 
 ## Empty-string handling
 Blank `project.yaml` strings fall back to defaults (today's date, the localised eyebrow, and the localised headline with `client.name` composed into it) - the build never emits empty hero text. A `market.lede` key is accepted and ignored: v45 removed the paragraph it filled.

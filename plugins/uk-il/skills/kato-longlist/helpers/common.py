@@ -258,22 +258,36 @@ def match_canonical_to_our(canon_properties, ds):
                      % (repr(pc) if pc else "(absent on the pipeline side)",
                         len(idxs), len(_units(idxs))))
         if len(_units(idxs)) > 1:
-            nm = _norm_name(cp.get("park"))
-            named = [i for i in idxs if i in set(by_name.get(nm) or [])] if nm else []
-            tried.append("composed-name narrowing park=%r -> %d candidate(s) in %d unit(s)"
-                         % (cp.get("park"), len(named), len(_units(named))))
-            if named:
-                idxs = named
+            # `displayName` FIRST, then `park`. Toolkit v45 gives each card its own display
+            # name, and that is precisely the field that separates two units on one estate:
+            # V60 and V90 at Vantage Park share a postal code, share a geocode and share the
+            # park name, so narrowing on `park` alone returns both and the pair is refused.
+            # Our own side is keyed on display_name(our), which for a split record already
+            # reads "Vantage Park V90", so the two line up once we look at the right field.
+            for _field, _val in (("displayName", cp.get("displayName")),
+                                 ("park", cp.get("park"))):
+                nm = _norm_name(_val)
+                named = [i for i in idxs if i in set(by_name.get(nm) or [])] if nm else []
+                tried.append("composed-name narrowing %s=%r -> %d candidate(s) in %d unit(s)"
+                             % (_field, _val, len(named), len(_units(named))))
+                if named:
+                    idxs = named
+                    break
         if len(_units(idxs)) > 1:
             narrowed = _coord_tiebreak(cp, ds, idxs)
             tried.append("coordinate tiebreak %d -> %d candidate(s) in %d unit(s)"
                          % (len(idxs), len(narrowed), len(_units(narrowed))))
             idxs = narrowed
         if not idxs:
-            nm = _norm_name(cp.get("park"))
-            idxs = list(by_name.get(nm) or []) if nm else []
-            tried.append("composed-name fallback park=%r -> %d candidate(s) in %d unit(s)"
-                         % (cp.get("park"), len(idxs), len(_units(idxs))))
+            for _field, _val in (("displayName", cp.get("displayName")),
+                                 ("park", cp.get("park"))):
+                nm = _norm_name(_val)
+                cand = list(by_name.get(nm) or []) if nm else []
+                tried.append("composed-name fallback %s=%r -> %d candidate(s) in %d unit(s)"
+                             % (_field, _val, len(cand), len(_units(cand))))
+                if cand:
+                    idxs = cand
+                    break
         todo.append({"cp": cp, "tried": tried, "idxs": idxs, "our": None})
 
     # PASS 2 - CLAIM AND ELIMINATE, to a fixed point. Each round resolves every property that
@@ -383,7 +397,20 @@ def dedupe_props(props):
     folders, toolkit_tracker would look in the primary's folder alone, find nothing, and
     report a row as having no machine-readable source while its brochure sat one folder
     away. Same underscore contract as `_dedupe_note`: internal, never a client-facing
-    field, and absent from the tracker HEADERS so it cannot leak into a deliverable."""
+    field, and absent from the tracker HEADERS so it cannot leak into a deliverable.
+
+    WHEN THE MASTER LIST HAS ALREADY DECIDED (stage 2.5), THIS DOES NOTHING. The heuristic
+    below exists because nobody had looked at the duplicates. Once somebody has, running it
+    anyway can only overrule them, and it overrules them in the direction that is hardest to
+    notice: two rows a person deliberately kept apart (a genuine pair of identical shells on
+    one estate, two phases of one scheme quoted at the same area) share a postal code and an
+    exact floor area, so the key is the same and one of them silently disappears from the
+    deliverable. build_dataset.py has already applied the user's own merges by then, as
+    _dedupe_folders on the survivor, so the sibling-document guarantee above still holds.
+    Detected per record rather than by a parameter, because both callers (the tracker and
+    the client Excel) must make the same choice and neither should have to know about it."""
+    if props and all(p.get("_master_adjudicated") for p in props):
+        return list(props)
     groups = {}
     for p in props:
         key = ((p.get("address") or {}).get("postcode"), (p.get("size") or {}).get("sqft"))

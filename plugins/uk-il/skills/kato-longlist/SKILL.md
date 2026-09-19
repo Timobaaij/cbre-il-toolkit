@@ -90,6 +90,82 @@ Report. Zero parsed exits non-zero.
 To prove .msg reading works in an unfamiliar environment before running the pipeline:
 `python "%HELP%\msg_reader.py" --selftest <the export zip or folder>` (takes seconds, needs nothing).
 
+**2.5. MASTER LIST: the user decides what the run builds. NEVER SKIP IT, NEVER ANSWER IT YOURSELF.**
+
+Options arrive by three overlapping routes and nothing upstream reconciles them: the **Kato
+longlist**, which raises one match request PER BROKER so the identical unit arrives two or three
+times under different agencies; the **broker emails**, where agents re-send options that are
+already on Kato and also name options that are on nobody's Kato; and **whatever extra files the
+user drops in the working directory**, usually brochures for options already in one of the first
+two. Before this step the run took every Kato match, silently merged whatever shared a postal code
+and an exact floor area, and never saw an email-only option at all. The user found out what had
+been decided by reading the finished dashboard.
+
+So: inventory everything, put it in front of the user, and build only what they say. The workbook
+is the single source of truth from here to the end of the run.
+
+- **2.5a. Write the candidates (YOU, this is the judgement).** Read `emails/emails.md` and
+  `emails/_property_facts.json` and write `master_candidates.json` in the working directory:
+  ```json
+  {"title": "...", "rank_basis": "distance to the client pin",
+   "brief": {"size_min": 120000, "size_max": 400000},
+   "rank": ["kato:6267947", "email:packington", "..."],
+   "duplicate_groups": {"D1": {"status": "SAME BUILDING, two agents",
+                               "note": "JLL listing carries 4 PDFs, LSH listing 1 - keep JLL.",
+                               "members": ["kato:6268030", "kato:6277087"]}},
+   "rows": [{"row_id": "email:packington", "property": "Packington Hill",
+             "source_type": "Broker email", "source": "Email: Re Nottingham req (11), C&W",
+             "address": "Pritchard Drive, Kegworth", "postcode": "DE74 2DF",
+             "lat": 52.833, "lon": -1.283, "size_from": 140000, "size_to": 140000,
+             "tenure": "To Let", "rent": "GBP10.50 psf", "availability": "U/C Q2 2027",
+             "planning": "Consented", "agent": "Jai Raizada, C&W", "agent_email": "...",
+             "notes": "15m eaves, 17 dock, 50m yard.",
+             "files": ["uploads/Packington Hill Brochure.pdf"]}]}
+  ```
+  `rows` carries **only what is NOT already a Kato property**: every email-only option and every
+  option whose sole source is an uploaded file. The Kato rows are read off disk. Row ids are
+  yours to choose (`email:<slug>`, `file:<slug>`); Kato rows are always `kato:<match_id>`.
+  `duplicate_groups` is your adjudication and it wins over the automatic sweep. Fill only the
+  fields the source actually states; blanks stay blank and are never invented.
+  **Running the build with no candidates file gives you the Kato rows alone**, which looks
+  complete and is not. It warns, loudly. Do not ship that to the user.
+- **2.5b. Build the workbook**: `python "%HELP%\master_list_build.py" --config run.yaml`
+  Writes `Master List.xlsx` (three tabs: **Master list**, **Duplicate check**, **Unmatched
+  files**) and `master_list_manifest.json`. On top of your groups it runs a blunt postal-code
+  sweep to catch what you missed, labelled `(auto)` and with its looseness stated in the note.
+  Re-runnable: existing Include? and Run notes are carried forward by the hidden Row ID, so a
+  second email export does not cost the user their forty decisions. `--fresh` discards them.
+  The **Brochure?** column is pre-formatted before the sheet is handed over: real conditional
+  formatting paints any value that is not a flat `Yes` red with bold black text, so a broker
+  scanning the sheet spots a missing brochure at a glance instead of reading 28 rows of detail.
+  `Link only` is painted the same red as `No` on purpose: a URL nobody downloaded is not a
+  document the run holds, and it is the exact case step 7a refuses as an unevidenced row. Only
+  `Yes` is left in the normal row styling. The rule lives on the Brochure? cell alone, is keyed
+  off the cell's own value rather than row position, and so survives the user sorting, filtering
+  or re-ranking the sheet. Do not restate it as a static fill; a footnote under the table
+  explains what the red means.
+- **2.5c. STOP AND WAIT. Give the user the one path and nothing else.** They set **Include?** to
+  **Yes or No** on every row and write anything the run must know in **Your Run notes for the AI**
+  ("split this unit into three cards", "run but without rent", "take the spec from the brochure,
+  not the email"). Do not fill the column in for them, do not infer it from the duplicate groups
+  you just wrote, and do not proceed on a partly answered sheet. This is the only point in the run
+  where the user decides scope.
+- **2.5d. Read it back**: `python "%HELP%\master_list_read.py" --config run.yaml`
+  Writes `master_list.json`, the file every later stage obeys, and **materialises a property
+  folder for each included option that had none** (email-only and upload-only rows, and rows the
+  user typed in by hand), copying any named file into its `media/`. Finds the workbook even if the
+  user saved it under another name, and says which one it used.
+  **It refuses (exit 2) on any row that is not Yes or No**, blanks and deferrals alike, and names
+  them. There is no third value on purpose: a deferred answer has to be resolved before the run
+  can start in any case, so carrying it would only move the same decision to a point where a log
+  reader takes it instead of the person who owns the deliverable. Read the stderr: a row excluded
+  inside a loose
+  postcode-only group is NOT merged, so any document it held is unused, and it says so.
+  Everything downstream inherits this automatically because step 5 filters `_dataset.json` once
+  (see its docstring). An excluded row inside an adjudicated duplicate group is merged into the
+  survivor rather than deleted, so its brochure still reaches the pipeline, and the automatic
+  merge in `common.dedupe_props` switches itself off once a person has answered.
+
 **3. Facts for the model** — `python "%HELP%\make_facts.py" --config run.yaml`
 Writes `emails/_property_facts.json` (each property's identifiers + key_points + summary + its
 **`kato_messages`**: the Kato in-app broker threads). **Most rents and much of the enrichment live
@@ -100,6 +176,29 @@ name/size; never blanket-apply a whole message to every property it is attached 
 
 **4. Enrich (you)** — read `emails/emails.md` + `emails/_property_facts.json` and write
 `enrichment.json` (`{"overrides": {"<property folder>": {rent, spec, outgoings, description, notes}}}`).
+- **Read `master_list.json`'s `run_notes` FIRST, honour every one, and ANSWER every one in
+  writing.** They are instructions from the person who owns the deliverable, keyed by property
+  folder, and nothing in the pipeline acts on them but you: the helpers move the text, they never
+  interpret it. "Split this unit into three cards" means three records, "run but without rent"
+  means leave the rent null however good the quote is, "take the spec from the brochure" means
+  prefer that source over the email.
+  **Step 5 REFUSES to build until each noted property carries a `run_note_done` block** in its
+  override, because carrying an instruction is not following one and nothing downstream could
+  tell the difference:
+  ```json
+  "05 - Derby 167 - DE24 9FU": {
+    "run_note_done": {"note": "Split unit in 3 cards", "status": "done",
+                      "action": "Created three records, one per unit on the masterplan, sized
+                                 55/56/56k sq ft from page 4 of the brochure."},
+    "rent": {...}, "spec": {...}, "description": "..."}
+  ```
+  `note` is the user's own text quoted back, and it is compared (whitespace and case insensitive)
+  against the master list: an acknowledgement of a note they have since changed is rejected, so
+  quote it, do not paraphrase it. `status` is `done`, `partial` or `not_possible`; the last two
+  are honest answers that SHIP, and the note plus your reason go into the Gaps Report so the user
+  meets it there and not in the dashboard. `action` must be a sentence someone can check against
+  the deliverable. Never invent a `done` you did not do: `not_possible` with a reason is a
+  correct answer, a false tick is the failure this gate exists to catch.
 - **You MUST read every property's `kato_messages` (in `_property_facts.json`) as well as
   `emails.md`** — the Kato in-app threads carry most of the rents and a lot of the spec, and a
   property with no email quote very often DOES have a Kato-message quote. Do NOT leave a rent at
@@ -121,7 +220,16 @@ name/size; never blanket-apply a whole message to every property it is attached 
 
 **5. Assemble** — `python "%HELP%\build_dataset.py" --config run.yaml`
 Merges enrichment + Kato data + media into `properties/<folder>/property.json`, `_dataset.json`,
-`_gaps.json`.
+`_gaps.json`. **This is where the master list bites**, and the only place it does: excluded rows
+are dropped here, so the tracker, the photo injection, the canonical patch, the client Excel and
+the dashboard all inherit one decision with no second list to keep in step. It prints what it
+dropped and every run note it is carrying, each tagged `[done]`, `[partial]`, `[not_possible]`
+or `[UNANSWERED]`.
+**It also REFUSES (exit 2) before writing anything if any run note has no `run_note_done` block**
+(see step 4), naming each one and why. Fix the enrichment and re-run; only where a note genuinely
+needs no action use `--allow-unacknowledged-notes`, which builds and records every unanswered
+note in `_gaps.json` instead, and you must then carry them into the Gaps Report yourself.
+With no `master_list.json` it behaves exactly as it did before step 2.5 existed.
 
 **6. Client Excel** — `python "%HELP%\build_excel.py" --config run.yaml`
 Writes the client workbook (Longlist + For Sale sheets, merged header bands, links shown as "link").
@@ -145,6 +253,26 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
     one reader deck and never mixes two properties. The label is routing only; what actually ties
     a document to its row is what the two of them state (scheme name, parties, postal code, area
     with its unit).
+  - **The tracker states a WAREHOUSE area or none at all, never the marketed total.** Three
+    columns carry area now: `Warehouse area (sq ft)` (mapped to the pipeline's `warehouseArea`,
+    filled only from `size.warehouse_sqft`), `Office area (sq ft)`, and
+    `Note: marketed total incl. ancillary (sq ft)`, which is deliberately bound to nothing and
+    read only into `__meta`. The single old `GLA (sq ft)` column published `size.sqft`, the
+    MARKETED TOTAL, into the field a brochure reader fills with the accommodation schedule's
+    warehouse-only line. `match._cross_source_forbidden` permanently vetoes any cross-source pair
+    whose two warehouse areas differ by more than 15%, and a forbidden pair is never written to
+    `match_candidates.json`, never adjudicated and never merged, so the brochure's records formed
+    their own cluster and the source-authority answer then dropped it. On a live run that cost
+    three of twenty-one options every page-cited field, every photo and their site plans (IAMP
+    Washington 30.2%, Logicor Spring 89 18.4%, Rugby106 18.0% - offices, plant decks, mezzanines
+    and undercrofts are the whole difference). **On a first pass the warehouse column is blank on
+    every row**, because Kato quotes one headline size and no split; the step says so in its
+    output. Expect MORE grey pairs at exit 10 as a result. That is the point: a blank refuses to
+    compare and sends the pair to an adjudicator, which is what the toolkit's own design says
+    should happen. It cannot cause an over-merge, because every auto path in
+    `_cross_source_auto` needs the developer stated on BOTH sides and this tracker publishes no
+    developer column. After step 7h the column carries the warehouse-only figures the pipeline
+    established, so a re-run restores the veto's protective value.
   - `longlist_work/project.yaml` (the folder the pipeline READS ITS CONFIG FROM): the config, all
     enrichment on, ORS key baked. **Not** in `longlist_inputs/`, because `.yaml` matches none of
     the pipeline's accepted input types, so a copy there was classified unreadable and shipped in
@@ -158,7 +286,11 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
   dispatches zero document readers for it, so every specification field on its card comes from the
   tracker this very step generated, with no page-cited evidence behind any value. Nothing fails and
   every gate passes, so the run is silently wrong rather than late. Fix it by putting the missing
-  document in that property's folder. Only when there genuinely is none, re-run with
+  document in that property's folder. **Expect this to fire on options the user accepted off the
+  master list that exist only as a line in an email**: there is no brochure to read for them and
+  there may never be one, which is exactly the case the refusal is meant to surface rather than
+  paper over. Ask the user for the document, or accept the flag and carry those rows into the
+  Gaps Report. Only when there genuinely is none, re-run with
   `--allow-unevidenced-rows`: it ships and records the affected rows in
   `longlist_work/kato_unevidenced_rows.json`, and you must then carry them into the Gaps Report
   yourself. `--include-sheets` also copies per-property spreadsheets, but each one becomes a
@@ -184,6 +316,19 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
   `python "<toolkit>\helpers\run.py" --folder <work>\longlist_inputs --work <work>\longlist_work --client "<client>" --geocode --pois --osrm --regions`.
   It builds `canonical.json` and passes its data gates. (Drive-times report `driving-hgv`.)
 
+  **The Stage 0 setup gate (toolkit v45+) is already cleared for you.** v45's `run.py` refuses to
+  read anything until a human has answered its five setup questions and `setup.confirmed: true` is in
+  `project.yaml`, on the correct premise that every value its own scaffold writes is a guess. Under
+  this wrapper they are not guesses: client name, enrichment flags, ORS key, email source and
+  language all come from the `run.yaml` the user filled in, and Kato has already parsed the Outlook
+  export itself, so `inputs.emails.source: none` is the answer rather than an omission. Step 7a
+  therefore writes `setup.confirmed: true`, `setup.confirmed_by` and `clarify.mode: interactive`
+  (the last of those is a policy constant the toolkit fixed on 2026-09-19, not an answer: the ask
+  mode was its sixth question until then and is no longer asked at all).
+  **Do not present the toolkit's five-question setup form**: it asks the same person the same
+  questions twice in one run. If a future toolkit adds a question the wrapper does not answer,
+  add it to `toolkit_tracker.py` rather than clearing the gate by hand.
+
   **Two different round-trip exits can stop this step, and both are normal.** They ask different
   questions and are answered with different files, so read which one you got before acting.
   - **Exit 3, the tracker column map.** "What do this spreadsheet's column headers mean?" It runs
@@ -202,6 +347,11 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
     rather than approving it blind: two records stating DIFFERENT postal codes can never be merged
     whatever verdict you give, so that pair ships as two cards for one building, and the fix is the
     source data, not the verdict.
+    The same is true of a >15% warehouse-area gap, and that one is invisible here: a forbidden
+    pair is NOT in the candidate list, so a missing pair is the thing to look for. `gate_runner.py
+    input-accounting` (step 7e) now BLOCKS when an option excluded by the source-authority answer
+    carries the same label as a shipped card, which is what that failure looks like from the
+    other end.
     **Expect a `country` value conflict on most properties, and do not read it as a data problem.**
     Our per-property cluster labels cannot resolve in the pipeline's city-to-country index (they are
     routing strings, deliberately unique per property), so every brochure reader is handed the
@@ -210,6 +360,13 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
     market constant either way.
   - **Exit 13** follows if a verdict is `unsure`: the pipeline escalates that pair to a blocking
     question for the user in `answers.json`. Put it to them and write their answer. Do not guess it.
+  - **Exit 17, the toolkit's own master list, must NEVER fire on a Kato run.** Scope was settled at
+    step 2.5, on our workbook, by the same operator; step 7a therefore writes
+    `master_list: {mode: external, confirmed_by: ...}` into `project.yaml` and the toolkit skips its
+    stop. If you get exit 17, do NOT build or answer the toolkit's sheet - that would ask the
+    operator to strike off the same options a second time. Check that `project.yaml` in
+    `longlist_work` carries that `master_list:` block (an older `toolkit_tracker.py`, or a
+    hand-edited project.yaml, is the cause) and re-run the same command.
 - **7c.** `python "%HELP%\inject_photos.py" --config run.yaml` — put our photos into `canonical.json`.
 - **7c.5. Patch canonical (our data the toolkit drops)** — `python "%HELP%\patch_canonical.py" --config run.yaml`.
   Injects, per property, straight from `property.json`: the curated **description**, the **landlord**
@@ -243,11 +400,15 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
   row (v36+ renders a combined BREEAM/EPC row via `certStr(p)`). Retired patches are not deleted - each
   keeps a premise re-asserted every run, so a toolkit regression bringing the old condition back fails
   loudly instead of quietly shipping a dashboard missing the fix.
-  **Verified against template v40:** all 12 active patches still match their anchor exactly once and
-  neither retired premise has regressed. None of the 12 became redundant, because every one of them is
-  a wrapper-specific presentation choice rather than a defect fix, so the toolkit gaining native
-  features (a keyless basemap, a composed card title, a stated-total sub-line, an uncropped plan view)
-  does not overlap any of them. Idempotent + version-agnostic: re-run
+  **Verified against template v45:** 10 active patches, 4 retired premises, all holding. P3 (card
+  eyebrow) and P13 (modal developer token) were RETIRED at v45, which does both jobs natively: the
+  eyebrow now renders through `partyLine(p)` (landlord, else developer, else a blank landlord line),
+  so the `TBD · TBD` dangling separator P3 existed to fix cannot occur, and the modal header now
+  carries its own `isTbd(p.developer)` guard inline. They join P7 and P12 as premises re-asserted
+  every run rather than deleted, so a regression reinstating the old condition fails loudly. The
+  remaining 10 are wrapper-specific presentation choices rather than defect fixes, which is why
+  native toolkit work only occasionally converges on them: when it does, retire the patch, do not
+  force the anchor. Idempotent + version-agnostic: re-run
   each session (the shadow is rebuilt pristine from the install every run); it reports EVERY moved anchor
   in one run and writes nothing rather than shipping unpatched. Use `--dry-run` to check a new toolkit
   version without touching it — that one is safe to point straight at `<install>`.
@@ -267,17 +428,61 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
   disclosed in the Gaps Report. That judgement is the operator's, and encoding it as a rule would
   either wave through something material or mandate work that changes nothing.
 
+**7h. REFRESH THE CLIENT EXCEL — ALWAYS, AFTER THE PIPELINE, NEVER BEFORE** —
+`python "%HELP%\sync_from_canonical.py" --config run.yaml` then
+`python "%HELP%\build_excel.py" --config run.yaml`
+
+**The client workbook from step 6 is out of date the moment the toolkit stage corrects anything,
+and it stays that way silently.** Step 6 writes it from `_dataset.json`, which is Kato plus your
+enrichment. Everything step 7 then establishes lands in the toolkit's `canonical.json` and NOWHERE
+ELSE: a brochure's warehouse-only area against a gross total, an office line the Kato listing never
+carried, an EPC or BREEAM rating read off a page, every `repairs.json` correction, every adjudicated
+value conflict, every QA fix. On the run this was written for, the step-6 workbook's Warehouse column
+fell back to the gross total on five properties, its Office column was empty on all twenty-one, and
+its EPC column read `tbd` for four properties whose own brochures state a rating. The dashboard was
+right and the spreadsheet beside it was wrong, which is worse than both being wrong: nothing on the
+face of either tells a broker which to trust, and the spreadsheet is the one they paste into an email.
+
+So the client Excel is **rebuilt at the end of every run, after 7g, and step 6's output is an
+intermediate.** Keeping step 6 where it is buys nothing downstream: 7a builds its tracker from
+`_dataset.json`, not from the workbook, and nothing else reads the workbook at all. It stays only
+so a run abandoned before step 7 still leaves a spreadsheet on disk. If you are going through to
+step 7, step 6 is dead work and 7h is the one that counts. Note also that the workbook is now built
+AFTER the 7g reviewer gates, which makes it the one deliverable no gate inspects: the values in it
+are the gated ones, but its own formatting and column choices are not reviewed by anything.
+`sync_from_canonical.py` pairs each canonical property to our record with the same matcher
+`inject_photos` and `patch_canonical` use, so a pairing failure REFUSES rather than skipping, and
+folds back a fixed, narrow set: warehouse and office areas, EPC, BREEAM, curated description. It
+deliberately does **not** touch the headline `size.sqft`, because warehouse + office under-sums any
+building with a plant deck, undercroft or mezzanine (it pulled Rugby106 from its marketed 106,645
+sq ft to 96,763 by dropping a 9,882 sq ft mezzanine), and it never touches rent, agent or tenure,
+where our data is richer than the pipeline's. `--dry-run` shows the diff first.
+
 **8. Finalise — ALWAYS LAST, NEVER SKIP** — `python "%HELP%\finalize_run.py" --config run.yaml`
 Collects every client-facing file into `OUTPUT/`, writes a plain-English `START-HERE.md`, and deletes
 junk (`__pycache__`, `.pyc`, stray temp files) from a fixed allowlist. It touches nothing a re-run or an
 audit needs, and is idempotent. **Do not tell the user the run is finished until this has run and you
 have given them the one path to open.** Use `--dry-run` to preview.
+**One deliberate exception to the allowlist:** where a deliverable arriving from a re-run collides
+with a file of the same name in `OUTPUT/`, the OLDER of the two is replaced, so re-running converges
+on one copy of each rather than leaving `<name>` beside `<name> (newer)` for the user to date-compare.
+A copy in `OUTPUT/` that is NEWER than the incoming build is treated as one the user edited and is
+kept, with the incoming file taking the suffix instead.
 
 ## Outputs (working directory)
 - `OUTPUT/` — **the only folder the user needs**: dashboard, spreadsheet, Gaps Report, Source Ledger.
 - `START-HERE.md` — what to open, what to send, what to ignore. Written by step 8.
+- `Master List.xlsx`: the inventory the user answered at step 2.5. **Internal, never sent to a
+  client**, and deliberately left in the working directory rather than moved to `OUTPUT/`: it is
+  the record of what was included and why, and the file to re-open when the run is refreshed.
+- `master_candidates.json` (your input to 2.5), `master_list_manifest.json` (what was built),
+  `master_list.json` (what the user decided; read by step 5 and by you at step 4).
 - `properties/<NN - Name - Postcode>/` — `_raw.json`, `_derived.json`, `property.json`, `media/`.
+  Folders materialised at step 2.5d have no `_raw.json` and carry `_derived.json._origin` instead.
 - `properties/_dataset.json`, `_index.json`, `_gaps.json`; `emails/`; `enrichment.json`.
+- `uploads/`: optional, where the user's extra brochures and sheets go. Loose files in the
+  working directory root are picked up too; either way anything no row claims is listed on the
+  workbook's **Unmatched files** tab, because a supplied file that nothing reads must be visible.
 - `longlist_work/` — toolkit working data (the deliverables are moved out of it by step 8).
 
 ## Working directory discipline (NOT optional)

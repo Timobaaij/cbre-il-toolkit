@@ -692,6 +692,161 @@ def _quote_line(q: tuple) -> str:
             f"row; if the value is right, tighten the locator to quote the text that carries it.")
 
 
+def _norm_option_name(s) -> str:
+    """A cluster label reduced to its words, for comparing two labels for identity."""
+    return " ".join(re.findall(r"[a-z0-9]+", str(s or "").lower()))
+
+
+def _excluded_same_as_shipped(canonical: Path) -> list:
+    """Exclusions that are not exclusions: the SAME building as a card that shipped. (B08b)
+
+    `apply_source_authority` drops a cluster the authoritative source family does not evidence,
+    and that is correct for a genuine extra - another unit of the same park, a scheme the
+    tracker never listed. It is NOT correct when the dropped cluster and a kept one are the
+    same option that failed to merge, because then the answer did not remove an option from
+    scope; it removed the only page-cited evidence a shipped option had.
+
+    `input-accounting` used to print that case as a clean `[note]`: "a disclosed decision, not
+    a silent loss". On a live run it was a silent loss three times over. Three options shipped
+    with no specification field, no photo and no site plan traceable to their own brochure,
+    while the brochure sat in the inputs folder and the Gaps Report described it as excluded on
+    purpose. The pairs were `forbidden` - vetoed on a >15% warehouse-area gap between a
+    marketed TOTAL and an accommodation schedule's warehouse-only line - so they were never
+    written to match_candidates.json and no adjudicator or verifier ever saw them.
+
+    THE TEST IS DELIBERATELY NARROW, because the same field carries the legitimate case.
+    `merge._likely_same_kept` links a dropped cluster to a kept one whenever a forbidden or
+    grey pair holds them apart, and on that live run ten of thirteen exclusions carried such a
+    link and ten were RIGHT (LLP500 against LLP90, Vantage Park against V60: two units of one
+    park, correctly excluded and correctly named as distinct). What separates the three
+    failures is that their label and the kept card's label are THE SAME STRING - the same unit
+    designator, the same park, the same city. `cluster_label` is already composed from those
+    three, so the comparison needs nothing the entry does not already carry, and on that run it
+    selects exactly the three and none of the ten.
+
+    Near-threshold size gaps get a NOTE rather than a block: a forbidden link whose two
+    headline areas sit between the 15% veto and 35% is the shape of a basis conflict rather
+    than two different buildings, and is worth a human glance without crying wolf.
+    """
+    try:
+        meta = (C.load_canonical(Path(canonical)).get("meta") or {})
+    except Exception:
+        return []
+    hits, near = [], []
+    for e in (meta.get("excluded") or []):
+        if not isinstance(e, dict):
+            continue
+        link = e.get("likely_same_as") or {}
+        if str(link.get("tier") or "").lower() != "forbidden":
+            continue
+        if _norm_option_name(e.get("name")) and \
+                _norm_option_name(e.get("name")) == _norm_option_name(link.get("name")):
+            a = _num_or_none((e.get("headline") or {}).get("warehouseArea"))
+            b = _num_or_none((link.get("kept_headline") or {}).get("warehouseArea"))
+            gap = (f"both are labelled '{link.get('name')}'"
+                   + (f"; the two records state {a:,.0f} and {b:,.0f} "
+                      f"{(e.get('headline') or {}).get('areaUnit') or ''}".rstrip()
+                      + f", a {abs(a - b) / max(a, b) * 100:.1f}% gap"
+                      if a and b else ""))
+            hits.append((e, gap))
+            continue
+        a = _num_or_none((e.get("headline") or {}).get("warehouseArea"))
+        b = _num_or_none((link.get("kept_headline") or {}).get("warehouseArea"))
+        if a and b and 0.15 < abs(a - b) / max(a, b) <= 0.35:
+            near.append((e, link, abs(a - b) / max(a, b)))
+    for e, link, g in near:
+        print(f"  [note] '{str(e.get('name'))[:44]}' was excluded while a forbidden pair held "
+              f"it apart from the shipped '{str(link.get('name'))[:44]}', on a {g * 100:.1f}% "
+              f"area gap. That is close enough to the 15% veto to be two figures on different "
+              f"bases (marketed total vs warehouse-only) rather than two buildings. Not "
+              f"blocking - the labels differ - but check it before sending the pack.")
+    return hits
+
+
+def _num_or_none(v):
+    try:
+        f = float(str(v).replace(",", "").strip())
+        return f if f > 0 else None
+    except Exception:
+        return None
+
+
+def _email_attachment_faults(work: Path) -> list:
+    """Emails whose ATTACHMENTS did not reach the run. Blocking, not a note.
+
+    THE DEFECT THIS EXISTS FOR, and the reason it cannot be an advisory. An offer email
+    contributes records from its BODY, so the .msg itself appears in the ledger and every
+    bucket above counts it as fully accounted. The brochure stapled to it can therefore be
+    absent from the entire run while input-accounting prints ALL-PASS: the one gate whose
+    whole job is "nothing discovered at intake vanishes silently" was structurally blind to
+    the commonest way a building goes missing, because the carrier file was present and the
+    payload was not. A note would not have helped either, since the run that produced the
+    note also produced a clean scorecard and shipped.
+
+    Four faults, all of them "the bytes are not where the inventory says they are":
+      * a LEGACY inventory - emails discovered, no `email_attachments` record at all. That
+        inventory was written before attachments were extracted, so nobody can say whether
+        those emails carried brochures. Unknown is not the same as none, and the fix is one
+        cheap re-run of intake, so it blocks;
+      * an extraction ERROR recorded against a named email (an unwritable path, extract_msg
+        not installed for a .msg);
+      * declared attachments that are neither saved nor explicitly skipped as inline, which
+        is the arithmetic signature of a half-completed save;
+      * a saved attachment whose file is GONE from the inputs folder - the folder deleted by
+        hand between runs, the classic "I tidied up" case. The inventory still promises it.
+
+    Skipped entirely when `email_attachments_enabled` is false, which is the wrapper-skill
+    contract (`inputs.emails.source: none`, kato-longlist): there the attachments were
+    extracted by the wrapper's own email step and this skill must not double-read them, so
+    demanding its own copies would block every correct wrapper run.
+    """
+    try:
+        inv = json.loads((work / "inventory.json").read_text(encoding="utf-8-sig"))
+    except Exception:
+        return []
+    emails = inv.get("emails") or []
+    if not emails:
+        return []
+    if inv.get("email_attachments_enabled") is False:
+        return []
+    ea = inv.get("email_attachments")
+    if ea is None:
+        return [f"{len(emails)} email(s) were discovered but this inventory.json carries NO "
+                f"attachment record at all, so nothing can say whether they carried brochures. "
+                f"It predates attachment extraction (a legacy run). Re-run intake against the "
+                f"inputs folder and re-run the spine; the emails' own bodies are NOT evidence "
+                f"that their attachments reached the dashboard."]
+    faults: list = []
+    inputs_dir = Path(str(inv.get("folder") or ""))
+    for e in ea if isinstance(ea, list) else []:
+        if not isinstance(e, dict):
+            continue
+        nm = str(e.get("email") or "(unnamed email)")
+        if e.get("skipped_reason"):
+            continue
+        if e.get("error"):
+            faults.append(f"{nm}: its attachments were NOT extracted - {e['error']}. The body's "
+                          f"records make this email look accounted for, which is exactly why "
+                          f"this blocks.")
+            continue
+        declared = e.get("declared")
+        accounted = len(e.get("saved") or []) + len(e.get("skipped_inline") or [])
+        if isinstance(declared, int) and declared > accounted:
+            faults.append(f"{nm}: {declared} attachment(s) on the email, {accounted} accounted "
+                          f"for (saved or skipped as inline). {declared - accounted} set of "
+                          f"bytes is unexplained.")
+        for s in e.get("saved") or []:
+            relp = str((s or {}).get("file") or "")
+            if not relp:
+                continue
+            if inputs_dir.is_dir() and not (inputs_dir / relp).exists():
+                faults.append(f"{nm}: the saved attachment '{relp}' is no longer in the inputs "
+                              f"folder. The inventory promises it and the extractors cited it; "
+                              f"restore the folder or re-run intake so the run and the disk "
+                              f"agree.")
+    return faults
+
+
 def cmd_input_accounting(args) -> int:
     """Reconcile every discovered INPUT against what actually shipped. (B08)"""
     work = Path(args.work)
@@ -709,7 +864,23 @@ def cmd_input_accounting(args) -> int:
     for rel in b["no_consumer"]:
         print(f"  [note] {rel}: loose image - no spine consumer reads it (extract_image.py "
               f"is not wired in). Not a defect in this run; it is simply not in the dashboard.")
-    if b["unaccounted"]:
+    same_building = _excluded_same_as_shipped(Path(args.canonical))
+    for e, why in same_building:
+        _bad(f"'{str(e.get('name'))[:48]}': recorded as excluded by the source-authority "
+             f"answer, but it is the SAME OPTION as a shipped card ({why}). That is not a "
+             f"scope decision. A forbidden pair is never written to match_candidates.json "
+             f"and never adjudicated, so the two clusters could not merge whatever anyone "
+             f"answered, and the authority answer then dropped the brochure's cluster - "
+             f"taking its page-cited fields, its photos and its site plan with it. The usual "
+             f"cause is a size conflict between two figures on DIFFERENT BASES: a marketed "
+             f"total (offices, plant deck, mezzanine, undercroft included) on one side and "
+             f"the accommodation schedule's warehouse-only line on the other. Fix the source "
+             f"of the figure - do NOT repair the merged value, which leaves the next run "
+             f"reproducing this exactly.")
+    email_faults = _email_attachment_faults(work)
+    for f in email_faults:
+        _bad(f)
+    if b["unaccounted"] or same_building or email_faults:
         for rel in b["unaccounted"]:
             _bad(f"{rel}: discovered at intake but contributed NOTHING - no ledger row, no "
                  f"photo binding, and not recorded as unreadable. A whole source has "

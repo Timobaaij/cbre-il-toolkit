@@ -180,7 +180,7 @@ CLI:
 
   Stage vocabulary, in pipeline order (both flags validate against it and name the valid
   spellings on a typo):
-      folder scan, extract, merge, enrichment, repairs, projection,
+      folder scan, extract, master list, merge, enrichment, repairs, projection,
       gates:pre, build, gates:post, deliver, qa
   Both flags REUSE the existing output of a skipped stage rather than re-deriving it, so
   the work dir must already hold it - they are a re-entry shortcut on a warm work dir, not
@@ -234,8 +234,14 @@ RESUME = False  # set by --resume: skip a stage whose output is already current 
 # a timing log naming "enrich" while --from validates "enrichment" would print a re-entry
 # command the operator cannot type, which is worse than printing none. Pipeline order, so
 # "strictly before the --from cut" is an index comparison and nothing else. -------------- #
-STAGE_ORDER = ("folder scan", "extract", "merge", "enrichment", "repairs", "projection",
-               "gates:pre", "build", "gates:post", "deliver", "qa")
+STAGE_ORDER = ("folder scan", "extract", "master list", "merge", "enrichment", "repairs",
+               "projection", "gates:pre", "build", "gates:post", "deliver", "qa")
+# "master list" sits between extract and merge in the VOCABULARY and physically INSIDE the
+# extract stage's code, between the cheap reads (tracker rows, email bodies) and the expensive
+# one (a reader agent per brochure deck). That is deliberate and it is the whole point of the
+# stage: the user decides scope while the decks are still unread, so the run pays for the decks
+# it was asked for. The vocabulary places it after extract because --from "master list" must
+# mean "re-open the scope decision and everything after it", not "re-read the trackers".
 
 # Stages that NEVER skip, under any flag. The pre-build gates, the post-build gates, the
 # freeze (which lives inside gates:pre, at ALL-PASS) and the QA window are the ONLY things
@@ -3325,8 +3331,10 @@ def setup_pending(cfg: dict, work: Path) -> bool:
 
     THE DEFECT THIS EXISTS FOR. `intake` scaffolds a COMPLETE project.yaml on the first
     pass - client name from --client, `output.language: English`, `inputs.emails.source:
-    none`, the enrichment flags, `clarify.mode: interactive` - i.e. all six Stage-0 answers,
-    pre-filled with guesses, written BEFORE anything tells the orchestrator to ask. SKILL.md
+    none`, the enrichment flags - i.e. all five Stage-0 answers, pre-filled with guesses,
+    written BEFORE anything tells the orchestrator to ask. (It also writes
+    `clarify.mode: interactive`, which is not one of the five and not a guess: asking when
+    unsure is fixed by policy.) SKILL.md
     then said to skip the form when "project.yaml already carries the answers". It always
     did. So the correct, compliant behaviour was to never ask the broker anything, and runs
     shipped English dashboards with no email ingestion and car drive-times because nobody
@@ -3360,15 +3368,17 @@ def setup_handoff_text(work: Path, proj: Path) -> str:
     other instructions. It is now the first thing in the message, and it names the one thing
     that clears it."""
     return (
-        "SETUP FIRST (Stage 0): the broker has NOT yet answered the six setup questions - "
+        "SETUP FIRST (Stage 0): the broker has NOT yet answered the five setup questions - "
         f"`setup.confirmed` is not true in {proj}. Present the ONE consolidated "
         "`mcp__visualize__show_widget` form from reference/setup-form.md VERBATIM (client "
-        "name, enrichment extras, openrouteservice key, Outlook emails, dashboard language, "
-        "ask mode) as a single elicitation - never AskUserQuestion, never one question at a "
-        "time; if the visualize tool is genuinely unavailable, put all six in ONE plain-text "
-        "message instead. Then write their answers into that project.yaml (`client:`, "
-        "`enrichment:`, `enrichment.ors_api_key`, `inputs.emails:`, `output.language`, "
-        "`clarify.mode`) AND set `setup.confirmed: true`. Every value already in that file "
+        "name, enrichment extras, openrouteservice key, Outlook emails, dashboard language) "
+        "as a single elicitation - never AskUserQuestion, never one question at a "
+        "time; if the visualize tool is genuinely unavailable, put all five in ONE plain-text "
+        "message instead. Do NOT ask about the ask mode: asking the broker when the run is "
+        "unsure is fixed by policy, so `clarify.mode` is neither asked nor written from an "
+        "answer. Then write their answers into that project.yaml (`client:`, "
+        "`enrichment:`, `enrichment.ors_api_key`, `inputs.emails:`, `output.language`) "
+        "AND set `setup.confirmed: true`. Every value already in that file "
         "is a GUESS this scaffold wrote, not an answer - do not read it as one. Nothing but "
         "`setup.confirmed: true` (or work/clarify.SKIP_ALL for a headless run with no "
         "broker to ask, which accepts the defaults as a recorded decision) clears this.")
@@ -4237,7 +4247,21 @@ def main() -> None:
         h = hashlib.sha1(str(rel).encode("utf-8")).hexdigest()[:8]
         return extract / f"{_slug(rel)[:40]}_{h}_{suffix}.json"
 
+    # SCOPE, DECIDED BY THE USER, APPLIED BEFORE THE EXPENSIVE STEP. An answered master list
+    # (work/master_list.json, the "master list" stage below) names the brochure clusters the
+    # user struck off. Those decks are never prepped, never rendered and never dispatched to a
+    # reader agent - which is the entire economic argument for putting the sheet here rather
+    # than after the merge, where the Kapdaa run's source-authority question effectively asked
+    # the same thing and asked it once every deck had already been read. Empty on the first
+    # pass and on a headless run, so both behave exactly as they did before this existed.
+    import master_list as _ML
+    _ml_skip_clusters = _ML.excluded_cluster_labels(work)
     for region, cl in inv["clusters"].items():
+        if region in _ml_skip_clusters:
+            if not QUIET:
+                print(f"  ({region}: you marked it No on the master list - its deck(s) are not "
+                      f"read; it is named in the Gaps Report)")
+            continue
         # ABSENCE, NOT A SENTINEL (F7). This used to mint the two-question-mark placeholder,
         # which then travelled into the deck entry and the reader prompt. Measured on a live run:
         # five of seven readers said, unprompted, that they had to derive the country themselves
@@ -4645,6 +4669,168 @@ def main() -> None:
         else:
             print(f"NOTE: {len(unreadable_inputs)} input file(s) unreadable, skipped "
                   f"(in the Gaps Report): {_summary}")
+
+    # ======================================================================= MASTER LIST ===
+    # THE ONE POINT IN THE RUN WHERE THE USER DECIDES SCOPE.
+    #
+    # Everything above this line is cheap: the tracker rows a dictionary/LLM column map parsed,
+    # and the email bodies an agent read. Everything below it is expensive: one reader agent per
+    # brochure deck, vision on the raster ones, then matching, merging, enrichment and a build.
+    # Before this stage existed the run decided what to build entirely on its own and the broker
+    # found out by reading the FINISHED dashboard - the Kapdaa run's defect in one sentence. The
+    # one question that does ask a human which source governs the longlist, the exit-13
+    # source-authority question, is asked after merging, which is after every deck has already
+    # been read and after the run has formed the opinion the question is then phrased in terms
+    # of. Both costs are paid here instead, once, on a sheet.
+    #
+    # It is a STOP, not a question with a default. Interactive is fixed by policy (the ask-mode
+    # question has been removed from the setup form), so the sheet is the default path and the
+    # only bypass is an explicit headless run, which includes everything and discloses that it
+    # did in the Gaps Report.
+    #
+    # ONE BOUNDARY, AND WHAT ITS SEGMENT COVERS. The stage opens here and closes at `merge`, so
+    # the deck preparation and the exit-3 reader dispatch below are timed against "master list"
+    # rather than against "extract". That is not a mislabel, it is the honest attribution: the
+    # only reason that work costs what it costs is which rows the sheet let through, and the
+    # whole argument for this stage is the prep that DOESN'T happen for the rows it stopped.
+    # Re-opening "extract" for the second half would give the vocabulary two boundaries for one
+    # stage, which is what makes the timing log's segments ambiguous (evals/stage_control_test).
+    _stage("master list")
+    _ml_auto = {}
+    # SCOPE ALREADY SETTLED UPSTREAM (project.yaml `master_list: {mode: external}`).
+    #
+    # A wrapper skill can own this decision before the spine is ever invoked - kato-longlist does,
+    # at its own step 2.5, with its own workbook, and it then generates this project.yaml and this
+    # inputs folder FROM the rows that survived. Firing exit 17 there would put a second sheet in
+    # front of the same operator, listing the same options they just finished striking off, and
+    # nothing on it they have not already decided. A gate that visibly re-asks an answered question
+    # is answered "Yes to everything" from the second time onwards, and then it protects nothing on
+    # the run where it would have mattered.
+    #
+    # It DECLINES the stop and does nothing else, deliberately. No master_list.json is written, so
+    # no consumer can read one: no derived source authority (the exit-13 question is asked exactly
+    # as it was before this stage existed), no `same` seeding into match_decisions.json, no deck
+    # skipped. One line in the Gaps Report says where scope was settled, and that is the entire
+    # difference from the pre-master-list spine. Absent, misspelt or unparseable means interactive.
+    _ml_external = _ML.external_scope(cfg)
+    if _ml_external:
+        try:
+            _ML.write_external(work, _ml_external)
+        except OSError:
+            pass  # the disclosure is best-effort; declining the stop is not conditional on it
+        if not QUIET:
+            print(f"  (master list: settled upstream, not asked here - "
+                  f"{_ml_external['confirmed_by']})")
+    try:
+        _ml_by_file: dict = {}
+        for _f in sorted(extract.glob("*.json")):
+            for _i, _r in enumerate(_load_records(_f)):
+                if isinstance(_r, dict) and not _r.get("unreadable"):
+                    _ml_by_file.setdefault(
+                        str((_r.get("__meta") or {}).get("source_file") or _f.name), []).append(_r)
+
+        def _first_page_text(p) -> str:
+            """The deck's FIRST PAGE text, and only that.
+
+            The cheapest evidence that exists before the read: enough for a human to recognise
+            a scheme on the sheet, and explicitly not data - nothing derived here reaches a
+            card, and the row's own note says so. A PPTX or a textless raster yields '', which
+            is correct: the row then shows its filename-derived label and the user judges it on
+            that, rather than on a number the run made up from a cover page it could not read.
+            """
+            try:
+                import extract_pdf as _xp
+                blocks = _xp.font_grouped_blocks(p) or []
+            except Exception:
+                return ""
+            return "\n".join(str(b.get("text") or "") for b in blocks
+                             if int(b.get("page") or 0) == 1)[:4000]
+
+        # The enumeration itself is the only expensive thing here (a first-page text read per
+        # deck) and it is also what writes master_candidates_auto.json into the work dir, so an
+        # external-scope run skips it outright rather than building a sheet nobody will be shown.
+        # `_ml_auto` stays {} and every branch below it is then inert by construction.
+        _ml_auto = ({} if _ml_external else
+                    _ML.build_auto(work, _ml_by_file, inv.get("clusters") or {}, folder,
+                                   _first_page_text, emails=inv.get("emails") or [],
+                                   email_attachments=inv.get("email_attachments") or []))
+    except Exception as _e:
+        # BEST-EFFORT ENUMERATION, DELIBERATE HARD STOP ONLY WHEN IT SUCCEEDS. A crash while
+        # inventorying candidates must not wedge a run behind a sheet that cannot be built; the
+        # run then behaves exactly as it did before this stage existed and says so.
+        print(f"  (master list not built: {_e} - the run continues with every option in scope)",
+              file=sys.stderr)
+    _ml_rows = (_ml_auto or {}).get("rows") or []
+    # --from/--only put the scope decision OUT OF SCOPE: whatever the user already answered
+    # stands, and the stop is not re-opened. A re-entry shortcut that re-asked the broker for a
+    # decision they had already taken would be a shortcut nobody uses twice.
+    if _stage_skipped("master list"):
+        _resumed("master list")
+        _ml_rows = []
+    if _ml_rows:
+        _ml_hash = str(_ml_auto.get("input_hash") or "")
+        if _ML.is_answered(work, _ml_hash):
+            _resumed("master list")
+            _ml_state = _ML.load_answers(work)
+            if not QUIET:
+                _c = _ml_state.get("counts") or {}
+                print(f"  (master list: answered - {_c.get('included', '?')} option(s) in, "
+                      f"{_c.get('excluded', '?')} out"
+                      + (" [headless: everything included]" if _ml_state.get("skipped") else "")
+                      + ")")
+        else:
+            import clarify as _CQ_ML
+            if _CQ_ML.clarify_mode(work, cfg) == "headless":
+                _ML.write_headless(work, _ml_auto,
+                                   "headless run (work/clarify.SKIP_ALL or "
+                                   "clarify.assume_defaults) - nobody to put the sheet to, so "
+                                   "every option found was included")
+                print("NOTE: headless run - the master list was NOT put to anyone and every "
+                      f"option found ({len(_ml_rows)}) is in scope. Disclosed in the Gaps "
+                      f"Report.")
+            else:
+                _ml_pl = _render_dispatch_prompts(work, [
+                    ("master-list", None,
+                     {"AUTO_PATH": str(work / _ML.AUTO_CANDIDATES),
+                      "OUTPUT_PATH": str(work / _ML.MODEL_CANDIDATES),
+                      "EMAIL_NOTE": (f"{len(inv.get('emails') or [])} .msg/.eml file(s) in "
+                                     f"{folder}" if inv.get("emails")
+                                     else "no email files in this run - skip that half")})])
+                _n_deck = sum(1 for r in _ml_rows if r.get("source_type") == "Brochure")
+                _ml_msg = (
+                    f"MASTER LIST: {len(_ml_rows)} candidate option(s) found "
+                    f"({len(_ml_rows) - _n_deck} from trackers/emails, {_n_deck} brochure "
+                    f"cluster(s)). The USER decides which are built, before the decks are read. "
+                    f"Do all four, in order: (1) dispatch the rendered master-list prompt to add "
+                    f"the email-only rows and adjudicate the duplicate groups -> "
+                    f"{work / _ML.MODEL_CANDIDATES}; (2) run "
+                    f"`python helpers/master_list_build.py --work \"{work}\"`; (3) give the user "
+                    f"{work / _ML.WORKBOOK} and WAIT - they set Include? to Yes or No on every "
+                    f"row and write anything the run must know in 'Your Run notes for the AI'. "
+                    f"Do NOT fill the column in for them and do NOT infer it from the duplicate "
+                    f"groups; (4) run "
+                    f"`python helpers/master_list_read.py --work \"{work}\"` and re-run the same "
+                    f"command. The read-back REFUSES (exit 2) on any row that is not Yes or No "
+                    f"and names them.{_ml_pl}")
+                _ml_msg = _handoff_once(work, 17, _attempts, "master list scope decision",
+                                        _ml_msg, tail=_ml_pl)
+                if QUIET:
+                    print("I have found every option in your files. Before I read the brochures "
+                          "I need you to say which ones to build - I will put them in a sheet.")
+                    _say_orchestrator(_ml_msg)
+                else:
+                    print("\n" + _ml_msg)
+                _exit_round_trip(
+                    work, 17, _attempts, "master list scope decision",
+                    diagnosis=[f"work/{_ML.ANSWERS} does not answer the current candidate set "
+                               f"(input_hash {_ml_hash}): "
+                               + ("it does not exist yet"
+                                  if not (work / _ML.ANSWERS).exists() else
+                                  f"it answers input_hash "
+                                  f"{(_ML.load_answers(work) or {}).get('input_hash')!r}, so an "
+                                  f"input has been added or removed since - re-build the "
+                                  f"workbook (answers carry forward by Row ID) and re-read it")])
+    # =================================================================== end MASTER LIST ===
 
     # fold in any vision-transcribed records from a prior pass (orchestrator output) -
     # but VALIDATE them first: for a scanned/designed deck, vision IS the entire
@@ -5299,16 +5485,16 @@ def main() -> None:
 
     # SETUP IS A FIRST-PASS INVARIANT (B63). Reaching here means no exit-3 round carried the
     # Stage-0 form this pass - an email-only or image-only corpus, or a work dir whose
-    # interpretation outputs are all cached or .SKIP-declined. That used to mean the six
+    # interpretation outputs are all cached or .SKIP-declined. That used to mean the five
     # questions were never printed AT ALL, because the only site that mentioned them was the
     # interpretation hand-off. So it stops here instead, on its own, and the run cannot get
-    # to a client-facing dashboard on six guessed answers without either the broker's
+    # to a client-facing dashboard on five guessed answers without either the broker's
     # answers or a recorded decline.
     if setup_pending(cfg, work):
         import clarify as _CQ0
         # THE ONLY TWO THINGS THAT CLEAR THIS are `setup.confirmed: true` (read by
         # setup_pending, above) and an explicit DECLINE. An ordinary answers.json entry
-        # deliberately does not: the six answers have to land in project.yaml, where every
+        # deliberately does not: the five answers have to land in project.yaml, where every
         # later stage reads them, and letting a stray answer clear the stop would put back
         # exactly the silent-skip this exists to close.
         _CQ0.ingest_answers(work)
@@ -5532,6 +5718,28 @@ def main() -> None:
         # locator-shaped scalar could skew a grey pair. No-op for canonical records / ledger / Gaps.
         for _r in _all_recs:
             _merge._normalise_offspec(_r)
+        # THE USER'S OWN DUPLICATE GROUPS PRE-ANSWER THE PAIRS THEY COVER. A group on the master
+        # list is the person who owns the deliverable saying "these are one building". Exit 10
+        # exists to ask a sub-agent that same question about pairs NOBODY has answered, so
+        # re-asking a grouped pair would route the broker's decision back through an
+        # intermediary to be re-derived - and a 'different' verdict from that intermediary would
+        # silently overrule them. Seeded BEFORE grey_pairs so the verdicts are in place for the
+        # coverage predicate in the same pass, keyed with match.pair_id, which is the id the
+        # spine itself generates for a pair: any other key would produce a file that looks
+        # answered and covers nothing. Never overwrites an existing verdict.
+        try:
+            import master_list as _ML  # local: this path must not depend on the extract stage
+            _ml_seed = _ML.seed_match_decisions(_all_recs, work)
+            _ml_have = _load_match_decisions(work) or {}
+            _ml_new = {k: v for k, v in _ml_seed.items() if k not in _ml_have}
+            if _ml_new:
+                _mutate_decisions_file(work / "match_decisions.json", _ml_new)
+                if not QUIET:
+                    print(f"  ({len(_ml_new)} pair(s) pre-answered 'same' from your master list "
+                          f"duplicate groups - exit 10 will not ask about them)")
+        except Exception as _e:
+            print(f"  (master-list duplicate groups not seeded into match_decisions: {_e})",
+                  file=sys.stderr)
         grey = _mm.grey_pairs(_all_recs)
         _n_grey = len(grey or [])
         # AUTO-MERGED PAIRS OFFERED FOR CONFIRMATION (A15). The auto tier merges without
@@ -5601,7 +5809,20 @@ def main() -> None:
         # broker to skim the ones that matter. Asked ONCE (clarify.pending), and unanswered
         # still ships the union, so this can never wedge a run.
         if not grey_uncovered:
-            _extras = _merge.authority_extras(clusters)
+            # AN ANSWERED MASTER LIST IS THE AUTHORITY, SO THE QUESTION IS NOT ASKED.
+            #
+            # The source-authority question asks a broker which SOURCE FAMILY decides what
+            # belongs on the longlist - a proxy question, asked late, whose answer then removes
+            # whole options by file extension. A user who has been through the master list has
+            # already answered the real question, option by option, with the option names in
+            # front of them, before any of those options cost a reader agent. Asking the proxy
+            # afterwards would be asking the same person the same thing twice and letting the
+            # cruder answer overrule the finer one. So: master list answered -> keep exactly the
+            # options they included and skip the question. Headless / no master list -> the
+            # question behaves exactly as it always has.
+            import master_list as _ML  # local: see the seeding block above
+            _ml_governs = _ML.user_answered(work)
+            _extras = {} if _ml_governs else _merge.authority_extras(clusters)
             # THE ARITHMETIC AND WHERE IT COMES FROM (B49). The question used to open on two
             # lists of names, which reads as "you are about to lose 14 options" and drove the
             # answer that doubled the deliverable. Give it the two totals a broker can check
@@ -5661,9 +5882,18 @@ def main() -> None:
             # Apply the settled answer to THIS path's clusters too, so the conflict ids
             # enumerated here match the ones merge.main will produce from its own filtered
             # clusters. Unanswered / 'union' is a no-op, so nothing changes for a run that
-            # never answered.
-            clusters, _ = _merge.apply_source_authority(
-                clusters, _clarify.settled_authority(_answers))
+            # never answered. When the master list governs, the SAME filter merge.main applies
+            # runs here instead, for the same reason: two clustering calls that disagree about
+            # which options exist produce conflict ids that drift, which is the key risk this
+            # whole path is written around.
+            if _ml_governs:
+                clusters, _ml_out = _ML.apply_to_clusters(clusters, work)
+                if _ml_out and not QUIET:
+                    print(f"  ({len(_ml_out)} option(s) left out - you marked them No on the "
+                          f"master list; each is named in the Gaps Report)")
+            else:
+                clusters, _ = _merge.apply_source_authority(
+                    clusters, _clarify.settled_authority(_answers))
         # The surfaced AUTO pairs join the open-pair set while the pairs round is open: a
         # 'different' verdict on one changes cluster membership exactly as a grey 'same' does,
         # so a conflict adjudicated against it now would be re-keyed and re-asked (the 44 ->
@@ -6072,6 +6302,16 @@ def main() -> None:
     if _cs.exists():
         merge_args += ["--answers", work]
         merge_inputs.append(_cs)
+
+    # THE ANSWERED SCOPE SHEET IS A MERGE INPUT, for exactly the reason the answered
+    # clarifications above are one: a user who changes an Include? from Yes to No and re-runs
+    # must see that option leave the dashboard, and resume would otherwise skip the one stage
+    # that drops it. A headless master_list.json is passed too and is a no-op inside merge
+    # (every row is Yes), which keeps the resume predicate honest rather than conditional.
+    _ml_f = work / "master_list.json"
+    if _ml_f.exists():
+        merge_args += ["--master-list", _ml_f]
+        merge_inputs.append(_ml_f)
 
     plan_ack_f = work / "placeholder_audit_ack.json"
     if plan_ack_f.exists():

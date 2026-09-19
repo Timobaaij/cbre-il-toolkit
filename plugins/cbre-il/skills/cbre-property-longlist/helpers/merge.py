@@ -2722,8 +2722,13 @@ def gallery_reach_pages(clusters: list[list[dict]], source_dir: Path,
                     for i, f in figs.items()}
         distinct = {i: f for i, f in distinct.items() if f}
         names = _distinct_name_tokens(clusters, owners)
-        if len(distinct) < 2 and len(names) < 2:
-            continue                # nothing tells these claimants apart, by figure or by name
+        # Claimants that NOTHING tells apart (same figures, no distinguishing name token - three
+        # identical units of one scheme in one brochure) used to reach NOTHING: the branch bailed
+        # here and every sibling card went thin. The broker's call is the opposite: units of one
+        # park in one brochure MAY share photographs, and nobody should go out of their way to
+        # divide them. With `distinct` and `names` both empty no page can be attributed, so every
+        # unclaimed page falls to the PARK-LEVEL branch below and reaches all of them, still
+        # under the third-scheme guard.
         all_own = set().union(*(figs[i] for i in owners)) if owners else set()
         anchors = [max(figs[i]) for i in owners if figs[i]]
         for p in sorted(unclaimed):
@@ -2733,11 +2738,14 @@ def gallery_reach_pages(clusters: list[list[dict]], source_dir: Path,
             # own name but no schedule table was previously invisible to this branch.
             named = {i for i, d in distinct.items() if _figs_hit(pf, d)}
             named |= {i for i, t in names.items() if t & toks}
-            if len(named) == 1:
-                out[next(iter(named))].setdefault(s, set()).add(p)
-                continue
             if named:
-                continue            # names MORE THAN ONE claimant - not park-level, not theirs
+                # A page naming ONE claimant is that claimant's. A page naming SEVERAL used to be
+                # refused for all of them ("not park-level, not theirs"), which starved exactly
+                # the shared spread a multi-unit brochure leads with: the schedule of Units 1-3
+                # beside the aerial. Sibling cards may share it; it goes to every claimant named.
+                for i in named:
+                    out[i].setdefault(s, set()).add(p)
+                continue
             # PARK-LEVEL: the page names no claimant at all. On a shared deck EVERY claimant is
             # on this card grid, so the subject such a page can depict is the thing they share -
             # the park itself (an aerial, the entrance, landscaping, an amenity spread). The
@@ -4168,6 +4176,10 @@ def _verified_photo_description(bsrc, entry):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--records", nargs="+", required=True)
+    ap.add_argument("--master-list", default="",
+                    help="work/master_list.json - the user's answered scope sheet. Clusters "
+                         "whose every record belongs to a row they marked No are dropped here "
+                         "and named in the Gaps Report. Absent = every option is in scope.")
     ap.add_argument("--source-dir", required=True)
     ap.add_argument("--project-yaml")
     ap.add_argument("--out", required=True)
@@ -4244,6 +4256,50 @@ def main() -> None:
     all_records = []
     for f in args.records:
         all_records.extend(json.loads(Path(f).read_text(encoding="utf-8-sig")))
+
+    # EMAIL ATTACHMENTS: cite the FILE, carry the EMAIL. A brochure that arrived stapled to an
+    # offer email is extracted exactly like any other deck, so its records cite the attachment
+    # and its page - which is right, because that is where the figure is printed, and a reader
+    # checking the ledger must be able to open the cited file at the cited page. But the
+    # attachment on its own is a filename with no history: the broker cannot tell who sent it,
+    # when, or which thread it settles, and on a corpus where two agents both offered the same
+    # park that is the difference between a current offer and a superseded one. So every record
+    # from an attachment also carries __meta.from_email = {subject, date, file}, read from the
+    # `.from_email.json` sidecar extract_email wrote beside the bytes. The sidecar is the source
+    # of truth rather than a run artefact, so the link survives a deleted work dir and a
+    # hand-run of this script.
+    #
+    # The index is keyed on the attachment's path relative to the inputs folder, and the
+    # lookup lives in extract_email.from_email_for rather than here. Both halves matter: a
+    # basename key made two emails that each attached "brochure.pdf" resolve to whichever
+    # sidecar was read last, so one of the two got a confidently WRONG sending email in its
+    # ledger locator. from_email_for resolves the bare name the extractors stamp, and returns
+    # nothing at all when the name is genuinely ambiguous.
+    _from_email, _EM = {}, None
+    try:
+        import extract_email as _EM   # noqa: F811
+        _from_email = _EM.from_email_index(Path(args.source_dir))
+    except Exception:
+        _from_email, _EM = {}, None   # no sidecars, or no attachments: byte-identical to before
+
+    def _fe_for(_source_file):
+        if not _from_email or _EM is None:
+            return None
+        try:
+            return _EM.from_email_for(_from_email, _source_file)
+        except Exception:
+            return None
+
+    if _from_email:
+        for _r in all_records:
+            if not isinstance(_r, dict):
+                continue
+            _m = _r.get("__meta")
+            if not isinstance(_m, dict):
+                continue
+            _fe = _fe_for(_m.get("source_file"))
+            if _fe:
+                _m["from_email"] = dict(_fe)
 
     for _r in all_records:            # v22 Phase 1: quarantine off-spec structures pre-merge
         _normalise_offspec(_r)
@@ -4350,6 +4406,24 @@ def main() -> None:
                       f"guiding source; each is named in the Gaps Report)")
         except Exception as e:
             print(f"  (source authority not applied: {e})", file=sys.stderr)
+    # THE MASTER LIST, APPLIED THE SAME WAY AND FOR A STRONGER REASON. The authority answer
+    # above is a proxy - a source family - and it is asked after everything has been read. The
+    # master list is the user naming the options themselves, before the decks were read. Its
+    # exclusions are applied here, on the settled clusters, so a row they struck off cannot
+    # reach a card through a second source that also mentions it. `apply_to_clusters` keeps a
+    # cluster unless EVERY record in it maps to an excluded row, and fails open if the filter
+    # would empty the dataset: an empty dashboard is never the right reading of a sheet
+    # somebody filled in. Nothing is dropped silently - deliver.py names each one.
+    if str(getattr(args, "master_list", "") or "").strip():
+        try:
+            import master_list as _ML
+            _ml_answers = _ML._read_json(Path(args.master_list), {}) or {}
+            clusters, _ml_dropped = _ML.apply_to_clusters(clusters, _ml_answers)
+            if _ml_dropped:
+                print(f"  ({len(_ml_dropped)} option(s) left out - you marked them No on the "
+                      f"master list; each is named in the Gaps Report)")
+        except Exception as e:
+            print(f"  (master list not applied: {e})", file=sys.stderr)
     FIELD_DECISIONS = {}  # conflict_id -> {pick, reason} (cross-source value-conflict sub-agent)
     if args.field_decisions and Path(args.field_decisions).exists():
         try:
@@ -4884,10 +4958,26 @@ def main() -> None:
                     })
         # ledger rows for every populated field (with conflict note where one occurred)
         for field, pr in prov.items():
+            # THE EMAIL GOES IN THE LOCATOR, because the ledger has no free column. Its eleven
+            # columns are fixed and validated (ledger.py COLUMNS/REQUIRED, and the exported
+            # xlsx hard-codes a width per column letter), so adding a twelfth to carry the
+            # sending email would break the export and every consumer that reads by position.
+            # `source_locator` is already the free-text "where exactly is this value" column,
+            # and "page 3 (attachment of email 'Sziget II offer', 2025-05-12)" answers that
+            # question MORE completely than "page 3" does, rather than smuggling a different
+            # fact into it. Appended, never substituted: the page citation stays first so the
+            # locator still opens at the page a checker needs.
+            _loc = str(pr.get("locator", "") or "")
+            _fe = _fe_for(pr.get("source_file"))
+            if _fe:
+                _subj = str(_fe.get("subject") or "") or "(no subject)"
+                _from = ("attachment of email " + repr(_subj)
+                         + (f", {_fe['date']}" if _fe.get("date") else ""))
+                _loc = f"{_loc} ({_from})".strip() if _loc else _from
             ledger_rows.append({
                 "property_id": i, "record_type": "property", "field": field,
                 "value": _short(merged.get(field)), "source_file": pr.get("source_file", ""),
-                "source_locator": pr.get("locator", ""), "source_type": pr.get("source_type", ""),
+                "source_locator": _loc, "source_type": pr.get("source_type", ""),
                 "extractor": f"E-{pr.get('source_type','')}", "confidence": _confidence(pr),
                 "conflict_note": conflicts.get(field, ""), "verified": "",
             })

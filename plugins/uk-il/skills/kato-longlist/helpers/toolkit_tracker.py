@@ -102,11 +102,88 @@ _NOISE_LABEL = re.compile(r"^(?:final|draft|copy|copy\s*\(\d+\)|updated?|latest|
 # U+2014); written as escapes so the source file carries no long-dash character of its own.
 _SPACED_DASH = re.compile("\\s+[-\u2013\u2014]\\s+")
 
+# THE AREA COLUMNS, AND WHY THERE ARE NOW THREE OF THEM.
+#
+# This used to be ONE column, headed "GLA (sq ft)", carrying `size.sqft` - the option's
+# MARKETED TOTAL. The pipeline's column map binds any GLA/GIA/size header to `warehouseArea`,
+# so every row asserted a warehouse area we had never been told. A brochure reader puts the
+# accommodation schedule's WAREHOUSE-ONLY line in the same field. The two are not the same
+# measurement, and `match._cross_source_forbidden` vetoes for ever any cross-source pair whose
+# two warehouse areas differ by more than 15 per cent:
+#
+#     aa, ba = _area_pair(a, b)
+#     if aa and ba and abs(aa - ba) / max(aa, ba) > 0.15:
+#         return True
+#
+# A forbidden pair is NEVER written to match_candidates.json, never adjudicated and never
+# merged, so the brochure's records form a cluster of their own, the source-authority answer
+# then drops that cluster, and the option ships with no page-cited evidence at all. Measured on
+# a live run, tracker figure against brochure figure: Unit 6 IAMP Washington 138,840 vs 96,949
+# (30.2%), Logicor Spring 89 89,052 vs 72,633 (18.4%), Rugby106 106,645 vs 87,413 (18.0%).
+# Three of twenty-one options lost their specification fields, their photos and their site
+# plans to a unit mismatch inside one field name. The difference is offices, plant decks,
+# mezzanines and undercrofts - exactly the buildings where the marketed total is furthest from
+# the warehouse line, which is why the failures cluster and are not random.
+#
+# So the warehouse column now carries ONLY a genuine warehouse-only figure, and is BLANK when
+# we do not hold one. Blank is the honest answer, and it is also the useful one: `_area_pair`
+# refuses to compare when either side is silent, `_cross_source_forbidden` cannot fire, and the
+# pair falls through to `grey`, where an adjudicator decides it on identity evidence instead of
+# being vetoed on a basis artefact. That is the toolkit's own stated design ("refusing to
+# compare sends the pair to the LLM, which is exactly where that judgement belongs").
+#
+# WHAT BLANK COSTS, STATED. On a FIRST pass `size.warehouse_sqft` is unset for every row -
+# Kato quotes a single headline size and no split - so the column ships empty and no
+# cross-source pair is area-vetoed from our side at all. Expect MORE grey pairs at the match
+# adjudication exit than before; that is the price of not vetoing on a number we invented. It
+# cannot cause an over-merge: every auto path in `_cross_source_auto` requires the developer
+# STATED ON BOTH SIDES, this tracker publishes no developer column, so no auto path can claim
+# one of our rows whatever the areas say. On a re-run after step 7h the column carries the
+# warehouse-only figures the pipeline established, and the veto's protective value returns.
+#
+# The marketed total is NOT thrown away. It goes in a third column headed
+# "Note: marketed total incl. ancillary (sq ft)", and every word of that header is load-bearing.
+# It matches NO alias in extract_xlsx's header ledger, so the dictionary map binds it to
+# nothing, and it matches _COMMENTARY_RX on 'note', so it is read into __meta.open_capture and
+# never reaches a client-facing card. Both were verified against the ledger rather than
+# assumed, and the first attempt failed that check: a header carrying the word 'office' (chosen
+# because 'office' is a hard NEGATIVE for warehouseArea) bound straight to officeArea instead,
+# which would have shipped the marketed total as the office floor area on every row. If this
+# header is ever reworded, re-run the check - extract_xlsx._header_field(h) must return None.
+# The one path that can still claim it is the LLM column map at exit 3; leave it unbound
+# there.
 HEADERS = ["Property", "Address", "City", "Region", "Country", "Postcode", "Coordinates (lat,lng)",
-           "GLA (sq ft)", "Tenure", "Availability", "Warehouse rent (GBP/sq ft/yr)", "Rent basis",
-           "Service charge (GBP/sq ft)", "Rates payable (GBP/yr)", "Clear height", "Power",
+           "Warehouse area (sq ft)", "Office area (sq ft)",
+           "Note: marketed total incl. ancillary (sq ft)",
+           "Tenure", "Availability", "Warehouse rent (GBP/sq ft/yr)", "Rent basis",
+           # No unit is asserted on these two. common.money() prefers Kato's `value_sqft` and
+           # falls back to `value` (an annual total) or to the broker's free-text comment, so
+           # the same column legitimately holds GBP/sq ft on one row, GBP/yr on the next and a
+           # sentence on a third. A fixed "(GBP/yr)" in the header was a lie on the common
+           # case: Kato's own business_rate node gave value 313575 per annum AND value_sqft
+           # 2.179, money() took the 2.179, and the header then told the column mapper it was
+           # an annual total. The mapper's blind check caught the contradiction and bound the
+           # column to nothing, so the figure was dropped rather than shown wrong - correct,
+           # but the fix belongs here. The unit now travels on the VALUE (see _money_cell).
+           "Service charge", "Rates payable", "Clear height", "Power",
            "Loading doors", "Yard depth", "Car parking", "Floor loading", "EPC", "BREEAM",
            "Agent", "Description"]
+
+
+def _money_cell(v):
+    """A service-charge / rates cell that states its own basis.
+
+    common.money() collapses three different Kato shapes into one field: a per sq ft rate, an
+    annual total, or the broker's free-text comment. Written bare into a column with a unit in
+    its header, whichever of the three arrives is presented as whichever unit the header
+    happens to claim. A number here is per sq ft, because that is the branch money() prefers,
+    so say so on the value; text passes through untouched.
+    """
+    if v is None or v == "":
+        return None
+    if isinstance(v, (int, float)):
+        return "%.2f GBP/sq ft" % float(v)
+    return str(v)
 
 
 def cluster_label(p):
@@ -150,6 +227,31 @@ def source_folders(p):
             seen.add(f)
             keep.append(f)
     return keep
+
+
+def _prune_stale_inputs(inputs, keep):
+    """Delete anything in the scanned folder this pass did not write.
+
+    The folder is DERIVED, not authored: every file in it is a copy this helper made, named
+    "<order> <stem> - <cluster label>". The label carries the row's postcode, so correcting a
+    postcode renames every one of that row's files and leaves the old ones behind. They are
+    byte-identical to the new copies, so the pipeline reports them as skipped duplicates and
+    nothing fails - but the failure mode when they are NOT identical is silent and bad: a
+    stale copy from an earlier pass is read as a record in its own right, under a cluster
+    label for a property that no longer exists, and ships as an extra card. Re-running is
+    meant to converge on the current dataset, so the folder is made to match it exactly.
+    """
+    removed = []
+    for name in sorted(os.listdir(inputs)):
+        path = os.path.join(inputs, name)
+        if os.path.isfile(path) and name not in keep:
+            os.remove(path)
+            removed.append(name)
+    if removed:
+        print("  pruned %d stale input(s) left by an earlier pass: %s"
+              % (len(removed), ", ".join(removed[:4])
+                 + (" ..." if len(removed) > 4 else "")), flush=True)
+    return removed
 
 
 def copy_sources(work, inputs, props, wanted):
@@ -234,6 +336,41 @@ enrichment:
   ors_api_key: "{ors}"
 qa:
   fill_threshold: 0.6
+clarify:
+  mode: interactive
+master_list:
+  # THE TOOLKIT'S SCOPE SHEET IS OURS, AND IT HAS ALREADY BEEN ANSWERED.
+  # Toolkit item 4 added a blocking master-list stop (exit 17): the spine inventories every
+  # candidate option it can see and refuses to read a brochure until a human has marked each one
+  # Yes or No. That is the right gate in the toolkit's own flow. Under this wrapper it is the
+  # SECOND time we would ask. Step 2.5 builds our master list, the operator answers it, and this
+  # very file is generated from the rows that survived - the properties folder, the tracker and
+  # the inputs folder all exist because somebody already said Yes to them. The toolkit's sheet
+  # would list those same options back with nothing new on it, and a gate that visibly re-asks an
+  # answered question gets "Yes to everything" from the second time onwards, which is how the
+  # gate stops protecting the run where it would have mattered.
+  # `external` DECLINES THE STOP AND NOTHING ELSE: the toolkit writes no master_list.json, so it
+  # derives no source authority from us, seeds no match verdicts and skips no deck. Its exit-13
+  # source-authority question is still asked, on its own evidence, exactly as before item 4. The
+  # only trace is one line in its Gaps Report naming where scope was settled - which belongs
+  # there, because the reader of that report cannot otherwise tell.
+  mode: external
+  confirmed_by: "kato-longlist step 2.5 - the operator answered OUR master list workbook, and this project.yaml was generated from the rows they kept"
+setup:
+  # Toolkit v45 added a Stage 0 gate: run.py refuses to read anything until a human has
+  # answered its setup questions and `setup.confirmed` is true, because every value the
+  # toolkit's own scaffold writes is a guess. Under this wrapper they are NOT guesses: the
+  # client name, the enrichment flags, the ORS key, the email source and the language all
+  # come from the Kato run.yaml the user filled in, and Kato has already parsed the Outlook
+  # export itself, so `inputs.emails.source: none` is the correct answer rather than an
+  # unanswered one. Re-asking them would be asking the same person the same questions
+  # twice in one run. Confirmed here, with the provenance stated, rather than left for the
+  # orchestrator to clear by hand every time.
+  # `clarify.mode: interactive` above is NOT one of those answers and never was a question
+  # under this wrapper either: the toolkit fixed it by policy on 2026-09-19, so it is written
+  # as the constant it is. The form dropped from six questions to five when that happened.
+  confirmed: true
+  confirmed_by: "kato-longlist toolkit_tracker.py, from the run.yaml the user completed"
 '''
 
 
@@ -343,15 +480,22 @@ def main():
                                       (ags[0]["name"] if ags and ags[0].get("name") else None)] if x)
         rent = r.get("value") if r.get("value") is not None else (
             "tbd" if (r.get("text") or "").lower().startswith("on application") else (r.get("text") or "tbd"))
+        sz = p.get("size") or {}
         ws.append([display_name(p), ", ".join(x for x in [a.get("line1"), a.get("line2")] if x),
                    a.get("town"), p.get("area") or a.get("town"), MARKET_COUNTRY_NAME,
                    a.get("postcode"), coord,
-                   (p.get("size") or {}).get("sqft"), p.get("tenure"), sp.get("availability"),
-                   rent, r.get("basis"), og.get("service_charge"), og.get("rates_payable"),
+                   # warehouse-only, or nothing. NEVER size.sqft - see the HEADERS comment.
+                   sz.get("warehouse_sqft"), sz.get("office_sqft"), sz.get("sqft"),
+                   p.get("tenure"), sp.get("availability"),
+                   rent, r.get("basis"), _money_cell(og.get("service_charge")),
+                   _money_cell(og.get("rates_payable")),
                    sp.get("clear_height"), sp.get("power"), sp.get("loading"), sp.get("yard"),
                    sp.get("parking"), sp.get("floor_loading"), sp.get("epc"), sp.get("breeam"),
                    agent, p.get("summary")])
-    wb.save(os.path.join(inputs, "Kato Longlist - Availability Schedule.xlsx"))
+    tracker_name = "Kato Longlist - Availability Schedule.xlsx"
+    wb.save(os.path.join(inputs, tracker_name))
+    _prune_stale_inputs(inputs, {n for _files in per_row.values()
+                                 for n, _first, _dup in _files} | {tracker_name})
 
     client = cfg.get("client") or ds.get("client") or "Kato Longlist"
     ors = cfg.get("ors_api_key") or ""
@@ -362,6 +506,18 @@ def main():
                     if any(f for _n, f, _d in (per_row.get(int(p.get("order") or 0)) or [])))
     print(f"tracker -> {inputs} ({len(props)} rows, {n_dupes} multi-broker duplicate(s) merged) "
           f"| project.yaml -> {tk_work} | client={client!r} | ors_key={'set' if ors else 'MISSING'}")
+    # SAY IT OUT LOUD. The warehouse column is blank wherever we hold no warehouse-only
+    # figure, and that is deliberate (see HEADERS). It is still a fact the operator has to
+    # know, because a row whose documents also state no warehouse line ships with no area at
+    # all and `deliver.py` will list it as a CORE gap. Silence here would make the honest
+    # blank look like a bug the first time somebody notices an empty column.
+    no_wh = [display_name(p) for p in props if not (p.get("size") or {}).get("warehouse_sqft")]
+    if no_wh:
+        print("  warehouse area: BLANK on %d/%d row(s) - we hold a marketed total for them, not "
+              "a warehouse-only figure, and the tracker no longer asserts one. Those pairs go to "
+              "the match adjudicator instead of being area-vetoed. Rows: %s"
+              % (len(no_wh), len(props), ", ".join(no_wh[:4])
+                 + (" ..." if len(no_wh) > 4 else "")), flush=True)
     print(f"source documents -> {inputs}: {len(copied)} file(s) copied, "
           f"{evidenced}/{len(props)} row(s) carry a readable source"
           + (f" | {len(by_policy)} per-property file(s) left out by policy "

@@ -10,6 +10,15 @@ into **one self-contained, CBRE-branded interactive HTML longlist dashboard** pl
 auditable Source Ledger, a Gaps Report and a flat Longlist workbook. Reusable across client
 projects, defensible by construction.
 
+**A saved email folder and a zip are first-class inputs.** A `.zip` is unpacked once into
+`<zipname>_unpacked` beside itself (idempotently, one level of nesting, never outside the
+inputs folder), and a `.msg`/`.eml` has its attachments saved beside it under
+`<yyyy-mm-dd>_<subject>_attachments/` before anything is classified, so a brochure that
+arrived stapled to an offer email is clustered and read on the SAME run, exactly like a file
+the broker dropped in the folder by hand. Inline images (signature logos, `cid:` images,
+anything under 20 KB) are excluded. Reading the PROSE stays an LLM step: Python opens the
+container, the agent reads the offer.
+
 **How to read this file:** "The loop" is the whole job - run one command, read one exit code,
 do the ONE mapped action, re-run. Every turn's complete instruction is the printed handoff
 plus the rendered `work/prompts/*.md` files; this card only teaches the loop. Detail lives in
@@ -45,7 +54,13 @@ Create the three folders, move the user's inputs into `1. Input` (no extra nesti
 python helpers/run.py --project "<project folder>" --client "<Name>" [--geocode --pois --osrm --regions]
 ```
 
-`--project` derives all three paths and creates the missing ones. Anything else at the top
+`--project` derives all three paths and creates the missing ones. **Move the zip and the email
+folder in as they are** - do not unpack them by hand and do not pull the attachments out.
+Intake unpacks each `.zip` into `<zipname>_unpacked/` and writes each email's attachments into
+`<yyyy-mm-dd>_<subject>_attachments/`, both INSIDE `1. Input`, and both are idempotent, so
+re-running changes nothing and the unpacked files keep their mtimes (which is what lets the
+resumed run skip the decks it already read). Unpacking by hand loses the `.from_email.json`
+sidecar, and with it the ledger's record of which email carried which brochure. Anything else at the top
 level goes into `1. Input/_originals/` or `2. Work Files/_scratch/` (a leading underscore
 makes intake skip it - for duplicates and scratch ONLY, never to resolve a data conflict:
 excluding an input is the broker's decision, via exit 13). Everywhere below, `work/<x>` means
@@ -80,6 +95,8 @@ the work directory; the exit-3 manifest's `work/` prefix is a convention resolve
 | 15 | **blocking QA finding(s)** unresolved | IMPLEMENT each fix, record it with `gate_runner.py qa-round resolve --work <work> --id <id> --because "<what you changed>"` (ids: `qa-round status`), re-run. This is a fix loop INSIDE the one review round - **never re-dispatch a reviewer**. Advisory findings ship disclosed in the Gaps Report's Known limitations; fix one only when it is one edit AND changes what a reader concludes, and `resolve` it if you do |
 | 16 | **invalid correction entr(y/ies)** - the run refused to START | read the printed fault list (EVERY fault in `work/overrides.json` and `work/repairs.json`, all in one pass) and **FIX the NAMED entries IN PLACE** in the file each fault names - or **DELETE** one that is stale - then re-run the SAME command. **Do NOT append a new entry**: the file being rejected IS the file to edit, so appending re-runs into the same refusal with one more entry each round. **Do NOT read `gate1_scorecard.md`** - this fires at startup, the gates have not run, and on a first pass it does not exist. Nothing has been changed, so there is nothing to undo. To ship past a known-stale entry knowingly, re-run with `--allow-invalid-corrections`: the same faults print, the faulty entries are IGNORED, and whatever they were meant to correct ships UNCORRECTED - tell the broker if you use it |
 
+| 17 | **master list** - the user has not said what to build | the run has inventoried every candidate option and stops BEFORE reading a single brochure. Do all four, in order: (1) dispatch the rendered `work/prompts/master-list.md` VERBATIM -> `work/master_candidates.json` (the email-only rows and the judged duplicate groups); (2) `python helpers/master_list_build.py --work "<work>"`; (3) give the user `<work>/Master List.xlsx` and **WAIT** - they set **Include?** to **Yes or No** on every row and write anything the run must know in **Your Run notes for the AI**. **Never fill that column in for them, never infer it from the duplicate groups, never proceed on a partly answered sheet** - this is the only point in the run where the user decides scope; (4) `python helpers/master_list_read.py --work "<work>"` (it REFUSES, exit 2, on any row that is not Yes or No, and names them) and re-run the same command (`reference/master-list.md`) |
+
 3. **Rendered dispatch prompts (`work/prompts/`).** Every agentic handoff renders the
    canonical prompt per pending job. **Dispatch each file's contents VERBATIM** - a
    hand-written paraphrase is the documented top error surface. You may append run-specific
@@ -95,7 +112,8 @@ the work directory; the exit-3 manifest's `work/` prefix is a convention resolve
 5. **Narrowing a re-run: `--from` and `--only`** (both optional; neither is needed on the
    normal loop, because resume already skips what is current). They answer a different question
    from `--resume`: not "is this output still current?" but "can the correction I just made even
-   REACH this stage?". Stage vocabulary, in pipeline order - `folder scan`, `extract`, `merge`,
+   REACH this stage?". Stage vocabulary, in pipeline order - `folder scan`, `extract`,
+   `master list`, `merge`,
    `enrichment`, `repairs`, `projection`, `gates:pre`, `build`, `gates:post`, `deliver`, `qa`
    (a typo stops the run and lists the valid spellings; note the space and the colon).
    - `--from <stage>` puts every stage BEFORE it OUT OF SCOPE, **even under `--no-resume`**:
@@ -201,10 +219,19 @@ write their artefacts.
    tracker columns included). Source of truth: `canonical.json`
    (`templates/canonical.schema.json`).
 
+Plus ONE internal artefact the user answers rather than receives: **`<work>/Master List.xlsx`**
+(exit 17, `reference/master-list.md`). Every candidate option found in the inputs, one per row,
+put to the user BEFORE the brochures are read; they mark each **Yes** or **No**, and only the Yes
+rows are built. It is not a deliverable and nothing on it is sent to a client - it decides what
+the run builds, and the options struck off it are named in the Gaps Report.
+
 ## The pipeline in brief (detail: `reference/pipeline.md`)
 
 Intake -> extract (**CAPTURE EVERY FIELD THE SOURCE STATES** - the manifest's `fields` array
-is a FLOOR, not a ceiling; xlsx/emails deterministic, decks via exit 3) -> match & merge
+is a FLOOR, not a ceiling; xlsx/emails deterministic, decks via exit 3) -> **master list**
+(exit 17: every candidate option on one sheet, the user marks each Yes or No, and ONLY the Yes
+rows reach the deck readers - the sheet sits between the cheap reads and the expensive ones on
+purpose, `reference/master-list.md`) -> match & merge
 (dedupe by city+developer+park, never within one brochure; grey pairs via exit 10; precedence:
 newest email wins commercials, brochure wins specs) -> enrich (per flags) -> pre-build gates
 (self-check, validate-data, coverage, input-accounting, capture-symmetry, media-harvest,
@@ -225,28 +252,33 @@ Present **ONE consolidated `visualize` widget** (`mcp__visualize__show_widget`, 
 elicitation form in **`reference/setup-form.md`** verbatim; call `mcp__visualize__read_me`
 with `modules:["elicitation"]` once first) **in the SAME message as the first exit-3
 dispatch** - no form answer feeds that round, so serialising them wastes broker think-time.
-It asks ALL SIX questions at once - client name (it names every deliverable), extras
+It asks ALL FIVE questions at once - client name (it names every deliverable), extras
 (drive-time maps / workforce snapshot / logistics landmarks), an openrouteservice key
 (a FIELD IN THIS FORM, never a follow-up; blank = car times, disclosed), Outlook emails
-(a named mail folder / all of Outlook / no), dashboard language (English default; 13
+(a named mail folder / all of Outlook / no), and dashboard language (English default; 13
 bundled including Simplified Chinese; any other European Latin-script language translates
-once via exit 11 and is cached), and ask mode ("Ask me when unsure" = `clarify.mode:
-interactive`, the STANDARD - judgement calls the files cannot settle become exit-13
-questions, but ONLY where the answer changes what the dashboard shows or how many options
-ship; everything else is disclosed, not asked - "Decide sensibly" = `headless`,
-default-honestly-and-disclose).
+once via exit 11 and is cached).
+**ASKING WHEN UNSURE IS FIXED, NOT ASKED.** `clarify.mode: interactive` is policy: a
+judgement call the files cannot settle becomes an exit-13 question, but ONLY where the
+answer changes what the dashboard shows or how many options ship; everything else is
+disclosed in the Gaps Report, not asked. There used to be a sixth pill offering
+"Decide sensibly" (`headless`) instead; it was removed on 2026-09-19 because the answer
+that saves the broker a prompt is the same answer that ships them a guess, and that is not
+a trade worth putting in a form. The headless path survives ONLY as an explicit escape for
+a run with no human in it: `work/clarify.SKIP_ALL` or `clarify.assume_defaults: true`.
 **Never `AskUserQuestion`, never one-question-at-a-time.**
 Parse the single submission line and persist every answer in `project.yaml` (`client:`,
-`enrichment:`, `enrichment.ors_api_key`, `inputs.emails:`, `output.language`,
-`clarify.mode` - `reference/config.md`) **AND set `setup.confirmed: true`** so re-runs are
-non-interactive. SKIP the widget ONLY when `setup.confirmed` is already true. **Values being
-present in `project.yaml` is NOT the test and never was** (B63): intake SCAFFOLDS that file
-on the first pass with all six pre-filled - client from `--client`, English, no emails, car
-times - so "it already carries the answers" was true on every run and the form was correctly
-skipped every time, shipping six guesses the broker never saw. `setup.confirmed` is the only
-signal that a human answered. The spine enforces this: while it is false, every hand-off
-leads with the form, and a pass with no other hand-off stops at exit 13 for it.
-FALLBACK (only if `visualize` is genuinely unavailable): all six in ONE plain-text message.
+`enrichment:`, `enrichment.ors_api_key`, `inputs.emails:`, `output.language` -
+`reference/config.md`; `clarify.mode` is NOT among them) **AND set `setup.confirmed: true`**
+so re-runs are non-interactive. SKIP the widget ONLY when `setup.confirmed` is already true.
+**Values being present in `project.yaml` is NOT the test and never was** (B63): intake
+SCAFFOLDS that file on the first pass with all five pre-filled - client from `--client`,
+English, no emails, car times - so "it already carries the answers" was true on every run
+and the form was correctly skipped every time, shipping five guesses the broker never saw.
+`setup.confirmed` is the only signal that a human answered. The spine enforces this: while
+it is false, every hand-off leads with the form, and a pass with no other hand-off stops at
+exit 13 for it.
+FALLBACK (only if `visualize` is genuinely unavailable): all five in ONE plain-text message.
 Email answers map to the Stage-1 `outlook_email_search` sub-agent via
 `prompts/outlook-ingest.md` (`reference/agentic-steps.md`).
 
