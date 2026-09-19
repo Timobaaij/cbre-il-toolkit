@@ -2391,7 +2391,17 @@ def _deck_is_low_quality(files) -> bool:
     for). Such a deck is routed to vision instead of shipping stubs. Conservative
     (>50% poor) so a clean spec-sheet deck is never re-visioned. Assessed PER
     SOURCE FILE by the caller - pooling a region's PDF with its messier PPTX twin
-    used to throw away a clean PDF parse."""
+    used to throw away a clean PDF parse.
+
+    NOT WIRED INTO THE SPINE AT PRESENT. A 2026-09-19 dead-code audit found no caller:
+    the interpretation manifest decides text-versus-raster mode per deck on its own
+    evidence, and this probe was never connected to that decision. It is kept, with this
+    notice, because normalize.UNKNOWN_FORMS and deliver._is_tbd both document the routing
+    it WOULD drive and because the predicate itself is sound; whoever wires it should do
+    so at the manifest step and re-run the sentinel parity evals, since every form added
+    to the shared unknown set then changes which decks the LLM is asked to re-read. Until
+    then, nothing a reader ships as tbd changes vision routing, whatever those two
+    comments imply."""
     recs = []
     for f in files:
         recs += [r for r in _load_records(f) if isinstance(r, dict)]
@@ -4807,8 +4817,10 @@ def main() -> None:
                     f"`python helpers/master_list_build.py --work \"{work}\"`; (3) give the user "
                     f"{work / _ML.WORKBOOK} and WAIT - they set Include? to Yes or No on every "
                     f"row and write anything the run must know in 'Your Run notes for the AI'. "
-                    f"Do NOT fill the column in for them and do NOT infer it from the duplicate "
-                    f"groups; (4) run "
+                    f"The column ships BLANK and the builder blanks it on every build: do NOT "
+                    f"fill it in for them, do NOT infer it from the duplicate groups and do NOT "
+                    f"copy the Brochure? column across - a pre-answered sheet passes the "
+                    f"read-back with nobody having decided anything; (4) run "
                     f"`python helpers/master_list_read.py --work \"{work}\"` and re-run the same "
                     f"command. The read-back REFUSES (exit 2) on any row that is not Yes or No "
                     f"and names them.{_ml_pl}")

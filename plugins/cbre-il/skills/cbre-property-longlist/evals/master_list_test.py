@@ -113,16 +113,33 @@ _deck = [r for r in rows if r["source_type"] == "Brochure"]
 ck(all(r["brochure"] == "Yes" for r in _deck), "a brochure row holds a document (Brochure? = Yes)")
 ck(all(r["brochure"] == "No" for r in rows if r["source_type"] != "Brochure"),
    "a tracker/email row holds none, so its Brochure? is No and will be painted red")
-_alpha = next(r for r in _deck if r["property"] == "alpha")
+_alpha = next(r for r in _deck if "Alpha Park" in (r["property"] or ""))
 ck(_alpha["postcode"].replace(" ", "") == "5928NX" and _alpha["size_from"] == 41000,
-   "a deck row's postcode and size come off the cluster label plus the FIRST PAGE only")
+   "a deck row's postcode and size come off the FIRST PAGE only")
+# DEFECT B. The row used to be called "alpha" - the cluster label, which is a filename stem - and
+# Town / city held that same stem. The first page says ALPHA PARK, Venlo, so the row does too.
+ck(_alpha["property"] != "alpha" and "Alpha Park" in _alpha["property"],
+   f"a deck row is named from the DOCUMENT, not the file (got {_alpha['property']!r})")
+ck(_alpha["city"] == "Venlo",
+   f"...and Town / city is the town printed beside the postcode (got {_alpha['city']!r})")
+ck("(from filename)" not in _alpha["property"],
+   "...with no filename marker, because the document named it")
+_beta = next(r for r in _deck if r["row_id"].startswith("deck:beta"))
+ck(_beta["property"].endswith("(from filename)"),
+   f"a deck whose first page reads as nothing falls back to the filename AND SAYS SO "
+   f"(got {_beta['property']!r})")
+ck(_beta["city"] == "",
+   f"...and its Town / city is BLANK, never the filename (got {_beta['city']!r})")
+ck(all(r["source"] in ("Brochure, input folder",)
+       or r["source"].startswith("Brochure, attached to email from ") for r in _deck),
+   f"every deck row's Source reads like a sentence (got {[r['source'] for r in _deck]})")
 
 print("\n1b. The blunt postcode sweep groups what the model has not adjudicated")
 _v = [r for r in rows if ML.norm_postcode(r["postcode"]) == "5928NX"]
 ck(len(_v) == 3 and len({r["duplicate_group"] for r in _v}) == 1 and _v[0]["duplicate_group"],
    "the tracker row, the email row and the deck row on one postcode land in ONE auto group")
-ck("(auto)" in _v[0]["duplicate_status"],
-   "the sweep LABELS itself auto, so the user can see it is not an adjudication")
+ck("(auto sweep)" in _v[0]["duplicate_status"] and _v[0]["duplicate_origin"] == "auto",
+   "the sweep LABELS itself an auto sweep, so the user can see it is not an adjudication")
 ck(all(not r["duplicate_group"] for r in rows if ML.norm_postcode(r["postcode"]) == "6121RC"
        or ML.norm_postcode(r["postcode"]) == "5986PB"),
    "a lone postcode is not a group, and a blank postcode is never swept")
@@ -194,7 +211,7 @@ for r in range(MB.FIRST_ROW, MB.FIRST_ROW + len(rows)):
     rid = ws.cell(r, _rid_col).value
     _by_rowid[str(rid)] = r
     ws.cell(r, _inc_col, "Yes")
-_beta_id = next(r["row_id"] for r in rows if r["property"] == "beta")
+_beta_id = next(r["row_id"] for r in rows if r["row_id"].startswith("deck:beta"))
 _born_id = next(r["row_id"] for r in rows
                 if r["source_type"] == "Tracker" and "Born" in r["property"])
 ws.cell(_by_rowid[_beta_id], _inc_col, "No")
@@ -262,7 +279,7 @@ for r in range(MB.FIRST_ROW, MB.FIRST_ROW + len(auto2["rows"])):
     _carried[str(ws3.cell(r, _rid_col).value)] = ws3.cell(r, _inc_col).value
 ck(_carried.get(_beta_id) == "No" and _carried.get(_born_id) == "No",
    "every prior answer is carried forward by Row ID - a rebuild never costs the user a decision")
-_gamma_id = next(r["row_id"] for r in auto2["rows"] if r["property"] == "gamma")
+_gamma_id = next(r["row_id"] for r in auto2["rows"] if r["row_id"].startswith("deck:gamma"))
 ck(not _carried.get(_gamma_id), "and the NEW row is the only blank one")
 
 # ============================================================== 7. the headless escape hatch
@@ -380,23 +397,75 @@ _auto9 = ML.build_auto(_w9, {}, _inv9.get("clusters") or {}, _inputs9,
 _rows9 = _auto9["rows"]
 _email_rows9 = [r for r in _rows9 if r["source_type"] == "Email"]
 _deck_rows9 = [r for r in _rows9 if r["source_type"] == "Brochure"]
-ck(len(_email_rows9) == 2,
-   f"the enumeration put BOTH email messages on the sheet (got {len(_email_rows9)}: "
-   f"{[r['property'] for r in _email_rows9]})")
-ck(all(r["row_id"].startswith("email:") for r in _email_rows9),
-   "...each under an email: Row ID, so the exclusion filter and the seeding agree on the family")
-ck(len({r["row_id"] for r in _email_rows9}) == 2,
+_mail9 = _auto9.get("emails") or []
+
+# DEFECT A. The previous version of this block asserted the OPPOSITE: that both messages appear
+# on the Master list as rows named after their subjects. That is what put thirteen rows reading
+# "RE: Looking for 60,000 to 100,000 sq ft..." on the live sheet, with no postcode and no size,
+# and forced the sub-agent to invent "MESSAGE ROW SPLIT" duplicate groups to explain them. A
+# message is a SOURCE. It is indexed, not enumerated, and nothing about it vanishes.
+ck(len(_email_rows9) == 0,
+   f"NO message is a candidate row (got {[r['property'] for r in _email_rows9]})")
+ck(not any(str(r.get("property") or "").lower().startswith(("re:", "fw:", "fwd:"))
+           for r in _rows9),
+   "no row is named after an email subject")
+ck(len(_mail9) == 2,
+   f"both messages are on the EMAILS INDEX instead (got {len(_mail9)})")
+ck(all(e["email_id"].startswith("email:") for e in _mail9),
+   "...each under an email: id, so the exclusion filter and the seeding agree on the family")
+ck(len({e["email_id"] for e in _mail9}) == 2,
    "...and the two ids differ, because the id is the message's path and not its subject")
-ck(any("Packington Hill" in r["property"] for r in _email_rows9),
-   "...named by the subject, which is what a broker recognises")
+ck(any("Packington Hill" in (e["subject"] or "") for e in _mail9),
+   "...carrying the cleaned subject, which is what a broker recognises")
+ck(all(e["sender"] for e in _mail9), "...and the sender, which is what the reader needs")
+_nothing9 = [e for e in _mail9 if not e["attachments"]]
+ck(len(_nothing9) == 1,
+   f"the message that brought nothing with it is visible and empty-handed (got {len(_nothing9)})")
 ck(len(_deck_rows9) == 1,
    f"the ATTACHED deck is its own candidate row (got {len(_deck_rows9)})")
 ck(_deck_rows9 and _deck_rows9[0]["brochure"] == ML.YES,
    "...with Brochure? = Yes: an attachment is a document held, exactly like a deck dropped in "
    "the folder by hand")
-_att_row9 = [r for r in _email_rows9 if r.get("files")]
-ck(len(_att_row9) == 1 and "Packington" in _att_row9[0]["brochure_detail"],
-   "...and the message row says its attachment is judged on its own row rather than claiming it")
+ck(_deck_rows9 and _deck_rows9[0]["source"].startswith("Brochure, attached to email from "),
+   "...and its Source names the sender, not the path (got %r)"
+   % (_deck_rows9[0]["source"] if _deck_rows9 else None))
+
+# TWO ATTACHMENTS ON ONE MESSAGE -> TWO DECK ROWS AND ONE EMAILS LINE, never a property row.
+_e9b = pathlib.Path(tempfile.mkdtemp(prefix="ml_email2_"))
+_in9b = _e9b / "inputs"
+_in9b.mkdir()
+_m9b = email.message.EmailMessage()
+_m9b["Subject"] = "RE: FW: two sheds, one email"
+_m9b["From"] = "Jane Roe <ann.blake@savills.com>"
+_m9b["Date"] = "Tue, 15 Sep 2026 09:14:00 +0100"
+_m9b.set_content("Both attached.")
+# DIFFERENT BYTES PER ATTACHMENT, deliberately: intake de-duplicates on content hash, so two
+# identical PDFs are one cluster and the fixture would silently test nothing.
+for _i9, _n in enumerate(("Riverside Park brochure.pdf", "Eastgate 88 brochure.pdf")):
+    _m9b.add_attachment(b"%PDF-1.4\n% " + bytes([65 + _i9]) * 22000 + b"\n%%EOF\n",
+                        maintype="application", subtype="pdf", filename=_n)
+(_in9b / "two attachments.eml").write_bytes(_m9b.as_bytes())
+_inv9b = INTAKE.discover(_in9b)
+_w9b = _e9b / "work"
+_w9b.mkdir()
+_auto9b = ML.build_auto(_w9b, {}, _inv9b.get("clusters") or {}, _in9b, lambda p: "",
+                        emails=_inv9b.get("emails") or [],
+                        email_attachments=_inv9b.get("email_attachments") or [])
+_decks9b = [r for r in _auto9b["rows"] if r["source_type"] == "Brochure"]
+ck(len(_decks9b) == 2,
+   f"a message with two attachments yields TWO deck rows (got {len(_decks9b)}: "
+   f"{[r['property'] for r in _decks9b]})")
+ck(len(_auto9b.get("emails") or []) == 1,
+   "...and ONE line on the Emails tab")
+ck(not any(r["source_type"] == "Email" for r in _auto9b["rows"]),
+   "...and no property row for the message itself")
+ck((_auto9b["emails"][0]["subject"] or "").lower().startswith("two sheds"),
+   "...whose subject has had RE:/FW: taken off it (got %r)"
+   % _auto9b["emails"][0]["subject"])
+ck(all(r["source"] == "Brochure, attached to email from Jane Roe (Savills), 15 Sep 2026"
+       for r in _decks9b),
+   "...and both deck rows name the sender, the firm and the date (got %r)"
+   % [r["source"] for r in _decks9b])
 
 # The red rule is what the user actually sees, so it is checked on the WORKBOOK, not the payload.
 MB.build(_w9)
@@ -412,12 +481,164 @@ _deck_cells9 = [str(_ws9.cell(r, _bc9).value or "")
 ck(_deck_cells9 and all(v == ML.YES for v in _deck_cells9),
    f"on the workbook the attachment deck's Brochure? cell reads a flat Yes {_deck_cells9}, so "
    f"the conditional rule does not paint it red")
-_email_cells9 = [str(_ws9.cell(r, _bc9).value or "")
-                 for r in range(MB.HDR_ROW + 1, _ws9.max_row + 1)
-                 if str(_ws9.cell(r, _pc9).value or "") in {e["property"] for e in _email_rows9}]
-ck(_email_cells9 and all(v != ML.YES for v in _email_cells9),
-   "...and a body-only message row is NOT a flat Yes, so it IS painted red - the honest reading "
-   "of a row whose specification would come from prose with no page citation behind it")
+ck(MB.SHEET_EMAILS in _wb9.sheetnames, "the workbook has an Emails tab")
+_wse9 = _wb9[MB.SHEET_EMAILS]
+_mailrows9 = [row for row in _wse9.iter_rows(min_row=5, values_only=True) if any(row)]
+ck(len(_mailrows9) == 2, f"...with one line per message (got {len(_mailrows9)})")
+ck(any("nothing extracted" in " ".join(str(c or "") for c in row) for row in _mailrows9),
+   "...and the message that produced neither an attachment nor a row is flagged there")
+
+
+# ==========================================================================================
+# 10. THE SHEET THE USER ACTUALLY READS (defects C, D and E on the live run).
+print("\n== 10. Include? ships blank, duplicates name their partner, Source is human ==")
+import json as _json  # noqa: E402
+
+_w10 = _e9 / "work10"
+_w10.mkdir()
+_auto10 = ML.build_auto(_w10, RECORDS, CLUSTERS, _w10, _fpt)
+_venlo_tracker = next(r["row_id"] for r in _auto10["rows"]
+                      if r["property"] == "Venlo Trade Port")
+_venlo_deck = next(r["row_id"] for r in _auto10["rows"]
+                   if "Alpha Park" in (r["property"] or ""))
+# A model file that does everything the live orchestrator did wrong: a pre-filled Include?, a
+# path for a Source, and a group whose own status denies that it is a group.
+(_w10 / ML.MODEL_CANDIDATES).write_text(_json.dumps({
+    "title": "Master list - fixture",
+    "rows": [{"row_id": "email:prose-option", "property": "Packington Hill",
+              "source_type": "Email", "source": "inbox/2026-09-01 Offer Venlo.msg - 2026-09-01",
+              "postcode": "6041 TA", "size_from": 140000, "include": "Yes"}],
+    "duplicate_groups": {"D1": {"status": "MESSAGE ROW SPLIT - not one building",
+                                "note": "the deck carries the spec, the tracker the rent",
+                                "members": [_venlo_tracker, _venlo_deck]}},
+}, ensure_ascii=False), encoding="utf-8")
+MB.build(_w10)
+_wb10 = load_workbook(_w10 / MB.WORKBOOK)
+_ws10 = _wb10[MB.SHEET]
+_h10 = {str(_ws10.cell(MB.HDR_ROW, c).value).strip(): c
+        for c in range(1, _ws10.max_column + 1) if _ws10.cell(MB.HDR_ROW, c).value}
+ck(list(_h10)[:7] == ["Rank", "Include?", "Your Run notes for the AI", "Property",
+                      "Duplicate of", "Source type", "Source"],
+   f"the columns are in reading order (got {list(_h10)[:7]})")
+ck("Duplicate group" not in _h10 and "Duplicate status" not in _h10
+   and "Duplicate note" not in _h10,
+   "the three columns that printed a group id and never named a partner are gone")
+_data10 = [r for r in range(MB.FIRST_ROW, _ws10.max_row + 1)
+           if _ws10.cell(r, _h10["Row ID"]).value]
+# DEFECT E.
+ck(all(_ws10.cell(r, _h10["Include?"]).value in (None, "") for r in _data10),
+   "Include? is BLANK on every row after a build, even though the model file pre-filled one")
+# DEFECT C.
+_dup10 = {str(_ws10.cell(r, _h10["Row ID"]).value):
+          str(_ws10.cell(r, _h10["Duplicate of"]).value or "") for r in _data10}
+ck(_dup10.get(_venlo_tracker, "").startswith("same building as #")
+   and _dup10.get(_venlo_deck, "").startswith("same building as #"),
+   f"both rows of the pair say who their partner is (got {_dup10.get(_venlo_tracker)!r} / "
+   f"{_dup10.get(_venlo_deck)!r})")
+ck("Alpha Park" in _dup10.get(_venlo_tracker, "")
+   and "Venlo Trade Port" in _dup10.get(_venlo_deck, ""),
+   "...by NAME, not by a group id nobody can look up")
+_ranks10 = {str(_ws10.cell(r, _h10["Row ID"]).value): _ws10.cell(r, _h10["Rank"]).value
+            for r in _data10}
+ck(abs(_ranks10[_venlo_tracker] - _ranks10[_venlo_deck]) == 1,
+   f"...and the two rows are ADJACENT, so the comparison is one glance "
+   f"(ranks {_ranks10[_venlo_tracker]} and {_ranks10[_venlo_deck]})")
+ck(not any("MESSAGE ROW SPLIT" in str(_ws10.cell(r, c).value or "")
+           for r in _data10 for c in range(1, _ws10.max_column + 1)),
+   "a group that denies being a same-building group cannot say so on the sheet")
+_wsd10 = _wb10[MB.SHEET_DUPES]
+ck(any("Same building" in str(row[0] or "")
+       for row in _wsd10.iter_rows(min_row=1, max_col=1, values_only=True)),
+   "the Duplicate check tab heads each block SAME BUILDING")
+# DEFECT D.
+_srcs10 = [str(_ws10.cell(r, _h10["Source"]).value or "") for r in _data10]
+ck(not any(("/" in s) or ("\\" in s) or s.lower().endswith(".msg") for s in _srcs10),
+   "no Source is a path (got %r)" % [s for s in _srcs10 if "/" in s])
+ck(all(s.startswith(("Email: ", "Brochure, ", "Source file: ")) for s in _srcs10),
+   f"every Source matches one of the human patterns (got {sorted(set(_srcs10))})")
+ck(all(not str(_ws10.cell(r, _h10["Property"]).value or "").lower()
+       .startswith(("re:", "fw:", "fwd:")) for r in _data10),
+   "no Property is a subject line")
+
+
+# ==========================================================================================
+# 11. A SCHEME BEATS A STREET, AND THE SWEEP DOES NOT OVERSTATE.
+print("\n== 11. scheme over street, and an honest postcode sweep ==")
+
+# Two covers taken off the live corpus. The first prints a street and no scheme, and its
+# FILENAME carries the scheme ("Goldthorpe - Midway One.pdf"); the row used to come out as
+# "Droves Dale Road, Rotherham", which is neither the scheme nor, on S63 9FD, the town. The
+# second prints "Central Park Drive"; the row used to take the drive over the park.
+_PAGES11 = {
+    "Goldthorpe - Midway One.pdf":
+        "TO LET / MAY SELL 68,195 SQ FT\nINDUSTRIAL WAREHOUSE UNIT REFURBISHMENT COMPLETE\n"
+        "DROVES DALE ROAD, GOLDTHORPE, ROTHERHAM, S63 9FD",
+    "BAR003_Brochure_16pp_V32.10.pdf":
+        "Central Park Drive Rugby, CV23 0WE\nA Prime Midlands Warehouse / Industrial Facility\n"
+        "106,645 Sq Ft (9,907 Sq M) Available Now",
+}
+_CL11 = {"Midway One": {"pdfs": ["Goldthorpe - Midway One.pdf"], "region": "Goldthorpe"},
+         "BAR003_Brochure_16pp_V32.10": {"pdfs": ["BAR003_Brochure_16pp_V32.10.pdf"],
+                                         "region": "BAR003_Brochure_16pp_V32.10"}}
+_w11 = _work()
+_auto11 = ML.build_auto(_w11, {}, _CL11, _w11,
+                        lambda q: _PAGES11.get(pathlib.Path(str(q)).name, ""))
+_n11 = {r["row_id"]: r for r in _auto11["rows"]}
+_midway = next(r for r in _auto11["rows"] if r["row_id"].startswith("deck:Midway"))
+_bar = next(r for r in _auto11["rows"] if r["row_id"].startswith("deck:BAR003"))
+ck("Midway One" in _midway["property"],
+   f"the filename's scheme beats the cover's street line (got {_midway['property']!r})")
+ck("Droves Dale Road" not in _midway["property"],
+   "...so the street is not the name")
+ck(_midway["city"] == "Goldthorpe",
+   f"...and the town is the locality the cover confirms, not the postal town at the end of the "
+   f"address line (got {_midway['city']!r})")
+ck("Central Park" in _bar["property"] and "Drive" not in _bar["property"],
+   f"a scheme printed on page 1 beats the street it stands on (got {_bar['property']!r})")
+ck(_bar["property"] != "BAR003_Brochure_16pp_V32.10",
+   "...and neither row is the filename stem")
+
+# FOUR UNITS OF ONE PARK, ONE POSTCODE. The live sheet told the reader all four were "possibly
+# the same building"; they are 61k, 90k, 117k and 216k sq ft.
+_VANTAGE = {"Vantage.msg": [_rec("Vantage.msg", "V%d, Vantage Park" % n, "Birmingham",
+                                 "B24 9GZ", n * 1000)
+                            for n in (61, 90, 117, 216)]}
+_w12 = _work()
+_auto12 = ML.build_auto(_w12, _VANTAGE, {}, _w12, _fpt)
+_v12 = _auto12["rows"]
+ck(len({r["duplicate_group"] for r in _v12}) == 1 and _v12[0]["duplicate_group"],
+   "the four rows share one postcode, so the sweep still groups them")
+MB.build(_w12)
+_ws12 = load_workbook(_w12 / MB.WORKBOOK)[MB.SHEET]
+_h12 = {str(_ws12.cell(MB.HDR_ROW, c).value).strip(): c
+        for c in range(1, _ws12.max_column + 1) if _ws12.cell(MB.HDR_ROW, c).value}
+_txt12 = [str(_ws12.cell(r, _h12["Duplicate of"]).value or "")
+          for r in range(MB.FIRST_ROW, _ws12.max_row + 1)
+          if _ws12.cell(r, _h12["Row ID"]).value]
+ck(_txt12 and not any("possibly the same building" in s.lower() for s in _txt12),
+   f"NO pair is called possibly the same building (got {_txt12[:1]})")
+ck(all("same building as" not in s for s in _txt12),
+   "...and none claims same building either: only a judged group may say that")
+ck(all(s.startswith("same postcode as #") for s in _txt12),
+   f"...each says what the sweep actually found (got {_txt12[0]!r})")
+ck(all("(auto sweep)" in s for s in _txt12), "...labelled (auto sweep), every one")
+ck(all("sizes differ, so probably different units of one park" in s for s in _txt12),
+   "...and, the areas being 61k to 216k, says they are different units of one park")
+
+# The other half of the rule: sizes within 15%, or one absent, is a real question.
+_TWIN = {"Twin.msg": [_rec("Twin.msg", "Aurora 100", "Venlo", "5928 NX", 100000),
+                      _rec("Twin.msg", "Aurora, Trade Port", "Venlo", "5928 NX", 104000)]}
+_w13 = _work()
+_auto13 = ML.build_auto(_w13, _TWIN, {}, _w13, _fpt)
+MB.build(_w13)
+_ws13 = load_workbook(_w13 / MB.WORKBOOK)[MB.SHEET]
+_h13 = {str(_ws13.cell(MB.HDR_ROW, c).value).strip(): c
+        for c in range(1, _ws13.max_column + 1) if _ws13.cell(MB.HDR_ROW, c).value}
+_txt13 = [str(_ws13.cell(r, _h13["Duplicate of"]).value or "")
+          for r in range(MB.FIRST_ROW, _ws13.max_row + 1)
+          if _ws13.cell(r, _h13["Row ID"]).value]
+ck(_txt13 and all("check whether one building" in s and "(auto sweep)" in s for s in _txt13),
+   f"two areas 4% apart on one postcode is a question, not a verdict (got {_txt13[:1]})")
 
 print("\n" + ("ALL PASS" if not fails else f"{len(fails)} FAILURE(S):"))
 for f in fails:

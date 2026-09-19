@@ -184,8 +184,9 @@ def looks_unknown(s) -> bool:
     moment a new private literal appears under helpers/.
 
     THIS IS STILL A JUDGEMENT SURFACE. The set feeds `_common.core_fill` -> `record_is_poor` ->
-    run.py's vision-routing probe, so a form added here changes WHICH INPUT FILES THE LLM IS
-    ASKED TO READ. That is the correct place for the change to land (a record stuffed with a
+    run.py's vision-routing probe (`_deck_is_low_quality`, written but not yet wired to the
+    manifest step), so once that probe is connected a form added here changes WHICH INPUT
+    FILES THE LLM IS ASKED TO READ. That is the correct place for the change to land (a record stuffed with a
     genuine unknown IS thinner and SHOULD be re-read), but land it knowingly: add the form to
     UNKNOWN_FORMS, re-run the parity eval, and never re-grow a set at a caller. A caller that
     needs a NARROWER family (merge/repairs `_EXPECT_ABSENT`, which must still notice a market

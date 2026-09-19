@@ -58,7 +58,8 @@ cell is a flat `Yes` and not red.
    to recognise a scheme, and explicitly not data. It then runs a blunt duplicate sweep on postal
    code alone. Then it STOPS with **exit 17**.
 2. **The model judges** (`prompts/master-list.md`, rendered into `work/prompts/`). It adds the
-   rows that exist only in email prose and adjudicates the duplicate groups, into
+   rows that exist only in email prose, names them after the property, and adjudicates the
+   SAME-BUILDING groups, into
    `work/master_candidates.json`. It never deletes, re-words or re-keys a spine row.
 3. **The workbook** (`helpers/master_list_build.py --work <work>`) merges the two, paints the
    Brochure? column, and writes `<work>/Master List.xlsx` plus `master_list_manifest.json`.
@@ -68,10 +69,39 @@ cell is a flat `Yes` and not red.
 
 ## What the workbook looks like
 
-- **Master list** tab. Rank, Include?, Your Run notes for the AI, then the facts: property,
-  source type, source, duplicate group and status, Brochure? and its detail, address, postcode,
-  town, size from/to and unit, rent, availability, landlord/developer, notes. Include? and Run
-  notes are the two pale-yellow columns; a row in a duplicate group is amber.
+- **Master list** tab, in reading order: Rank, Include?, Your Run notes for the AI, Property,
+  Duplicate of, Source type, Source, Brochure?, Brochure detail, Address, Postcode, Town / city,
+  Size from, Size to, Size unit, Quoting rent, Availability, Landlord / developer, Notes from the
+  source, and the hidden Row ID. Include? and Run notes are the two pale-yellow columns; a row in
+  a duplicate group is amber.
+- **A ROW IS A BUILDING. A MESSAGE IS NOT A ROW.** An email reaches this tab two ways and no
+  others: the deck it attached (already a row, with the sender and the date in its Source) and
+  the options the sub-agent reads out of its prose. Every message is listed on the **Emails** tab
+  instead, with sender, organisation, date, cleaned subject, attachments and the master-list rows
+  that came out of it; one that produced neither an attachment nor a row is flagged there as
+  "nothing extracted". The earlier design put one row per .msg on this tab named after the
+  subject, which asked the user to include or exclude a source - a question with no correct
+  answer - and forced the sub-agent to invent "this message mentions these buildings" duplicate
+  groups to explain itself.
+- **A row is named after the property, never after the file.** A brochure row's name comes from
+  the deck's own first page (park, unit, and the town printed beside the postcode); the filename
+  is the last resort and is marked "(from filename)" when it is used. Town / city is
+  document-derived or blank, never a filename: a blank town is a question a colleague will ask
+  and a wrong one is a fact they will act on.
+- **Source reads like a sentence.** "Email: John Doe (Cushman & Wakefield), 7 Sep 2026",
+  "Brochure, attached to email from Jane Roe (Savills), 7 Sep 2026", "Brochure, input folder".
+  Paths and filenames are provenance for the run and live in the manifest; they are not an answer
+  to "who told us about this".
+- **Duplicate of** names the partner by the rank the reader can see, on BOTH rows of the pair:
+  "same building as #35 Wolverhampton 144 (brochure)". The sheet is sorted by rank and a group's
+  members are pulled onto adjacent lines, because the comparison is only cheap when the two rows
+  are next to each other.
+- **Include? ships BLANK, and the builder blanks it on every build.** Not `setdefault` - an
+  overwrite, because the live run came back with all 62 rows pre-answered (the Brochure? column
+  copied across) and a pre-answered sheet sails through the read-back with nobody having decided
+  anything. The only route into the column is `carry_forward`, which re-imports answers from a
+  workbook a human has had in front of them, keyed on Row ID. Nothing else may write it: not the
+  spine, not the candidates files, not the orchestrator, not the sub-agent.
 - **Include? is Yes or No, with no third value.** A deferred answer has to be resolved before the
   run can start in any case, so carrying "maybe" in the sheet would only move the same decision
   to a point where a log reader takes it instead of the person who owns the deliverable. The
@@ -87,9 +117,12 @@ cell is a flat `Yes` and not red.
   filter and re-rank freely. Every answer is keyed back on the Row ID, and a rebuild (a second
   email export, three more brochures) carries every existing Include? and Run note forward by
   that id. `--fresh` discards them deliberately.
-- **Duplicate check** tab. Every flagged group, its members side by side, read-only. The decision
-  still goes in Include? on the master list tab, so there is exactly one place a decision lives.
-  Groups are the model's adjudication first, then the postcode sweep behind it. The sweep is
+- **Duplicate check** tab. One block per SAME-BUILDING group, its members side by side in full,
+  read-only. The decision still goes in Include? on the master list tab, so there is exactly one
+  place a decision lives. A group means one physical building reached by more than one source and
+  it can mean nothing else: the builder normalises every status onto that, so "this message
+  mentions these buildings" cannot be expressed. Groups are the model's adjudication first, then
+  the postcode sweep behind it. The sweep is
   crude on purpose: it over-groups and says so, because a group the user glances at and dismisses
   costs a second, and a missed duplicate puts the same building on the client's dashboard twice.
 

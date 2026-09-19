@@ -37,6 +37,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -55,6 +56,7 @@ WORKBOOK = ML.WORKBOOK
 MANIFEST = ML.MANIFEST
 SHEET = "Master list"
 SHEET_DUPES = "Duplicate check"
+SHEET_EMAILS = "Emails"
 
 # CBRE chrome, so the sheet a colleague opens is the one they have seen before. Green header
 # band, amber for a row that overlaps another row, pale yellow for the two columns the user is
@@ -73,15 +75,23 @@ MIN_ROWS = 40          # spare rows below the data keep the validated Include? d
 INCLUDE_VALUES = ("Yes", "No")
 
 # (header, key, width, number format, wrap)
+#
+# COLUMN ORDER IS THE READING ORDER, and it changed after the live run's sheet came back
+# unreadable. What the reader needs, in the order they need it: where am I (Rank), what am I
+# being asked (Include?, notes), WHAT IS IT (Property), IS IT THE SAME AS SOMETHING ELSE HERE
+# (Duplicate of), where did it come from (Source type, Source), is there a document, then the
+# facts. `Duplicate group`, `Duplicate status` and `Duplicate note` are gone: three columns that
+# between them printed "D8" and a sentence, and never once told the reader WHICH OTHER ROW. One
+# column that names the partner by rank replaces all three, and the whole story is on the
+# Duplicate check tab for anyone who wants the members side by side.
 COLUMNS = [
     ("Rank",                      "rank",             6,    "0",      False),
     ("Include?",                  "include",          11,   None,     False),
     ("Your Run notes for the AI", "run_notes",        26.3, None,     True),
     ("Property",                  "property",         34,   None,     True),
+    ("Duplicate of",              "duplicate_of",     40,   None,     True),
     ("Source type",               "source_type",      13,   None,     False),
     ("Source",                    "source",           46,   None,     True),
-    ("Duplicate group",           "duplicate_group",  11,   None,     False),
-    ("Duplicate status",          "duplicate_status", 26,   None,     True),
     ("Brochure?",                 "brochure",         12,   None,     False),
     ("Brochure detail",           "brochure_detail",  46,   None,     True),
     ("Address",                   "address",          34,   None,     True),
@@ -93,7 +103,6 @@ COLUMNS = [
     ("Quoting rent",              "rent",             20,   None,     True),
     ("Availability",              "availability",     22,   None,     True),
     ("Landlord / developer",      "agent",            30,   None,     True),
-    ("Duplicate note",            "duplicate_note",   60,   None,     True),
     ("Notes from the source",     "notes",            70,   None,     True),
     # Hidden, and load-bearing. The user may sort, filter and re-rank freely, so row position is
     # not an identity. The Row ID travels with the row through any sort and is what
@@ -126,6 +135,10 @@ def merge_candidates(auto: dict, model: dict) -> tuple:
             print("  WARNING: model candidate row %d has no 'property' name, skipped" % i,
                   file=sys.stderr)
             continue
+        if r.get("include"):
+            print("  WARNING: model candidate row %d supplied an Include? answer (%r). Dropped: "
+                  "scope is the user's decision and the sheet ships blank."
+                  % (i, r.get("include")), file=sys.stderr)
         rid = str(r.get("row_id") or "cand:%02d" % i)
         if rid in have:
             print("  WARNING: model candidate row %r duplicates a spine row id - the spine row "
@@ -156,15 +169,85 @@ def merge_candidates(auto: dict, model: dict) -> tuple:
         r.pop("duplicate_group", None)
         r.pop("duplicate_status", None)
         r.pop("duplicate_note", None)
+        r.pop("duplicate_origin", None)
+    _humanise_sources(rows, auto.get("emails") or [])
     meta = ML.apply_duplicates(rows, model.get("duplicate_groups") or {})
     return rows, meta, added
 
 
-def apply_rank(rows: list, model: dict) -> None:
-    """Order the sheet: the model's explicit order first, then everything it did not rank.
+def _humanise_sources(rows: list, mail: list) -> None:
+    """Make the Source column read like a sentence a colleague wrote, not like a path.
 
-    Unranked rows keep a stable, predictable order (source type, then name) because a sheet
-    whose rows move on every rebuild is a sheet whose answers cannot be trusted.
+    DEFECT D. The live sheet's Source column held
+    "mail_unpacked/mail/Emakl.msg - 2026-09-07 13:19:08+00:00" and bare PDF filenames. A path is
+    provenance for the RUN, which already keeps it in the manifest and the hidden Row ID; it is
+    not an answer to the only question the reader is asking of that column, which is "who told us
+    about this, and when". The email index carries the sender and the date, so anything still
+    shaped like a path or a filename is rewritten from it, and a subject line - reply prefixes,
+    arrows and all - is never allowed to stand as a source.
+    """
+    by_file = {}
+    for e in (mail or []):
+        for k in (str(e.get("email_file") or ""), str(e.get("file_name") or "")):
+            if k:
+                by_file[k.lower()] = e
+                by_file[Path(k).name.lower()] = e
+    for r in rows:
+        src = str(r.get("source") or "").strip()
+        if src.startswith(("Email: ", "Brochure, ", "Tracker: ", "Source file: ")):
+            continue
+        hit = None
+        for k, e in by_file.items():
+            if k and k in src.lower():
+                hit = e
+                break
+        if hit is None:
+            # The sub-agent writes its own source text and the live run's read
+            # "RE: Looking for 60,000 to 100,000 sq ft, Sam Roe, C&W" - a subject line
+            # with a reply prefix on the front, which is the one thing this column must never
+            # show. Match it back to the message by its SENDER, which the row also names in
+            # Landlord / developer, and print the index's own wording instead.
+            hay = ("%s %s" % (src, r.get("agent") or "")).lower()
+            for e in (mail or []):
+                nm = str(e.get("sender") or "").strip().lower()
+                # ONE message from that sender, or the date would be a guess: a broker who
+                # wrote twice in a week would otherwise have both notes dated whichever of
+                # them this loop reached first.
+                if (nm and len(nm) > 4 and nm in hay
+                        and sum(1 for x in mail
+                                if str(x.get("sender") or "").strip().lower() == nm) == 1):
+                    hit = e
+                    break
+        if hit:
+            r["source_detail"] = r.get("source_detail") or src
+            r["source"] = (ML.deck_source_text(hit.get("sender_raw"), hit.get("date_raw"), True)
+                           if r.get("source_type") == "Brochure"
+                           else ML.email_source_text(hit.get("sender_raw"), hit.get("date_raw")))
+        elif r.get("source_type") == "Brochure":
+            r["source_detail"] = r.get("source_detail") or src
+            r["source"] = "Brochure, input folder"
+        else:
+            # Nothing in the index matches, so the sender is genuinely unknown. Name the file it
+            # came out of, without its extension - a stem is a handle, ".msg" is plumbing - and
+            # keep the raw string in source_detail for the manifest.
+            r["source_detail"] = r.get("source_detail") or src
+            stem = ML.clean_subject(Path(src.split(" - ")[0].strip()).stem)
+            r["source"] = ("Email: %s (sender not recorded)" % stem
+                           if r.get("source_type") == "Email" else "Source file: %s" % stem)
+
+
+def apply_rank(rows: list, model: dict) -> None:
+    """Order the sheet: the model's explicit order first, then everything it did not rank, with
+    the members of a duplicate group PULLED TOGETHER behind whichever of them ranks first.
+
+    Unranked rows keep a stable, predictable order (source type, then name) because a sheet whose
+    rows move on every rebuild is a sheet whose answers cannot be trusted.
+
+    THE ADJACENCY IS THE POINT (defect C). The old sheet sorted by duplicate group, which put
+    grouped rows first and scattered their ranks: the live workbook read 1, 2, 3, 4, 37, 50, 38
+    down the page. Sorting by rank and letting a group's first member drag its partners along
+    gives a sheet that reads top to bottom AND puts the two rows a reader has to compare on
+    adjacent lines, which is the only moment the comparison is cheap.
     """
     order = [str(x) for x in (model.get("rank") or [])]
     pos = {rid: i for i, rid in enumerate(order)}
@@ -172,8 +255,27 @@ def apply_rank(rows: list, model: dict) -> None:
     rows.sort(key=lambda r: (pos.get(r["row_id"], big),
                              str(r.get("source_type") or ""),
                              str(r.get("property") or "").lower()))
+    by_group: dict = {}
+    for r in rows:
+        g = r.get("duplicate_group")
+        if g:
+            by_group.setdefault(g, []).append(r)
+    out, done = [], set()
+    for r in rows:
+        if id(r) in done:
+            continue
+        g = r.get("duplicate_group")
+        members = by_group.get(g) or [r]
+        for m in members:
+            if id(m) not in done:
+                out.append(m)
+                done.add(id(m))
+    rows[:] = out
     for i, r in enumerate(rows, 1):
         r["rank"] = i
+    for r in rows:
+        g = r.get("duplicate_group")
+        r["duplicate_of"] = (ML.duplicate_partner_text(r, by_group.get(g) or []) if g else "")
 
 
 def carry_forward(path, rows) -> tuple:
@@ -362,13 +464,14 @@ def write_dupes(wb, rows):
             groups.setdefault(r["duplicate_group"], []).append(r)
 
     ws.cell(1, 1, "Duplicate check").font = Font(name=FACE, sz=14, bold=True, color=GREEN)
-    ws.cell(2, 1, "Each block below is one set of rows that may be the same option. Decide which "
-                  "one to keep, then set Include? on the Master list tab. Nothing on this tab is "
-                  "read by the run.").font = Font(name=FACE, sz=9)
+    ws.cell(2, 1, "Each block below is one SAME-BUILDING set: the same physical building reached "
+                  "this run from more than one source. Decide which row to keep, then set "
+                  "Include? on the Master list tab. Nothing on this tab is read by the run.")\
+        .font = Font(name=FACE, sz=9)
     cols = [("Rank", "rank", 8), ("Property", "property", 40), ("Source type", "source_type", 14),
-            ("Postcode", "postcode", 12), ("Size to", "size_to", 14),
+            ("Source", "source", 42), ("Postcode", "postcode", 12), ("Size to", "size_to", 14),
             ("Quoting rent", "rent", 20), ("Landlord / developer", "agent", 30),
-            ("Brochure detail", "brochure_detail", 46), ("Duplicate note", "duplicate_note", 70)]
+            ("Brochure detail", "brochure_detail", 46), ("Why grouped", "duplicate_note", 70)]
     for i, (_h, _k, w) in enumerate(cols, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     if not groups:
@@ -400,6 +503,90 @@ def write_dupes(wb, rows):
     return ws
 
 
+def write_emails(wb, mail, rows):
+    """Every message in the run, and which master-list rows came out of it.
+
+    WHY THIS TAB EXISTS. Taking the message rows off the Master list (defect A) removed a real
+    thing the old design got right: a reader could see that an email existed. They just could not
+    do anything useful with it, because a message is a source and the column beside it asked them
+    to include or exclude a building. So the messages move HERE, where they are information
+    rather than a decision, and the tab closes the loop the master list cannot: for each message,
+    what it brought with it and which rows on the other tab it produced.
+
+    The last column is the one that earns the tab. A message with no attachment and no row from
+    the sub-agent is flagged "NOTHING EXTRACTED" - it is the only place in the run where an email
+    that contributed nothing is visible as such, and it is exactly the row a broker should read
+    twice before the run goes on without it.
+    """
+    ws = wb.create_sheet(SHEET_EMAILS)
+    ws.sheet_view.showGridLines = False
+    ws.cell(1, 1, "Emails in this run").font = Font(name=FACE, sz=14, bold=True, color=GREEN)
+    ws.cell(2, 1, "Every message the run opened. A message is a SOURCE, not an option, so none "
+                  "of these is a row on the Master list: an email reaches that sheet through the "
+                  "decks it attached and the options its prose names. Nothing on this tab is "
+                  "answered, and nothing on it is read by the run.")\
+        .font = Font(name=FACE, sz=9)
+    cols = [("From", 26), ("Organisation", 24), ("Date", 13), ("Subject", 52),
+            ("Attachments saved", 44), ("Master list rows from this email", 52), ("Status", 22)]
+    for i, (h, w) in enumerate(cols, 1):
+        _hdr_cell(ws, 4, i, h)
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.row_dimensions[4].height = 28
+
+    # The sender+date fallback below is only safe where that pair identifies ONE message. Two
+    # notes from the same broker on the same morning are the ordinary case in a live inbox, and
+    # crediting one message's rows to the other is a lie the reader has no way to spot.
+    _seen: dict = {}
+    for m in (mail or []):
+        _seen["%s|%s" % (m.get("sender"), m.get("date"))] = _seen.get(
+            "%s|%s" % (m.get("sender"), m.get("date")), 0) + 1
+    by_email: dict = {}
+    for r in rows:
+        key = str(r.get("email_file") or "").lower()
+        files = {str(f).lower() for f in (r.get("source_files") or [])}
+        for m in (mail or []):
+            mk = str(m.get("email_file") or "").lower()
+            hit = (key and key == mk) or bool(
+                files & {str(a).lower() for a in (m.get("attachments") or [])})
+            if not hit:
+                # an orchestrator row that names the message file, or whose humanised Source now
+                # names the sender and the date this index gave it
+                src = "%s %s %s" % (r.get("source") or "", r.get("source_detail") or "",
+                                    r.get("agent") or "")
+                hit = (bool(m.get("file_name")) and str(m["file_name"]).lower() in src.lower())
+                if (not hit and m.get("sender") and m.get("date")
+                        and _seen.get("%s|%s" % (m.get("sender"), m.get("date"))) == 1):
+                    hit = (str(m["sender"]).lower() in src.lower()
+                           and str(m["date"]) in src)
+            if hit:
+                by_email.setdefault(mk, []).append(r)
+    r0 = 5
+    for j, m in enumerate(sorted(mail or [], key=lambda x: (str(x.get("date_raw") or ""),
+                                                            str(x.get("file_name") or "")))):
+        got = by_email.get(str(m.get("email_file") or "").lower()) or []
+        atts = m.get("attachments") or []
+        status = ("nothing extracted" if not got and not atts
+                  else "%d row(s)" % len(got) if got else "attachment(s) only")
+        vals = [m.get("sender") or "(sender not recorded)", m.get("organisation") or "",
+                m.get("date") or "", m.get("subject") or m.get("file_name") or "",
+                "; ".join(atts), "; ".join("#%s %s" % (x.get("rank"), x.get("property"))
+                                           for x in sorted(got, key=lambda x: x.get("rank") or 0)),
+                status]
+        for i, v in enumerate(vals, 1):
+            c = ws.cell(r0 + j, i, v or None)
+            c.font = Font(name=FACE, sz=9,
+                          bold=(i == 7 and status == "nothing extracted"),
+                          color=("FFB00000" if i == 7 and status == "nothing extracted"
+                                 else "FF000000"))
+            c.alignment = Alignment(vertical="top", wrap_text=(i in (4, 5, 6)))
+            if j % 2:
+                c.fill = PatternFill("solid", fgColor=BAND)
+        ws.row_dimensions[r0 + j].height = 32
+    if not mail:
+        ws.cell(4, 1, "No email files in this run.").font = Font(name=FACE, sz=9)
+    return ws
+
+
 # ------------------------------------------------------------------------------------- main
 
 def build(work: Path, out: Path | None = None, fresh: bool = False) -> dict:
@@ -420,16 +607,28 @@ def build(work: Path, out: Path | None = None, fresh: bool = False) -> dict:
 
     rows, dup_meta, added = merge_candidates(auto, model)
     apply_rank(rows, model)
+    # INCLUDE? IS BLANK ON BUILD. NOT setdefault - an outright overwrite, every time.
+    #
+    # The live run came back with Include? answered on all 62 rows: "No" on every email row and
+    # "Yes" on every brochure row, which is the Brochure? column copied across, not a decision
+    # anybody took. It cannot have come from the candidates files (neither carries the key) and
+    # the prompt already forbade it, so it was written into the workbook after the build - and
+    # `setdefault` was powerless to stop it, because the value was already there. A sheet of
+    # pre-filled answers is worse than an empty one: it sails through the read-back's Yes/No
+    # guard and the user never gets asked. The only route into this column is `carry_forward`
+    # from a workbook a HUMAN has had in front of them, which runs immediately below.
     for r in rows:
-        r.setdefault("include", "")
-        r.setdefault("run_notes", "")
+        r["include"] = ""
+        r["run_notes"] = ""
     kept, manual = (0, {}) if fresh else carry_forward(out, rows)
 
+    mail = auto.get("emails") or []
     n_deck = sum(1 for r in rows if r.get("source_type") == "Brochure")
     title = model.get("title") or "Master list - every option this run has found so far"
-    note = ("Set Include? to Yes or No on EVERY row, and put any instruction for the run in "
-            "'Your Run notes for the AI'. Amber rows overlap with another row - see the "
-            "Duplicate check tab. Nothing is built until this sheet is answered.")
+    note = ("Set Include? to Yes or No on EVERY row (it ships blank on purpose), and put any "
+            "instruction for the run in 'Your Run notes for the AI'. Amber rows are the same "
+            "building reached by two sources - the partner is named in 'Duplicate of' and sits "
+            "on the next line. Nothing is built until this sheet is answered.")
     foot = [
         "Rank is a sort order only. Re-sort, filter or re-rank freely: the run reads your "
         "answers by a hidden row id, not by position.",
@@ -441,12 +640,17 @@ def build(work: Path, out: Path | None = None, fresh: bool = False) -> dict:
         "its card's specification comes from source text with no page citation behind it, so "
         "either chase the brochure or expect the row in the Gaps Report. Only a flat 'Yes' is "
         "left unformatted.",
-        "A brochure row's name, postcode and size are read off the filename and the deck's first "
-        "page only. The deck is READ properly if you include it.",
+        "A brochure row is named from the deck's own first page; a name ending '(from filename)' "
+        "is a label off the PDF, not a fact. Postcode and size are a first-page glance. The deck "
+        "is READ properly if you include it.",
+        "Emails are on their own tab. A message is a source, not an option, so it is never a row "
+        "here: it reaches this sheet through the decks it attached and the options its prose "
+        "names. %d message(s) indexed." % len(mail),
         "Nothing here is sent to a client. It decides what the run builds.",
     ]
     wb = write_master(rows, title, note, foot)
     write_dupes(wb, rows)
+    write_emails(wb, mail, rows)
     try:
         wb.save(out)
     except PermissionError:
@@ -456,10 +660,11 @@ def build(work: Path, out: Path | None = None, fresh: bool = False) -> dict:
                 "workbook": os.path.basename(out),
                 "input_hash": auto.get("input_hash") or ML.fingerprint(rows),
                 "duplicate_groups": dup_meta,
+                "emails": mail,
                 "rows": [{k: r.get(k) for k in
-                          ("row_id", "rank", "property", "source_type", "source", "cluster",
-                           "source_files", "postcode", "duplicate_group", "duplicate_status",
-                           "files")} for r in rows]}
+                          ("row_id", "rank", "property", "source_type", "source", "source_detail",
+                           "cluster", "source_files", "postcode", "duplicate_group",
+                           "duplicate_status", "duplicate_of", "files")} for r in rows]}
     (work / MANIFEST).write_text(json.dumps(manifest, ensure_ascii=False, indent=1),
                                  encoding="utf-8")
 

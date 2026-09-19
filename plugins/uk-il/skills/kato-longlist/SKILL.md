@@ -118,7 +118,7 @@ is the single source of truth from here to the end of the run.
              "address": "Pritchard Drive, Kegworth", "postcode": "DE74 2DF",
              "lat": 52.833, "lon": -1.283, "size_from": 140000, "size_to": 140000,
              "tenure": "To Let", "rent": "GBP10.50 psf", "availability": "U/C Q2 2027",
-             "planning": "Consented", "agent": "Jai Raizada, C&W", "agent_email": "...",
+             "planning": "Consented", "agent": "Alex Doe, C&W", "agent_email": "...",
              "notes": "15m eaves, 17 dock, 50m yard.",
              "files": ["uploads/Packington Hill Brochure.pdf"]}]}
   ```

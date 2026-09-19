@@ -121,7 +121,8 @@ def _is_tbd(v):
 
     Until v41 this ADDED `"??"` locally because normalize.looks_unknown did not carry it, and
     its docstring defended the local widening by the blast radius of the shared set (it feeds
-    _common.core_fill -> record_is_poor -> run.py's vision-routing probe). Fix plan contract C5
+    _common.core_fill -> record_is_poor -> run.py's vision-routing probe, which is written but
+    not wired to the manifest at present; see run._deck_is_low_quality). Fix plan contract C5
     measured that radius and moved `"??"` into the shared family on purpose: the only field
     the pipeline writes `"??"` into is `country`, which no core_fill field reads, so the routing
     probe is unchanged by it; and a record whose city or status a reader shipped as `TBA` IS

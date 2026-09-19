@@ -7,6 +7,48 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.16.0] — 2026-09-19
+
+Marketplace 1.16.0: **CBRE I&L Toolkit 1.12.0** and **UK I&L Toolkit 1.6.2**. The Kato upload
+for this release was a stale August snapshot whose only difference was a reverted update
+notice, so none of it was applied; the UK bump carries one change only, the broker-name
+replacement below.
+
+### Fixed — property longlist Master List
+- **A pre-answered sheet could sail through the read-back with nobody having decided
+  anything.** The live run came back with all 62 rows already filled in, because another
+  column had been copied across into `Include?`. That defeats the entire point of the stop.
+  `Include?` now has exactly one route in — `carry_forward`, which re-imports answers from a
+  workbook a human has actually had in front of them, keyed on the hidden Row ID. Nothing else
+  may write it: not the spine, not the candidates files, not the orchestrator, not the
+  sub-agent.
+- **Emails are no longer rows on the master list.** The earlier design put one row per `.msg`
+  named after the subject, which asked the user to include or exclude *a source* — a question
+  with no correct answer — and forced the sub-agent to invent "this message mentions these
+  buildings" duplicate groups to explain itself. Messages now have their own **Emails** tab
+  with sender, organisation, date, cleaned subject, attachments and the rows that came out of
+  them; one that produced neither is flagged there as "nothing extracted".
+- **A duplicate group now means one physical building reached by more than one source, and
+  nothing else.** The builder normalises every status onto that, so the looser readings cannot
+  be expressed. Group members are pulled onto adjacent lines, because the comparison is only
+  cheap when the two rows sit next to each other.
+- **A property is named from the deck's own first page**, with the filename as the last resort
+  and marked `(from filename)` when it is used. Town is document-derived or blank, never a
+  filename: a blank town is a question a colleague will ask, and a wrong one is a fact they
+  will act on.
+- **Source reads as provenance, not as a path** — "Brochure, attached to email from Jane Roe
+  (Savills), 7 Sep 2026", "Brochure, input folder". Filenames are provenance for the run and
+  live in the manifest; they are not an answer to "who told us about this".
+
+### Security
+- **Replaced five real-looking broker names carried over from a live run** — in the master-list
+  reference, its dispatch prompt, two helpers, an eval, and the Kato skill card. They are now
+  placeholder people at the same real agencies (`John Doe (Cushman & Wakefield)`, `Jane Roe
+  (Savills)`, `Alex Doe (C&W)`, `Sam Roe`), matching the convention already used in the expense
+  claim. Real firms are fine; named individuals in a public repository are not.
+- `vendor/README.md`, the PyMuPDF provenance note added in 1.15.1, was absent from this upload
+  and has been preserved rather than deleted.
+
 ## [1.15.2] — 2026-09-19
 
 Marketplace 1.15.2: **CBRE I&L Toolkit 1.11.2**. UK I&L Toolkit unchanged at 1.6.1.
@@ -1229,6 +1271,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.16.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.16.0
 [1.15.2]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.15.2
 [1.15.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.15.1
 [1.15.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.15.0
