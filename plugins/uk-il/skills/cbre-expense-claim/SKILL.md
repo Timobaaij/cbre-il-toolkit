@@ -1,6 +1,6 @@
 ---
 name: cbre-expense-claim
-description: Turn a folder of expense receipts (iOS scans, phone photos, Uber and airline email screenshots, AMEX and Revolut app screenshots) into a CBRE expense claim: a reconciled Expenses.xlsx and a page-stamped Consolidated Expenses.pdf, then file the lines into PeopleSoft. Use whenever the user wants their expenses done, receipts turned into a spreadsheet, a consolidated receipt PDF built, or an expense report prepared and filed. Trigger even when the need is only described ("do my expenses", "sort out last week's receipts", "turn this folder into a claim").
+description: "Turn a folder of expense receipts (iOS scans, phone photos, Uber and airline email screenshots, AMEX and Revolut app screenshots) into a CBRE expense claim: a reconciled Expenses.xlsx and a page-stamped Consolidated Expenses.pdf, then file the lines into PeopleSoft. Use whenever the user wants their expenses done, receipts turned into a spreadsheet, a consolidated receipt PDF built, or an expense report prepared and filed. Trigger even when the need is only described (\"do my expenses\", \"sort out last week's receipts\", \"turn this folder into a claim\")."
 ---
 
 # CBRE expense claim

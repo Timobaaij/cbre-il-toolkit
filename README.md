@@ -88,9 +88,17 @@ This repository is both the plugin and its marketplace. Skills live in
 (optionally) load the plugin without installing:
 
 ```bash
+python tools/validate_skills.py     # do this one first
 claude plugin validate .
 claude --plugin-dir ./plugins/cbre-il
 ```
+
+`claude plugin validate` checks the **manifests** only. It does not parse skill
+front matter, so a skill with invalid YAML passes validation, installs cleanly,
+reports the right version and then simply never appears, with no error anywhere.
+`tools/validate_skills.py` is the check that catches that. The fault that keeps
+causing it is an unquoted colon-space inside `description:` (a plain YAML scalar
+cannot contain `": "`), so quote any description that needs a colon.
 
 When you ship changes: bump `version` in **both** `plugin.json` and
 `marketplace.json` (keep them in sync — `plugin.json` wins), add an entry to the

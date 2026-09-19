@@ -7,6 +7,42 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.14.1] — 2026-09-19
+
+Marketplace 1.14.1: **CBRE I&L Toolkit 1.10.1** and **UK I&L Toolkit 1.5.2**. Both plugins
+move, so update both.
+
+### Fixed
+- **Four skills were installing but never loading, with no error anywhere.** Reported after
+  `cbre-il-occupier-brief` failed to appear on two separate machines, both correctly on
+  1.10.0. It was not a cache, not a version and not the install: **their YAML front matter
+  was invalid.**
+
+  A plain, unquoted YAML scalar cannot contain a colon followed by a space. Every one of
+  these descriptions had one:
+
+  ```yaml
+  description: Produce a CBRE I&L OCCUPIER BRIEF: a short, dense dossier ...
+                                                ^^ parser stops here
+  ```
+
+  The parser reads that second colon as the start of a nested mapping key and raises
+  *"mapping values are not allowed here"*, so the skill is skipped. Everything else about the
+  plugin looks healthy while it happens: the manifests validate, the install succeeds, the
+  right version is reported, and the files are on disk. The skill just is not there.
+
+  Affected, now fixed by quoting the description: **`cbre-il-occupier-brief`**,
+  **`cbre-site-tour-app`** (shipped broken in 1.10.0, so it has been missing since it was
+  released), **`cbre-il-outreach-angles`** and **`cbre-expense-claim`**. The description text
+  is unchanged — each one was verified to round-trip byte-identically through the parser.
+
+### Added
+- **`tools/validate_skills.py`** — parses every skill's front matter the way a client does,
+  checks `name` matches its directory and is lowercase-hyphenated, and names the colon-space
+  fault explicitly when it sees it. `claude plugin validate` checks the *manifests* only and
+  never looks at skill front matter, which is exactly why this shipped four times unnoticed.
+  It is now the first step in the maintainer checklist in the README.
+
 ## [1.14.0] — 2026-09-16
 
 Marketplace 1.14.0: **CBRE I&L Toolkit 1.10.0** gains a skill and loses one. UK I&L Toolkit
@@ -1071,6 +1107,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.14.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.14.1
 [1.14.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.14.0
 [1.13.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.13.0
 [1.12.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.12.1
