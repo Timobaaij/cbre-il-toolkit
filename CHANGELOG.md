@@ -7,6 +7,32 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.15.2] — 2026-09-19
+
+Marketplace 1.15.2: **CBRE I&L Toolkit 1.11.2**. UK I&L Toolkit unchanged at 1.6.1.
+
+### Fixed
+- **The last two missing skills: a `description` over 1024 characters stops a skill loading.**
+  On 1.11.1, with the YAML fault from 1.14.1 already fixed, the plugin still listed **5 skills
+  instead of 7** — `cbre-il-occupier-brief` and `cbre-site-tour-app` were still absent. With
+  the YAML problem out of the way the pattern was unambiguous: every skill at or below **993**
+  characters loaded, and both skills above **1024** did not.
+
+  This is a measured limit, not a documented one. The published guidance says the description
+  is *truncated* in the skill listing at 1,536 characters, which is a different thing and is
+  why the length was dismissed the first time round — a mistake, since the two faults were
+  masking each other. Both descriptions are now well under: occupier brief 1,208 → **892**,
+  site tour app 1,157 → **928**. Every trigger phrase is kept; what came out is mechanism
+  detail that belongs in the body of `SKILL.md` and reads better there.
+
+### Changed
+- **`tools/validate_skills.py` now enforces the length cap too**, failing above 1024 and
+  warning above 950 so a description that grows by a sentence in a later release cannot
+  quietly cross it. Two skills are already in the warning band — property longlist at 993 (31
+  characters of headroom) and warehouse network mapper at 983 — so their descriptions need
+  trimming, not extending, at the next revision. The README's maintainer section records both
+  faults.
+
 ## [1.15.1] — 2026-09-19
 
 Marketplace 1.15.1: **CBRE I&L Toolkit 1.11.1** and **UK I&L Toolkit 1.6.1**. Both plugins
@@ -1203,6 +1229,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.15.2]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.15.2
 [1.15.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.15.1
 [1.15.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.15.0
 [1.14.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.14.1

@@ -1,7 +1,7 @@
 {
   "name": "cbre-il-toolkit",
   "description": "CBRE's Industrial & Logistics toolkit for Claude — branded decks, occupier briefs, outreach angles, property longlists, site-tour apps, warehouse-network maps, and on-brand writing, plus a UK I&L toolkit.",
-  "version": "1.15.1",
+  "version": "1.15.2",
   "owner": {
     "name": "Timo Baaij",
     "email": "timo.baaij@cbre.com"
@@ -12,7 +12,7 @@
       "displayName": "CBRE I&L Toolkit",
       "source": "./plugins/cbre-il",
       "description": "The CBRE Industrial & Logistics toolkit for Claude. Build polished, on-brand PowerPoint decks, turn a folder of property materials into an interactive longlist dashboard, brief the team on a target company before a meeting with a traceable occupier brief, surface evidence-backed reasons to reach out to a target company now as a ranked outreach-angles sheet with ready-to-send email hooks, build a CBRE-branded interactive site-tour itinerary app for the field, map a company's warehouse and distribution network to an auditable Excel, and keep every word in the CBRE tone of voice.",
-      "version": "1.11.1",
+      "version": "1.11.2",
       "author": {
         "name": "Timo Baaij",
         "email": "timo.baaij@cbre.com"

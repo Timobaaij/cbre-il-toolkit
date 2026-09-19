@@ -96,9 +96,13 @@ claude --plugin-dir ./plugins/cbre-il
 `claude plugin validate` checks the **manifests** only. It does not parse skill
 front matter, so a skill with invalid YAML passes validation, installs cleanly,
 reports the right version and then simply never appears, with no error anywhere.
-`tools/validate_skills.py` is the check that catches that. The fault that keeps
-causing it is an unquoted colon-space inside `description:` (a plain YAML scalar
-cannot contain `": "`), so quote any description that needs a colon.
+`tools/validate_skills.py` is the check that catches that. Two faults cause it:
+
+1. **An unquoted colon-space inside `description:`** — a plain YAML scalar cannot
+   contain `": "`, so quote any description that needs a colon.
+2. **A description longer than 1024 characters** — measured on a real install, every
+   skill at or below 993 characters loaded and both above 1024 did not. Keep
+   descriptions well under it; detail belongs in the body of SKILL.md.
 
 When you ship changes: bump `version` in **both** `plugin.json` and
 `marketplace.json` (keep them in sync — `plugin.json` wins), add an entry to the
