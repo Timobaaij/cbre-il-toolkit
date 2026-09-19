@@ -88,8 +88,8 @@ cell is a flat `Yes` and not red.
   is the last resort and is marked "(from filename)" when it is used. Town / city is
   document-derived or blank, never a filename: a blank town is a question a colleague will ask
   and a wrong one is a fact they will act on.
-- **Source reads like a sentence.** "Email: John Doe (Cushman & Wakefield), 7 Sep 2026",
-  "Brochure, attached to email from Jane Roe (Savills), 7 Sep 2026", "Brochure, input folder".
+- **Source reads like a sentence.** "Email: Alex Morgan (Cushman & Wakefield), 7 Sep 2026",
+  "Brochure, attached to email from Sam Fletcher (Savills), 7 Sep 2026", "Brochure, input folder".
   Paths and filenames are provenance for the run and live in the manifest; they are not an answer
   to "who told us about this".
 - **Duplicate of** names the partner by the rank the reader can see, on BOTH rows of the pair:

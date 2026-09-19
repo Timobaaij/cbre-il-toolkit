@@ -436,7 +436,7 @@ _in9b = _e9b / "inputs"
 _in9b.mkdir()
 _m9b = email.message.EmailMessage()
 _m9b["Subject"] = "RE: FW: two sheds, one email"
-_m9b["From"] = "Jane Roe <ann.blake@savills.com>"
+_m9b["From"] = "Casey Reid <fixture@savills.com>"
 _m9b["Date"] = "Tue, 15 Sep 2026 09:14:00 +0100"
 _m9b.set_content("Both attached.")
 # DIFFERENT BYTES PER ATTACHMENT, deliberately: intake de-duplicates on content hash, so two
@@ -462,7 +462,7 @@ ck(not any(r["source_type"] == "Email" for r in _auto9b["rows"]),
 ck((_auto9b["emails"][0]["subject"] or "").lower().startswith("two sheds"),
    "...whose subject has had RE:/FW: taken off it (got %r)"
    % _auto9b["emails"][0]["subject"])
-ck(all(r["source"] == "Brochure, attached to email from Jane Roe (Savills), 15 Sep 2026"
+ck(all(r["source"] == "Brochure, attached to email from Casey Reid (Savills), 15 Sep 2026"
        for r in _decks9b),
    "...and both deck rows name the sender, the firm and the date (got %r)"
    % [r["source"] for r in _decks9b])

@@ -116,12 +116,12 @@
     "sha256": "65d2e6fd144e2f2f845f0d82096b533420f0ff2853c4e71ceb3ea6f1e5da2b28"
   },
   "helpers/master_list.py": {
-    "size": 71920,
-    "sha256": "a57728f83376b715b2be7d36b5d27ae7c0c9d60a06b7efc5bbe9e7c685e2d41a"
+    "size": 71923,
+    "sha256": "6938c4cae413c3e22c2ec8de0d55f6abe732669aa2ce299b80929519bc6b9838"
   },
   "helpers/master_list_build.py": {
-    "size": 36527,
-    "sha256": "d90d668a81023f8c8098b7a26ccae45ab6de29fddb2a3c6dd5e794da4adb8d63"
+    "size": 36532,
+    "sha256": "062caeba252d4b13240ced2c1bd9cf511b49614ebf04c85944cb97943fa0e89b"
   },
   "helpers/master_list_read.py": {
     "size": 13573,
@@ -288,8 +288,8 @@
     "sha256": "6f33b61d2b1e45fb25368c4a68d8a456903f5b20d270533585514d0dd7498e42"
   },
   "prompts/master-list.md": {
-    "size": 7364,
-    "sha256": "305cc7292afdb3224d9ea322bd50f730a8e4fc784cbd9e5076db2e1cda27ce58"
+    "size": 7374,
+    "sha256": "c9f7fe179dd58258c4c661de6f9e57b0b58dccec36b72d4de5f640d098239c48"
   },
   "prompts/match-adjudicate.md": {
     "size": 4309,

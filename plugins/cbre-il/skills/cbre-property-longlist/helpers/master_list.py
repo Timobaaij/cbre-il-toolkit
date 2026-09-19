@@ -659,8 +659,8 @@ def sender_parts(raw) -> tuple:
     if not name:
         name = addr.split("@")[0].replace(".", " ").title() if addr else ""
     # A trailing "(...)" is taken off FIRST. The live corpus has
-    # "Pearson, Sam (Avison Young - UK)": leaving the bracket on blocked the surname flip below
-    # and the sheet printed "Pearson, Sam (Avison Young - UK)" where it should read "Sam Pearson".
+    # "Hale, Robin (Avison Young - UK)": leaving the bracket on blocked the surname flip below
+    # and the sheet printed "Hale, Robin (Avison Young - UK)" where it should read "Robin Hale".
     m = re.match(r"^(.*?)\s*\(([^)]+)\)\s*$", name)
     if m:
         name = m.group(1).strip()
@@ -702,7 +702,7 @@ def human_date(v) -> str:
 
 
 def email_source_text(sender_raw, date) -> str:
-    """"Email: John Doe (Cushman & Wakefield), 7 Sep 2026" - the Source an adult can read."""
+    """"Email: Alex Morgan (Cushman & Wakefield), 7 Sep 2026" - the Source an adult can read."""
     name, org = sender_parts(sender_raw)
     who = name or "unknown sender"
     if org:
@@ -791,7 +791,7 @@ def email_index(folder: Path, emails, email_attachments=None) -> list:
     "RE: →  Looking for 60,000 to 100,000 sq ft of Industrial/Log..." with no postcode, no
     size and a raw path for a Source. A message is not a building. It is a SOURCE, and asking a
     human to answer Yes or No to a source is asking a question with no correct answer: "No" to
-    John Doe's email is not a decision about any of the four units it names.
+    Alex Morgan's email is not a decision about any of the four units it names.
 
     It also poisoned everything downstream. Because a message was a row, the orchestrator had to
     invent ten "MESSAGE ROW SPLIT - not one building" duplicate groups tying each message to the

@@ -7,6 +7,24 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.16.1] — 2026-09-19
+
+Marketplace 1.16.1: **CBRE I&L Toolkit 1.12.1**. UK I&L Toolkit unchanged at 1.6.2.
+
+### Security
+- **The Master List's example broker names are now a consistent invented set** — `Alex Morgan
+  (Cushman & Wakefield)`, `Sam Fletcher (Savills)`, `Priya Nair (C&W)`, `Jordan Blake`, `Casey
+  Reid`, across the reference, the dispatch prompt, two helpers and an eval. Real firms, made-up
+  people. The eval's fixture sender address became `fixture@savills.com` rather than a
+  real-looking personal address.
+- One example was renamed only on one side of the sentence, which left a real-looking name in
+  the quoted text and made the comment contradict itself (it showed `Pearson, Sam` and then
+  said it should read `Robin Hale`). Both halves now read `Hale, Robin` / `Robin Hale`, so the
+  comment demonstrates the surname flip it is actually describing.
+
+No behaviour change in this release — the code paths, the workbook and the gates are identical
+to 1.12.0.
+
 ## [1.16.0] — 2026-09-19
 
 Marketplace 1.16.0: **CBRE I&L Toolkit 1.12.0** and **UK I&L Toolkit 1.6.2**. The Kato upload
@@ -1271,6 +1289,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.16.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.16.1
 [1.16.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.16.0
 [1.15.2]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.15.2
 [1.15.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.15.1

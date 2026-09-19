@@ -203,7 +203,7 @@ def _humanise_sources(rows: list, mail: list) -> None:
                 break
         if hit is None:
             # The sub-agent writes its own source text and the live run's read
-            # "RE: Looking for 60,000 to 100,000 sq ft, Sam Roe, C&W" - a subject line
+            # "RE: Looking for 60,000 to 100,000 sq ft, Jordan Blake, C&W" - a subject line
             # with a reply prefix on the front, which is the one thing this column must never
             # show. Match it back to the message by its SENDER, which the row also names in
             # Landlord / developer, and print the index's own wording instead.
