@@ -99,7 +99,6 @@ except Exception:                                    # pragma: no cover
 # private sentinel set, which evals/f05_no_private_sentinel_sets_test.py exists to refuse.
 import normalize as _N  # noqa: E402  (helpers/ is on path by the line above)
 
-MEDIA_FIELDS = ("photo", "plan")
 _SLUG_RX = re.compile(r"[^a-z0-9]+")
 _EXT = {"/9j/": "jpg", "iVBOR": "png", "R0lGO": "gif", "UklGR": "webp"}
 

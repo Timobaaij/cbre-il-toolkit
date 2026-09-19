@@ -4,17 +4,17 @@
 
 **Goal:** Fix four generic, client-agnostic bugs found during a live Corby, UK run of the `cbre-property-longlist` skill: a motorway-locator condenser that can fuse the wrong distance onto the wrong road, a reserved schema key (`district`) that collides with the single most natural open-schema field name a reader would pick, a screenshot helper that writes outside the work directory when run from the skill's own folder (as the skill's own docs instruct), and two mechanical gates that the orchestrator must remember to run by hand instead of the spine running them itself.
 
-**Architecture:** Each fix is independent and touches a disjoint set of files (only Task 4's schema rename touches the frozen `dashboard_template.html`, requiring the skill's documented template-versioning procedure). No client data, filenames, or run-specific values appear in any change — every fix is verified against the existing eval corpus plus a new pinned eval per task.
+**Architecture:** Each fix is independent and touches a disjoint set of files (only Task 4's schema rename touches the frozen `dashboard_template.html`, requiring the skill's documented template-versioning procedure). No client data, filenames, or run-specific values appear in any change - every fix is verified against the existing eval corpus plus a new pinned eval per task.
 
 **Tech Stack:** Python 3 (stdlib `re`, `json`, `hashlib`, `argparse`), the skill's own `evals/*.py` harness (plain scripts with `sys.exit`, no pytest).
 
 ## Global Constraints
 
-- This directory is **not a git repository** (verified: `git status` → "fatal: not a git repository"). The skill's own `reference/template-contract.md` accounts for this: step 1 of any template edit is "take a dated copy of the whole skill folder FIRST … the copy is your only revert." Task 0 does this for the WHOLE plan, once, up front — there are no per-step `git commit` steps anywhere below; read "commit" as "the dated backup already covers this."
-- Every change must stay **fully generic** — no client name, no run-specific filename, no tailoring to the Corby dataset. Every new test fixture uses synthetic/generic data.
+- This directory is **not a git repository** (verified: `git status` → "fatal: not a git repository"). The skill's own `reference/template-contract.md` accounts for this: step 1 of any template edit is "take a dated copy of the whole skill folder FIRST … the copy is your only revert." Task 0 does this for the WHOLE plan, once, up front - there are no per-step `git commit` steps anywhere below; read "commit" as "the dated backup already covers this."
+- Every change must stay **fully generic** - no client name, no run-specific filename, no tailoring to the Corby dataset. Every new test fixture uses synthetic/generic data.
 - After **every** task: run that task's own new/modified eval file directly, then run `python evals/run_all.py --quick` as a fast regression check.
-- After the **last** task: run the **full** `python evals/run_all.py` (all 60+ evals) — this is the skill's own documented bar for shipping any helper/template edit (`SKILL.md` "Maintenance" section), and then `python helpers/make_integrity.py` must already be current (it is run inside Task 4, the only task that touches a helper file the manifest hashes — re-run it once more at the very end as a final check).
-- Never touch `helpers/make_template.py`'s `CONFIG_REPLACEMENTS`/`POST_PATCHES` literals — that machinery is explicitly HISTORICAL (cannot regenerate the live v37+ template) and out of scope.
+- After the **last** task: run the **full** `python evals/run_all.py` (all 60+ evals) - this is the skill's own documented bar for shipping any helper/template edit (`SKILL.md` "Maintenance" section), and then `python helpers/make_integrity.py` must already be current (it is run inside Task 4, the only task that touches a helper file the manifest hashes - re-run it once more at the very end as a final check).
+- Never touch `helpers/make_template.py`'s `CONFIG_REPLACEMENTS`/`POST_PATCHES` literals - that machinery is explicitly HISTORICAL (cannot regenerate the live v37+ template) and out of scope.
 - All file paths below are absolute Windows paths rooted at `C:\Users\TBaaij\.claude\skills\cbre-property-longlist\`. Written with forward slashes below for readability inside code blocks; use the real path when running commands.
 
 ---
@@ -36,7 +36,7 @@ cp -r "C:/Users/TBaaij/.claude/skills/cbre-property-longlist" "C:/Users/TBaaij/.
 diff -rq "C:/Users/TBaaij/.claude/skills/cbre-property-longlist" "C:/Users/TBaaij/.claude/skills/cbre-property-longlist.backup-2026-08-15"
 ```
 
-Expected: no output (the two trees are identical). This backup is the revert path for every task below — if anything goes wrong, restore the affected file(s) from here rather than trying to hand-reconstruct the original.
+Expected: no output (the two trees are identical). This backup is the revert path for every task below - if anything goes wrong, restore the affected file(s) from here rather than trying to hand-reconstruct the original.
 
 ---
 
@@ -48,11 +48,11 @@ Expected: no output (the two trees are identical). This backup is the revert pat
 
 **Interfaces:**
 - Consumes: nothing new (the existing `_MW_ROAD`, `_MW_JCT`, `_MW_PAIRS`, `_MW_DIST`, `_MW_ADJACENT` module-level regexes in `normalize.py`)
-- Produces: `short_motorway(text, limit=MOTORWAY_MAX) -> (str, bool)` — SAME signature as today, only its internal distance-selection logic changes. Nothing downstream (`merge.py:1883` calls `N.short_motorway(p["motorway"])[0]`) needs to change.
+- Produces: `short_motorway(text, limit=MOTORWAY_MAX) -> (str, bool)` - SAME signature as today, only its internal distance-selection logic changes. Nothing downstream (`merge.py:1883` calls `N.short_motorway(p["motorway"])[0]`) needs to change.
 
-**The bug:** when a clause (a `;`/`.`-separated run) mentions **more than one** distance figure, `short_motorway` picks the FIRST distance anywhere in the clause via `_MW_DIST.search(clause)`, regardless of which road/junction it actually sits next to in the source text. A real example that shipped a wrong value: `"Evo Corby has immediate access to the A43, is only 11 miles to the A14, and 28 miles from Junction 19 of the M1."` has no `;`/`.` mid-sentence, so the WHOLE sentence is one clause; `_MW_PAIRS` correctly finds `Junction 19 of the M1` (road=`M1`, jct=`19`), but `_MW_DIST.search` then grabs the FIRST distance in the clause — `"11 miles"` (which belongs to the A14 mention, far earlier in the sentence) — instead of `"28 miles"` (which sits right next to `"Junction 19"`, a few words away). The result, `"M1 J19 11 miles"`, misstates a real published distance by 17 miles: a fabricated-looking value on a client-facing card.
+**The bug:** when a clause (a `;`/`.`-separated run) mentions **more than one** distance figure, `short_motorway` picks the FIRST distance anywhere in the clause via `_MW_DIST.search(clause)`, regardless of which road/junction it actually sits next to in the source text. A real example that shipped a wrong value: `"Evo Corby has immediate access to the A43, is only 11 miles to the A14, and 28 miles from Junction 19 of the M1."` has no `;`/`.` mid-sentence, so the WHOLE sentence is one clause; `_MW_PAIRS` correctly finds `Junction 19 of the M1` (road=`M1`, jct=`19`), but `_MW_DIST.search` then grabs the FIRST distance in the clause - `"11 miles"` (which belongs to the A14 mention, far earlier in the sentence) - instead of `"28 miles"` (which sits right next to `"Junction 19"`, a few words away). The result, `"M1 J19 11 miles"`, misstates a real published distance by 17 miles: a fabricated-looking value on a client-facing card.
 
-**The fix:** make distance selection **proximity-aware** — when a road/junction match is found at some character span in the clause, prefer the `_MW_DIST` match whose span is CLOSEST to that road/junction span (by character distance), not simply the first one found anywhere in the clause. When only one distance exists in the clause (the common, already-tested case), "nearest" and "first" are identical, so no existing behaviour changes.
+**The fix:** make distance selection **proximity-aware** - when a road/junction match is found at some character span in the clause, prefer the `_MW_DIST` match whose span is CLOSEST to that road/junction span (by character distance), not simply the first one found anywhere in the clause. When only one distance exists in the clause (the common, already-tested case), "nearest" and "first" are identical, so no existing behaviour changes.
 
 - [ ] **Step 1: Read the current function to confirm line numbers before editing**
 
@@ -66,7 +66,7 @@ print(open(p, encoding='utf-8').read().count('def short_motorway'))
 
 Expected: `1` (confirms there is exactly one definition to edit).
 
-- [ ] **Step 2: Write the failing test — add a new CASE to the existing motorway eval**
+- [ ] **Step 2: Write the failing test - add a new CASE to the existing motorway eval**
 
 Edit `evals/header_brochure_motorway_test.py`. Insert a new tuple into the existing `CASES` list (right after the two already there, before the closing `]`, at line 90):
 
@@ -215,7 +215,7 @@ Expected: every `[PASS]` line, including the three motorway `CASES` and the two 
 cd "C:/Users/TBaaij/.claude/skills/cbre-property-longlist" && python evals/run_all.py --quick
 ```
 
-Expected: `STATUS: ALL-PASS` (or the suite's equivalent all-clear line). If anything fails, stop and diagnose before continuing — do not proceed to Task 2 on a red quick-pass.
+Expected: `STATUS: ALL-PASS` (or the suite's equivalent all-clear line). If anything fails, stop and diagnose before continuing - do not proceed to Task 2 on a red quick-pass.
 
 ---
 
@@ -229,7 +229,7 @@ Expected: `STATUS: ALL-PASS` (or the suite's equivalent all-clear line). If anyt
 - Consumes: `playwright_check(html: Path, out: Path) -> int` (unchanged signature, already in the file at line 92)
 - Produces: nothing new consumed elsewhere; `main()`'s CLI contract changes only in what `--out`/`--out-dir` DEFAULTS to when omitted (still overridable exactly as before when passed explicitly)
 
-**The bug:** `ap.add_argument("--out", "--out-dir", dest="out", default="render", ...)` is a RELATIVE path resolved against the process's current working directory, not against the built HTML file's location. The skill's own documented invocation pattern (`SKILL.md` "Which shell runs the helpers": *"Run the helpers with the sandbox shell from the skill directory"*) means an orchestrator following the docs literally runs `python helpers/render_qa.py <path-to-built.html>` from INSIDE the skill's own install folder — so the default `render/` directory is created inside the shared skill folder itself, not the client's work directory, on essentially every run. (The SAME class of bug was already fixed once in this exact file for `launch.json`, at line 218-220 — `html.resolve().parent / ".claude"` — but the screenshot `--out` default was never given the same treatment.)
+**The bug:** `ap.add_argument("--out", "--out-dir", dest="out", default="render", ...)` is a RELATIVE path resolved against the process's current working directory, not against the built HTML file's location. The skill's own documented invocation pattern (`SKILL.md` "Which shell runs the helpers": *"Run the helpers with the sandbox shell from the skill directory"*) means an orchestrator following the docs literally runs `python helpers/render_qa.py <path-to-built.html>` from INSIDE the skill's own install folder - so the default `render/` directory is created inside the shared skill folder itself, not the client's work directory, on essentially every run. (The SAME class of bug was already fixed once in this exact file for `launch.json`, at line 218-220 - `html.resolve().parent / ".claude"` - but the screenshot `--out` default was never given the same treatment.)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -348,7 +348,7 @@ CLI:
   the shared skill tree.
 ```
 
-Then replace `main()` (lines 204-212 only — the `if rc == -1:` branch below is untouched):
+Then replace `main()` (lines 204-212 only - the `if rc == -1:` branch below is untouched):
 
 ```python
 def main() -> None:
@@ -366,7 +366,7 @@ def main() -> None:
     rc = playwright_check(html, out_dir)
 ```
 
-(Every line from `if rc == -1:` onward, currently lines 213-248, is unchanged — it already correctly anchors `launch.json` to `html.resolve().parent`.)
+(Every line from `if rc == -1:` onward, currently lines 213-248, is unchanged - it already correctly anchors `launch.json` to `html.resolve().parent`.)
 
 - [ ] **Step 4: Run the eval to verify it passes**
 
@@ -382,7 +382,7 @@ Expected: all `[PASS]`, `STATUS: ALL-PASS`.
 cd "C:/Users/TBaaij/.claude/skills/cbre-property-longlist" && python evals/render_capture_test.py
 ```
 
-Expected: `RENDER CAPTURE TEST: PASS` (unchanged — that eval only exercises `capture_report`/source-text greps, neither of which this task touched).
+Expected: `RENDER CAPTURE TEST: PASS` (unchanged - that eval only exercises `capture_report`/source-text greps, neither of which this task touched).
 
 - [ ] **Step 6: Quick regression pass**
 
@@ -404,9 +404,9 @@ Expected: all-clear.
 
 **Interfaces:**
 - Consumes: `run_gate(module, *cmd) -> int` (existing helper in `run.py`, already used for every other mechanical gate); `gate_runner.py`'s existing `input-accounting` and `capture-symmetry` subcommands (unchanged CLI: `input-accounting <canonical> --work <W>`, `capture-symmetry --work <W>`)
-- Produces: two more entries appended to the `g1` list (the pre-build gate return-code list) and to `gate1_scorecard.md`'s printed fragments — nothing downstream reads `g1`'s length, only `any(rc != 0 for rc in g1)` and `all(rc == 0 for rc in g1)`, both unaffected in shape
+- Produces: two more entries appended to the `g1` list (the pre-build gate return-code list) and to `gate1_scorecard.md`'s printed fragments - nothing downstream reads `g1`'s length, only `any(rc != 0 for rc in g1)` and `all(rc == 0 for rc in g1)`, both unaffected in shape
 
-**The bug:** `gate_runner.py input-accounting` (a REAL gate — it can return 1 and block, per `evals/input_accounting_test.py`'s "MUST FIRE" cases) and `gate_runner.py capture-symmetry` (an always-0 advisory-notes report, per `cmd_capture_symmetry`'s unconditional `return 0`) are both fully mechanical and deterministic, yet the spine never calls either — `SKILL.md` and `reference/gates.md` currently tell the ORCHESTRATOR to run them by hand "alongside the batch." This is exactly the kind of manual step that gets forgotten under time pressure, and both gates are cheap, pure-Python checks with no reason to stay manual — every other mechanical gate in the identical spirit is already wired into `run.py`'s `g1` list.
+**The bug:** `gate_runner.py input-accounting` (a REAL gate - it can return 1 and block, per `evals/input_accounting_test.py`'s "MUST FIRE" cases) and `gate_runner.py capture-symmetry` (an always-0 advisory-notes report, per `cmd_capture_symmetry`'s unconditional `return 0`) are both fully mechanical and deterministic, yet the spine never calls either - `SKILL.md` and `reference/gates.md` currently tell the ORCHESTRATOR to run them by hand "alongside the batch." This is exactly the kind of manual step that gets forgotten under time pressure, and both gates are cheap, pure-Python checks with no reason to stay manual - every other mechanical gate in the identical spirit is already wired into `run.py`'s `g1` list.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -505,7 +505,7 @@ Expected: multiple `[FAIL]` lines (the calls don't exist yet; the manual-run lan
 
 - [ ] **Step 3: Implement the fix in `helpers/run.py`**
 
-In the Stage-4 section, immediately after the existing `coverage` gate call and before `trace-coverage` (this is where `reference/gates.md`'s own table already places "G-inputs" — between G-coverage and G-trace-coverage), insert two new lines. The block currently reads (lines 3184-3189):
+In the Stage-4 section, immediately after the existing `coverage` gate call and before `trace-coverage` (this is where `reference/gates.md`'s own table already places "G-inputs" - between G-coverage and G-trace-coverage), insert two new lines. The block currently reads (lines 3184-3189):
 
 ```python
     cov_args = ["coverage", canonical]
@@ -556,12 +556,12 @@ Find this row (currently line 43):
 
 Old:
 ```
-| G-inputs | `gate_runner.py input-accounting --work <W> <canonical>` — **ORCHESTRATOR-RUN: the spine does not invoke this one yet, so run it yourself alongside the other pre-build gates** | every discovered input either contributed fields (it appears in the Source Ledger), contributed a photo, was recorded unreadable/skipped, or has no consumer in the spine (a loose image). Anything else has silently vanished | a whole source dropped with nothing recorded |
+| G-inputs | `gate_runner.py input-accounting --work <W> <canonical>` - **ORCHESTRATOR-RUN: the spine does not invoke this one yet, so run it yourself alongside the other pre-build gates** | every discovered input either contributed fields (it appears in the Source Ledger), contributed a photo, was recorded unreadable/skipped, or has no consumer in the spine (a loose image). Anything else has silently vanished | a whole source dropped with nothing recorded |
 ```
 
 New:
 ```
-| G-inputs | `gate_runner.py input-accounting --work <W> <canonical>` — run automatically by `run.py` in the same pre-build batch as every other mechanical gate | every discovered input either contributed fields (it appears in the Source Ledger), contributed a photo, was recorded unreadable/skipped, or has no consumer in the spine (a loose image). Anything else has silently vanished | a whole source dropped with nothing recorded |
+| G-inputs | `gate_runner.py input-accounting --work <W> <canonical>` - run automatically by `run.py` in the same pre-build batch as every other mechanical gate | every discovered input either contributed fields (it appears in the Source Ledger), contributed a photo, was recorded unreadable/skipped, or has no consumer in the spine (a loose image). Anything else has silently vanished | a whole source dropped with nothing recorded |
 ```
 
 - [ ] **Step 6: Run the eval to verify it passes**
@@ -578,7 +578,7 @@ Expected: all `[PASS]`, `STATUS: ALL-PASS`.
 cd "C:/Users/TBaaij/.claude/skills/cbre-property-longlist" && python evals/capture_contract_test.py && python evals/input_accounting_test.py
 ```
 
-Expected: both `STATUS: ALL-PASS` / `PASS` — `capture_contract_test.py` only checks that the STRING "capture-symmetry" still appears in `SKILL.md`/`reference/gates.md` (it does, per Step 4/5 above), never the removed "run it yourself" phrasing, so it is unaffected. `input_accounting_test.py` only exercises `gate_runner.py input-accounting` directly and `GR._accounting_buckets`, not `run.py`'s orchestration, so it is unaffected too.
+Expected: both `STATUS: ALL-PASS` / `PASS` - `capture_contract_test.py` only checks that the STRING "capture-symmetry" still appears in `SKILL.md`/`reference/gates.md` (it does, per Step 4/5 above), never the removed "run it yourself" phrasing, so it is unaffected. `input_accounting_test.py` only exercises `gate_runner.py input-accounting` directly and `GR._accounting_buckets`, not `run.py`'s orchestration, so it is unaffected too.
 
 - [ ] **Step 8: Quick regression pass**
 
@@ -605,7 +605,7 @@ Expected: all-clear.
 - Consumes: `_common.canonical_property_fields()` (unchanged signature; its OUTPUT set changes because it derives from `canonical.schema.json`'s top-level `properties` keys)
 - Produces: canonical property records may now carry a plain STRING `district` field (like `city`/`park`/`postcode`), auto-discoverable by every reader via the manifest's `fields` array; the renamed `districtProfile` object keeps the exact same shape/behaviour the old `district` object had (orchestrator-filled labour-market micro-profile, never populated by the deterministic spine)
 
-**Why this is a real, generic bug, not a one-off:** `reference/interpretation.md` (the actual contract every interpretation sub-agent reads) lists `district` as one of the 43 "reader-fillable" canonical field names — generated LIVE from `_common.canonical_property_fields()`, which in turn reads `canonical.schema.json`'s own top-level `properties` keys. `helpers/gate_runner.py`'s `PROV_ADVISE_FIELDS = frozenset({"city", "district", "park", "address", "postcode"})` (used by the `prov-containment` gate) already expects `district` to be a flat, checkable STRING field grouped with `city`/`park`/`postcode`. But `canonical.schema.json` currently declares top-level `district` as an OBJECT (an "ORCHESTRATOR-FILLED... labour-market micro-profile" — nothing in `helpers/` actually writes to it; it is a manual-edit-only feature). So the skill's own contract ADVERTISES `district` as a fillable string field, its own gate EXPECTS it to be a checkable string field, and its own schema REJECTS exactly that. This will recur for any client, any market — "district" is an obvious, natural key for "the estate/sub-area a park sits within" (this run's own two brochures independently reached for it, unprompted, for exactly that meaning).
+**Why this is a real, generic bug, not a one-off:** `reference/interpretation.md` (the actual contract every interpretation sub-agent reads) lists `district` as one of the 43 "reader-fillable" canonical field names - generated LIVE from `_common.canonical_property_fields()`, which in turn reads `canonical.schema.json`'s own top-level `properties` keys. `helpers/gate_runner.py`'s `PROV_ADVISE_FIELDS = frozenset({"city", "district", "park", "address", "postcode"})` (used by the `prov-containment` gate) already expects `district` to be a flat, checkable STRING field grouped with `city`/`park`/`postcode`. But `canonical.schema.json` currently declares top-level `district` as an OBJECT (an "ORCHESTRATOR-FILLED... labour-market micro-profile" - nothing in `helpers/` actually writes to it; it is a manual-edit-only feature). So the skill's own contract ADVERTISES `district` as a fillable string field, its own gate EXPECTS it to be a checkable string field, and its own schema REJECTS exactly that. This will recur for any client, any market - "district" is an obvious, natural key for "the estate/sub-area a park sits within" (this run's own two brochures independently reached for it, unprompted, for exactly that meaning).
 
 - [ ] **Step 1: Write the failing test**
 

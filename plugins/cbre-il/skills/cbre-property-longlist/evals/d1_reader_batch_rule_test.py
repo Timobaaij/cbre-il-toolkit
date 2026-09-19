@@ -233,8 +233,8 @@ def main() -> int:
         check(landed and landed[0].get("options", [""])[0].startswith("24,230 sq ft"),
               "clarify: the value-led option string survives into the question verbatim")
         del by_q
-    except Exception as e:  # a mid-edit helpers/clarify.py is another agent's file
-        check(False, f"clarify grounding could not run ({e!r}) - is helpers/clarify.py mid-edit?")
+    except Exception as e:  # a helpers/clarify.py that will not import fails the check here
+        check(False, f"clarify grounding could not run ({e!r}) - helpers/clarify.py did not load")
 
     print(f"\n{'PASS' if not fails else 'FAIL'} d1_reader_batch_rule_test "
           f"({len(fails)} failure(s))")

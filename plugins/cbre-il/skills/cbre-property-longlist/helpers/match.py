@@ -743,7 +743,6 @@ def _cross_source_auto(a: dict, b: dict) -> bool:
 
 GREY_LOW = 70   # token-set floor below which a same-name pair is not even plausible
 GREY_COORD_KM = 2.0  # two cross-source pins this close are plausibly one site
-RECALL_KM = COORD_MERGE_KM  # the auto coord-net radius (a grey pin is wider, see GREY_COORD_KM)
 
 
 def _cross_source_grey(a: dict, b: dict) -> bool:

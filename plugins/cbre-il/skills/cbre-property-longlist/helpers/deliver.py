@@ -286,8 +286,10 @@ def master_list_lines(work_dir) -> list:
     # options were chosen and by whom, and silence would read as "nobody chose", which is the
     # exact misreading the headless paragraph below exists to prevent.
     try:
-        _ext = json.loads((Path(work_dir) / "master_list_external.json")
-                          .read_text(encoding="utf-8-sig"))
+        # the filename is master_list's to own: a rename there must not leave this reader
+        # silently finding nothing and printing the "nobody chose" paragraph instead
+        from master_list import EXTERNAL as _ML_EXTERNAL
+        _ext = json.loads((Path(work_dir) / _ML_EXTERNAL).read_text(encoding="utf-8-sig"))
     except Exception:
         _ext = None
     if isinstance(_ext, dict) and str(_ext.get("mode") or "") == "external":

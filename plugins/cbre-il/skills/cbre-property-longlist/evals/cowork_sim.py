@@ -591,6 +591,93 @@ class Responder:
         self.log("      data translation: wrote data_translate.SKIP")
         return True
 
+    def exit_17(self, stderr: str) -> bool:
+        """MASTER LIST: the user's scope decision, before any deck is read.
+
+        Three moving parts and a human in the middle: master_list_build.py writes the
+        workbook, the USER sets Include? to Yes or No on every row, master_list_read.py
+        makes those answers binding in work/master_list.json. The sim plays the human.
+        Step (1) of the handoff - the candidates sub-agent that adds email-only rows - is
+        OPTIONAL by design, so declining it is the same decline this responder makes at
+        every other agentic step.
+
+        The handoff prints the two commands, but it prints them on STDOUT and a handler
+        only receives stderr, so this drives the helpers off `self.work` the way exit_9
+        and exit_10 already drive off work-dir files rather than off the message text.
+
+        `mode` decides how badly the sheet comes back, escalating over attempts the way
+        the rest of this class does (`round_seen`):
+          clean        - every row Yes, one attempt, nothing to argue with.
+          anything else - ATTEMPT 1 hands back a sheet with one row left BLANK and one row
+            typed "Maybe". Both are refusals the read-back owes us (exit 2, no answers file
+            written), and the spine must come back and ask again rather than proceed on a
+            half-answered sheet. ATTEMPT 2 answers every row and strikes ONE off with No,
+            so the exclusion path runs (the row is not built and must be NAMED in the Gaps
+            Report). The last option is never the one struck off: an empty scope is a
+            different test, not this one.
+        """
+        from openpyxl import load_workbook
+
+        attempt = self.round_seen.get("master_list", 0) + 1
+        self.round_seen["master_list"] = attempt
+        wbp = self.work / "Master List.xlsx"
+        if not wbp.exists():
+            b = subprocess.run(
+                [sys.executable, str(SKILL / "helpers" / "master_list_build.py"),
+                 "--work", str(self.work)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace")
+            if b.returncode != 0 or not wbp.exists():
+                self.log(f"      master_list_build FAILED ({b.returncode}): "
+                         f"{(b.stderr or '')[-200:]}")
+                return False
+
+        wb = load_workbook(wbp)
+        ws = wb["Master list"]
+        hdr = {str(ws.cell(4, c).value).strip(): c
+               for c in range(1, ws.max_column + 1) if ws.cell(4, c).value}
+        if "Include?" not in hdr or "Row ID" not in hdr:
+            self.log("      the built workbook has no Include?/Row ID column - cannot answer.")
+            return False
+        # a Row ID is what makes a row answerable; the padding rows below the data have none
+        rows = [r for r in range(5, ws.max_row + 1) if ws.cell(r, hdr["Row ID"]).value]
+        if not rows:
+            self.log("      the built workbook has no answerable row.")
+            return False
+
+        half = self.mode != "clean" and attempt == 1
+        blank_i = 0 if half else -1
+        maybe_i = 1 if half and len(rows) > 1 else -1
+        no_i = (len(rows) - 1 if self.mode != "clean" and not half and len(rows) > 1 else -1)
+        for i, r in enumerate(rows):
+            ws.cell(r, hdr["Include?"],
+                    None if i == blank_i else "Maybe" if i == maybe_i
+                    else "No" if i == no_i else "Yes")
+        wb.save(wbp)
+
+        rr = subprocess.run(
+            [sys.executable, str(SKILL / "helpers" / "master_list_read.py"),
+             "--work", str(self.work)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
+        wrote = (self.work / "master_list.json").exists()
+        if half:
+            if rr.returncode == 0 or wrote:
+                self.log("      DEFECT: master_list_read ACCEPTED a sheet with a blank row "
+                         f"and a 'Maybe' (exit {rr.returncode}) - the Yes/No guard did not "
+                         "hold, and half a decision became binding.")
+            else:
+                self.log(f"      master list: refused the half-answered sheet "
+                         f"(exit {rr.returncode}), as it must - answering it properly next "
+                         f"round")
+            return True  # the round-trip WAS answered; the answer was rejected, which is the test
+        if rr.returncode != 0 or not wrote:
+            self.log(f"      master_list_read FAILED on a fully answered sheet "
+                     f"({rr.returncode}): {(rr.stderr or '')[-200:]}")
+            return False
+        self.log(f"      master list: {len(rows)} row(s) answered "
+                 f"({'1 excluded (No), rest Yes' if no_i >= 0 else 'all Yes'}) -> "
+                 f"master_list.json")
+        return True
+
 
 # ---------------------------------------------------------------- the driver
 

@@ -16,7 +16,7 @@ resizing, .msg parsing, writing files). Run every helper with native Windows Pyt
 `mcp__shell__run_command` or the PowerShell tool where those exist; in **Claude Cowork** use whatever
 code-execution tool is available instead, and see step 0. `HELP` = this skill's own `helpers` directory
 (on Timo's PC, `C:\Users\TBaaij\.claude\skills\Kato-Longlist\helpers`; elsewhere, wherever the skill is
-installed — never hardcode that path in Cowork).
+installed - never hardcode that path in Cowork).
 
 ## Inputs
 
@@ -32,7 +32,7 @@ export (`Emails.zip` of Outlook `.msg` files) sits in the working directory.
 
 **ASK for the Kato credentials; never ship them.** `email` and `password` arrive blank in
 `run.example.yaml` on purpose. Before the first helper that logs in, ask the user for their **CBRE
-email** and **Kato password**, and write them into the working directory's `run.yaml` — which is
+email** and **Kato password**, and write them into the working directory's `run.yaml` - which is
 git-ignored, so a filled-in config can never be committed. Do not paste either value into the chat,
 a deliverable, or any file other than that `run.yaml`, and do not carry them between projects: ask
 again per working directory. If `run.yaml` already has both filled in, use them and do not re-ask.
@@ -41,10 +41,10 @@ asking for.
 
 ## Pipeline
 
-**0. Preflight — ALWAYS FIRST, BEFORE ANY OTHER STEP** —
+**0. Preflight - ALWAYS FIRST, BEFORE ANY OTHER STEP**
 `python "%HELP%\kato_preflight.py" --config run.yaml`
 Measures what this environment can actually do (network to Kato, Playwright, packages, bundles already
-present) and prints a **VERDICT**. Never guess which stage-1 path to use — branch on it:
+present) and prints a **VERDICT**. Never guess which stage-1 path to use - branch on it:
 - **`DIRECT_FETCH_OK`** → step 1.
 - **`BUNDLE_REQUIRED`** and a bundle is present → step **1-alt**.
 - **`BUNDLE_REQUIRED`** and NO bundle → run
@@ -54,20 +54,20 @@ present) and prints a **VERDICT**. Never guess which stage-1 path to use — bra
   for their bundle.** Do not attempt step 1 anyway: in Cowork it dies on a Playwright `ImportError` or a
   silent network timeout, which reads as a broken skill to a non-technical colleague.
 
-Honour the `degradations` it prints — e.g. no `pymupdf` → no site plans (step 7d); no network → the
+Honour the `degradations` it prints - e.g. no `pymupdf` → no site plans (step 7d); no network → the
 toolkit's enrichment needs its `web_enrich.py` browser handoff rather than live
 `--geocode/--pois/--osrm/--regions`. **Step 2 is never a degradation:** .msg parsing is done by this
 skill's own `msg_reader.py` (standard library only), so it works in Cowork with no pip and no network.
-If a run ever reports emails as unavailable, that is a bug or a missing export — never "the sandbox
+If a run ever reports emails as unavailable, that is a bug or a missing export - never "the sandbox
 cannot do it".
 
-**1. Fetch** — `python "%HELP%\kato_fetch.py" --config run.yaml`
+**1. Fetch** - `python "%HELP%\kato_fetch.py" --config run.yaml`
 Logs into Kato, enumerates the Longlist, and per property saves `_raw.json` + `_derived.json` and
 downloads the brochures/docs and photos (photos capped at 1200px / <500KB). Idempotent; re-runnable.
 
-**1-alt. Ingest a browser-captured bundle (NO Playwright, NO network)** —
+**1-alt. Ingest a browser-captured bundle (NO Playwright, NO network)**
 `python "%HELP%\kato_ingest.py" --config run.yaml --bundle kato_bundle_<reqid>_<date>.zip`
-Use this INSTEAD of step 1 whenever Playwright or outbound network is unavailable — above all in
+Use this INSTEAD of step 1 whenever Playwright or outbound network is unavailable - above all in
 **Claude Cowork**, which is fully sandboxed (only WebSearch/WebFetch have egress), so the Kato API is
 unreachable no matter what credentials are held. The colleague captures the requirement with the
 Chrome extension (`kato-cowork-bridge/extension`, see its README) while signed in to Kato, which
@@ -77,14 +77,14 @@ It ABORTS if the bundle's requirement id does not match `run.yaml`'s `kato_url`.
 helpers with whatever code-execution tool is available rather than `mcp__shell__run_command`, and
 expect `--bundle` media to be all the media there is: there is no way to fetch a missing file later.
 
-**2. Parse emails** — `python "%HELP%\emails_parse.py" --config run.yaml`
+**2. Parse emails** - `python "%HELP%\emails_parse.py" --config run.yaml`
 Turns the `.msg` files into clean text (`emails/emails.md`, `emails.json`) and saves every attachment
 (`emails/attachments/NN/`, with the broker's inline signature logos kept apart in `NN/inline/` so the
-brochures are obvious). Parsing uses `msg_reader.py` from this skill — **standard library only, so it
+brochures are obvious). Parsing uses `msg_reader.py` from this skill - **standard library only, so it
 needs no install and works in Cowork**. It also reads emails attached to emails, because broker rents
 are regularly one reply deep.
 It finds the export even when it is not called `Emails.zip` (any zip in the working directory holding
-.msg files) and **says which file it used** — so check that line rather than assuming. Read the
+.msg files) and **says which file it used** - so check that line rather than assuming. Read the
 `parsed=X/Y failed=Z` line: anything less than all of them means text is missing and belongs in the Gaps
 Report. Zero parsed exits non-zero.
 To prove .msg reading works in an unfamiliar environment before running the pipeline:
@@ -166,15 +166,15 @@ is the single source of truth from here to the end of the run.
   survivor rather than deleted, so its brochure still reaches the pipeline, and the automatic
   merge in `common.dedupe_props` switches itself off once a person has answered.
 
-**3. Facts for the model** — `python "%HELP%\make_facts.py" --config run.yaml`
+**3. Facts for the model** - `python "%HELP%\make_facts.py" --config run.yaml`
 Writes `emails/_property_facts.json` (each property's identifiers + key_points + summary + its
 **`kato_messages`**: the Kato in-app broker threads). **Most rents and much of the enrichment live
-in `kato_messages`, NOT the Outlook export** — a broker's quote is usually posted on the Kato match
+in `kato_messages`, NOT the Outlook export** - a broker's quote is usually posted on the Kato match
 thread. These messages are frequently MULTI-OPTION (one message lists several buildings, each with a
 rent, and is attached to several property threads), so map each figure to the RIGHT building by
 name/size; never blanket-apply a whole message to every property it is attached to.
 
-**4. Enrich (you)** — read `emails/emails.md` + `emails/_property_facts.json` and write
+**4. Enrich (you)** - read `emails/emails.md` + `emails/_property_facts.json` and write
 `enrichment.json` (`{"overrides": {"<property folder>": {rent, spec, outgoings, description, notes}}}`).
 - **Read `master_list.json`'s `run_notes` FIRST, honour every one, and ANSWER every one in
   writing.** They are instructions from the person who owns the deliverable, keyed by property
@@ -200,14 +200,14 @@ name/size; never blanket-apply a whole message to every property it is attached 
   the deliverable. Never invent a `done` you did not do: `not_possible` with a reason is a
   correct answer, a false tick is the failure this gate exists to catch.
 - **You MUST read every property's `kato_messages` (in `_property_facts.json`) as well as
-  `emails.md`** — the Kato in-app threads carry most of the rents and a lot of the spec, and a
+  `emails.md`** - the Kato in-app threads carry most of the rents and a lot of the spec, and a
   property with no email quote very often DOES have a Kato-message quote. Do NOT leave a rent at
   "On application" without first checking that property's `kato_messages` (and the multi-option
   messages attached to OTHER properties, which routinely name this building too).
 - Rent = the broker quote, taken in order: email quote → Kato-message quote → Kato structured →
   `"On application"`. Attach a rent only when a broker clearly names that exact building; otherwise
   leave it null. Keep the qualifier ("guiding, exc + VAT", "sublease assignment", "assignment til
-  <date>"). Kato messages are multi-option — match each figure to the right building by name/size.
+  <date>"). Kato messages are multi-option - match each figure to the right building by name/size.
 - Specs (clear height, power, loading, yard, parking, floor loading, EPC, BREEAM, availability) come
   from each property's own key_points/amenities/summary. Add outgoings where a broker states them.
 - **`description`** (REQUIRED, every property): author a 3-4 sentence dashboard description from that
@@ -218,7 +218,7 @@ name/size; never blanket-apply a whole message to every property it is attached 
   it into the dashboard. (The toolkit's tracker path cannot carry a description, so without this the
   cards show none.)
 
-**5. Assemble** — `python "%HELP%\build_dataset.py" --config run.yaml`
+**5. Assemble** - `python "%HELP%\build_dataset.py" --config run.yaml`
 Merges enrichment + Kato data + media into `properties/<folder>/property.json`, `_dataset.json`,
 `_gaps.json`. **This is where the master list bites**, and the only place it does: excluded rows
 are dropped here, so the tracker, the photo injection, the canonical patch, the client Excel and
@@ -231,16 +231,16 @@ needs no action use `--allow-unacknowledged-notes`, which builds and records eve
 note in `_gaps.json` instead, and you must then carry them into the Gaps Report yourself.
 With no `master_list.json` it behaves exactly as it did before step 2.5 existed.
 
-**6. Client Excel** — `python "%HELP%\build_excel.py" --config run.yaml`
+**6. Client Excel** - `python "%HELP%\build_excel.py" --config run.yaml`
 Writes the client workbook (Longlist + For Sale sheets, merged header bands, links shown as "link").
 
-**7. CBRE HTML dashboard** — via the toolkit skill `cbre-il-toolkit:cbre-property-longlist` (invoke it
+**7. CBRE HTML dashboard** - via the toolkit skill `cbre-il-toolkit:cbre-property-longlist` (invoke it
 to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute paths). Set
 `ORS_API_KEY` in the running shell so drive-times are HGV.
 
 > **Two paths, don't mix them.** Both are the toolkit's **skill root** (the dir containing `helpers/`
-> and `assets/`), not its `helpers/` dir — so toolkit scripts are `<toolkit>\helpers\<name>.py`.
-> `<install>` is the resolved toolkit skill directory — whatever is installed right now, so Kato always
+> and `assets/`), not its `helpers/` dir - so toolkit scripts are `<toolkit>\helpers\<name>.py`.
+> `<install>` is the resolved toolkit skill directory - whatever is installed right now, so Kato always
 > inherits the newest CBRE chrome; Kato ships **no** dashboard template of its own. `<toolkit>` is the
 > per-run **shadow** of it (step 7a.5) and is what every later step uses. Kato writes only to the
 > shadow, never to `<install>`.
@@ -296,16 +296,16 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
   yourself. `--include-sheets` also copies per-property spreadsheets, but each one becomes a
   SEPARATE tracker for the pipeline (one extra exit-3 column-map round-trip per file, and its rows
   merge in as further properties), so use it only where a sheet is a property's only source.
-- **7a.5. Shadow the toolkit** — `python "%HELP%\toolkit_shadow.py" --source "<install>" --work <work>`
+- **7a.5. Shadow the toolkit** - `python "%HELP%\toolkit_shadow.py" --source "<install>" --work <work>`
   → prints `<work>\toolkit`, which is `<toolkit>` for the rest of step 7. Copies the installed
   toolkit (~28 MB, ~1 s; skips `evals/`, `docs/`, hardlinks `vendor/`) so step 7e.5 can patch the
   template without touching the install. The toolkit derives its `SKILL_ROOT` from `__file__`, so
-  the shadow is self-contained — template, VERSION, integrity manifest, i18n, datasets and gates all
+  the shadow is self-contained - template, VERSION, integrity manifest, i18n, datasets and gates all
   resolve inside it. Rebuilt fresh each run, so a toolkit update is picked up automatically; pass
   `--keep` to reuse the existing shadow when resuming. Runtime caches are unaffected (the toolkit
   writes `geocode_cache.json` / `poi_osm_cache.json` / `osrm_cache.json` / `regions_cache.json` into
   the **work** dir, not the skill dir). It warns if `<install>` is already `-kato` tagged, which means
-  an older Kato run patched it in place — reinstall or update the toolkit to get pristine chrome back.
+  an older Kato run patched it in place - reinstall or update the toolkit to get pristine chrome back.
   **It also asserts the minimum wrapped-toolkit version** (`MIN_TOOLKIT_VERSION`, currently `v40`)
   and REFUSES an older or unreadable one, with the remedy, before copying anything. The wrapper owns
   that floor and the toolkit owns no ceiling, so there is exactly one place to change it. The
@@ -367,12 +367,12 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
     operator to strike off the same options a second time. Check that `project.yaml` in
     `longlist_work` carries that `master_list:` block (an older `toolkit_tracker.py`, or a
     hand-edited project.yaml, is the cause) and re-run the same command.
-- **7c.** `python "%HELP%\inject_photos.py" --config run.yaml` — put our photos into `canonical.json`.
-- **7c.5. Patch canonical (our data the toolkit drops)** — `python "%HELP%\patch_canonical.py" --config run.yaml`.
+- **7c.** `python "%HELP%\inject_photos.py" --config run.yaml` - put our photos into `canonical.json`.
+- **7c.5. Patch canonical (our data the toolkit drops)** - `python "%HELP%\patch_canonical.py" --config run.yaml`.
   Injects, per property, straight from `property.json`: the curated **description**, the **landlord**
   (real name / "Confidential"), the **brochure / video / website** URLs, a **Street View** URL (from
   the geocoded street-view pano/coords), and **EPC**. The toolkit has ONE green-cert field (`breeam`)
-  and no tracker path to description/links, so these are dropped in its column-mapping step — we own
+  and no tracker path to description/links, so these are dropped in its column-mapping step - we own
   `property.json`, so we inject them here (same pattern as `inject_photos.py`). `developer` is left
   `tbd` on purpose (the source rarely names one).
   It also repairs **`country`**, which arrives as the pipeline's unknown sentinel on every card (the
@@ -386,8 +386,8 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
   `python "%HELP%\bind_site_plans.py" --config run.yaml --decisions decisions.json`.
 - **7e. QA.** `python "%HELP%\qa_montages.py" --config run.yaml` → look at `plans_qa_*.png` (every bound
   plan is a real plan) and `heroes_qa_*.png` (right photo on the right property); fix any via 7d.
-- **7e.5. Patch the toolkit template (card/modal presentation)** — `python "%HELP%\patch_template.py" --toolkit "<toolkit>"`
-  (the SHADOW from step 7a.5 — the same dir whose `build_dashboard.py` you run below, never `<install>`;
+- **7e.5. Patch the toolkit template (card/modal presentation)** - `python "%HELP%\patch_template.py" --toolkit "<toolkit>"`
+  (the SHADOW from step 7a.5 - the same dir whose `build_dashboard.py` you run below, never `<install>`;
   the helper refuses any target that is not a shadow, so this cannot go wrong silently).
   Applies Kato's idempotent card/modal tweaks to `<toolkit>\assets\dashboard_template.html` and
   re-versions it (rewrites `assets\VERSION` chrome_sha256 so the toolkit's own template-SHA + byte-
@@ -411,9 +411,9 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
   force the anchor. Idempotent + version-agnostic: re-run
   each session (the shadow is rebuilt pristine from the install every run); it reports EVERY moved anchor
   in one run and writes nothing rather than shipping unpatched. Use `--dry-run` to check a new toolkit
-  version without touching it — that one is safe to point straight at `<install>`.
-  **NEVER hand-edit `built.html`** (the byte-equality gate rejects it) — the patch goes in the template.
-- **7f. Build + deliver** — `python "<toolkit>\helpers\build_dashboard.py" <work>\longlist_work\canonical.json --out <work>\longlist_work\built.html`
+  version without touching it - that one is safe to point straight at `<install>`.
+  **NEVER hand-edit `built.html`** (the byte-equality gate rejects it) - the patch goes in the template.
+- **7f. Build + deliver** - `python "<toolkit>\helpers\build_dashboard.py" <work>\longlist_work\canonical.json --out <work>\longlist_work\built.html`
   then the toolkit `deliver.py` (dashboard, Source Ledger, Gaps Report, Longlist xlsx).
 - **7g. Reviewer gates: ONE ROUND, NEVER TWO.** Run the toolkit's isolated reviewer gates
   (G-honesty, G-trace, G-images, G-visual, G-enrich) per its `reference/gates.md`, then its
@@ -428,7 +428,7 @@ to resolve its `helpers/` path; run its helpers with `mcp__shell`, absolute path
   disclosed in the Gaps Report. That judgement is the operator's, and encoding it as a rule would
   either wave through something material or mandate work that changes nothing.
 
-**7h. REFRESH THE CLIENT EXCEL — ALWAYS, AFTER THE PIPELINE, NEVER BEFORE** —
+**7h. REFRESH THE CLIENT EXCEL - ALWAYS, AFTER THE PIPELINE, NEVER BEFORE**
 `python "%HELP%\sync_from_canonical.py" --config run.yaml` then
 `python "%HELP%\build_excel.py" --config run.yaml`
 
@@ -458,7 +458,7 @@ building with a plant deck, undercroft or mezzanine (it pulled Rugby106 from its
 sq ft to 96,763 by dropping a 9,882 sq ft mezzanine), and it never touches rent, agent or tenure,
 where our data is richer than the pipeline's. `--dry-run` shows the diff first.
 
-**8. Finalise — ALWAYS LAST, NEVER SKIP** — `python "%HELP%\finalize_run.py" --config run.yaml`
+**8. Finalise - ALWAYS LAST, NEVER SKIP** - `python "%HELP%\finalize_run.py" --config run.yaml`
 Collects every client-facing file into `OUTPUT/`, writes a plain-English `START-HERE.md`, and deletes
 junk (`__pycache__`, `.pyc`, stray temp files) from a fixed allowlist. It touches nothing a re-run or an
 audit needs, and is idempotent. **Do not tell the user the run is finished until this has run and you
@@ -470,20 +470,20 @@ A copy in `OUTPUT/` that is NEWER than the incoming build is treated as one the 
 kept, with the incoming file taking the suffix instead.
 
 ## Outputs (working directory)
-- `OUTPUT/` — **the only folder the user needs**: dashboard, spreadsheet, Gaps Report, Source Ledger.
-- `START-HERE.md` — what to open, what to send, what to ignore. Written by step 8.
+- `OUTPUT/` - **the only folder the user needs**: dashboard, spreadsheet, Gaps Report, Source Ledger.
+- `START-HERE.md` - what to open, what to send, what to ignore. Written by step 8.
 - `Master List.xlsx`: the inventory the user answered at step 2.5. **Internal, never sent to a
   client**, and deliberately left in the working directory rather than moved to `OUTPUT/`: it is
   the record of what was included and why, and the file to re-open when the run is refreshed.
 - `master_candidates.json` (your input to 2.5), `master_list_manifest.json` (what was built),
   `master_list.json` (what the user decided; read by step 5 and by you at step 4).
-- `properties/<NN - Name - Postcode>/` — `_raw.json`, `_derived.json`, `property.json`, `media/`.
+- `properties/<NN - Name - Postcode>/` - `_raw.json`, `_derived.json`, `property.json`, `media/`.
   Folders materialised at step 2.5d have no `_raw.json` and carry `_derived.json._origin` instead.
 - `properties/_dataset.json`, `_index.json`, `_gaps.json`; `emails/`; `enrichment.json`.
 - `uploads/`: optional, where the user's extra brochures and sheets go. Loose files in the
   working directory root are picked up too; either way anything no row claims is listed on the
   workbook's **Unmatched files** tab, because a supplied file that nothing reads must be visible.
-- `longlist_work/` — toolkit working data (the deliverables are moved out of it by step 8).
+- `longlist_work/` - toolkit working data (the deliverables are moved out of it by step 8).
 
 ## Working directory discipline (NOT optional)
 
@@ -500,7 +500,7 @@ client. Producing the bytes is not the job; producing something a non-technical 
   location and clean up (step 2 already does this).
 - **Use the documented layout.** Do not invent folder or file names. If something has no documented home,
   it belongs in `_scratch/` and then in the bin.
-- **Finish with step 8, then say one sentence naming one path** — the `OUTPUT/` folder. Do not hand back
+- **Finish with step 8, then say one sentence naming one path** - the `OUTPUT/` folder. Do not hand back
   a list of six paths and let the user work out which matters.
 - **Never present a gap as a success.** If emails failed to parse, a rent is unconfirmed, or a site plan
   is missing, it goes in the Gaps Report and in what you tell the user.

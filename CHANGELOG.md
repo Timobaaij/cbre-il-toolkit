@@ -7,6 +7,47 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.15.1] — 2026-09-19
+
+Marketplace 1.15.1: **CBRE I&L Toolkit 1.11.1** and **UK I&L Toolkit 1.6.1**. Both plugins
+move. A fix release on both sides — no new or removed files.
+
+### Fixed
+- **`cowork_sim` now answers exit 17.** The simulator had no Responder branch for the Master
+  List round-trip and aborted on it in 1.15.0. It now plays the human properly: builds the
+  workbook, answers the sheet, reads it back, and additionally checks that a **half-answered
+  sheet is refused**. The suite converges at round 5, monotonic, idempotent and deterministic.
+- Property longlist: fixes across `deliver`, `gate_runner`, `images`, `master_list`, `match`,
+  `msg_reader` and `project_properties`, with the matching reference documents.
+- Kato longlist: fixes in `build_excel`, `finalize_run`, `msg_reader` and `patch_template`.
+- Re-applied the UK update-notice fix that the Kato upload reverted for the second release
+  running. It had gone back to naming "CBRE I&L Toolkit" and the CBRE CLI install id while
+  reading the UK plugin's own version, so a UK user acting on the nudge would update the wrong
+  plugin.
+
+### Security
+- **Documented the provenance of the bundled PyMuPDF wheel**, in a new
+  `cbre-property-longlist/vendor/README.md`. A security scan reports that this plugin contains
+  something it "couldn't be confirmed" — that warning is about the wheel, and it is accurate in
+  the literal sense: the wheel is a 25 MB **compiled binary**, so no automated scan can read
+  what is inside it. It is not a finding of anything wrong.
+
+  The wheel is the genuine upstream artefact. Its SHA256,
+  `857842b4888827bd6155a1131341b2822a7ebe9a8c15a975fd7d490d7a64a30c`, matches byte for byte the
+  digest PyPI publishes for `pymupdf-1.27.2.3-cp310-abi3-manylinux_2_28_x86_64.whl`. It has not
+  been rebuilt, repacked or modified. The new README records the upstream link, the size, the
+  digest and the licence, plus the one-line command to check it, so anybody asked to approve
+  this plugin can confirm it themselves rather than take it on trust.
+
+  It is bundled because PDF extraction has to work where PyMuPDF is not installed and cannot be
+  installed, which is the ordinary case in Cowork. It is unpacked into a temp directory and
+  imported from there, never installed into the system environment.
+
+  **Recorded gap, for the author:** `assets/integrity.json` does not cover `vendor/*.whl` —
+  `make_integrity.py` hashes `helpers/*.py`, `prompts/*.md` and a fixed asset list, so
+  `preflight.py` reports OK even if the wheel were swapped. The published digest is the only
+  check on it today. Adding `vendor/*.whl` to the manifest would close it.
+
 ## [1.15.0] — 2026-09-19
 
 Marketplace 1.15.0: **CBRE I&L Toolkit 1.11.0** and **UK I&L Toolkit 1.6.0**. Both plugins
@@ -1162,6 +1203,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.15.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.15.1
 [1.15.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.15.0
 [1.14.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.14.1
 [1.14.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.14.0

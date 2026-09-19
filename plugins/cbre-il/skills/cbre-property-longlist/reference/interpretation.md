@@ -385,13 +385,13 @@ records matching `templates/record_schema.json`:
 - **OPTIONAL: if the schedule prints its own TOTAL, copy that number.** When a spec table shows a
   total/overall/GIA/GEA/GLA figure for the whole building alongside the individual areas (e.g.
   "Warehouse 440,000 / Office 12,500 / **Total GIA 452,500**"), set
-  `"__meta": {"statedTotalArea": 452500, "statedTotalUnit": "sq ft"}` on that record — the number
+  `"__meta": {"statedTotalArea": 452500, "statedTotalUnit": "sq ft"}` on that record - the number
   **exactly as printed**, never one you add up yourself. It is only ever compared against the
   areas; a total you computed would make the comparison circular and worthless.
   Purely optional: a deck that prints no total is unaffected, and omitting it costs nothing.
   Why it is worth the two keys: the dashboard derives `Total GLA = warehouse + office` and
   `rent = GLA × rate`, so a size figure that ALREADY included the office silently inflates both.
-  That shipped once — GLA 11.7% above the source's own total and rent overstated by £702,108/yr.
+  That shipped once - GLA 11.7% above the source's own total and rent overstated by £702,108/yr.
   With the stated total recorded, `gate_runner arithmetic` catches it before anything is built.
 - **When the page says MORE than the shipped value can carry, say so in `__meta.source_conflicts`.**
   A plain object mapping a field name to ONE COMPLETE SENTENCE, printed VERBATIM (only the source

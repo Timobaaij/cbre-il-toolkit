@@ -92,16 +92,10 @@ offline city geocoding ships in the toolkit as `cities_dataset.json.gz`.
 
 ## Tests
 
-```
-python tests/make_test_bundle.py --tree "<a prior run dir>" --out fixture.zip
-python helpers/kato_ingest.py --config <work>/run.yaml --bundle fixture.zip
-python tests/verify_ingest.py --tree <work> --bundle fixture.zip --source "<prior run dir>"
-node   tests/zip_test.mjs out.zip      # then read out.zip with Python's zipfile
-```
-
-`verify_ingest.py` asserts raw fidelity, self-consistency (`_derived.json` == `derive(raw, li)`),
-media honesty (every URL `derive()` wants is on disk or recorded as a failure) and determinism (two
-ingests are byte-identical).
+This skill ships no test suite of its own. Its helpers are exercised end to end by a run, and
+the toolkit it wraps (`cbre-property-longlist`) carries the eval suite under `evals/`. A
+bundle ingest can be checked by hand: run `kato_ingest.py --bundle <zip>` twice into two work
+directories and diff them; the ingest is deterministic, so any difference is a defect.
 
 `diff_trees.py` is the spec's full acceptance test and needs a live `kato_fetch.py` run to compare
 against. Note that it will report differences on any tree containing manual `_corrections`.

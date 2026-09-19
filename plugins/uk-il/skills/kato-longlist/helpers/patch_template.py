@@ -47,7 +47,6 @@ import os, sys, argparse, hashlib, re
 
 MIDDOT = "·"   # the '·' separator already used in the template
 ARROW = "↗"    # the '↗' already used by the "Open in Google Maps ↗" label
-NUMERO = "№"   # the '№' glyph already used in the modal header
 
 # Each patch: (name, old, new, marker_new). marker_new present => already applied (skip).
 PATCHES = [

@@ -27,7 +27,7 @@ Note: the dashboard embeds ~30 base64 images, so a full-page **screenshot can ti
 Opens the view PNGs (Grid, Map, Flyover, Compare) and judges against `assets/reference_screenshots/` (**if that folder has no PNGs - it ships with only a README - judge against the rubric below and the CBRE house style; the missing baseline is NOT itself a finding**):
 - **Grid:** cards populated (thumb, park title, city/developer, key specs, rent, "View details"); CBRE green + Financier/Calibre; no broken thumbnails or overflow.
 - **Modal:** opens, populated, scrolls, closes; `"tbd"` shown honestly, never blank or a fabricated value.
-- **Site Plan (the modal's Site Plan toggle, when a property has one) - the INDEPENDENT plan verify:** open it and confirm the image IS genuinely THIS property's SITE PLAN - a footprint / block / layout drawing of the plot (unit outline, site boundary, dock/yard/parking, dimensions). The mechanical images gate does NOT judge the plan slot, so THIS is the independent-LLM check that the interpreter's `plan_page` pick was right. REJECT and flag **HIGH** if it is instead a location / context / connectivity map, an interior or exterior photo, an accommodation / specification table, a contact / cover / agents page, or a DIFFERENT property's plan (a wrong image here is an authoritative false claim - the slot carries no on-image source trace). A missing plan is honest; a wrong one is not — so **verify the plans that ARE bound; do not go hunting for ones that are not.** If a missed plan happens to be obvious in a screenshot you already have open, note it as `advisory:` with the source + 0-based page; but do NOT open decks to search for candidates. "Find a plan we have not found yet" has no terminal state, and the deterministic `planNearMiss` scan already surfaces plan-ish pages into the Gaps Report's "Possible site plans not captured" without a reviewer round. Two things now feed you before you open anything: `work/media_harvest.json` (the advisory `media-harvest` gate - a lost media capability, a card that read one page of a whole deck, deck pages nobody claimed) and, per card, `work/properties/<id>/media_decisions.json` with `media/considered/` beside it - the actual discard pile as openable files, so "was there anything better?" is answerable without opening a single PDF.
+- **Site Plan (the modal's Site Plan toggle, when a property has one) - the INDEPENDENT plan verify:** open it and confirm the image IS genuinely THIS property's SITE PLAN - a footprint / block / layout drawing of the plot (unit outline, site boundary, dock/yard/parking, dimensions). The mechanical images gate does NOT judge the plan slot, so THIS is the independent-LLM check that the interpreter's `plan_page` pick was right. REJECT and flag **HIGH** if it is instead a location / context / connectivity map, an interior or exterior photo, an accommodation / specification table, a contact / cover / agents page, or a DIFFERENT property's plan (a wrong image here is an authoritative false claim - the slot carries no on-image source trace). A missing plan is honest; a wrong one is not - so **verify the plans that ARE bound; do not go hunting for ones that are not.** If a missed plan happens to be obvious in a screenshot you already have open, note it as `advisory:` with the source + 0-based page; but do NOT open decks to search for candidates. "Find a plan we have not found yet" has no terminal state, and the deterministic `planNearMiss` scan already surfaces plan-ish pages into the Gaps Report's "Possible site plans not captured" without a reviewer round. Two things now feed you before you open anything: `work/media_harvest.json` (the advisory `media-harvest` gate - a lost media capability, a card that read one page of a whole deck, deck pages nobody claimed) and, per card, `work/properties/<id>/media_decisions.json` with `media/considered/` beside it - the actual discard pile as openable files, so "was there anything better?" is answerable without opening a single PDF.
 - **Map:** markers at correct positions; legend present. Check **POI layer toggles** only when `meta.enrichment.pois` is true, and **isochrone polygons** only when `meta.enrichment.osrm` is true - these are broker-opt-in extras; their absence on a build that did not request them is correct configuration, not a defect.
 - **Compare (the fourth tab):** switch to it - it compares ALL properties by default (columns = properties + the pinned Attribute column). Confirm: the comparison table renders (reusing `compareHTML`), the **Attribute column stays pinned** while the property columns scroll horizontally (essential at 8/12+ properties), the deselect **chips wrap** and toggling one drops/adds its column, Select-all / Clear-all work, and the largest-warehouse / lowest-rent highlights are present. Flag overflow/clipping or a crushed layout as a visual MED. (The card tick-box popup compare is separate and unchanged.)
 - **Flyover (the third tab):** navigation is prev/next buttons, arrow keys, space bar and marker-click ONLY - scrolling must NOT change the property. Confirm the map flies to the active option and one option shows at a time.
@@ -35,14 +35,14 @@ Opens the view PNGs (Grid, Map, Flyover, Compare) and judges against `assets/ref
 - **Sandboxed preview (Cowork) network caveat:** the dashboard fetches map tiles (Carto/ArcGIS), client-side POIs (Overpass) and drive times (OSRM) from the internet AT OPEN TIME. A sandboxed Preview-MCP browser may block those hosts, so **grey/blank map tiles, missing POIs or "tbd" drive-times in a preview screenshot are an environment artefact, not a defect** - note them as `[ENV]`, judge the markers/cards/modals/chrome that render locally, and never block on them. On the broker's machine (normal internet) they resolve.
 Writes `reviews/round<N>/G-visual.md` (the round you are dispatching; see `reference/gates.md` "Reviewer dispatch contract" rule 3) with per-view `[OK]/[ISSUE HIGH|MED|LOW]/[ENV]` finding lines (see `reference/gates.md` "Verdict semantics" for the machine-actionable format) ending in `VERDICT: <green|amber|red>`.
 
-**LABEL EVERY FINDING `blocking:` OR `advisory:` — you decide which, and nothing downstream
+**LABEL EVERY FINDING `blocking:` OR `advisory:` - you decide which, and nothing downstream
 second-guesses you.** Python counts the rounds; it never classifies a finding, because severity on
 an unseen deck in an unseen language is a judgement only you can make. Use this rubric:
 
-- **`blocking:`** — the build makes a **false claim** or is **structurally broken**: a mis-bound or
+- **`blocking:`** - the build makes a **false claim** or is **structurally broken**: a mis-bound or
   wrong-property Site Plan; a `tbd` rendered as blank or as a fabricated value; a wrong property's
   photo; zero cards; a real (non-`[ENV]`) console error; an unopenable or empty view.
-- **`advisory:`** — everything that is a **matter of degree on byte-frozen chrome**: layout,
+- **`advisory:`** - everything that is a **matter of degree on byte-frozen chrome**: layout,
   spacing, crowding, clipping, overflow, a crushed column, colour, a thumbnail that could be
   nicer, and every `[ENV]` note. Report them precisely; they do not block.
 
@@ -54,7 +54,7 @@ because its remedy is deterministic and therefore terminates: strike the field t
 silence is indistinguishable from a crashed review and fails safe.
 
 Why the split: a layout defect on frozen, version-pinned chrome is **identical on every run**, so it
-is a template-level bug for the eval battery to catch once and for all — not a per-client QA round
+is a template-level bug for the eval battery to catch once and for all - not a per-client QA round
 that protects exactly one deliverable. A false claim about a property is the opposite: it is unique
 to this run and nobody else will catch it.
 
@@ -68,15 +68,15 @@ no second render-and-review cycle. `final_gate.py --qa-state <work>` BLOCKS whil
 finding has no recorded repair (`qa-round resolve --id <id> --because "…"`) and CARRIES every
 advisory finding instead, into the Gaps Report's **"Known limitations (reviewed and accepted at
 QA)"** section, which ships with the dashboard. Do NOT re-dispatch a reviewer to "confirm the fix" on
-a gate that returned no blocking finding, and do NOT reopen a gate to re-check an advisory finding
-— **an advisory finding is CLOSED by being written down, not by being fixed.**
+a gate that returned no blocking finding, and do NOT reopen a gate to re-check an advisory finding:
+**an advisory finding is CLOSED by being written down, not by being fixed.**
 
 **Order matters: `qa-round record` → deliver → `final_gate`.** `deliver` is what actually writes the
 carried findings into the report, so running the gate first blesses a report that is a round behind.
 `final_gate --qa-state` now BLOCKS on that mismatch, and its remedy is ONE `deliver.py` re-run
-(printed in full, slug and filename already derived) — never another review round.
+(printed in full, slug and filename already derived) - never another review round.
 
 (Why this is mechanical: this line used to read "re-review with a fresh reviewer until zero
 HIGH/MED", which is an unbounded loop whose exit condition is a subjective verdict re-earned by a
-deliberately memoryless reviewer. On a matter of degree — crowding, spacing, a clipped compound —
+deliberately memoryless reviewer. On a matter of degree - crowding, spacing, a clipped compound,
 a fresh reviewer can always find one more, so it never terminated.)

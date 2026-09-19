@@ -258,7 +258,7 @@ def main():
             continue
         p = os.path.join(work, entry)
         size = dir_size(p) if os.path.isdir(p) else os.path.getsize(p)
-        leftovers.append(f"- `{entry}`{'/' if os.path.isdir(p) else ''} — {size/1048576:.1f} MB")
+        leftovers.append(f"- `{entry}`{'/' if os.path.isdir(p) else ''} - {size/1048576:.1f} MB")
     text = START_HERE.format(client=client, out=OUTPUT_DIR, files=file_lines,
                              working="\n".join(leftovers) or "- _(nothing)_")
     if not args.dry_run:

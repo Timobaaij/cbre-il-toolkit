@@ -121,10 +121,6 @@ def write_external(work: Path, scope: dict, n_candidates=None) -> dict:
     return payload
 
 
-def external_note(work) -> dict:
-    """The recorded external-scope disclosure, or {} - for deliver.py's one Gaps Report line."""
-    return _read_json(Path(work) / EXTERNAL, {}) or {}
-
 YES, NO = "Yes", "No"
 
 # Source-file suffixes that make a record an EMAIL record rather than a tracker row. Kept here

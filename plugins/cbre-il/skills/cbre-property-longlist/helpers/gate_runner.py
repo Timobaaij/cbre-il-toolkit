@@ -322,13 +322,35 @@ def _accounting_buckets(work: Path, canonical: Path) -> dict:
                     excluded_src.add(Path(str(sf)).name.lower())
     except Exception:
         excluded_src = set()
+    # sources whose only rows the USER struck off on the MASTER LIST (work/master_list.json,
+    # made binding by master_list_read.py and named one by one in the Gaps Report's "Options
+    # excluded by the master list", deliver.py:316). Exactly the same shape as the
+    # source-authority bucket above, and it needs the same exemption for the same reason: an
+    # excluded option leaves ZERO ledger rows, so without this the gate BLOCKED the user's own
+    # disclosed scope decision as "a whole source has silently vanished" - and the only way
+    # out of that block is to un-answer the sheet. A file is exempt ONLY when EVERY row it
+    # feeds was struck off: a tracker with one No among ten still owes the run its records.
+    ml_no, ml_kept = set(), set()
+    try:
+        for r in (json.loads((work / "master_list.json").read_text(encoding="utf-8-sig")
+                             ).get("rows") or []):
+            tgt = ml_no if str(r.get("include") or "").strip().lower() == "no" else ml_kept
+            for sf in (r.get("source_files") or []):
+                if sf:
+                    tgt.add(Path(str(sf)).name.lower())
+    except Exception:
+        ml_no, ml_kept = set(), set()
+    ml_no -= ml_kept
     out["excluded"] = []
+    out["master_list_no"] = []
     for rel in sorted(set(files)):
         nm = Path(rel).name.lower()
         if nm in led_src:
             out["records"].append(rel)
         elif nm in excluded_src:
             out["excluded"].append(rel)
+        elif nm in ml_no:
+            out["master_list_no"].append(rel)
         elif nm in unread:
             out["unreadable"].append(rel)
         elif nm in photo_bound:
@@ -856,7 +878,12 @@ def cmd_input_accounting(args) -> int:
         f"{len(b['photo'])} contributed a photo only, {len(b['unreadable'])} unreadable/skipped, "
         f"{len(b.get('excluded') or [])} excluded by the broker's source-authority answer "
         f"(disclosed in the Gaps Report), "
+        f"{len(b.get('master_list_no') or [])} struck off on the master list, "
         f"{len(b['no_consumer'])} have no consumer in the spine")
+    for rel in b.get("master_list_no") or []:
+        print(f"  [note] {rel}: every option it carries was answered No on the master list, so "
+              f"it was never read - named in the Gaps Report's 'Options excluded by the master "
+              f"list' section, so the exclusion is the user's own disclosed decision.")
     for rel in b.get("excluded") or []:
         print(f"  [note] {rel}: its only records were excluded by your source-authority "
               f"answer - named in the Gaps Report's 'Options excluded' section, so the "
@@ -3289,11 +3316,6 @@ _SEVERITY_BUCKET = {"high": "blocking", "med": "advisory", "medium": "advisory",
 
 
 _ROUND_DIR_RE = re.compile(r"^round(\d+)$", re.I)
-# `- <id>: fixed | not fixed | made worse [- note]` - the adjudicator's per-finding verdict. (B44)
-_ADJ_RE = re.compile(
-    r"^\s*[-*]?\s*\**\s*(q?[0-9a-f]{8,12})\**\s*[:=]\s*\**\s*"
-    r"(fixed|not\s+fixed|made\s+worse|unfixed|broken)\**\s*(?:[-–:]\s*(.*))?$",
-    re.I | re.M)
 
 
 def review_round_dirs(reviews) -> list:
@@ -3489,99 +3511,6 @@ def cmd_flywheel(args) -> int:
           f"convert it into a mechanical pre-build gate + an eval, then the reviewers stop "
           f"finding it (SKILL.md 'Maintenance').")
     return 0
-
-
-_DIFF_MEDIA_KEYS = ("photo", "plan", "gallery", "images")
-_DIFF_SUMMARISE = ("preBaked", "distances", "enrichment", "pois", "regions")
-
-
-def _diff_short(v) -> str:
-    """A value rendered for a human, short. Media is reduced to an identity, never a payload."""
-    import hashlib
-    if isinstance(v, str):
-        if v.startswith("data:"):
-            return f"<image {hashlib.sha256(v.encode()).hexdigest()[:8]}>"
-        return v if len(v) <= 90 else v[:87] + "..."
-    if isinstance(v, (int, float, bool)) or v is None:
-        return str(v)
-    return f"<{type(v).__name__} of {len(v)}>" if isinstance(v, (list, dict)) else str(v)[:90]
-
-
-def canonical_data_diff(before_path, after_path, max_lines: int = 200) -> list:
-    """A FIELD-LEVEL diff of two canonical snapshots: which property, which field, old -> new.
-
-    This is what the adjudicator is given so it can check BLAST RADIUS - whether the round-1 fix
-    also moved something it should not have. A blind reviewer cannot check that, because it does
-    not know what changed; that is the whole reason the adjudication pass carries context.
-
-    DELIBERATELY STDLIB-ONLY: json + hashlib, no subprocess, no git, no import of any helper.
-    That is the mechanical guarantee that it can only ever show a DATA diff - never a code diff,
-    and never the author's rationale (`because` lives in qa_state.json and is not read here).
-    The adjudicator judges the DELIVERABLE, not the edit.
-
-    Media is excluded twice over, because one layer is not enough: a key denylist
-    (photo/plan/gallery/images report an identity change only) AND a value backstop that does not
-    depend on the key list at all (any string starting `data:`). A 12-property canonical is
-    99.56% base64 by weight, so a diff that leaked one URI would be useless.
-
-    Derived blobs are SUMMARISED rather than enumerated - a re-enrich moves ~24 POI distances per
-    property, and 18 separate lines about it would bury the one line that matters. (B44)"""
-    import json as _json
-
-    def _load(p):
-        try:
-            d = _json.loads(Path(p).read_text(encoding="utf-8-sig"))
-            return d if isinstance(d, dict) else {}
-        except Exception:
-            return {}
-
-    a, b = _load(before_path), _load(after_path)
-    if not a:
-        return ["(no before-snapshot for this round - nothing to diff)"]
-    ap = {str(p.get("id")): p for p in (a.get("properties") or []) if isinstance(p, dict)}
-    bp = {str(p.get("id")): p for p in (b.get("properties") or []) if isinstance(p, dict)}
-    out: list = []
-    for gone in sorted(set(ap) - set(bp)):
-        out.append(f"property {gone} ({_diff_short(ap[gone].get('park'))}): REMOVED")
-    for new in sorted(set(bp) - set(ap)):
-        out.append(f"property {new} ({_diff_short(bp[new].get('park'))}): ADDED")
-    for pid in sorted(set(ap) & set(bp), key=lambda s: (len(s), s)):
-        pa, pb, rows = ap[pid], bp[pid], []
-        for k in sorted(set(pa) | set(pb)):
-            if k == "__meta":
-                continue
-            va, vb = pa.get(k), pb.get(k)
-            if va == vb:
-                continue
-            if k in _DIFF_MEDIA_KEYS:
-                rows.append(f"    {k}: image/media changed")
-                continue
-            if any(t in k for t in _DIFF_SUMMARISE) and isinstance(va, (dict, list)):
-                n = 0
-                if isinstance(va, dict) and isinstance(vb, dict):
-                    n = sum(1 for kk in set(va) | set(vb) if va.get(kk) != vb.get(kk))
-                rows.append(f"    {k}: derived block changed"
-                            + (f" ({n} value(s))" if n else ""))
-                continue
-            rows.append(f"    {k}: {_diff_short(va)}  ->  {_diff_short(vb)}")
-        if rows:
-            out.append(f"property {pid} ({_diff_short(pb.get('park'))}):")
-            out += rows
-    ma, mb = a.get("meta") or {}, b.get("meta") or {}
-    for k in sorted(set(ma) | set(mb)):
-        if ma.get(k) != mb.get(k):
-            if any(t in k for t in _DIFF_SUMMARISE) or isinstance(ma.get(k), (dict, list)):
-                out.append(f"meta.{k}: changed")
-            else:
-                out.append(f"meta.{k}: {_diff_short(ma.get(k))}  ->  {_diff_short(mb.get(k))}")
-    if not out:
-        return ["(no data changed between the two snapshots)"]
-    if len(out) > max_lines:
-        # NEVER silently truncate - a capped list that reads as complete is the failure this
-        # project has a standing lesson about.
-        out = out[:max_lines] + [f"... {len(out) - max_lines} further change line(s) not shown "
-                                 f"(cap {max_lines}); the artefacts themselves are authoritative"]
-    return out
 
 
 def _artefact_fingerprint(work) -> str:

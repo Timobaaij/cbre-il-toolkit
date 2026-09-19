@@ -503,11 +503,6 @@ def uri_gallery_admissible(uri: str) -> bool:
         return False
 
 
-def is_photo_kind(img) -> bool:
-    """True when an image is a real photo/aerial/render (the only valid silent hero)."""
-    return classify_image(img) == "photo"
-
-
 def classify_data_uri(uri: str) -> str:
     """classify_image for a 'data:image/...;base64,...' hero URI (used by the G-images
     gate to BLOCK a map/plan/screenshot hero). Returns 'photo' on any decode/stats

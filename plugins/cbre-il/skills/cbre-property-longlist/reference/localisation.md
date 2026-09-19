@@ -106,7 +106,7 @@ Confirms the rendered chrome reads as a fluent, correct, complete, in-language d
 
 This applies to BOTH bundled and fallback languages.
 
-## Free-text DATA translation (exit 12) — the property values follow `output.language`
+## Free-text DATA translation (exit 12) - the property values follow `output.language`
 
 The chrome (labels/headings) is localised by the i18n table above; this step localises the
 free-text DATA so a description or status does not render in a different language than the

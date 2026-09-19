@@ -4,12 +4,12 @@
 # `email` and `password` are deliberately BLANK here and are never shipped: the skill ASKS
 # you for your CBRE email and Kato password at the start of a run and writes them into your
 # local `run.yaml`, which is git-ignored (see the .gitignore beside this file). Never commit
-# a filled-in run.yaml — this skill ships from a public repository.
+# a filled-in run.yaml - this skill ships from a public repository.
 
-# The Kato requirement URL (any tab is fine — the requirement id is parsed from it).
+# The Kato requirement URL (any tab is fine - the requirement id is parsed from it).
 kato_url: "https://agency.kato.app/#/requirements/REQUIREMENT_ID/manage/shortlist?include_discounted=false&table_tab=longlist&view=list&order=group_position"
 
-# Kato login — left blank on purpose; the skill asks for these and fills them in.
+# Kato login - left blank on purpose; the skill asks for these and fills them in.
 email: ""
 password: ""
 
@@ -20,7 +20,7 @@ work_dir: ""
 # Broker email export (Outlook .msg files), zipped or a folder, relative to work_dir.
 emails_zip: "Emails.zip"
 
-# Image handling — resize at source via imgix; brochures/PDFs kept as-is.
+# Image handling - resize at source via imgix; brochures/PDFs kept as-is.
 image_max_px: 1200
 image_quality: 70
 

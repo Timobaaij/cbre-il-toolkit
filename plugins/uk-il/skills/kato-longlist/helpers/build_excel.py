@@ -33,20 +33,6 @@ def rent_cell(rec):
         return r["value"], "£#,##0.00"
     return (r.get("text") or "On application"), None
 
-def agent_str(rec):
-    org = rec.get("agent_organisation") or ""
-    ags = rec.get("agents") or []
-    nm = ags[0]["name"] if ags and ags[0].get("name") else ""
-    return " – ".join([x for x in [org, nm] if x])
-
-def contact_str(rec):
-    ags = rec.get("agents") or []
-    if not ags:
-        return ""
-    a = ags[0]
-    tel = a.get("mobile") or a.get("tel") or ""
-    return " / ".join([x for x in [tel, a.get("email")] if x])
-
 # Column groups: (band, [(header, fn, width, numfmt, link_kind)])
 def street(rec):
     a = rec.get("address") or {}

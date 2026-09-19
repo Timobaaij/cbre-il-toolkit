@@ -6,11 +6,11 @@ into a single-question / one-at-a-time flow or a follow-up.** This is a hard req
 answers everything in one form and the run proceeds with zero further setup prompts.
 
 ## How to render it
-1. Call `mcp__visualize__read_me` with `modules:["elicitation"]` (once per session; internal — do not
+1. Call `mcp__visualize__read_me` with `modules:["elicitation"]` (once per session; internal - do not
    narrate it).
 2. Call `mcp__visualize__show_widget` with the form HTML BELOW as `widget_code`, substituting the
    **inferred client name** into the two `{{CLIENT}}` spots (from the inputs folder / `project.yaml`
-   `client:`; if genuinely unknown, use a best-guess label — the broker can still pick "Other").
+   `client:`; if genuinely unknown, use a best-guess label - the broker can still pick "Other").
    Title stays `Property longlist details`.
 3. Show ALL FIVE groups every time: even a field you could infer (e.g. the client name) is shown as a
    confirmable pill. No shortcuts, no omitted groups.
@@ -21,8 +21,8 @@ answers everything in one form and the run proceeds with zero further setup prom
 
 ## The submitted answer
 On submit the broker's answers arrive as your next message on one line, e.g.:
-`Property longlist details — Client: Acme Retail · Extras: Drive-time maps, Logistics landmarks · Ors key: (blank) · Emails: Normal CEE · Language: English`
-(`(Skipped the form — proceed with defaults or ask me in plain text)` if they skip.) Parse it and
+`Property longlist details - Client: Acme Retail · Extras: Drive-time maps, Logistics landmarks · Ors key: (blank) · Emails: Normal CEE · Language: English`
+(`(Skipped the form - proceed with defaults or ask me in plain text)` if they skip.) Parse it and
 record into `project.yaml` per the mapping in SKILL.md "The broker setup prompt": Client→`client:`,
 Extras→`enrichment:` flags, Ors key→`enrichment.ors_api_key`, Emails→`inputs.emails:`
 (folder name = the "(other)" text; "Across all of Outlook" = no `folderName`; "No" = skip), Language→
@@ -74,7 +74,7 @@ launches such a run. Neither is reachable from this form, which is the point.
     </div>
 
     <div class="elicit-group">
-      <label class="elicit-question">Want me to add any extras? (each adds a little time — the dashboard already has photos, filters, comparison and a map)</label>
+      <label class="elicit-question">Want me to add any extras? (each adds a little time - the dashboard already has photos, filters, comparison and a map)</label>
       <div class="elicit-pills" data-name="extras" data-multi="true">
         <button type="button" class="elicit-pill" data-value="Drive-time maps" style="border-radius:12px;padding:14px 16px;display:flex;gap:12px;align-items:flex-start;text-align:left;min-width:210px;box-shadow:0 1px 2px rgba(0,0,0,0.04)">
           <i class="ti ti-truck" style="font-size:20px" aria-hidden="true"></i>
