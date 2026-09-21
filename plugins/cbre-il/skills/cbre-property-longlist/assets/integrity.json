@@ -116,8 +116,8 @@
     "sha256": "65d2e6fd144e2f2f845f0d82096b533420f0ff2853c4e71ceb3ea6f1e5da2b28"
   },
   "helpers/master_list.py": {
-    "size": 73449,
-    "sha256": "5488d9931b1f38bd0620c13498b2c9d98ef0ac303e5507f67710d787ae66b51c"
+    "size": 75233,
+    "sha256": "3dcb55d3bf131fe120e08805e1b8abd7f4ff72bb1db66f8894b4bca53405f62f"
   },
   "helpers/master_list_build.py": {
     "size": 37363,
@@ -172,8 +172,8 @@
     "sha256": "ef4490856016645372dfb644719da09a355cb48ed69650f6ac5ef297cc038904"
   },
   "helpers/run.py": {
-    "size": 469149,
-    "sha256": "de1877952b54cbade6baf9e01e6b8460f101fb1ddc62908dbf20dff5ba6e38e7"
+    "size": 470684,
+    "sha256": "270ecf2fbab3ff9e304d33039aa1eaabad5caf39531281d22be9880477a5e507"
   },
   "helpers/seed_geocode.py": {
     "size": 6292,

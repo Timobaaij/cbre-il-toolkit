@@ -7,6 +7,34 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.16.3] — 2026-09-21
+
+Marketplace 1.16.3: **CBRE I&L Toolkit 1.12.3**. UK I&L Toolkit unchanged at 1.6.2.
+
+### Fixed
+- **An answered Master List no longer costs 37 seconds of first-page reads on every pass.**
+  The check for "has the user answered the sheet?" needs the inputs hash, and that hash was
+  falling out of the enumeration — so the enumeration ran first, every time, reading the first
+  page of every deck to name its row and fill its postcode and size. On a live 23-deck run
+  that was 37 seconds a pass, paid even when the sheet had been answered hours earlier.
+
+  Under a Cowork sandbox capped near 45 seconds that is not a slow run, it is a **failed** one:
+  a resumed stage costing 37 is the difference between a pass that reaches the final gate and
+  one killed short of it. A new `expected_hash` computes the same digest from the row ids
+  alone — a record's is its provenance locator, a cluster's is a digest of its file names,
+  neither of which needs a page read — so the spine asks "is it answered?" first and only
+  enumerates for a sheet that is genuinely unanswered or whose inputs set has changed.
+
+  The equality is pinned rather than assumed: the eval asserts `expected_hash` digests exactly
+  the id set `build_auto` digests, with records and clusters, with each alone, and that adding
+  a deck still changes it so an answered sheet is correctly re-opened. The code carries the
+  matching warning — if the cluster enumeration ever grows a new reason to skip a cluster, it
+  has to be mirrored in `expected_hash`.
+
+### Security
+- Re-applied the example-name fix for the third release running (`Pearson, Sam` → `Hale,
+  Robin`), and preserved `vendor/README.md`, the PyMuPDF provenance note, for the fourth.
+
 ## [1.16.2] — 2026-09-21
 
 Marketplace 1.16.2: **CBRE I&L Toolkit 1.12.2**. UK I&L Toolkit unchanged at 1.6.2.
@@ -1321,6 +1349,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.16.3]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.16.3
 [1.16.2]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.16.2
 [1.16.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.16.1
 [1.16.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.16.0

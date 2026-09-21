@@ -677,6 +677,29 @@ ck(_kept14 == 1 and _rows14[0]["include"] == "Yes"
    f"an answer given under the old label-prefixed id carries forward by digest (kept={_kept14})")
 ck(not _manual14, "...and is not mistaken for a hand-typed row")
 
+# ====================================== 14. the answered check must not cost a first-page read
+print("\n14. expected_hash equals build_auto's input_hash without reading a single page")
+# THE LIVE DEFECT. A 23-deck run paid 37 s of first-page reads on every pass, answered sheet or
+# not, because the hash the answered check needs came out of the enumeration. The spine now
+# asks expected_hash first; this pins that it digests exactly the set build_auto would.
+_calls15 = []
+def _fpt15(q):
+    _calls15.append(str(q))
+    return _PAGES11.get(pathlib.Path(str(q)).name, "")
+_w15 = _work()
+_auto15 = ML.build_auto(_w15, _TWIN, _CL11, _w15, _fpt15)
+ck(_calls15, "the enumeration itself does read first pages (the fixture is live)")
+_exp15 = ML.expected_hash(_TWIN, _CL11)
+ck(_exp15 == _auto15["input_hash"],
+   f"expected_hash == build_auto input_hash with records AND clusters ({_exp15} vs {_auto15['input_hash']})")
+ck(ML.expected_hash({}, _CL11) == ML.build_auto(_work(), {}, _CL11, _w15, _fpt15)["input_hash"],
+   "...and with clusters alone")
+ck(ML.expected_hash(_TWIN, {}) == ML.build_auto(_work(), _TWIN, {}, _w15, _fpt15)["input_hash"],
+   "...and with records alone")
+ck(ML.expected_hash(_TWIN, _CL11) != ML.expected_hash(
+       _TWIN, {**_CL11, "Extra": {"pdfs": ["extra.pdf"], "region": "Extra"}}),
+   "...while a new deck still changes it, so an answered sheet is re-opened for it")
+
 print("\n" + ("ALL PASS" if not fails else f"{len(fails)} FAILURE(S):"))
 for f in fails:
     print(f"  - {f}")

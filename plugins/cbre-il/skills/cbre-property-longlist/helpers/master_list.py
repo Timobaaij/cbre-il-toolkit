@@ -1179,6 +1179,34 @@ def fingerprint(rows: list) -> str:
     return hashlib.sha1("|".join(ids).encode("utf-8")).hexdigest()[:16]
 
 
+def expected_hash(records_by_file: dict, clusters: dict) -> str:
+    """The `input_hash` build_auto WOULD produce for this inputs set, without building it.
+
+    Every Row ID is cheap: a record's is its provenance locator, a cluster's is a digest of its
+    file names. What made build_auto expensive was never the ids, it was the first-page text
+    read per deck that names the row and fills its postcode and size. On a live run of 23 decks
+    that read cost 37 seconds, and the spine paid it on EVERY pass, because the answered check
+    (`is_answered`, which needs the hash) ran after the enumeration that computed it. Under a
+    Cowork sandbox capped near 45 seconds a resumed stage that costs 37 is the difference
+    between a pass that reaches the final gate and one that is killed short of it, on a run
+    whose sheet the user had answered hours earlier.
+
+    So the hash is computed here from the ids alone, the caller asks `is_answered` first, and
+    the enumeration runs only for a sheet that is genuinely unanswered or whose inputs set has
+    changed. This MUST digest exactly the id set build_auto digests: the same `_record_rows`
+    and the same per-cluster file list and `cluster_row_id`, in the same order; the eval pins
+    the equality. If _cluster_rows ever grows a new reason to skip a cluster, mirror it here.
+    """
+    ids = [str(r.get("row_id") or "") for r in _record_rows(records_by_file)]
+    for label, cl in sorted((clusters or {}).items()):
+        files = [*(cl.get("pdfs") or ([cl["pdf"]] if cl.get("pdf") else [])),
+                 *(cl.get("pptxs") or ([cl["pptx"]] if cl.get("pptx") else []))]
+        if not files:
+            continue
+        ids.append(cluster_row_id(label, files))
+    return fingerprint([{"row_id": i} for i in ids])
+
+
 def build_auto(work: Path, records_by_file: dict, clusters: dict, folder: Path,
                first_page_text, emails=None, email_attachments=None) -> dict:
     """Write work/master_candidates_auto.json - the spine's half of the candidate set.

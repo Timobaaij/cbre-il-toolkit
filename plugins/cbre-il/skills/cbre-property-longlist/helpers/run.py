@@ -4760,10 +4760,22 @@ def main() -> None:
         # deck) and it is also what writes master_candidates_auto.json into the work dir, so an
         # external-scope run skips it outright rather than building a sheet nobody will be shown.
         # `_ml_auto` stays {} and every branch below it is then inert by construction.
-        _ml_auto = ({} if _ml_external else
-                    _ML.build_auto(work, _ml_by_file, inv.get("clusters") or {}, folder,
-                                   _first_page_text, emails=inv.get("emails") or [],
-                                   email_attachments=inv.get("email_attachments") or []))
+        # ASK "IS IT ANSWERED?" BEFORE PAYING FOR THE ENUMERATION. The answered check needs
+        # the input hash, and the hash used to come out of build_auto, so a sheet the user had
+        # answered hours earlier still cost a first-page read of every deck on every pass:
+        # 37 s of a ~45 s Cowork window on a live run, which is why that run kept dying short
+        # of its final gate. `expected_hash` digests the same Row ID set without opening a
+        # single PDF; only an unanswered or changed inputs set goes on to build_auto.
+        _ml_expect = ("" if _ml_external else
+                      _ML.expected_hash(_ml_by_file, inv.get("clusters") or {}))
+        if not _ml_external and not _stage_skipped("master list") \
+                and _ML.is_answered(work, _ml_expect):
+            _ml_auto = {"rows": [], "input_hash": _ml_expect, "answered_without_enumeration": True}
+        else:
+            _ml_auto = ({} if _ml_external else
+                        _ML.build_auto(work, _ml_by_file, inv.get("clusters") or {}, folder,
+                                       _first_page_text, emails=inv.get("emails") or [],
+                                       email_attachments=inv.get("email_attachments") or []))
     except Exception as _e:
         # BEST-EFFORT ENUMERATION, DELIBERATE HARD STOP ONLY WHEN IT SUCCEEDS. A crash while
         # inventorying candidates must not wedge a run behind a sheet that cannot be built; the
@@ -4777,6 +4789,15 @@ def main() -> None:
     if _stage_skipped("master list"):
         _resumed("master list")
         _ml_rows = []
+    if (_ml_auto or {}).get("answered_without_enumeration"):
+        # The cheap path above found the answered sheet for exactly this inputs set. Same
+        # report as the enumerated answered branch below, so the operator sees no difference
+        # between a pass that paid for the enumeration and one that did not.
+        _resumed("master list")
+        if not QUIET:
+            _c = (_ML.load_answers(work) or {}).get("counts") or {}
+            print(f"  (master list: answered - {_c.get('included', '?')} option(s) in, "
+                  f"{_c.get('excluded', '?')} out, enumeration skipped)")
     if _ml_rows:
         _ml_hash = str(_ml_auto.get("input_hash") or "")
         if _ML.is_answered(work, _ml_hash):
