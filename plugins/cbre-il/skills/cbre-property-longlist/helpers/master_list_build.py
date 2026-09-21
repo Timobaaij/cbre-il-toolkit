@@ -329,9 +329,24 @@ def carry_forward(path, rows) -> tuple:
             continue
         if inc or note:
             prior[str(rid).strip()] = (inc, note)
+    # SECOND KEY FOR DECK ROWS: the file-set digest alone. A deck's Row ID once carried the
+    # cluster label as its prefix, and a label that intake first guessed from an opaque filename
+    # and a sub-agent later resolved to a real town changed the id under six answered rows on a
+    # live run; the user was asked the same six questions again. The digest half never moved,
+    # because the files never moved, so it is what identifies the row when the full id misses.
+    # Consulted only after the exact id, so it can never override an identity match.
+    by_digest = {}
+    for rid, got in prior.items():
+        d = ML.row_id_digest(rid)
+        if d:
+            by_digest.setdefault(d, got)
     kept, matched = 0, set()
     for row in rows:
         got = prior.get(row["row_id"])
+        if got is None:
+            d = ML.row_id_digest(row["row_id"])
+            if d:
+                got = by_digest.get(d)
         if got is None:
             key = nk(row.get("property"), row.get("postcode"))
             got = by_name.get(key)

@@ -57,6 +57,7 @@ answer then decides what the run builds.
                              "members": ["<row_id>", "<row_id>"]}},
  "rows": [{"row_id": "email:<slug>", "property": "Packington Hill",
            "source_type": "Email", "source": "Email: Priya Nair (C&W), 3 Sep 2026",
+           "source_files": ["PNair Packington Hill.msg"],
            "address": "Pritchard Drive, Kegworth", "postcode": "DE74 2DF",
            "city": "Kegworth", "size_from": 140000, "size_to": 140000, "size_unit": "sq ft",
            "rent": "GBP10.50 psf", "availability": "U/C Q2 2027",
@@ -69,6 +70,10 @@ answer then decides what the run builds.
   `"Email: Alex Morgan (Cushman & Wakefield), 7 Sep 2026"`. Never a path, never a filename,
   never a subject line. The senders and dates are on the Emails tab of the last workbook and in
   the `emails` list of {{AUTO_PATH}}.
+- `source_files` is the .msg/.eml FILENAME the option was read out of (a list, because one
+  option can be named in two messages). The pre-build input-accounting gate uses it to credit
+  that email when the user strikes the option off, so a row left with `source_files: []` makes
+  the gate call the email a source that vanished and blocks the run.
 
 ### `duplicate_groups`: SAME BUILDING, and nothing else
 

@@ -232,6 +232,41 @@ SIGNAL_MIN_RECORDS = 5
 SIGNAL_MIN_PRESENT = 3
 
 
+def _carrier_attachment_index(work: Path, inv: dict | None = None) -> dict:
+    """{carrier .msg/.eml basename (lowercased): [saved attachment basenames]}.
+
+    THE LINK THE ACCOUNTING BUCKETS WERE MISSING. A saved attachment enters the ledger under
+    its OWN filename (Broker07.pdf), never its carrier's (Broker07.msg), so an email whose body
+    held no quotable property data - it just carried the brochure - looked to the gate like a
+    source that contributed nothing at all. Live: 11 of 16 broker emails were called
+    "silently vanished" on a run where every brochure was read and shipped.
+
+    Built from the `.from_email.json` sidecars extract_email writes beside each saved
+    attachment, not from a work artefact, so the link survives a deleted work dir and a
+    resumed run - the same reason from_email_index reads them. The sidecar lists what was
+    actually SAVED, which is what makes the credit honest: an attachment that was declared
+    and never written is absent here, and its carrier stays unaccounted and keeps blocking.
+    """
+    if inv is None:
+        try:
+            inv = json.loads((work / "inventory.json").read_text(encoding="utf-8-sig"))
+        except Exception:
+            inv = {}
+    idx: dict = {}
+    try:
+        import extract_email as _EM
+        folder = str((inv or {}).get("folder") or "")
+        if not folder:
+            return idx
+        for rel, fe in (_EM.from_email_index(Path(folder)) or {}).items():
+            carrier = Path(str((fe or {}).get("file") or "")).name.lower()
+            if carrier:
+                idx.setdefault(carrier, []).append(str(rel).rsplit("/", 1)[-1])
+    except Exception:
+        return {}
+    return {k: sorted(set(v)) for k, v in idx.items()}
+
+
 def _accounting_buckets(work: Path, canonical: Path) -> dict:
     """Classify EVERY discovered input into exactly one bucket. (B08)
 
@@ -247,7 +282,13 @@ def _accounting_buckets(work: Path, canonical: Path) -> dict:
 
     The affirmative evidence is the LEDGER's source_file column, not "a record exists":
     the ledger is what every shipped field traces to, so an input that appears there
-    demonstrably reached the client."""
+    demonstrably reached the client.
+
+    ONE INPUT CANNOT PRESENT ITS OWN EVIDENCE: an email whose body held no quotable data but
+    whose attachments were read ships under the ATTACHMENTS' filenames, never its own, so it
+    fell through to `unaccounted` and blocked a run on which nothing was lost. That is the
+    `attachment_carrier` bucket, and it is credited only against the sidecar's saved list -
+    see _carried below for why every saved attachment, not merely one, has to be accounted."""
     inv, led_src, unread = {}, set(), {}
     try:
         inv = json.loads((work / "inventory.json").read_text(encoding="utf-8-sig"))
@@ -341,8 +382,32 @@ def _accounting_buckets(work: Path, canonical: Path) -> dict:
     except Exception:
         ml_no, ml_kept = set(), set()
     ml_no -= ml_kept
+    # emails whose ONLY contribution was the brochures stapled to them (see
+    # _carrier_attachment_index). Credited only when the attachments really landed.
+    carrier_att = _carrier_attachment_index(work, inv)
+
+    def _carried(nm: str) -> bool:
+        """True when this .msg/.eml's saved attachments ARE the contribution, in full.
+
+        Two conditions, and the second is the one that keeps the gate strict. (1) at least
+        one saved attachment reached the ledger or a photo binding, so something of this
+        email demonstrably shipped; (2) EVERY saved attachment is itself accounted for in
+        some bucket. Drop (2) and an email carrying two brochures, one of them lost, would
+        be waved through on the strength of the other. An email with nothing saved fails
+        (1) and stays unaccounted, which is the genuine-loss case this gate exists for.
+        """
+        saved = carrier_att.get(nm) or []
+        if not saved:
+            return False
+        if not any(s in led_src or s in photo_bound for s in saved):
+            return False
+        return all(s in led_src or s in photo_bound or s in unread or s in excluded_src
+                   or s in ml_no or Path(s).suffix.lower() in NO_CONSUMER
+                   for s in saved)
+
     out["excluded"] = []
     out["master_list_no"] = []
+    out["attachment_carrier"] = []
     for rel in sorted(set(files)):
         nm = Path(rel).name.lower()
         if nm in led_src:
@@ -351,6 +416,8 @@ def _accounting_buckets(work: Path, canonical: Path) -> dict:
             out["excluded"].append(rel)
         elif nm in ml_no:
             out["master_list_no"].append(rel)
+        elif Path(rel).suffix.lower() in (".msg", ".eml") and _carried(nm):
+            out["attachment_carrier"].append(rel)
         elif nm in unread:
             out["unreadable"].append(rel)
         elif nm in photo_bound:
@@ -879,7 +946,19 @@ def cmd_input_accounting(args) -> int:
         f"{len(b.get('excluded') or [])} excluded by the broker's source-authority answer "
         f"(disclosed in the Gaps Report), "
         f"{len(b.get('master_list_no') or [])} struck off on the master list, "
+        f"{len(b.get('attachment_carrier') or [])} contributed only through attachments "
+        f"that were read, "
         f"{len(b['no_consumer'])} have no consumer in the spine")
+    # the real casing of every discovered file, so a note prints the brochure's name as the
+    # broker spelled it; the carrier index is lowercased because matching is case-insensitive.
+    _disp = {Path(r).name.lower(): Path(r).name
+             for v in b.values() if isinstance(v, list) for r in v}
+    _carriers = _carrier_attachment_index(work)
+    for rel in b.get("attachment_carrier") or []:
+        atts = [_disp.get(a, a) for a in (_carriers.get(Path(rel).name.lower()) or [])]
+        print(f"  [note] {rel}: contributed no records of its own; its saved "
+              f"attachment{'' if len(atts) == 1 else 's'} {', '.join(atts)} "
+              f"{'was read and ships' if len(atts) == 1 else 'were read and ship'}")
     for rel in b.get("master_list_no") or []:
         print(f"  [note] {rel}: every option it carries was answered No on the master list, so "
               f"it was never read - named in the Gaps Report's 'Options excluded by the master "

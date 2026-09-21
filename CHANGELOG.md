@@ -7,6 +7,38 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.16.2] — 2026-09-21
+
+Marketplace 1.16.2: **CBRE I&L Toolkit 1.12.2**. UK I&L Toolkit unchanged at 1.6.2.
+
+### Fixed
+- **The input-accounting gate cried wolf at an email that carried brochures.** A live corpus
+  of 16 broker emails and 22 brochures blocked with eleven copies of *"contributed NOTHING …
+  a whole source has silently vanished"* on a run where every brochure was read and shipped.
+  The cause: a saved attachment enters the ledger under its **own** filename, never its
+  carrier's, so an email whose body held no quotable property data fell through every bucket
+  into the one that blocks.
+
+  The fix keeps the gate's teeth. A seventh bucket, `attachment_carrier`, credits the email
+  from the `.from_email.json` sidecars — but **only when every saved attachment is itself
+  accounted for**, so the genuine loss (a declared attachment nothing saved) still blocks.
+  The new `evals/input_accounting_attachment_carrier_test.py` asserts the must-fire cases as
+  hard as the must-not-fire ones.
+
+  Its sibling half: the exit-17 sub-agent contract never asked for `source_files` on an
+  email-prose row, so the existing exemption could not fire either. The dispatch prompt now
+  asks for it. The author's own note on the lesson is worth repeating — *when a gate's
+  exemption keys on a field, check that something actually populates that field on every path
+  into it* — as is the reason it mattered: **a gate that reds a correct run gets switched
+  off.**
+
+### Security
+- Re-applied the example-name fix from 1.16.1, which this upload reverted: a real-looking
+  broker name had returned to both halves of a comment in `master_list.py`. It reads
+  `Hale, Robin` / `Robin Hale` again.
+- `vendor/README.md`, the PyMuPDF provenance note, was absent from this upload for the third
+  release running and has again been preserved rather than deleted.
+
 ## [1.16.1] — 2026-09-19
 
 Marketplace 1.16.1: **CBRE I&L Toolkit 1.12.1**. UK I&L Toolkit unchanged at 1.6.2.
@@ -1289,6 +1321,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.16.2]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.16.2
 [1.16.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.16.1
 [1.16.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.16.0
 [1.15.2]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.15.2

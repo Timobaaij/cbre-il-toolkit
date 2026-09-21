@@ -24,6 +24,20 @@ Moved verbatim from SKILL.md (workstream 1 item 1.1).
   twice: convert it into a mechanical pre-build gate plus an eval, and the reviews trend
   toward `FINDINGS: none` - reviewers as the safety net, not the primary defect-removal
   mechanism.
+  - **2026-09, input-accounting cried wolf at an email that carried brochures.** A 16-email,
+    22-brochure corpus blocked with eleven copies of "contributed NOTHING ... silently
+    vanished" on a run where every brochure was read and shipped: a saved attachment enters
+    the ledger under its OWN filename, never its carrier's, so an email whose body held no
+    quotable data was invisible to every bucket. A gate that reds a correct run gets switched
+    off, which is the whole reason this one has six honest outcomes rather than two. Now
+    `_accounting_buckets` has a seventh, `attachment_carrier`, credited from the
+    `.from_email.json` sidecars and only when EVERY saved attachment is itself accounted for,
+    so the genuine loss (a declared attachment nothing saved) still blocks. Pinned by
+    `evals/input_accounting_attachment_carrier_test.py`. Its sibling half: the exit-17
+    sub-agent contract never asked for `source_files` on an email-prose row, so the
+    `master_list_no` exemption could not fire either - `prompts/master-list.md` now asks for
+    it. The lesson worth carrying: when a gate's exemption keys on a field, check that
+    something actually POPULATES that field on every path into it.
 - The dispatch-prompt templates live in `prompts/` (one per sub-agent kind) and are
   integrity-guarded: after editing one, run `make_integrity.py` and the evals
   (`prompt_render_test` pins the load-bearing clauses so a template edit cannot silently drop

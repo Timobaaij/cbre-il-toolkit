@@ -60,7 +60,11 @@ cell is a flat `Yes` and not red.
 2. **The model judges** (`prompts/master-list.md`, rendered into `work/prompts/`). It adds the
    rows that exist only in email prose, names them after the property, and adjudicates the
    SAME-BUILDING groups, into
-   `work/master_candidates.json`. It never deletes, re-words or re-keys a spine row.
+   `work/master_candidates.json`. It never deletes, re-words or re-keys a spine row. Each row
+   it adds carries `source_files`: the .msg/.eml filename the option was read out of. That is
+   what lets the pre-build input-accounting gate credit the email when the user strikes the
+   option off; a row that arrives with `source_files: []` leaves the email looking like a
+   source that vanished, and the gate blocks.
 3. **The workbook** (`helpers/master_list_build.py --work <work>`) merges the two, paints the
    Brochure? column, and writes `<work>/Master List.xlsx` plus `master_list_manifest.json`.
    **The user answers it.** Yes or No on every row, free text in "Your Run notes for the AI".

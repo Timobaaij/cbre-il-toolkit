@@ -584,8 +584,11 @@ _w11 = _work()
 _auto11 = ML.build_auto(_w11, {}, _CL11, _w11,
                         lambda q: _PAGES11.get(pathlib.Path(str(q)).name, ""))
 _n11 = {r["row_id"]: r for r in _auto11["rows"]}
-_midway = next(r for r in _auto11["rows"] if r["row_id"].startswith("deck:Midway"))
-_bar = next(r for r in _auto11["rows"] if r["row_id"].startswith("deck:BAR003"))
+# Rows are found by their FILE, not by the id prefix: the prefix is now the filename stem, not
+# the cluster label (section 13), so "deck:Midway" no longer exists for a file called
+# "Goldthorpe - Midway One.pdf".
+_midway = next(r for r in _auto11["rows"] if "Goldthorpe - Midway One.pdf" in r["source_files"])
+_bar = next(r for r in _auto11["rows"] if "BAR003_Brochure_16pp_V32.10.pdf" in r["source_files"])
 ck("Midway One" in _midway["property"],
    f"the filename's scheme beats the cover's street line (got {_midway['property']!r})")
 ck("Droves Dale Road" not in _midway["property"],
@@ -639,6 +642,40 @@ _txt13 = [str(_ws13.cell(r, _h13["Duplicate of"]).value or "")
           if _ws13.cell(r, _h13["Row ID"]).value]
 ck(_txt13 and all("check whether one building" in s and "(auto sweep)" in s for s in _txt13),
    f"two areas 4% apart on one postcode is a question, not a verdict (got {_txt13[:1]})")
+
+# ==================================================== 13. a cluster label is not an identity
+print("\n13. Resolving a deck's cluster label never re-opens an answered row")
+# THE LIVE DEFECT. Intake parked six opaque filenames under placeholder labels, a sub-agent
+# later resolved them to Telford, Letchworth, Gateshead, Derby, Leigh and Washington, and six
+# of thirty-six answered rows came back blank, because the label was the id's prefix.
+_files14 = ["SmartParc SEGRO Derby Unit1 Brochure.pdf"]
+_id_placeholder = ML.cluster_row_id("SmartParc_SEGRO_Derby_Unit1_Brochure", _files14)
+_id_resolved = ML.cluster_row_id("Derby", _files14)
+ck(_id_placeholder == _id_resolved,
+   f"the same file set gives the same Row ID under any label ({_id_placeholder} vs {_id_resolved})")
+ck(ML.cluster_row_id("Derby", _files14) != ML.cluster_row_id("Derby", _files14 + ["second.pdf"]),
+   "...while a second brochure joining the cluster still changes it, as it must")
+ck(ML.row_id_digest(_id_resolved) and ML.row_id_digest("email:x.msg|abcd1234") == "",
+   "row_id_digest reads the digest of a deck id and nothing else")
+# An OLD-SCHEME id (label prefix, same digest) already answered on disk carries forward.
+# The on-disk sheet is written directly: the builder's carry_forward is what must accept it.
+_w14 = _work()
+_rows14 = [{"row_id": _id_resolved, "property": "SmartParc SEGRO Derby Unit 1", "postcode": "DE21 7HW",
+            "include": "", "run_notes": ""}]
+_old_rid = "deck:SmartParc_SEGRO_Derby_Unit1_Brochure|" + ML.row_id_digest(_id_resolved)
+_wb14 = MB.Workbook(); _ws14 = _wb14.active; _ws14.title = MB.SHEET
+for _c, _h in enumerate(("Rank", "Include?", "Your Run notes for the AI", "Property", "Postcode", "Row ID"), 1):
+    _ws14.cell(MB.HDR_ROW, _c, _h)
+for _c, _v in enumerate((1, "Yes", "keep the mezzanine figure", "SmartParc SEGRO Derby Unit 1",
+                         "DE21 7HW", _old_rid), 1):
+    _ws14.cell(MB.FIRST_ROW, _c, _v)
+_p14 = _w14 / MB.WORKBOOK
+_wb14.save(_p14)
+_kept14, _manual14 = MB.carry_forward(_p14, _rows14)
+ck(_kept14 == 1 and _rows14[0]["include"] == "Yes"
+   and _rows14[0]["run_notes"] == "keep the mezzanine figure",
+   f"an answer given under the old label-prefixed id carries forward by digest (kept={_kept14})")
+ck(not _manual14, "...and is not mistaken for a hand-typed row")
 
 print("\n" + ("ALL PASS" if not fails else f"{len(fails)} FAILURE(S):"))
 for f in fails:

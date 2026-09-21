@@ -224,17 +224,42 @@ def email_row_id(rel_path) -> str:
 
 
 def cluster_row_id(label: str, files) -> str:
-    """The Row ID for one brochure cluster: its label plus a digest of its file set.
+    """The Row ID for one brochure cluster: a digest of its FILE SET, with a readable prefix
+    taken from the first file's own name.
 
     The digest is in the id on purpose. A cluster is the unit the deck reader is dispatched on,
     so if a second brochure joins the cluster the thing the user said Yes to is not the thing
     the run would now read, and the row must be re-offered rather than inherit an answer given
     about a different document set.
+
+    THE CLUSTER LABEL IS DELIBERATELY NOT IN THE ID. It used to be the prefix, and on a live
+    run that cost the user six answers out of thirty-six. Intake guesses a region label per deck
+    from the filename, parks an opaque filename under a placeholder label, and a later sub-agent
+    resolves the placeholder to a real town (Telford, Letchworth, Gateshead, Derby, Leigh,
+    Washington). Nothing about the document changed, but the label did, so the id did, so
+    carry_forward could not recognise the row and re-asked Yes/No for the same six PDFs. An
+    identity must be built only from what identifies the thing: the files. The prefix is the
+    first filename's stem, which the label resolution never touches, and it is cosmetic; only
+    the digest is matched. `label` is kept in the signature so callers do not change.
     """
     names = sorted(Path(str(f)).name for f in (files or []))
     h = hashlib.sha1("|".join(names).encode("utf-8")).hexdigest()[:8]
-    slug = re.sub(r"[^A-Za-z0-9]+", "_", str(label or "deck")).strip("_")[:40] or "deck"
+    stem = Path(names[0]).stem if names else "deck"
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", stem).strip("_")[:40] or "deck"
     return f"deck:{slug}|{h}"
+
+
+def row_id_digest(rid) -> str:
+    """The identity half of a `deck:` Row ID: the file-set digest after the bar.
+
+    carry_forward matches on this when the full id misses, so a sheet built while the id still
+    carried the cluster label (see cluster_row_id) hands its answers on to the id scheme that
+    does not. Empty for any other id kind, so nothing but deck rows takes this route.
+    """
+    s = str(rid or "").strip()
+    if not s.startswith("deck:") or "|" not in s:
+        return ""
+    return s.rsplit("|", 1)[1]
 
 
 def _num(v):
@@ -914,9 +939,10 @@ def _cluster_rows(clusters: dict, folder: Path, first_page_text, emails=None) ->
     is document-derived or blank; a filename is never allowed into it, because a wrong town is a
     fact a colleague will act on and a blank one is a question they will ask.
 
-    The ROW ID is unchanged (`cluster_row_id`, the label plus a digest of the file set), because
-    it is the record's provenance locator and not its name. A better name must not re-open a row
-    the user has already answered.
+    The ROW ID is unchanged (`cluster_row_id`, a digest of the file set), because it is the
+    record's provenance locator and not its name. A better name must not re-open a row the user
+    has already answered, and neither must a better cluster label: see cluster_row_id for the
+    run on which it did.
     """
     rows = []
     by_attachment = {}
