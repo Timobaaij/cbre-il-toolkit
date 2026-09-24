@@ -7,6 +7,37 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.17.0] — 2026-09-24
+
+Marketplace 1.17.0: **UK I&L Toolkit 1.7.0** gains a fourth skill. CBRE I&L Toolkit unchanged
+at 1.12.3.
+
+### Added
+- **`cbre-evergreen-portfolio` — a CBRE EverGreen export becomes one portable HTML file.** It
+  pairs a **scroll storyline** with an **interactive dashboard** in a single document, built
+  and reviewed by agent committees, for UK occupier portfolios. The output opens by
+  double-click: the CBRE fonts, Leaflet and a vector basemap are all inlined, so there is no
+  server and no network call (street tiles load only if a reader zooms right in).
+
+  The engineering worth noting is the collision handling — the storyline and dashboard
+  stylesheets clash on dozens of selectors (`:root`, `body`, `*`, `svg`, `table`), so each is
+  scoped under its own view root by `cssscope.py` rather than being hand-deconflicted. The
+  boundary data is Eurostat GISCO, credited in the file it ships in. `assemble.py` takes a
+  report directory and emits the single file; `--stub-missing` lets an author self-check a
+  build before the storyline and dashboard are written.
+
+  Its process discipline matches the rest of the toolkit: **exactly one QA pass and one fix
+  pass, never another QA round**, with a separate post-fix smoke check that loads the built
+  file at desktop and mobile widths and fails on any console error.
+
+  The update notifier was not in the upload; it has been added at `scripts/version_check.py`,
+  targeting the UK plugin, and wired into the top of "Run it".
+
+  Verified on install: all 37 files land, every embedded font and the vendored Leaflet are
+  byte-intact after line-ending normalisation, every Python and JavaScript file parses, and a
+  real `--stub-missing` build produced a **1.27 MB** self-contained page carrying the embedded
+  fonts, Leaflet, CBRE green and the boundary credit, with no external asset reference.
+
 ## [1.16.3] — 2026-09-21
 
 Marketplace 1.16.3: **CBRE I&L Toolkit 1.12.3**. UK I&L Toolkit unchanged at 1.6.2.
@@ -1349,6 +1380,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.17.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.17.0
 [1.16.3]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.16.3
 [1.16.2]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.16.2
 [1.16.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.16.1

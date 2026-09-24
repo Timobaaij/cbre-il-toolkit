@@ -30,6 +30,7 @@ updating one never re-syncs the other.
 | **Kato longlist** | A client-ready longlist built straight from a Kato requirement, enriched with rents and specs from the broker emails — a per-property dataset, a clean client Excel, and a CBRE-branded HTML dashboard. Asks for your CBRE email and Kato password at the start of a run; they are never stored in the repo. |
 | **Brochure downloader** | Every brochure PDF linked from a longlist spreadsheet, downloaded through your own browser and packaged as one clean zip — named after each property and validated — ready for the property longlist. |
 | **Expense claim** | A folder of receipts (iOS scans, phone photos, Uber and airline emails, AMEX and Revolut screenshots) turned into a reconciled `Expenses.xlsx` and a page-stamped `Consolidated Expenses.pdf`, then filed line by line into PeopleSoft. Stops twice: once for you to set the expense types and attendees, once before submission — it never attaches receipts or submits for you. |
+| **EverGreen portfolio** | A CBRE EverGreen export turned into one portable HTML file that pairs a scroll storyline with an interactive portfolio dashboard — CBRE-branded, fonts and map inlined, so it opens by double-click with no server. Built and checked by agent committees, for UK occupier portfolios. |
 
 > **Moved in v1.4.0:** the brochure downloader used to ship inside the CBRE I&L Toolkit.
 > If you had it from there, install **UK I&L Toolkit** to keep it.
@@ -38,8 +39,8 @@ updating one never re-syncs the other.
 
 **In Claude Cowork:** open **Customize → Plugins → ＋ → Add marketplace → Add from a
 repository**, enter `Timobaaij/cbre-il-toolkit`, then install **CBRE I&L Toolkit** — and
-**UK I&L Toolkit** for the UK-specific skills (brochure downloader, Kato longlist, expense
-claim).
+**UK I&L Toolkit** for the UK-specific skills (Kato longlist, EverGreen portfolio,
+brochure downloader, expense claim).
 
 **In Claude Code (CLI):**
 
