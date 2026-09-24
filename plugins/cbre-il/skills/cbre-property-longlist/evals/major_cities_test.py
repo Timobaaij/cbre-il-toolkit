@@ -11,12 +11,14 @@ most two city results, and exactly one when the nearest 100k+ city is itself 400
 Offline: the bundled cities-major dataset for the real towns, plus two tiny synthetic
 datasets for the boundary. Run: python evals/major_cities_test.py"""
 from __future__ import annotations
+import json
 import sys
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "helpers"))
+import _common as C  # noqa: E402
 import enrich as E  # noqa: E402
 
 LEIGH = (53.497, -2.519)
@@ -82,6 +84,17 @@ def main() -> int:
             ck("nearest major city" in cities.get("Wigan", {}).get("note", "")
                and "400,000+" in cities.get("Manchester", {}).get("note", ""),
                "...each note says which rule picked it")
+            # read the schema's POI enum DIRECTLY, not through jsonschema: v46 shipped city_major
+            # while the enum lacked it, and a jsonschema-less host's degraded check never looks
+            # at enums, so every eval passed there and validate-data failed everywhere else
+            schema = json.loads((ROOT / "templates/canonical.schema.json").read_text(encoding="utf-8"))
+            enum = set(schema["$defs"]["poi"]["properties"]["type"]["enum"])
+            emitted = {q["type"] for q in c["pois"]}
+            ck(emitted <= enum, f"every emitted POI type is in the schema enum "
+                                f"(emitted {sorted(emitted)}, not allowed {sorted(emitted - enum)})")
+            errs = C.validate_canonical(c) if C._best_validator()[0] else []
+            ck(not [e for e in errs if "pois" in e],
+               f"...and the real validator, where installed, accepts the POIs ({errs[:2]})")
     finally:
         E.CACHE_DIR, E.SEED_DIR, E._DATASET, E._BORDERS = saved
 

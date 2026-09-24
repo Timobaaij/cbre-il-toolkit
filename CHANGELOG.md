@@ -7,6 +7,28 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.18.1] — 2026-09-24
+
+Marketplace 1.18.1: **CBRE I&L Toolkit 1.13.1**. UK I&L Toolkit unchanged at 1.7.0.
+
+### Added
+- **A regression guard for the `city_major` schema gap fixed in 1.18.0**, in
+  `evals/major_cities_test.py`. It reads the schema's list of allowed place types **directly
+  from the file** rather than through `jsonschema`, and checks that every type the pipeline
+  emits is on it. That closes the hole that let the original bug through: without
+  `jsonschema`, `validate-data` falls back to a check that never looks at that list, so every
+  eval passed on a machine without the package and the run failed everywhere else. Where
+  `jsonschema` *is* installed, the guard also runs the real validator on the result.
+
+  Verified against the bug itself, not just against the fix: with `city_major` taken back
+  out of the schema, the guard **fails with and without `jsonschema`**, naming the offending
+  type (`not allowed ['city_major']`); with the fix in place it passes both ways. A machine
+  without `jsonschema` will now catch this class of mistake before it ships.
+
+No behaviour change. This release adds one test and nothing else: after the example-name fix
+was re-applied, `master_list.py` and the integrity manifest are byte-identical to 1.13.0, and
+the schema already carried the fix.
+
 ## [1.18.0] — 2026-09-24
 
 Marketplace 1.18.0: **CBRE I&L Toolkit 1.13.0** — dashboard template v45 → **v46**. UK I&L
@@ -1437,6 +1459,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.18.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.18.1
 [1.18.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.18.0
 [1.17.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.17.0
 [1.16.3]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.16.3
