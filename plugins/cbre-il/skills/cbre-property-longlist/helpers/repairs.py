@@ -947,6 +947,9 @@ def apply(canonical: dict, entries: list, base_dir: Path | None = None,
     prov_rows = provenance if provenance is not None else (
         read_provenance(Path(base_dir) / LEDGER_NAME) if base_dir is not None else None)
     prov = _prov_index(prov_rows) if prov_rows is not None else None
+    # every key ANY property carried before this batch: the same dataset-wide set `run` hands
+    # `load` as `extra_fields`, frozen here so one entry's new key cannot license the next
+    ds_keys = {k for q in props if isinstance(q, dict) for k in q}
     for e in entries:
         rid = e["id"]
         idx, fail = _resolve(props, e["property"])
@@ -1011,13 +1014,21 @@ def apply(canonical: dict, entries: list, base_dir: Path | None = None,
         # `set` only in THIS check, because its verdict is INVALID and a clear must never earn
         # that: the `unset` half of the same contract is enforced a few lines below, against
         # this same resolved property, and reports `stale`. See `load` for why the dataset-wide
-        # screen cannot carry it.
-        unknown = [k for k in sets if k not in canon and k not in p]
+        # screen cannot carry it. One widening: a key ANOTHER property already carries may be
+        # added here when the entry cites where the value is printed (`source_file` AND
+        # `source_locator`) - plotAreaHa on #1 when #15 carries it is a read, not a typo, and a
+        # typo is still refused because no property carries the misspelling.
+        cited = bool(str(e.get("source_file") or "").strip()
+                     and str(e.get("source_locator") or "").strip())
+        unknown = [k for k in sets if k not in canon and k not in p
+                   and not (k in ds_keys and cited)]
         if unknown:
             rep["invalid"].append(
                 f"repair {rid}: {', '.join(unknown)} is not a canonical property field and "
                 f"property {pid} does not carry it either (a typo cannot be allowed to create "
-                f"one). An off-spec key the property DOES carry is repairable.")
+                f"one). An off-spec key the property DOES carry is repairable, and so is one "
+                f"another property already carries when the entry cites its source "
+                f"(`source_file` + `source_locator`).")
             continue
         # SURVIVAL (D12): refused whole, BEFORE anything is written and before `expect` is
         # consulted, so an entry carrying a value merge would condense straight back lands on

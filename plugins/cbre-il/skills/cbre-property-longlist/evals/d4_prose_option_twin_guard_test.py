@@ -224,8 +224,10 @@ def value_led_lands_with_twin() -> None:
     ck(n == 1 and len(reps) == 1, f"ONE repair is written ({n}, {len(reps)})")
     e = (reps or [{}])[0]
     s = e.get("set") or {}
-    ck(s.get("officeArea") == LED[1] and s.get("officeAreaVal") == 24230,
-       f"the option lands verbatim and the twin is merge's own derivation ({s})")
+    # the bracket is the broker's attribution, not data: it goes to `why`, never into the value
+    ck(s.get("officeArea") == "24,230 sq ft" and s.get("officeAreaVal") == 24230
+       and "all three office lines combined" in str(e.get("why") or ""),
+       f"the option lands as figure + unit, the note in why, the twin merge's own ({s})")
     ck(REP.validate_entry(e) == [],
        f"the entry passes the repairs stage's own validator ({REP.validate_entry(e)[:1]})")
     buf = io.StringIO()
@@ -233,7 +235,7 @@ def value_led_lands_with_twin() -> None:
         rep = REP.run(w, write=True)
     props = json.loads(cn.read_text(encoding="utf-8-sig"))["properties"]
     ck(len(rep.get("applied") or []) == 1 and props[0]["officeAreaVal"] == 24230
-       and props[0]["officeArea"] == LED[1] and props[1]["officeAreaVal"] == 900.0,
+       and props[0]["officeArea"] == "24,230 sq ft" and props[1]["officeAreaVal"] == 900.0,
        f"the repairs stage APPLIES it to that card only "
        f"(applied={len(rep.get('applied') or [])}, card1={props[0].get('officeAreaVal')})")
     ck("NOT applied" not in out, "and no refusal was printed for a landable answer")

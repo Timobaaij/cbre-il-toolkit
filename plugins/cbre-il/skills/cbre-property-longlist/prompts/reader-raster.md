@@ -65,6 +65,10 @@ you capture.
   write values the way the page prints them (units inside the value).
 - Rents ANNUAL (x12 a monthly quote, noted in `prov`); `areaUnit`/`rentUnit` read off the page,
   never inferred from the country; NEVER convert a figure yourself (Python owns all arithmetic).
+- A quoted annual TOTAL rent ("GBP 750,000 per annum exclusive") goes VERBATIM, with its basis, in
+  `quotingRentTotal` - never in `warehouseRent`/`warehouseRentVal`, and never divided into a rate.
+- `clearHeight` is CLEAR/haunch height. Only an eaves height printed -> `clearHeight` WITH the
+  qualifier ("12m eaves"), never a bare "12m"; both printed -> eaves in the open key `eavesHeight`.
 - `__meta.page_no` copied VERBATIM (0-based, the HERO photo page); set `image_pages`,
   `plan_page`, `heroRef`/`planRef` per the contract; `source_lang` too.
   On a deck of MORE THAN ONE page `image_pages` and `plan_page` are REQUIRED keys - `[]` / `null`

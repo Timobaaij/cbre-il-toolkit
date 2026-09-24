@@ -156,6 +156,8 @@ DISPLAY_FIELDS = frozenset({
     # source states one, and the three links each render as their own chip in the modal, so
     # all four are card slots and a question about them is material.
     "displayName", "videoLink", "websiteLink", "streetViewLink",
+    # v46: a stated annual total rent renders as the Total annual rent fallback
+    "quotingRentTotal",
 })
 
 # Per-kind materiality. A producer may override it per question by stamping `materiality`.

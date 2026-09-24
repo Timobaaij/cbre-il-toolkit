@@ -93,6 +93,26 @@ def capture_report(paths: dict) -> list:
     return notes
 
 
+def _launch_browser(pw):
+    """The bundled Chromium first, then the INSTALLED Edge, then Chrome (Playwright's
+    `channel=`). 'pip install playwright' without 'playwright install chromium' is the common
+    Windows state, and it cost the real render: the check fell to the structural floor
+    (NEEDS-PREVIEW-MCP) on hosts that had Edge all along. Raises the FIRST failure when none
+    launches, since that one says what to install."""
+    first = None
+    for kw in ({}, {"channel": "msedge"}, {"channel": "chrome"}):
+        try:
+            b = pw.chromium.launch(**kw)
+        except Exception as e:
+            first = first or e
+            continue
+        if kw:
+            print(f"(Playwright: bundled Chromium unavailable - rendering with the installed "
+                  f"{kw['channel']})")
+        return b
+    raise first
+
+
 def playwright_check(html: Path, out: Path) -> int:
     try:
         from playwright.sync_api import sync_playwright
@@ -106,7 +126,7 @@ def playwright_check(html: Path, out: Path) -> int:
     # traceback with no STATUS line (the orchestrator keys on STATUS).
     try:
         with sync_playwright() as pw:
-            b = pw.chromium.launch()
+            b = _launch_browser(pw)
             pg = b.new_page(viewport={"width": 1440, "height": 1000})
             pg.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
             pg.goto(html.resolve().as_uri())
@@ -228,7 +248,10 @@ def main() -> None:
         cl = html.resolve().parent / ".claude"; cl.mkdir(exist_ok=True)
         (cl / "launch.json").write_text(json.dumps(launch, indent=2), encoding="utf-8")
         print("Playwright unavailable - G-visual runs via the Claude Preview MCP instead "
-              "(available in Cowork). This is NOT a reason to skip G-visual - run the steps below.\n")
+              "(available in Cowork). This is NOT a reason to skip G-visual - run the steps below.")
+        # the one-time fix on a host with pip, so the NEXT run renders for real
+        print(f"(to enable the headless render here: \"{sys.executable}\" -m pip install "
+              f"playwright, then \"{sys.executable}\" -m playwright install chromium)\n")
         # browser-free structural FLOOR: even with no renderer at all, a broken file
         # (leaked token / empty PROPS / non-embedded photo) is caught and BLOCKS here.
         # Guarded so a malformed file can NEVER kill the STATUS line the orchestrator keys on.

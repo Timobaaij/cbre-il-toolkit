@@ -70,8 +70,10 @@ def main() -> int:
                     warehouseAreaSqm="33700",
                     __meta={"statedTotalArea": 387259, "statedTotalUnit": "sq ft"})
     out = M.derive_office_sum(cl, m, pv)
-    ck(out and out["status"] == "computed" and m["officeArea"] == 24230,
-       f"four office lines sum to 24,230 (got {m.get('officeArea')!r})")
+    # written with the dataset unit, the way sibling officeArea strings print: a bare int tripped
+    # the value-format gate on the pipeline's own output
+    ck(out and out["status"] == "computed" and m["officeArea"] == "24,230 sq ft",
+       f"four office lines sum to '24,230 sq ft' (got {m.get('officeArea')!r})")
     ck("securityGatehouseArea" not in {c["key"] for c in out["components"]},
        "the gatehouse is NOT an office component")
     ck("headlineArea" not in {c["key"] for c in out["components"]} and "warehouseAreaSqm" not in
@@ -94,8 +96,11 @@ def main() -> int:
                     gatehouseArea="1,006 Sq Ft",
                     __meta={"statedTotalArea": 464989, "statedTotalUnit": "Sq Ft"})
     out = M.derive_office_sum(cl, m, pv)
-    ck(out and out["status"] == "computed" and m["officeArea"] == 26208,
-       f"sums to 26,208 (got {m.get('officeArea')!r})")
+    ck(out and out["status"] == "computed" and m["officeArea"] == "26,208 sq ft",
+       f"sums to '26,208 sq ft' (got {m.get('officeArea')!r})")
+    ck(M.canonicalize(dict(m)).get("officeAreaVal") == 26208.0
+       and (M._office_area_parse(m["officeArea"]) or {}).get("value") == 26208.0,
+       "the unit string still yields officeAreaVal == 26208 (canonicalize and _office_area_parse)")
     ck(out.get("residual") == 1006 and "gatehouseArea" in str(out.get("reconciles")),
        "reconciles exactly once the stated gatehouse is added")
 
@@ -118,7 +123,7 @@ def main() -> int:
                     officeRent="8.50 psf", epcOffices="A+", officeDescription="Three storey fitted",
                     officeParking="20 spaces", officeFloors=2, officeRatio="5%", gatehouseArea="200 sq ft")
     out = M.derive_office_sum(cl, m, pv)
-    ck(out and m["officeArea"] == 8000 and {c["key"] for c in out["components"]} ==
+    ck(out and m["officeArea"] == "8,000 sq ft" and {c["key"] for c in out["components"]} ==
        {"groundFloorOffice", "firstFloorOffice"},
        f"rent, EPC, description, parking, floors, ratio and gatehouse are excluded "
        f"({[c['key'] for c in out['components']]})")
@@ -137,7 +142,7 @@ def main() -> int:
     cl, m, pv = rec(warehouseArea="200000", areaUnit="sq ft", groundFloorOffice="4,000 sq ft",
                     firstFloorOffice="4,000 sq ft", firstFloorOfficeAreaSqm="372 sq m")
     out = M.derive_office_sum(cl, m, pv)
-    ck(out and out["status"] == "computed" and m["officeArea"] == 8000,
+    ck(out and out["status"] == "computed" and m["officeArea"] == "8,000 sq ft",
        "a line stated in two units counts ONCE, in the record's unit")
     cl, m, pv = rec(warehouseArea="4000", areaUnit="sq m", groundFloorOffice="30,000 sq ft",
                     firstFloorOffice="30,000 sq ft")
@@ -166,8 +171,10 @@ def main() -> int:
     cl, m, pv = rec(warehouseArea="30000", areaUnit="sq m", groundFloorOffice="900 sq m",
                     firstFloorOffice="900 sq m")
     out = M.derive_office_sum(cl, m, pv)
-    ck(out and m["officeArea"] == 1800 and out["unit"] == "sq m" and pv["officeArea"]["areaUnitOfSource"] == "sq m",
+    ck(out and m["officeArea"] == "1,800 sq m" and out["unit"] == "sq m" and pv["officeArea"]["areaUnitOfSource"] == "sq m",
        "the target unit is the record's own")
+    ck(M.canonicalize(dict(m)).get("officeAreaVal") == 1800.0,
+       "...and officeAreaVal is still the number")
 
     print()
     if FAILS:

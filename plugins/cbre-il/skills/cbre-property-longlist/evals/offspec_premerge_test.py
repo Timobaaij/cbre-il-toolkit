@@ -43,4 +43,32 @@ assert "leaked" not in _conflict_fields(fixed), "fix: the sweep must suppress th
 # not silently dropped - it is quarantined to __meta.offspec
 assert any("leaked" in (r["__meta"].get("offspec") or {}) for r in fixed), "must quarantine, not drop"
 
+# LEDGER: the quarantine's audit row must carry a source_locator. ledger.py REQUIRES one, and merge
+# used to hard-code "", so ANY quarantine on a run blocked `ledger validate`. Real merge, real ledger.
+import csv  # noqa: E402
+import json  # noqa: E402
+import subprocess  # noqa: E402
+import tempfile  # noqa: E402
+import types  # noqa: E402
+import ledger as L  # noqa: E402
+
+_d = pathlib.Path(tempfile.mkdtemp(prefix="cbre_offspec_"))
+(_d / "inputs").mkdir()
+_rec = dict(_base("pdf"), country="GB", leaked={"n": 1})
+_rec["__meta"]["locator_base"] = "page 1"
+(_d / "r.json").write_text(json.dumps([_rec]), encoding="utf-8")
+_p = subprocess.run([sys.executable, str(pathlib.Path(M.__file__)), "--records", str(_d / "r.json"),
+                     "--source-dir", str(_d / "inputs"), "--out", str(_d / "c.json"),
+                     "--ledger", str(_d / "l.csv")], capture_output=True, text=True,
+                    encoding="utf-8", errors="replace")
+assert (_d / "l.csv").exists(), f"merge must write a ledger: {(_p.stdout + _p.stderr)[-300:]}"
+with open(_d / "l.csv", newline="", encoding="utf-8") as _fh:
+    _rows = list(csv.DictReader(_fh))
+_off = [r for r in _rows if r.get("record_type") == "offspec"]
+assert _off, "the quarantined key must reach the ledger as an offspec row"
+assert all(str(r.get("source_locator") or "").strip() for r in _off), \
+    f"every offspec row needs a non-empty source_locator: {[r.get('source_locator') for r in _off]}"
+assert L.cmd_validate(types.SimpleNamespace(ledger=str(_d / "l.csv"))) == 0, \
+    "ledger validate must pass on a run that quarantined an off-spec key"
+
 print("OFFSPEC PREMERGE TEST: PASS")

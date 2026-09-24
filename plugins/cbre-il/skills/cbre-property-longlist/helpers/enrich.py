@@ -170,7 +170,8 @@ def _cache_lookup_key(cache: dict, city: str, country: str, code: str = "") -> s
 
     ORDER, most specific first:
       1. the LOCALITY key 'city|country|code' - only when the record states a code, and only
-         when that entry actually carries a coordinate;
+         when that entry actually carries a coordinate; for an UNKNOWN country, any
+         'city|<cc>|code' entry carrying a coordinate (D9c);
       2. the CITY key 'city|country' - the coarse fallback (see below);
       3. (UNKNOWN country only) the cross-country prefix scan: locality entries for the same
          city and the same code first, then city-level ones.
@@ -228,6 +229,17 @@ def _cache_lookup_key(cache: dict, city: str, country: str, code: str = "") -> s
         lv = cache.get(lk)
         if lv is not None and _coords_cc(lv)[0] is not None:
             return lk
+        if _is_unknown_cc(country):
+            # UNKNOWN country + a stated code: a locality PIN for the same city and code under
+            # ANY country outranks the town key. A UK brochure rarely states its country, so the
+            # record reads 'city|??' while its postcode answer sits under 'city|gb|code'; checking
+            # the town key first served the town centroid on every warm run (D9c). Only a
+            # coordinate-bearing entry qualifies here, exactly as in step 1.
+            pref, lcode = f"{city.strip().lower()}|", code.lower()
+            for k in cache:
+                if (k.startswith(pref) and _key_code(k) == lcode
+                        and _coords_cc(cache[k])[0] is not None):
+                    return k
     ck = _geo_key(city, country)
     if cache.get(ck) is not None:
         return ck
@@ -318,6 +330,7 @@ def _borders_dataset():
 
 
 _CITY_DATASET: dict | bool | None = None  # None = not loaded; False = absent (tests may pin)
+MAJOR_CITY_POP = 400_000  # the second "Major cities" result: nearest city at least this big (15e)
 
 
 def _cities_major_dataset():
@@ -336,7 +349,8 @@ def _nearest_from_dataset(lat: float, lng: float, dataset: dict | None,
                           borders: dict | None = None, cities: dict | None = None) -> dict:
     """The genuine nearest air/port/rail facility from the complete POI dataset, the nearest
     border crossing from the complete borders dataset, and the nearest >=100k city from the
-    complete cities-major dataset - each capped by POI_MAX_KM (past the cap we honestly give
+    complete cities-major dataset (plus, under 'city_major', the nearest MAJOR_CITY_POP+ city
+    when that is a different one) - each capped by POI_MAX_KM (past the cap we honestly give
     up). All three are COMPLETE sets, so nearest-of-set IS the genuine nearest."""
     found: dict = {}
     for q in (dataset or {}).get("pois", []):
@@ -365,10 +379,19 @@ def _nearest_from_dataset(lat: float, lng: float, dataset: dict | None,
         km = _haversine_km(lat, lng, c["lat"], c["lng"])
         if km > POI_MAX_KM.get("city", 300):
             continue
+        rec = {"name": c["name"], "type": "city", "lat": c["lat"],
+               "lng": c["lng"], "km": round(km, 1), "dataset": True,
+               "country": c.get("country", ""), "population": c.get("population")}
         if "city" not in found or km < found["city"]["km"]:
-            found["city"] = {"name": c["name"], "type": "city", "lat": c["lat"],
-                             "lng": c["lng"], "km": round(km, 1), "dataset": True,
-                             "country": c.get("country", ""), "population": c.get("population")}
+            found["city"] = rec
+        # ALSO the nearest city of MAJOR_CITY_POP+ (15e): Leigh's nearest 100k+ city is Wigan,
+        # which alone hid Manchester and Liverpool from "Major cities". Keyed apart (type still
+        # 'city') and dropped below when it is the same city, so at most two city results.
+        if (c.get("population") or 0) >= MAJOR_CITY_POP and (
+                "city_major" not in found or km < found["city_major"]["km"]):
+            found["city_major"] = rec
+    if "city_major" in found and found["city_major"] is found.get("city"):
+        del found["city_major"]  # the nearest 100k+ city IS a 400k+ one: one city only
     return found
 
 
@@ -1005,7 +1028,7 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
     # a postcode can be added to OSM later, so the live path re-asks it exactly as the city-level
     # guard re-asks a city memo. Offline, `_postcode_first` returns nothing and the pin stays,
     # byte for byte. An unknown country is never asked (a postal code is only unambiguous within
-    # a country).
+    # a country) - here; the LATE step after the country fill asks it once one is known (D9c).
     redo: dict = {}  # id(p) -> normalised stated code, for a pinned-but-approximate property
     for p in props:
         if not _pinned(p):
@@ -1325,6 +1348,10 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
         if latlng and latlng[0] is not None:
             res[id(p)] = [latlng, cc, known, city, country, src]
 
+    # Records whose country is still UNKNOWN here: every postcode step above skipped them. The
+    # fill below may give them one (the town lookup's cc, or the pin's reverse geocode), and the
+    # LATE postcode step after it gives them the ask they were denied. (D9c)
+    cc_unknown0 = {id(p) for p in props if _is_unknown_cc(p.get("country"))}
     filled = 0
     displaced = 0
     for p in props:
@@ -1452,6 +1479,61 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
                 updates.append(_trace(p.get("id"), "lng", p["lng"], sf, loc, st))
         else:
             gaps.append(f"could not geocode '{city}' (property id={p.get('id')})")
+
+    # LATE POSTCODE FIRST. (D9c) A UK brochure rarely states its country: GB arrives only in the
+    # fill above, AFTER pass A and the redo list skipped the postcode as ambiguous without one.
+    # So the town centroid shipped (measured: 9 of 28 cards 1.6-8.6 km off, one in the wrong
+    # NUTS-3 area), and the disclosure below then counted each code as never asked - sending a
+    # run WITH network to exit 8 for a request this pass could have made itself. Each record
+    # whose country was unknown above and is known now gets the step it was denied: the
+    # locality pin when the cache holds one, else a live ask through `_postcode_first`, so a
+    # genuine "no such place" is memoised exactly as before and exit 8 cannot loop on it. The
+    # D10 one-way rule holds: only an approximate or absent pin is touched. A code that is NOT
+    # asked says why, on stdout and in the disclosure below.
+    skip_why: dict = {}  # id(p) -> why its stated postcode was not asked
+    todo_ids = {id(q) for q in todo}
+    for p in props:
+        if id(p) not in cc_unknown0 or (_pinned(p) and not p.get("coordsApprox")):
+            continue
+        code = _locality_code(p)
+        city = str(p.get("city", "")).strip()
+        country = str(p.get("country", "")).strip()
+        if not code or not city or _is_unknown_cc(city) or _key_code(gkeys.get(id(p), "")):
+            continue  # nothing stated, or already answered at locality level this pass
+        lk = _geo_key(city, country, code)
+        pll, pcc = _coords_cc(cache.get(lk))
+        src = "cache"
+        if pll is None:
+            why = ("country still unknown" if _is_unknown_cc(country)
+                   else "circuit breaker tripped earlier in this pass" if dead else "")
+            if not why:
+                pll, pcc = _postcode_first(p, city, country, True, code)
+                src = _postcode_src(code, country) if pll else ""  # D9b provenance, read at once
+                why = "offline (the postcode ask failed)" if dead else ""
+            if why:
+                skip_why[id(p)] = why
+                print(f"NOTE geocode: id={p.get('id')} '{_name(p)}' postcode '{code}' "
+                      f"not asked: {why}")
+            if pll is None:
+                continue  # not asked, or a genuine "no such place" (memoised): the pin stays
+        if _pinned(p) and float(p["lat"]) == float(pll[0]) and float(p["lng"]) == float(pll[1]):
+            continue
+        old = (p["lat"], p["lng"]) if _pinned(p) else None
+        p["lat"], p["lng"], p["coordsApprox"] = pll[0], pll[1], True
+        gkeys[id(p)] = lk
+        if old is None:
+            filled += 1
+        elif id(p) not in todo_ids:  # a town pin THIS pass wrote is already counted as filled
+            km = _haversine_km(old[0], old[1], p["lat"], p["lng"])
+            print(f"geocode: id={p.get('id')} '{_name(p)}': approximate town pin "
+                  f"({old[0]:.5f}, {old[1]:.5f}) replaced by the locality-level coordinate "
+                  f"for its stated postcode '{code}' ({p['lat']:.5f}, {p['lng']:.5f}), "
+                  f"{km:.1f} km away")
+            displaced += 1
+        if updates is not None:
+            sf, st, loc = _coord_locator(src, city, _key_code(lk))
+            updates.append(_trace(p.get("id"), "lat", p["lat"], sf, loc, st))
+            updates.append(_trace(p.get("id"), "lng", p["lng"], sf, loc, st))
     if dirty:
         _save_cache(GEOCODE_CACHE, cache)
 
@@ -1474,7 +1556,8 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
             continue
         ent = cache.get(_geo_key(city, country, code))
         if ent is None:
-            waiting.append(f"id={p.get('id')} '{_name(p)}' {code}")
+            why = skip_why.get(id(p))  # the late step's reason, when it is the one that skipped (D9c)
+            waiting.append(f"id={p.get('id')} '{_name(p)}' {code}" + (f" ({why})" if why else ""))
         elif _coords_cc(ent)[0] is None:
             unresolved.append(f"id={p.get('id')} '{_name(p)}' {code}")
     # THE SANDBOX HANDOFF NEEDS TO KNOW (the D9 repair). run.py asks the web-enrichment round
@@ -1515,6 +1598,16 @@ def geocode(canonical: dict, gaps: list, updates: list | None = None) -> int:
             f"sandbox (geocoder unreachable), so their pin is the town centre until the "
             f"web-enrichment round or a seed supplies the postcode coordinate: "
             + ", ".join(waiting[:8]) + ".")
+    # the third cause (D9c): no country, so the code was never asked - not counted as waiting,
+    # because the web round cannot ask it either
+    nocc = [f"id={p.get('id')} '{_name(p)}' {_locality_code(p)}" for p in props
+            if skip_why.get(id(p)) == "country still unknown"]
+    if nocc:
+        gaps.append(
+            f"{len(nocc)} property(ies) state a postcode but no country could be established, so "
+            f"the postcode was not asked (a postal code is ambiguous without a country) and the "
+            f"pin is the town centre: " + ", ".join(nocc[:8]) + ". State the country in the "
+            f"source or work/repairs.json, then re-run.")
     if displaced:
         print(f"geocode: {displaced} approximate town pin(s) replaced by locality-level "
               f"coordinates (see the lines above)")
@@ -1526,7 +1619,7 @@ POI_TYPES = ("air", "port", "rail", "border", "city")
 # per-type give-up caps (km): inside OVERPASS_RADIUS_M the genuine OSM nearest
 # wins; beyond it the curated MAJOR-facilities library supplements up to these
 # caps (labelled as such); past the cap we honestly give up - never a far stand-in.
-POI_MAX_KM = {"air": 600, "port": 800, "rail": 300, "border": 400, "city": 300}
+POI_MAX_KM = {"air": 600, "port": 800, "rail": 300, "border": 400, "city": 300, "city_major": 300}
 
 
 def _haversine_km(lat1, lng1, lat2, lng2) -> float:
@@ -1717,21 +1810,25 @@ def attach_pois(canonical: dict, gaps: list) -> int:
             found = _nearest_from_dataset(p["lat"], p["lng"], dataset, borders, cities_major)
             if lib_types:        # outage fallback only for a type whose complete asset is absent
                 found = _library_supplement(p["lat"], p["lng"], found, lib_types)
-            for t, poi in found.items():
+            for slot, poi in found.items():
+                # 'city_major' is a second CITY result (15e), typed apart so the template can flag
+                # it major; the template folds it back into the cities (dashboard v46)
+                t = "city_major" if slot == "city_major" else poi.get("type", slot)
                 key = (poi["name"], t, round(poi["lat"], 3), round(poi["lng"], 3))
                 if poi.get("dataset"):
                     src = ("CBRE border dataset" if t == "border"
-                           else "CBRE cities dataset" if t == "city"
+                           else "CBRE cities dataset" if t in ("city", "city_major")
                            else "CBRE POI dataset")
                 else:
                     src = "curated library"
                 note = f"nearest {t} ({src})"
                 if t == "border" and poi.get("crossingOf"):
                     note = f"nearest border crossing {poi['crossingOf']} ({src})"
-                if t == "city" and poi.get("population"):
+                if t in ("city", "city_major") and poi.get("population"):
                     # population is SHOWN here (renders in the modal distance note + map popup);
                     # no chrome change needed - the template already renders poi.note verbatim.
-                    note = f"nearest major city ({src}; pop {poi['population']:,})"
+                    note = (f"nearest major city ({src}; pop {poi['population']:,})" if slot == "city"
+                            else f"nearest city of {MAJOR_CITY_POP:,}+ ({src}; pop {poi['population']:,})")
                 rec = {"name": poi["name"], "type": t, "lat": poi["lat"], "lng": poi["lng"],
                        "note": note}
                 if poi.get("country"):
@@ -2045,8 +2142,9 @@ def _alias_norm(s) -> str:
 # labels are still preferred; this is the fallback so a broad label is not a dead end.
 _NUTS_SPEC = [
     ("UKF", "East Midlands"), ("UKG", "West Midlands"), ("UKE", "Yorkshire and the Humber"),
-    ("UKD", "North West England"), ("UKJ", "South East England"), ("UKH", "East of England"),
-    ("UKI", "London", "greater london"), ("UKK", "South West England"), ("UKC", "North East England"),
+    ("UKD", "North West England", "north west"), ("UKJ", "South East England", "south east"),
+    ("UKH", "East of England"), ("UKI", "London", "greater london"),
+    ("UKK", "South West England", "south west"), ("UKC", "North East England", "north east"),
     ("UKM", "Scotland"), ("UKL", "Wales", "cymru"),
     ("DE1", "Baden-Wurttemberg", "baden wurttemberg", "baden wuerttemberg"),
     ("DE2", "Bayern", "bavaria"), ("DEA", "Nordrhein-Westfalen", "north rhine westphalia", "nrw"),
@@ -2064,6 +2162,10 @@ _NUTS_SPEC = [
     ("NL3", "West Netherlands", "randstad"), ("NL41", "Noord-Brabant", "north brabant"),
     ("IE05", "Southern Ireland"), ("IE06", "Eastern and Midland"),
 ]
+# A label that is ONLY a compass direction ('North East', 'South-West', 'Mid'). `_dataset_region`
+# never binds one through a bracket-derived name-index piece; the same pattern keeps
+# build_regions_dataset._name_variants from indexing such pieces at all (15a).
+_COMPASS_ONLY = re.compile(r"^(north|south|east|west|central|mid)([ -]?(north|south|east|west))?$")
 _NUTS_ALIASES: dict = {}
 for _spec in _NUTS_SPEC:
     for _nm in (_spec[1],) + _spec[2:]:
@@ -2109,9 +2211,23 @@ def _dataset_region(ds: dict, code: str):
     if code in ds.get("regions", {}):
         return ds["regions"][code]
     ni = ds.get("name_index", {})
-    hit = ni.get(_norm_region(code))
-    if hit and len(hit) == 1:
-        return ds["regions"][hit[0]]
+
+    def _hit(k):
+        h = ni.get(k)
+        if not h or len(h) != 1:
+            return None
+        # A COMPASS-ONLY key ('north east') binds only a region whose WHOLE name it is (IE042
+        # 'West'). The shipped index also carries bracket pieces - 'West Sussex (North East)'
+        # indexes 'north east' -> UKJ28 - which captured the UK macro-region label and bound
+        # a North East England site to one West Sussex district; such a query falls through
+        # to the aliases below instead (15a).
+        if _COMPASS_ONLY.match(k) and _norm_region(ds["regions"][h[0]].get("name", "")) != k:
+            return None
+        return ds["regions"][h[0]]
+
+    reg = _hit(_norm_region(code))
+    if reg:
+        return reg
     # bilingual / dual-name fallback: split the QUERY on / , ; and parentheticals too, so a
     # property carrying a joined ('Valencia / Valencia') or local-language ('Alacant') form
     # resolves even against a dataset that was not re-indexed with variants (defense in depth)
@@ -2121,9 +2237,9 @@ def _dataset_region(ds: dict, code: str):
     except Exception:
         variants = {_norm_region(code)}
     for v in variants:
-        h = ni.get(v)
-        if h and len(h) == 1:
-            return ds["regions"][h[0]]
+        reg = _hit(v)
+        if reg:
+            return reg
     alias = _NUTS_ALIASES.get(_alias_norm(code))
     if alias:
         return _aggregate_nuts(ds, alias[0], alias[1])
@@ -2479,6 +2595,9 @@ def bind_region_codes(canonical: dict, ds: dict | None, gaps: list | None = None
     for _e in ((canonical.get("meta") or {}).get("regionHarmonised") or []):
         if isinstance(_e, dict) and _e.get("stated"):
             prior[_e.get("id")] = (str(_e["stated"]), _norm_region(str(_e.get("bound") or "")))
+    # a label `fill_region_from_code` derived last pass is not a claim the record made (15b)
+    for _pid, _e in _derived_regions(canonical).items():
+        prior.setdefault(_pid, ("", _norm_region(str(_e.get("region") or ""))))
 
     def _ok_city(c):
         return _ok_region_city(c)
@@ -2518,6 +2637,66 @@ def _stated_region(p: dict) -> str:
     can never be mistaken for an administrative level."""
     v = p.get("region")
     return str(v).strip() if _ok_region_city(v) else ""
+
+
+def _derived_regions(canonical: dict) -> dict:
+    """id -> the `meta.regionFromCode` record for a region label `fill_region_from_code`
+    DERIVED on an earlier pass, kept only while the property still carries that exact name
+    (a label a source or repair has since supplied is stated again). A derived label is not
+    a claim the record made, so the bind's cross-check and `harmonise_regions` skip it. (15b)"""
+    by_id = {p.get("id"): p for p in canonical.get("properties", []) or []}
+    out = {}
+    for e in ((canonical.get("meta") or {}).get("regionFromCode") or []):
+        if isinstance(e, dict) and e.get("id") in by_id and _norm_region(
+                str(by_id[e["id"]].get("region") or "")) == _norm_region(str(e.get("region") or "")):
+            out[e["id"]] = e
+    return out
+
+
+def fill_region_from_code(canonical: dict, ds: dict | None, updates: list | None = None) -> int:
+    """A BLANK region beside a bound regionCode reads the dataset's NUTS-3 name. (15b)
+
+    Cards shipped `region` 'TBC' while carrying a valid regionCode: `harmonise_regions`
+    deliberately skips a blank region and nothing else read the code back into the label.
+    Only a blank/sentinel region is filled, only from a code that is a KEY of `ds['regions']`
+    (a real NUTS-3 area, as the bind produces - never a label or an aggregate), and a stated
+    region is NEVER overwritten. The value is DERIVED and says so: a ledger row naming the
+    regions dataset with a conflict_note, and `meta.regionFromCode` per property, which is
+    also how a re-run recognises its own fill (refreshed from the current bind, or restored
+    to what it replaced when the code no longer binds). Returns the number changed."""
+    if not ds:
+        return 0
+    regions = ds.get("regions", {}) or {}
+    mine = _derived_regions(canonical)
+    rec, n = [], 0
+    for p in canonical.get("properties", []) or []:
+        pid = p.get("id")
+        if _stated_region(p) and pid not in mine:
+            continue  # a stated region is never overwritten
+        code = p.get("regionCode")
+        name = str((regions.get(code) or {}).get("name") or "").strip() if isinstance(code, str) else ""
+        was = mine[pid].get("was", "") if pid in mine else p.get("region", "")
+        if not name:
+            if pid in mine:
+                p["region"] = was  # its code no longer binds: back to the gap it filled
+                n += 1
+            continue
+        rec.append({"id": pid, "region": name, "code": code, "was": was})
+        if p.get("region") != name:
+            p["region"] = name
+            n += 1
+        if updates is not None:
+            row = _trace(pid, "region", name, f"assets/regions_dataset.json ({code})",
+                         f"NUTS-3 name of the bound regionCode {code}", "dataset")
+            row["conflict_note"] = ("derived from the regions dataset (the name of the bound "
+                                    "NUTS-3 area); no source stated a region")
+            updates.append(row)
+    meta = canonical.setdefault("meta", {})
+    if rec:
+        meta["regionFromCode"] = rec
+    else:
+        meta.pop("regionFromCode", None)
+    return n
 
 
 def harmonise_regions(canonical: dict, ds: dict | None, gaps: list,
@@ -2575,7 +2754,9 @@ def harmonise_regions(canonical: dict, ds: dict | None, gaps: list,
     if not ds:
         return 0
     props = canonical.get("properties", []) or []
-    levels = {_norm_region(v) for v in (_stated_region(p) for p in props) if v}
+    derived = _derived_regions(canonical)  # a label filled from the code is not a stated level (15b)
+    levels = {_norm_region(v) for v in (_stated_region(p) for p in props
+                                        if p.get("id") not in derived) if v}
     if len(levels) < 2:
         return 0  # one level (or none) - already coherent, change nothing
 
@@ -2584,7 +2765,7 @@ def harmonise_regions(canonical: dict, ds: dict | None, gaps: list,
     unbound: list[str] = []
     for p in props:
         cur = _stated_region(p)
-        if not cur:
+        if not cur or p.get("id") in derived:
             continue  # a blank region is a gap, not a level
         code = p.get("regionCode")
         prof = regions.get(code) if isinstance(code, str) else None
@@ -2766,6 +2947,11 @@ def main() -> None:
         # `g` is the regions layer's OWN gap bucket, so the bind's stated-vs-polygon
         # disclosure reaches the Gaps Report by the same path the layer's other lines take.
         bind_region_codes(canonical, _regions_dataset(), g)
+        # 15b: a BLANK region beside the code just bound reads that area's dataset name
+        # (derived, ledgered as such; a stated region is never touched)
+        nf = fill_region_from_code(canonical, _regions_dataset(), updates)
+        if nf:
+            print(f"regions: filled {nf} blank region label(s) from the bound NUTS-3 code")
         # I11: with each property bound to the area its coordinates PROVE it is in, a
         # dataset whose `region` labels sit at different administrative levels (a county
         # from one source, the wider region from another) is harmonised to that bind.

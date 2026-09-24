@@ -33,10 +33,14 @@ WHAT THIS FILE PINS, in order:
      pin lands, for an unpinned property and for an approximate one alike, and a memo that is
      still "no" is not rewritten;
   7. the count of stated postcodes the pass could not ask travels in meta.enrichment for
-     run.py's exit-8 decision.
+     run.py's exit-8 decision;
+  8. a record that states NO country (the UK brochure norm) still gets its postcode (D9c):
+     cold, the postcode is asked once the town lookup fills GB, and nothing is left "unasked"
+     for exit 8; warm, a 'city|gb|code' pin outranks the 'city|??' town entry.
 
 EVERY POSTAL CODE IS INVENTED and nothing here is country-specific (the same discipline
-region_locality_cache_test keeps). Offline: `_geocode_postcode`, `_geocode_one` and
+region_locality_cache_test keeps) - except part 8, which uses the measured run's real towns
+so the bundled gazetteer fills the country as it did there; its postcode answers are stubbed. Offline: `_geocode_postcode`, `_geocode_one` and
 `_reverse_cc` are stubbed, `time.sleep` is a no-op, and a live call is asserted never made.
 Run: python evals/d9_postcode_locality_test.py"""
 from __future__ import annotations
@@ -370,6 +374,46 @@ def main() -> int:
         seeded = json.loads((w / "geocode_cache.json").read_text(encoding="utf-8"))
         ck(r.returncode == 0 and seeded.get(KA) == {"latlng": PIN_A, "cc": CC},
            "seed_geocode.py overwrites a negative memo: the memo is never a claim on the slot")
+
+    # =====================================================================================
+    # 8. NO stated country (D9c). Real towns from the measured run, so the BUNDLED gazetteer
+    #    fills GB offline exactly as it did there; every postcode answer is still stubbed.
+    # =====================================================================================
+    print("\n8. a record with no stated country still gets its postcode:")
+    LEIGH_PC = [53.5081, -2.5360]
+    with tempfile.TemporaryDirectory() as td:
+        # (i) COLD: empty cache, country "" - GB arrives from the town lookup, AFTER pass A
+        lp = {"id": 1, "park": "Leigh Park", "city": "Leigh", "country": "", "postcode": "WN7 4HB"}
+        c, gaps, upd, out, after, n, h = run(Path(td), {}, [lp], lambda code, cc: (LEIGH_PC, cc))
+        p1 = c["properties"][0]
+        ck(h.pc_calls == [("WN74HB", "GB")],
+           f"cold: the postcode is asked once the country is known ({h.pc_calls})")
+        ck(after.get("leigh|gb|wn74hb") == {"latlng": LEIGH_PC, "cc": "GB"},
+           "...and cached under the LOCALITY key 'leigh|gb|wn74hb'")
+        ck((p1["lat"], p1["lng"]) == tuple(LEIGH_PC) and p1.get("country") == "GB" and n == 1,
+           f"...and the pin is the POSTCODE pin, not the town centre ({p1.get('lat')}, {p1.get('lng')}; n={n})")
+        ck(c["meta"]["enrichment"].get("postcodes_unasked") == 0,
+           "...and postcodes_unasked is 0: nothing left to send run.py to exit 8")
+        lat_rows = [u for u in upd if u["field"] == "lat"]
+        ck(bool(lat_rows) and "WN74HB" in lat_rows[-1]["source_locator"],
+           "...and the ledger's last lat row (the one the upsert keeps) names the postcode")
+    with tempfile.TemporaryDirectory() as td:
+        # (ii) WARM: both a town entry under '??' and a postcode pin under GB are cached
+        W_TOWN, W_PC = [52.5855, -2.1230], [52.6120, -2.1050]
+        warm = {"wolverhampton|??": {"latlng": W_TOWN, "cc": "GB"},
+                "wolverhampton|gb|wv107qz": {"latlng": W_PC, "cc": "GB"}}
+        ck(E._cache_lookup_key(warm, "Wolverhampton", "??", "WV107QZ") == "wolverhampton|gb|wv107qz",
+           "warm: the lookup resolves the postcode key before the '??' town key")
+        wp = {"city": "Wolverhampton", "country": "??", "postcode": "WV10 7QZ"}
+        props = [dict(wp, id=1, park="No Pin"),
+                 dict(wp, id=2, park="On Town", lat=W_TOWN[0], lng=W_TOWN[1], coordsApprox=True)]
+        c, gaps, upd, out, after, n, h = run(Path(td), warm, props, _raise)  # offline
+        got = [(p["lat"], p["lng"]) for p in c["properties"]]
+        ck(got == [tuple(W_PC), tuple(W_PC)] and n == 2,
+           f"warm, offline: the postcode pin wins for the unpinned record AND the one on the "
+           f"town centroid ({got}; n={n})")
+        ck(not h.pc_calls and c["meta"]["enrichment"].get("postcodes_unasked") == 0,
+           "...served from the cache: nothing asked, nothing left unasked")
 
     # the docstring promise matches the behaviour above
     sdoc = (ROOT / "helpers" / "seed_geocode.py").read_text(encoding="utf-8")

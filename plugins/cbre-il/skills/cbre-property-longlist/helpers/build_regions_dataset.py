@@ -56,6 +56,8 @@ INDICATORS = {
 }
 GDP_PREFIX = "GDP, nominal"  # encoding-fragile euro sign -> match by prefix
 _NUTS_CC = {"EL": "GR", "UK": "GB"}  # NUTS prefixes that differ from ISO2
+# the same pattern as enrich._COMPASS_ONLY (kept in step): a label that is only a direction
+_COMPASS_ONLY = re.compile(r"^(north|south|east|west|central|mid)([ -]?(north|south|east|west))?$")
 
 
 def _norm_name(s: str) -> str:
@@ -68,7 +70,10 @@ def _name_variants(name: str) -> set:
     forms so a property binds whichever spelling it carries: 'Valencia / Valencia' ->
     {'valencia / valencia', 'valencia'}; 'Alicante / Alacant' -> {..., 'alicante',
     'alacant'}; 'Bolzano (Bozen)' -> {..., 'bolzano', 'bozen'}. Accent-stripped, lowered.
-    Splits on / , ; and ' - '; indexes both the outside and the inside of parentheses."""
+    Splits on / , ; and ' - '; indexes both the outside and the inside of parentheses -
+    except a COMPASS-ONLY parenthetical ('West Sussex (North East)'), which is a district
+    qualifier, not a local name: indexed, 'north east' bound the UK macro-region label to
+    one West Sussex district (15a; enrich._dataset_region guards the shipped index too)."""
     raw = str(name or "")
     out = set()
     full = _norm_name(raw)
@@ -76,10 +81,10 @@ def _name_variants(name: str) -> set:
         out.add(full)
     inside = re.findall(r"\(([^)]*)\)", raw)        # parenthetical local name(s)
     base = re.sub(r"\([^)]*\)", " ", raw)           # the name without the parenthetical
-    for piece in [base] + inside:
+    for i, piece in enumerate([base] + inside):
         for part in re.split(r"[/,;]| - ", piece):
             v = _norm_name(part)
-            if v:
+            if v and not (i and _COMPASS_ONLY.match(v)):
                 out.add(v)
     return out
 

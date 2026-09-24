@@ -194,6 +194,54 @@ def _route_certifications(rec: dict) -> dict:
     return rec
 
 
+# Stated availability TIMING -> earlyAccess. `earlyAccess` is the one displayed delivery /
+# early-access date, but readers file "Available now" / "Available from Q4 2026" under
+# `availability` or `status`, so the card showed a gap for a date the source plainly states. The
+# match is deliberately narrow: only a timing phrase, never a bare "Available", "Coming Soon",
+# "available in part or as a whole" or "Available to sublease or assign" (those state no time).
+_AVAIL_MONTH = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|"
+                r"aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)")
+_AVAIL_DATE = (r"(?:Q[1-4]\s*20\d\d|H[12]\s*20\d\d|(?:\d{1,2}(?:st|nd|rd|th)?\s+)?" + _AVAIL_MONTH
+               + r"\.?\s+20\d\d|(?:early|mid|late|end)[\s-]+(?:of\s+)?20\d\d)")
+_AVAIL_TIMING_RX = re.compile(
+    r"\bavailable\s+(?:now|immediately|for\s+immediate\s+occupation"
+    r"|from\s+(?:" + _AVAIL_DATE + r"|practical\s+completion))\b"
+    # a bare date needs a delivery word in front: "Refurbished March 2024" is not an access date
+    r"|\b(?:practical\s+completion|(?-i:PC)|completion|delivery|ready\s+for\s+occupation)\s+"
+    r"(?:(?:due|expected|anticipated|scheduled|targeted|in|by|from|of)\s+)*"
+    + _AVAIL_DATE + r"\b", re.I)
+# a date beside one of these is when the unit was TAKEN, not when it can be occupied
+_AVAIL_TAKEN_RX = re.compile(r"\b(?:under\s+offer|let\s+agreed|sold|leased)\b", re.I)
+
+
+def _route_availability(rec: dict) -> dict:
+    """COPY a stated availability timing phrase into an empty `earlyAccess`, BEFORE clustering.
+
+    Beside `_route_certifications` and called with it. Conservative: fires only when
+    `earlyAccess` is absent or a sentinel (`N.looks_unknown`; a stated "None" is data and is
+    kept), reads `availability` then `status`, copies ONLY the matched phrase (the source field
+    keeps its value), and never overwrites a stated `earlyAccess`. The provenance names the
+    source field's locator and says the value is timing wording copied from it."""
+    if not N.looks_unknown(rec.get("earlyAccess")):
+        return rec
+    for src in ("availability", "status"):
+        v = rec.get(src)
+        if not isinstance(v, str) or N.looks_unknown(v) or _AVAIL_TAKEN_RX.search(v):
+            continue
+        m = _AVAIL_TIMING_RX.search(v)
+        if not m:
+            continue
+        meta = rec.setdefault("__meta", {})
+        rec["earlyAccess"] = m.group(0).strip()
+        prov = meta.setdefault("prov", {})
+        if isinstance(prov, dict):
+            loc = str(prov.get(src) or meta.get("locator_base") or "").strip()
+            prov["earlyAccess"] = (f"{loc} (copied from {src}: timing wording stated in "
+                                   f"status/availability)").strip()
+        break
+    return rec
+
+
 # ---------------------------------------------------------------------------- #
 # DURABLE MANUAL CORRECTIONS (P1-4)
 #
@@ -794,7 +842,10 @@ def derive_office_sum(cluster: list, merged: dict, prov: dict) -> dict | None:
     files = sorted({(prov.get(k) or {}).get("source_file", "") for k, _, _, _ in parts} - {""})
     first = prov.get(parts[0][0]) or {}
     value = int(total) if float(total).is_integer() else round(total, 2)
-    merged["officeArea"] = value
+    # written the way a sibling record's officeArea is printed ("26,208 sq ft"): a bare int here
+    # tripped the value-format gate, which then asked the broker about the pipeline's own output.
+    # canonicalize / `_office_area_parse` still read officeAreaVal == the number back from it.
+    merged["officeArea"] = f"{value:,} {target}"
     prov["officeArea"] = {
         "source_file": files[0] if len(files) == 1 else (first.get("source_file", "") or ""),
         "source_type": first.get("source_type", ""),
@@ -1167,14 +1218,31 @@ _FEET_RX = re.compile(r"\b(?:ft|feet|foot)\b|'", re.I)
 # correctly, here: measured before this fix, `{"epc": "BREEAM Excellent. EPC 85 (B)."}` re-filed
 # WHOLESALE, leaving epc empty and shipping a string reading "EPC 85 (B)" under BREEAM. Any future
 # edit to this pattern must be judged against BOTH consumers, not the gate alone.
+#
+# D15 UK notation. The UK register prints the band FIRST and the score after it with no anchor word
+# at all - "C-73", "B-48", "C 62", "A24", "A+ (-2)" - and a banded "A++" exists too. Every one of
+# those failed (no anchor word; branch (c) wants "rated"), so a stated rating was struck to tbd.
+# Branch (d) admits exactly that shape, ANCHORED over the whole string (a band glued to a score,
+# optionally "for" a named use: "A 20 offices"), so it cannot fire inside prose; the use words are
+# a closed list, so "A 12 Smith Street" (an address) and "A 2023" (a year) still fail. The gate
+# branch in `_pick_gate_verdict` folds typographic dashes and quotes and judges each ";" part.
+# Router check: no string branch (d) accepts can hold a BREEAM grade word, so the
+# `_route_certifications` decision is unchanged by it.
 _EPC_GATE_RX = re.compile(
-    r"^(?:target(?:ing|ed)?\s+)?(?:epc\s*)?[A-G]\+?$"
+    r"^(?:target(?:ing|ed)?\s+)?(?:epc\s*)?[A-G]\+{0,2}$"
     r"|\b(?:epc|energy\s+performance(?:\s+certificate)?|rating|rated|band|target(?:ing|ed)?)\b"
     r"(?:\W+(?:epc|rating|band|grade|certificate|of|is|will|be|to|the|a|an|achieve[sd]?|"
     r"achieving|minimum|min|expected|anticipated|target(?:ing|ed)?))*"
     r"(?:[^\w.\n]+\d{1,3}[^\w.\n]{0,3}|\W+)(?-i:[A-G])\+?(?![A-Za-z0-9])"
-    r"|(?<![A-Za-z0-9])(?-i:[A-G])\+?\s+(?:rated|rating)\b",
+    r"|(?<![A-Za-z0-9])(?-i:[A-G])\+?\s+(?:rated|rating)\b"
+    r"|^(?:epc\s*)?(?-i:[A-G])\+{0,2}\s*(?:-?\s*\d{1,3}|\(\s*-?\d{1,3}\s*\))"
+    r"(?:\s+(?:for\s+)?(?:the\s+)?(?:offices?|warehouses?|industrial|logistics|production|"
+    r"workshops?|mezzanines?|trade\s+counters?|hub)(?:\s+(?:element|space|area|accommodation))?)?$",
     re.I)
+# D15 UK notation: typographic dashes fold to "-" and quotes to a space before branch (d) is tried.
+_EPC_FOLD = str.maketrans({"‐": "-", "‑": "-", "–": "-",
+                           "‘": " ", "’": " ", "“": " ", "”": " ",
+                           "'": " ", '"': " "})
 
 
 def _pick_gate_verdict(field: str, value, rent_unit: str | None = None,
@@ -1249,10 +1317,19 @@ def _pick_gate_verdict(field: str, value, rent_unit: str | None = None,
         s = str(value).strip()
         if field == "breeam":
             return "pass" if _BREEAM_GRADE.search(s) else "fail"
-        return "pass" if _EPC_GATE_RX.search(s) else "fail"   # D15: a token anywhere
+        if _EPC_GATE_RX.search(s):
+            return "pass"   # D15: a token anywhere
+        # D15 UK notation: a per-use list ("'A+' (-2) offices; 'A' (6) warehouse") passes only when
+        # EVERY ";" part carries a rating; the raw string is tried first, so nothing that passed fails
+        parts = [p.strip() for p in s.translate(_EPC_FOLD).split(";") if p.strip()]
+        return "pass" if parts and all(_EPC_GATE_RX.search(p) for p in parts) else "fail"
     if field in _COUNT_GATE_FIELDS:
         num = value if isinstance(value, (int, float)) and not isinstance(value, bool) \
             else N.extract_first_number(str(value))
+        if num is None and isinstance(value, str):
+            # a spelled-out count ("two dock level loading doors") is a stated count, not a garble;
+            # the A10 tiebreak reads this same verdict, so it needs no fallback of its own
+            num = N.word_number(value)
         if num is None or num < 0 or num > 2000 or float(num) != int(num):
             return "fail"
         return "pass"
@@ -4304,6 +4381,7 @@ def main() -> None:
     for _r in all_records:            # v22 Phase 1: quarantine off-spec structures pre-merge
         _normalise_offspec(_r)
         _route_certifications(_r)     # B5: an EPC never ships as a BREEAM grade
+        _route_availability(_r)       # stated availability timing reaches earlyAccess
 
     # DURABLE MANUAL CORRECTIONS (P1-4). Applied HERE - after extraction + _normalise_offspec and
     # BEFORE compute_file_quality / dominant_units / match.dedupe - because all three consume the
@@ -4726,10 +4804,15 @@ def main() -> None:
                 if f is None:
                     _withheld.append((fld, merged[fld], _u))
                     merged.pop(fld, None)
+                    merged.pop(f"{fld}Unit", None)   # no figure left for a unit to label
                     prov.pop(fld, None)
                     continue
                 _raw = merged[fld]
                 merged[fld] = round(merged[fld] * f)
+                # the reader's own `<field>Unit` named the SOURCE unit; the figure is now in the
+                # dataset unit, so leaving it would ship "174240 acres" in the Longlist column
+                if f"{fld}Unit" in merged:
+                    merged[f"{fld}Unit"] = area_unit
                 if fld in prov:
                     prov[fld]["locator"] = (
                         f"{prov[fld].get('locator', '')} "
@@ -4886,10 +4969,15 @@ def main() -> None:
         # v22 Phase 1: audit every quarantined off-spec key (never silently dropped)
         for _r in cl:
             for _k, _v in (_r.get("__meta", {}).get("offspec", {}) or {}).items():
+                # ledger.py REQUIRES source_locator, so an empty one blocked `ledger validate` on
+                # any run that quarantined anything: name the record's page and the quarantine slot
+                _ob = str(_r.get("__meta", {}).get("locator_base") or "").strip()
                 ledger_rows.append({
                     "property_id": i, "record_type": "offspec", "field": _k,
                     "value": _short(_v), "source_file": _r.get("__meta", {}).get("source_file", ""),
-                    "source_locator": "", "source_type": _r.get("__meta", {}).get("source_type", ""),
+                    "source_locator": (f"{_ob}; " if _ob else "")
+                    + f"__meta.offspec[{_k}] (boundary quarantine)",
+                    "source_type": _r.get("__meta", {}).get("source_type", ""),
                     "extractor": "boundary", "confidence": "",
                     "conflict_note": "off-spec structure (provenance/meta) quarantined - not a displayable value",
                     "verified": "",

@@ -30,7 +30,8 @@ plainly wrong on a merged property.
 What this pins:
   * schema-OR-RECORD membership: an off-spec key the TARGET carries is repairable and
     clearable; a name on neither is still INVALID for `set`, and so is an off-spec key that
-    lives on a DIFFERENT property (the check is per-target, not dataset-wide);
+    lives on a DIFFERENT property (the check is per-target, not dataset-wide) unless the entry
+    cites `source_file` + `source_locator`, which lets it ADD that key; a typo never passes;
   * every DENIED_FIELDS key is still refused, on `set` and on `unset` alike, and the denial
     message still WINS over the membership one;
   * `unset` REMOVES the key rather than writing a sentinel over it, the ledger row says
@@ -223,8 +224,8 @@ def main() -> int:
     w = work_with([entry(set={"sidingAccess": "rail served"})])
     rep = R.run(w)
     ck(not rep["applied"] and len(rep["invalid"]) == 1,
-       "an off-spec key on ANOTHER property is INVALID - the check is per-target, not "
-       "dataset-wide")
+       "an UNCITED off-spec key on ANOTHER property is INVALID - the check is per-target, "
+       "not dataset-wide")
     ck(any("sidingAccess" in s and "property 1" in s for s in rep["invalid"]),
        f"...and the message names the key AND the property it is not on {rep['invalid']}")
 
@@ -237,6 +238,27 @@ def main() -> int:
     r = R.apply(c, [entry(set={"yardDepht": "40 m"})])
     ck(not r["applied"] and len(r["invalid"]) == 1,
        "apply() alone still refuses a typo, so the guard cannot be walked around")
+
+    # a key ANOTHER property carries (only #1 has yardDepth) may be ADDED to #2 when the entry
+    # cites where the value is printed; uncited it is still refused, and a typo always is
+    beta = {"key": "northtown|otherco|beta park", "id": 2}
+    c = canon()
+    r = R.apply(c, [entry(property=beta, set={"yardDepth": "30 m"},
+                          source_file="beta.pdf", source_locator="page 2")])
+    ck(len(r["applied"]) == 1 and not r["invalid"] and c["properties"][1]["yardDepth"] == "30 m",
+       f"a key another property carries is ADDED to the target when the entry cites "
+       f"source_file + source_locator {r['invalid']}")
+    c = canon()
+    r = R.apply(c, [entry(property=beta, set={"yardDepth": "30 m"}, source_file="beta.pdf")])
+    ck(not r["applied"] and len(r["invalid"]) == 1 and "yardDepth" not in c["properties"][1],
+       "...but WITHOUT a source_locator it is refused and nothing is written")
+    ck(any("source_locator" in s and "source_file" in s for s in r["invalid"]),
+       f"...and the refusal says a source citation would allow it {r['invalid']}")
+    c = canon()
+    r = R.apply(c, [entry(property=beta, set={"yardDepht": "30 m"},
+                          source_file="beta.pdf", source_locator="page 2")])
+    ck(not r["applied"] and len(r["invalid"]) == 1 and "yardDepht" not in c["properties"][1],
+       "...and a misspelling ('yardDepht') is refused even when cited - no property carries it")
 
     # load()'s signature: unchanged for existing callers, widened when told what the data holds
     p = w / "repairs.json"

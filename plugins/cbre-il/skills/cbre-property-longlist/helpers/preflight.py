@@ -85,6 +85,53 @@ def problems(notes: list[str] | None = None) -> list[str]:
     return uniq
 
 
+# The third-party packages the pipeline imports, as (import name, pip name). A missing one used
+# to surface much later and in the wrong words: a missing PyYAML crashed load_yaml once a
+# project.yaml existed, and in quiet mode any stage's ImportError read "a file could not be
+# read". find_spec only LOCATES a package (nothing is imported), so this stays cheap.
+DEPS = (("fitz", "pymupdf"), ("PIL", "pillow"), ("pptx", "python-pptx"),
+        ("pdfplumber", "pdfplumber"), ("openpyxl", "openpyxl"), ("yaml", "pyyaml"),
+        ("requests", "requests"), ("jsonschema", "jsonschema"))
+
+
+def _vendored(pip_name: str) -> bool:
+    """True when a bundled vendor/ wheel for `pip_name` matches THIS interpreter: the no-pip
+    sandbox path, where run.py unpacks it at start (_vendor_wheels.ensure), so it is not
+    missing. A wheel for another platform (the manylinux PyMuPDF on Windows) does not count:
+    there the fitz_shim fallback is a degradation pip can fix, so it is named."""
+    try:
+        import _vendor_wheels as vw
+        return any(pip_name in w.name.lower() and vw._compatible(w.name)
+                   for w in vw._VENDOR.glob("*.whl"))
+    except Exception:
+        return False
+
+
+def missing_packages() -> list[str]:
+    """pip names of the DEPS this interpreter cannot import ([] == all present)."""
+    import importlib.util
+    out: list[str] = []
+    for mod, pip_name in DEPS:
+        try:
+            found = importlib.util.find_spec(mod) is not None
+        except (ImportError, ValueError):
+            found = False
+        if not found and not _vendored(pip_name):
+            out.append(pip_name)
+    return out
+
+
+def deps_line() -> str:
+    """ONE line naming the pip command that installs every missing package, or '' when none is
+    missing. `sys.executable` is quoted: it is the interpreter that must see the package, and on
+    Windows its path usually holds spaces."""
+    missing = missing_packages()
+    if not missing:
+        return ""
+    return (f"Missing Python packages - install with: "
+            f"\"{sys.executable}\" -m pip install --user {' '.join(missing)}")
+
+
 def ownership_problems() -> list[str]:
     """Tamper-EVIDENCE for the author's ownership/provenance mark (see NOTICE). A
     TEXTUAL check (no import) so it stays dependency-free + robust even if _common is
@@ -124,6 +171,9 @@ def main() -> int:
         print("OK ownership mark verified (Timo Baaij)")
     for nmsg in notes[:12]:  # advisory only - a stale manifest must not block a run
         print(f"(note: {nmsg})", file=sys.stderr)
+    dl = deps_line()         # stdout: an MCP shell host does not surface stderr
+    if dl:
+        print(dl)
     return 0
 
 

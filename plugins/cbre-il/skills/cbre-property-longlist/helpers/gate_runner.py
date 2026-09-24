@@ -1223,7 +1223,8 @@ def cmd_value_format(args) -> int:
     # been an unresolvable loop with the answer swallowed. That is no longer true. The guard
     # now accepts a key the SCHEMA declares OR one the resolved target property already
     # carries, off-spec included ("an off-spec key the property DOES carry is repairable" -
-    # repairs.apply), so an open capture column IS repairable today and a fix exists for
+    # repairs.apply), or one another property carries when the entry cites `source_file` +
+    # `source_locator`, so an open capture column IS repairable today and a fix exists for
     # anyone who wants one.
     #
     # It stays advisory on the HARM instead, which is the reason that was always the real one:

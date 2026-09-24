@@ -555,6 +555,12 @@ STRING_FIELDS = [
     # numeric is coerced to a string instead of hard-failing validate-data; and a populated one
     # must carry a ledger row, which is right - it becomes the largest string on the card.
     "displayName",
+    # v46: `quotingRentTotal` - a STATED ANNUAL TOTAL rent, verbatim with its basis ('£750,000
+    # per annum exclusive'). Registered exactly like warehouseRent/serviceCharge: the chrome
+    # reads it (quotedTotalRent, the Total annual rent fallback when no per-area rate exists),
+    # a tracker's bare numeric is coerced to a string, and a populated one must carry a ledger
+    # row - it is money. Before v46 it had no canonical home and shipped only as an extras column.
+    "quotingRentTotal",
 ]
 
 
@@ -628,7 +634,7 @@ IDENTIFIER_FIELDS = frozenset({
     "warehouseRentVal", "officeRentVal", "officeAreaVal", "expansionParkVal",
     # rent/price/area strings are figure+unit+currency -> kept verbatim (source convention)
     "warehouseRent", "officeRent", "serviceCharge", "landPrice", "plotArea", "warehouseArea",
-    "officeArea", "divisibleFrom", "earlyAccess",
+    "officeArea", "divisibleFrom", "earlyAccess", "quotingRentTotal",
     # addresses/postcodes are identifiers, never prose (a translated address is a wrong
     # address); link display-texts are stubs
     # v45: the three media links join brochureLink for the same reason - a URL is an

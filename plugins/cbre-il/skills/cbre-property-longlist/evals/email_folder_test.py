@@ -21,7 +21,10 @@ What is asserted here, all offline, all on synthetic fixtures:
   5. a record citing the attachment carries __meta.from_email and the shipped ledger row's
      locator names the email that carried it;
   6. input-accounting BLOCKS when the attachment folder is deleted between runs, and blocks
-     on a legacy inventory that predates attachment extraction.
+     on a legacy inventory that predates attachment extraction;
+  7. three same-day emails on one thread ("RE: X", "Re: X", and an "RE: X" carrying only a
+     logo) get distinct folders even case-insensitively, each sidecar names its own email,
+     a second harvest moves and rewrites nothing, and both brochure carriers are credited.
 """
 from __future__ import annotations
 import json
@@ -95,6 +98,79 @@ def _eml(subject: str, date_hdr: str, body: str, attachments=()) -> bytes:
         else:
             m.add_attachment(data, maintype=maintype, subtype=subtype, filename=name)
     return m.as_bytes()
+
+
+def _thread_collision() -> None:
+    """One subject, one day, three emails. On Windows "RE X" and "Re X" are ONE directory,
+    so the old naming poured both brochures into it and the last sidecar written - here the
+    logo-only reply's, with nothing saved - named a single email. Neither brochure carrier
+    was then credited by input-accounting, on a run where nothing was lost."""
+    print("same-day thread:")
+    tmp = Path(tempfile.mkdtemp(prefix="cbre_emailthread_"))
+    inputs, work = tmp / "1. Input", tmp / "2. Work Files"
+    inputs.mkdir(parents=True)
+    work.mkdir(parents=True)
+    date = "Thu, 15 May 2025 09:00:00 +0200"
+    pdf_a, pdf_b = _pdf_bytes("Eastfield Unit A"), _pdf_bytes("Eastfield Unit B", 34000)
+    emails = {
+        "1 RE.eml": ("RE: Eastfield offer", [("Eastfield unit A.pdf", pdf_a, "pdf", None)]),
+        "2 Re.eml": ("Re: Eastfield offer", [("Eastfield unit B.pdf", pdf_b, "pdf", None)]),
+        "3 RE logo.eml": ("RE: Eastfield offer", [("logo.png", _TINY_PNG, "png", None)]),
+    }
+    for fn, (subj, atts) in emails.items():
+        (inputs / fn).write_bytes(_eml(subj, date, "See attached.", atts))
+    inv = I.discover(inputs, exclude_dir=work)
+
+    dirs = sorted(p for p in inputs.iterdir() if p.is_dir() and p.name.endswith("_attachments"))
+    ck(len(dirs) == 2 and len({d.name.casefold() for d in dirs}) == 2,
+       f"two brochure carriers get two folders, distinct case-insensitively "
+       f"({[d.name for d in dirs]})")
+    sides = {}
+    for d in dirs:
+        try:
+            sides[d.name] = json.loads((d / EM.FROM_EMAIL_SIDECAR).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            sides[d.name] = {}
+    own = {s.get("file"): s.get("attachments") for s in sides.values()}
+    ck(own == {"1 RE.eml": ["Eastfield unit A.pdf"], "2 Re.eml": ["Eastfield unit B.pdf"]},
+       f"...each sidecar names ITS OWN email and only its own brochure ({own})")
+    ck(all(sorted(p.name for p in d.iterdir() if not p.name.startswith("."))
+           == sides[d.name].get("attachments") for d in dirs),
+       "...and each folder holds exactly the files its sidecar lists")
+    ck(not any("3 RE logo.eml" in json.dumps(s) for s in sides.values()),
+       "the logo-only reply saved nothing, so it wrote no sidecar anywhere")
+
+    def _snap():
+        return {p.relative_to(inputs).as_posix(): (p.stat().st_mtime_ns, p.read_bytes())
+                for d in inputs.iterdir() if d.is_dir() and d.name.endswith("_attachments")
+                for p in d.iterdir()}
+    before = _snap()
+    I.discover(inputs, exclude_dir=work)
+    ck(_snap() == before and len(before) == 4,
+       f"a second harvest moves nothing and rewrites no file or sidecar ({len(before)} file(s))")
+
+    # the gate's view: both carriers credited through the brochures they carried
+    (work / "inventory.json").write_text(json.dumps(inv, ensure_ascii=False), encoding="utf-8")
+    canon = work / "canonical.json"
+    canon.write_text(json.dumps({"meta": {}, "properties": [{"id": 1, "park": "P"}]}),
+                     encoding="utf-8")
+    (work / "unreadable.json").write_text("[]", encoding="utf-8")
+    rows = ["property_id,record_type,field,value,source_file,source_locator,source_type,"
+            "extractor,confidence,conflict_note,verified"]
+    rows += [f"1,property,park,P,{n},page 1,pdf,E-pdf,high,,"
+             for n in ("Eastfield unit A.pdf", "Eastfield unit B.pdf", "3 RE logo.eml")]
+    (work / "source_ledger.csv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    import gate_runner as GR
+    b = GR._accounting_buckets(work, canon)
+    ck({"1 RE.eml", "2 Re.eml"} <= set(b.get("attachment_carrier") or [])
+       and not b.get("unaccounted"),
+       f"input-accounting credits BOTH carriers ({b.get('attachment_carrier')}, "
+       f"unaccounted {b.get('unaccounted')})")
+    q = subprocess.run([sys.executable, str(HELPERS / "gate_runner.py"), "input-accounting",
+                        str(canon), "--work", str(work)],
+                       capture_output=True, text=True, errors="replace")
+    ck(q.returncode == 0 and "ALL-PASS" in q.stdout,
+       f"...and the gate passes {ascii(q.stdout[-140:])}")
 
 
 def main() -> int:
@@ -291,6 +367,8 @@ def main() -> int:
        "...and harvests NOTHING when it is none, so no brochure is written twice")
     ck(inv2.get("email_attachments_enabled") is False,
        "...and says so in the inventory, so the gate knows not to demand the copies")
+
+    _thread_collision()
 
     os.environ.pop("_", None)
     if FAILS:

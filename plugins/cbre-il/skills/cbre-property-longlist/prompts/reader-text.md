@@ -78,6 +78,10 @@ registry, read at render time from your manifest, and it is NOT a limit on what 
   `areaUnit`; a rent REQUIRES `rentUnit` - read them OFF THE DECK, never inferred from the
   country, and NEVER convert a figure yourself (Python owns all arithmetic). No stated unit ->
   omit `areaUnit`, never guess.
+- A quoted annual TOTAL rent ("GBP 750,000 per annum exclusive") goes VERBATIM, with its basis, in
+  `quotingRentTotal` - never in `warehouseRent`/`warehouseRentVal`, and never divided into a rate.
+- `clearHeight` is CLEAR/haunch height. Only an eaves height printed -> `clearHeight` WITH the
+  qualifier ("12m eaves"), never a bare "12m"; both printed -> eaves in the open key `eavesHeight`.
 - `__meta` is required: `source_type`, `source_file`, `locator_base`, `page_no` copied VERBATIM
   from the manifest (0-based, and it MUST be the page carrying this property's HERO photo -
   never a plan/divider/cover), `prov` = "<locator> (text interpretation)" per field,

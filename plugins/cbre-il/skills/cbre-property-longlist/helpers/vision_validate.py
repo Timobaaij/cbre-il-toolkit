@@ -225,6 +225,13 @@ def validate(work: Path, source_dir: Path | None = None) -> tuple[list[str], lis
                               f"the NEIGHBOUR'S photo")
             else:
                 seen_pages.add(pno)
+            # A reader that writes `prov` beside the fields instead of under __meta: merge
+            # quarantines the unknown top-level key, so every ledger row of the record ships
+            # with no locator. Caught here, before merge, where "fix and re-run" is the contract.
+            if "prov" in r and not meta.get("prov"):
+                errors.append(f"{tag}: top-level `prov` must be inside `__meta.prov` - merge "
+                              f"drops a top-level prov and the ledger rows lose their "
+                              f"locators; move the object under __meta")
             # __meta.image_pages (the carousel scope): each entry must be an int >= 0
             # AND within this deck's rasterised pages (mirrors the page_no out-of-range
             # ERROR - an off-range page harvests a neighbour's photo); and no page may

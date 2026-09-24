@@ -31,11 +31,21 @@ import i18n as I18N
 
 
 def _fmt_thousands_k(lo: float, hi: float) -> str:
-    """e.g. 33600,76000 -> '33.6 - 76k' (one decimal only if needed)."""
+    """e.g. 33600,76000 -> '33.6 - 76k' (one decimal only if needed).
+
+    The suffix is chosen PER END: a figure that would print as 1000k or more is written in
+    millions ('25k - 1.0m', '1.2 - 2.5m'). It used to divide by 1000 unconditionally and put
+    one 'k' after the range, so a 1,000,000 building shipped as '1000k' and wrapped the tile."""
+    def is_m(v):
+        return float(f"{v / 1000.0:.1f}") >= 1000
     def one(v):
+        if is_m(v):
+            return f"{v / 1e6:.1f}"
         k = v / 1000.0
         return f"{k:.1f}".rstrip("0").rstrip(".")
-    return f"{one(lo)} - {one(hi)}k"
+    if is_m(lo) == is_m(hi):
+        return f"{one(lo)} - {one(hi)}{'m' if is_m(hi) else 'k'}"
+    return f"{one(lo)}k - {one(hi)}m"
 
 
 #: POI types the chrome renders. v45 retired the BORDER category from every surface (the
@@ -45,7 +55,10 @@ def _fmt_thousands_k(lo: float, hi: float) -> str:
 #: coverage checks are all still correct and still tested, and re-enabling the category is a
 #: one-line change in both places. A POI with no stated type is KEPT - dropping records on a
 #: missing field is how a filter becomes a silent data loss.
-DISPLAY_POI_TYPES = frozenset({"air", "port", "rail", "city"})
+DISPLAY_POI_TYPES = frozenset({"air", "port", "rail", "city",
+                               # v46 (15e): a property's nearest 400k+ city; the chrome
+                               # normalises it to a city with a `major` flag
+                               "city_major"})
 
 
 def _display_pois(pois: list) -> list:

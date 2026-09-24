@@ -78,6 +78,32 @@ def is_range(s: str) -> bool:
     return bool(re.search(r"\d\s*(?:[-–—]|to)\s*\d", str(s)))
 
 
+_WORD_UNITS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+               "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+               "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+               "nineteen": 19}
+_WORD_TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50}
+_WORD_NUMBER_RX = re.compile(
+    r"\b(?P<tens>" + "|".join(_WORD_TENS) + r")(?:(?:-|\u2010|\u2011|\s+)(?P<unit>"
+    + "|".join(k for k, v in _WORD_UNITS.items() if v < 10) + r"))?\b"
+    r"|\b(?P<small>" + "|".join(_WORD_UNITS) + r")\b", re.I)
+
+
+def word_number(s) -> int | None:
+    """The FIRST spelled-out count one..fifty in `s` ("two dock level loading doors" -> 2,
+    "twenty-four dock doors" -> 24), word-bounded; None when there is none or it exceeds fifty.
+    A FALLBACK for count gates only - normalize_number is deliberately unchanged, so area and
+    rent parsing never read a word as a figure."""
+    m = _WORD_NUMBER_RX.search(str(s or ""))
+    if not m:
+        return None
+    if m.group("small"):
+        return _WORD_UNITS[m.group("small").lower()]
+    n = _WORD_TENS[m.group("tens").lower()] + (_WORD_UNITS[m.group("unit").lower()]
+                                                if m.group("unit") else 0)
+    return n if n <= 50 else None
+
+
 def clean_value(s: str) -> str:
     """Collapse internal whitespace/newlines in an extracted value."""
     return re.sub(r"\s+", " ", str(s)).strip()

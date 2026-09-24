@@ -38,7 +38,8 @@ writes every real attachment beside its email into
 discovers it on the same run and classifies it exactly as a brochure someone had
 dropped in the folder by hand. The date and subject are IN the folder name because two
 brokers both send "Brochure.pdf" and a flat attachments folder silently overwrites one
-with the other.
+with the other. Two same-day emails on one subject ("RE: X", "Re: X") would still share a
+folder, so the second gets a short hash of its path (`_attachments_folder`).
 
 INLINE IMAGES ARE EXCLUDED. A broker signature carries five to twenty logos, award
 badges and social icons per email, and each one that reaches the folder becomes a
@@ -67,6 +68,7 @@ from __future__ import annotations
 
 import argparse
 import email
+import hashlib
 import json
 import sys
 from email import policy
@@ -150,6 +152,53 @@ def _unique_path(directory: Path, filename: str) -> Path:
         cand = f"{stem} ({n}){ext}"
         n += 1
     return directory / cand
+
+
+def _sidecar_owner(folder: Path) -> str:
+    """The email basename a folder's `.from_email.json` names; "" when there is none."""
+    try:
+        d = json.loads((folder / FROM_EMAIL_SIDECAR).read_text(encoding="utf-8-sig"))
+        return str(d.get("file") or "") if isinstance(d, dict) else ""
+    except (OSError, ValueError):
+        return ""
+
+
+def _attachments_folder(email_path: Path, iso_date: str, stem: str,
+                        root: Path | None = None) -> tuple[Path, bool]:
+    """(folder, owned): where this email's attachments go, and whether that folder's
+    sidecar already names this email.
+
+    DATE + SUBJECT IS NOT UNIQUE. A thread yields "RE: X" and "Re: X" on one day, and
+    Windows folds the two folder names onto one directory: both emails wrote into it and
+    the LAST sidecar written won, so the other carrier's brochures lost their provenance
+    and its accounting credit. The name is therefore compared casefolded on every OS (so
+    Linux and Windows pick the same folder), and an email whose plain name is held by a
+    sidecar naming ANOTHER email gets `<date>_<subject>_<sha1(path rel. root)[:6]>`.
+    A folder this email already owns is reused first, plain or hashed, so a re-run never
+    moves a file or rewrites someone else's sidecar, whichever order the walk takes.
+    """
+    head = f"{iso_date or 'undated'}_{stem}"
+    plain = f"{head}{ATTACH_DIR_SUFFIX}"
+    try:
+        rel = email_path.relative_to(root).as_posix() if root is not None else email_path.name
+    except ValueError:
+        rel = email_path.name
+    tag = hashlib.sha1(rel.encode("utf-8")).hexdigest()[:6]
+    ours = re.compile(re.escape(head.casefold()) + r"(_[0-9a-f]{6})?"
+                      + re.escape(ATTACH_DIR_SUFFIX))
+    try:
+        near = sorted(p for p in email_path.parent.iterdir()
+                      if p.is_dir() and ours.fullmatch(p.name.casefold()))
+    except OSError:
+        near = []
+    owner = {p: _sidecar_owner(p) for p in near}
+    for p in near:
+        if owner[p] == email_path.name:
+            return p, True
+    same = [p for p in near if p.name.casefold() == plain.casefold()]
+    if any(owner[p] for p in same):
+        return email_path.parent / f"{head}_{tag}{ATTACH_DIR_SUFFIX}", False
+    return (same[0] if same else email_path.parent / plain), False
 
 
 def _eml_attachments(msg) -> list[tuple[str, str, bytes]]:
@@ -237,7 +286,7 @@ def _msg_attachments(m) -> list[tuple[str, str, bytes]]:
 
 
 def save_attachments(email_path: Path, subject: str, iso_date: str,
-                     atts: list[tuple[str, str, bytes]]) -> dict:
+                     atts: list[tuple[str, str, bytes]], root: Path | None = None) -> dict:
     """Write an email's real attachments beside it and describe what was written.
 
     IDEMPOTENT BY CONTENT LENGTH. The spine re-runs constantly (every agentic exit code
@@ -258,7 +307,7 @@ def save_attachments(email_path: Path, subject: str, iso_date: str,
     if not atts:
         return rec
     stem = _sanitise(subject) or _sanitise(email_path.stem) or "email"
-    folder = email_path.parent / f"{iso_date or 'undated'}_{stem}{ATTACH_DIR_SUFFIX}"
+    folder, owned = _attachments_folder(email_path, iso_date, stem, root)
     rec["dir"] = folder.name
     for i, (name, cid, data) in enumerate(atts, start=1):
         # RULE 1: a Content-ID with no filename is a cid: image the HTML body references
@@ -289,6 +338,12 @@ def save_attachments(email_path: Path, subject: str, iso_date: str,
             continue
         rec["saved"].append({"file": f"{folder.name}/{dest.name}", "bytes": len(data),
                              "attachment_name": name})
+    # An email that SAVED nothing (a reply carrying only its signature logos) creates no
+    # folder and touches no sidecar it does not already own: on the old rule its empty
+    # sidecar landed on the same-subject folder and uncredited the brochure's carrier.
+    if not (rec["saved"] or owned):
+        rec["dir"] = ""
+        return rec
     if rec["saved"] or rec["skipped_inline"]:
         try:
             (folder).mkdir(parents=True, exist_ok=True)
@@ -521,7 +576,7 @@ def extract(folder: Path, save_attachment_bytes: bool = True) -> list[dict]:
             continue
         iso = _iso_date(d.get("date", ""))
         parts = d.pop("_att_parts", [])
-        att_rec = (save_attachments(p, str(d.get("subject") or ""), iso, parts)
+        att_rec = (save_attachments(p, str(d.get("subject") or ""), iso, parts, root=folder)
                    if save_attachment_bytes else
                    {"email": p.name, "subject": d.get("subject") or "", "date": iso,
                     "declared": 0, "saved": [], "skipped_inline": [], "dir": "",
@@ -585,7 +640,8 @@ def harvest_folder(folder: Path, save_attachment_bytes: bool = True) -> list[dic
                          "skipped_reason": "attachments handled by the calling skill "
                                            "(inputs.emails.source: none)"})
             continue
-        r = save_attachments(p, str(d.get("subject") or ""), _iso_date(d.get("date", "")), parts)
+        r = save_attachments(p, str(d.get("subject") or ""), _iso_date(d.get("date", "")), parts,
+                             root=Path(folder))
         r["email"] = rel
         # store the saved paths RELATIVE TO THE INPUTS FOLDER, which is the frame every
         # other inventory path uses and the frame input-accounting re-checks them in

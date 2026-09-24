@@ -294,6 +294,47 @@ def main() -> int:
        "the CLI fires on a single-source, extract-only work dir (one deck can shadow itself)")
 
     print()
+    print("== 7. stated availability timing is not a false absence of earlyAccess ==")
+    # The same defect class one field over: readers file "Available now" under `status` or
+    # `availability`, and `earlyAccess` (the displayed delivery date) shipped as a gap.
+    import merge as M                    # noqa: E402
+    ra = {"status": "Fully Refurbished, Available Now",
+          "__meta": {"locator_base": "page 1", "prov": {"status": "page 3"}}}
+    M._route_availability(ra)
+    ck(ra.get("earlyAccess") == "Available Now" and ra.get("status") == "Fully Refurbished, Available Now",
+       f"status timing is COPIED to earlyAccess, status kept ({ra.get('earlyAccess')!r})")
+    pv = ra["__meta"]["prov"].get("earlyAccess", "")
+    ck(pv.startswith("page 3") and "status" in pv and "timing" in pv,
+       f"...with the source field's locator and a timing-wording note ({pv!r})")
+    rb = M._route_availability({"availability": "Available from Q4 2026", "earlyAccess": "TBC"})
+    ck(rb.get("earlyAccess") == "Available from Q4 2026",
+       f"an `availability` phrase fills a sentinel earlyAccess ({rb.get('earlyAccess')!r})")
+    for s in ("available in part or as a whole", "Available to sublease or assign",
+              "Available", "Coming Soon"):
+        r_ = M._route_availability({"status": s, "availability": s})
+        ck(M.N.looks_unknown(r_.get("earlyAccess")),
+           f"{s!r} states no timing: earlyAccess stays a gap ({r_.get('earlyAccess')!r})")
+    rc = M._route_availability({"status": "Available Now", "earlyAccess": "Q1 2027"})
+    ck(rc.get("earlyAccess") == "Q1 2027", "an existing earlyAccess is never overwritten")
+    # end to end: the router is wired at the pre-merge call site, so the property ships it
+    d = Path(tempfile.mkdtemp(prefix="cbre_d15_avail_"))
+    (d / "inputs").mkdir()
+    (d / "r.json").write_text(json.dumps([
+        {"park": "Refurb Park", "city": "Corby", "country": "GB", "developer": "Dev",
+         "warehouseArea": 100000, "areaUnit": "sq ft", "status": "Fully Refurbished, Available Now",
+         "__meta": {"source_file": "Refurb.pdf", "source_type": "pdf", "locator_base": "page 1"}}]),
+        encoding="utf-8")
+    subprocess.run([sys.executable, str(ROOT / "helpers" / "merge.py"), "--records", str(d / "r.json"),
+                    "--source-dir", str(d / "inputs"), "--out", str(d / "c.json"),
+                    "--ledger", str(d / "l.csv")], capture_output=True, text=True,
+                   encoding="utf-8", errors="replace")
+    props = (json.loads((d / "c.json").read_text(encoding="utf-8")).get("properties") or []
+             if (d / "c.json").exists() else [])
+    ck(len(props) == 1 and props[0].get("earlyAccess") == "Available Now",
+       f"the real merge ships earlyAccess 'Available Now' "
+       f"({[p.get('earlyAccess') for p in props]})")
+
+    print()
     if FAILS:
         print(f"STATUS: BLOCKED ({len(FAILS)} failure(s))")
         for f in FAILS:

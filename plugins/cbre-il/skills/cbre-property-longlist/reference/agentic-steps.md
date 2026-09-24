@@ -21,7 +21,7 @@ rendered prompt.
   town-centre geocode and no coordinate is ever model-invented. Falls back to a `.msg`/`.eml`
   folder (`extract_email.py`) when the MCP is absent, **and the fallback now saves and routes
   attachment bytes like the Outlook path does**: intake writes each email's attachments into
-  `<yyyy-mm-dd>_<subject>_attachments/` beside it before classification, so by the time you
+  `<yyyy-mm-dd>_<subject>[_<6 hex>]_attachments/` beside it before classification, so by the time you
   are dispatched they are ordinary decks in the manifest with their own page citations. You do
   not have to fetch or describe them. Inline images (under 20 KB, or a Content-ID with no
   filename) are already excluded. If an email's attachments could NOT be extracted,

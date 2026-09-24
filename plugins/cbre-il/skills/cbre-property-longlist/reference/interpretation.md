@@ -165,12 +165,12 @@ records matching `templates/record_schema.json`:
 - **Fill EVERY field the page states. The manifest's `fields` array is the canonical
   registry and it is NOT a limit** - it is generated at run time from
   `_common.canonical_property_fields()`, so it is always the live set the pipeline
-  carries (51 reader-fillable names: `areaUnit, breeam, brochureLink, carParking,
+  carries (52 reader-fillable names: `areaUnit, breeam, brochureLink, carParking,
   city, clearHeight, country, description, developer, displayName, district,
   districtProfile, divisibleFrom, earlyAccess, electricity, epc, expansionBuilding,
   expansionPark, floorLoad, incentives, landPrice, landlord, lat, leaseTerm, lng,
   loadingDocks, mapLink, motorway, officeArea, officeRent, overheadDoors, park,
-  permitting, plotArea, postcode, region, reit, rentFree, rentUnit, serviceCharge,
+  permitting, plotArea, postcode, quotingRentTotal, region, reit, rentFree, rentUnit, serviceCharge,
   sprinklers, status, streetViewLink, truckParking, unit, videoLink, warehouseArea,
   warehouseAreaSqm, warehouseRent, warehouseRentVal, websiteLink`). Read `fields` from
   the manifest rather than trusting this copy. Each entry is an OBJECT `{name, type,
@@ -249,11 +249,24 @@ records matching `templates/record_schema.json`:
   only an EPC leaves `breeam` ABSENT; do not put the band there to fill the field. This is not
   hypothetical: a tracker whose EPC column was treated as a BREEAM alias shipped an impossible
   "BREEAM A+" to a client card, cited to an empty BREEAM cell.
+- **CLEAR height and EAVES height are different measurements - keep the qualifier.**
+  `clearHeight` takes the CLEAR (or haunch) height. If the page prints ONLY an eaves height,
+  put it in `clearHeight` but KEEP the word as printed (`"12m eaves"`), never a bare `"12m"`:
+  eaves is measured to the roof edge, clear height to the underside of the structure, so a
+  bare figure quotes the client a clear height no source stated. If the page prints BOTH, the
+  clear figure goes in `clearHeight` and the eaves figure in the open key **`eavesHeight`**.
 - **Rents are ANNUAL.** Store `warehouseRentVal` as a number in EUR/m²/**year** and
   make `warehouseRent` show that same number (e.g. `"€54 / sq m / year"`). If the
   text quotes a **monthly** rent (`€/m²/mes`, `/month`, `/Monat`, …), multiply by
   12 and note the conversion in `prov` (the consistency gate checks the display
   number equals `warehouseRentVal`).
+- **A quoted annual TOTAL rent goes in `quotingRentTotal`, never in `warehouseRent`.** A
+  whole-building figure (`"£750,000 per annum exclusive"`) is not a per-area rate: write it
+  VERBATIM with its basis into `quotingRentTotal` and leave `warehouseRent` /
+  `warehouseRentVal` absent unless the page ALSO prints a per-area rate. Never divide the total
+  by an area to back out a rate - that is a rent no source quoted. The dashboard and the
+  Longlist show the stated total as the Total annual rent (marked as stated) only when no
+  GLA x rate total can be computed.
 - **A numeric area REQUIRES `areaUnit`; a rent REQUIRES `rentUnit`.** Return the unit **as the
   source states it** (`"sq m"` / `"sq ft"`; `"£/sq ft/yr"`, `"€/sq m/yr"`) - read it off the deck
   (the figure's own suffix, the column header, the spec table's unit row). **Do NOT infer the unit

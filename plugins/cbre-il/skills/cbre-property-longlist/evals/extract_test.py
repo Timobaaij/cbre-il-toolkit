@@ -2006,6 +2006,20 @@ def vision_validate_cases() -> None:
         check(any("exclude_refs" in e and "9" in e for e in errors),
               "EXCL-1: an exclude_refs page off the deck is an ERROR (bounds check)")
 
+        # a reader that writes `prov` at the TOP level: merge quarantines it and the ledger rows
+        # lose their locators, so it must block here, before merge, while re-running is cheap
+        write([rec(prov={"park": "page 1"}), rec(__meta={"page_no": 2}),
+               rec(__meta={"page_no": 3})])
+        errors, _ = VV.validate(work)
+        check(any("record 1" in e and "top-level `prov`" in e and "__meta.prov" in e
+                  for e in errors),
+              "PROV-1: a top-level prov with an empty __meta.prov is an ERROR naming __meta.prov")
+        write([rec(__meta={"page_no": 1, "prov": {"park": "page 1"}}),
+               rec(__meta={"page_no": 2}), rec(__meta={"page_no": 3})])
+        errors, _ = VV.validate(work)
+        check(not any("prov" in e for e in errors),
+              "PROV-1: the same prov correctly under __meta.prov validates clean")
+
 
 def region_code_cases() -> None:
     print("regionCode auto-derivation + loud empty-regions failure:")

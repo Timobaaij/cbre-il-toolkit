@@ -29,6 +29,8 @@ correction landing on the wrong card or inventing a value nobody was asked about
   * a subject matching zero or several shipped cards   -> nothing written
   * a field the merged property does not carry         -> nothing written
   * an option that will not reduce to the field's type -> nothing written
+  * an AREA answer in a different area unit from the field's -> nothing written (while one in
+    the field's unit lands as figure + unit, its bracketed explanation going to `why`)
   * an unreadable work/repairs.json (the broker's own hand-file) -> refused LOUDLY, never
     consumed-and-dropped
 
@@ -365,6 +367,72 @@ def fails_closed() -> None:
        "hand-written entries)")
 
 
+def area_answers() -> None:
+    print("\n6b. an AREA answer lands as figure + unit; its bracketed explanation goes to `why`")
+    office_q = "the office area: is it the ground floor only, or all the office lines?"
+    long_ans = ("45,434 sq ft (all office lines combined: ground floor, first floor and the "
+                "mezzanine offices)")
+    # (a) free text on a TEXT area field, longer than the 80-char free-text limit
+    w = _wd("cbre_land_area_long_")
+    rec = _rec("Kestrel Reach", "a.pdf",
+               {"question": office_q, "field": "officeArea",
+                "options": ["40,000 sq ft", "45,434 sq ft"]}, officeArea="40,000 sq ft")
+    qs = _ask(w, [rec])
+    cn = _canonical(w, [_prop(1, "Kestrel Reach", officeArea="40,000 sq ft",
+                              officeAreaVal=40000, areaUnit="sq ft")])
+    _answer(w, {qs[0]["id"]: long_ans})
+    n = _bridge(w, cn)
+    e = (_repairs(w) or [{}])[0]
+    ck(len(long_ans) > 80 and n == 1 and e.get("set", {}).get("officeArea") == "45,434 sq ft",
+       f"a {len(long_ans)}-char answer on a text area field lands as '45,434 sq ft' "
+       f"({e.get('set')})")
+    ck("all office lines combined" in str(e.get("why")),
+       f"...and the broker's note is preserved in `why` ({str(e.get('why'))[-70:]})")
+    out = REP.run(w, write=True)
+    got = json.loads(cn.read_text(encoding="utf-8-sig"))["properties"][0]
+    ck(len(out.get("applied") or []) == 1 and got.get("officeArea") == "45,434 sq ft",
+       f"...and repairs.py applies it ({got.get('officeArea')}, officeAreaVal "
+       f"{got.get('officeAreaVal')})")
+    # (b) free text with a trailing bracket on a NUMBER area field
+    w = _wd("cbre_land_area_num_")
+    rec_n = _rec("Kestrel Reach", "a.pdf",
+                 {"question": AREA_Q, "field": "warehouseArea",
+                  "options": ["12500", "125000"]}, warehouseArea=125000)
+    qs = _ask(w, [rec_n])
+    cn = _canonical(w, [_prop(1, "Kestrel Reach", warehouseArea=125000, areaUnit="sq ft")])
+    _answer(w, {qs[0]["id"]: "113,690 sq ft (the schedule total, excluding the canopy)"})
+    e = (_repairs(w) or [{}])[0] if _bridge(w, cn) else {}
+    ck(e.get("set") == {"warehouseArea": 113690},
+       f"'113,690 sq ft (...)' on a number field lands as 113690 ({e.get('set')})")
+    # (c) a SHORT bracketed answer, free text and offered option alike, keeps no bracket
+    for label, opts, ans in (
+            ("free text", ["8,000 sq ft", "9,037 sq ft"],
+             "9,037 sq ft (all four office lines combined)"),
+            ("an offered option", ["8,000 sq ft", "9,037 sq ft (all four office lines combined)"],
+             "9,037 sq ft (all four office lines combined)")):
+        w = _wd("cbre_land_area_short_")
+        rec_s = _rec("Kestrel Reach", "a.pdf",
+                     {"question": office_q, "field": "officeArea", "options": opts},
+                     officeArea="8,000 sq ft")
+        qs = _ask(w, [rec_s])
+        cn = _canonical(w, [_prop(1, "Kestrel Reach", officeArea="8,000 sq ft",
+                                  areaUnit="sq ft")])
+        _answer(w, {qs[0]["id"]: ans})
+        e = (_repairs(w) or [{}])[0] if _bridge(w, cn) else {}
+        v = e.get("set", {}).get("officeArea")
+        ck(v == "9,037 sq ft" and "four office lines" in str(e.get("why")),
+           f"{label}: a short bracketed answer lands WITHOUT the bracket in the value ({v}), "
+           f"the note in `why`")
+    # (d) a DIFFERENT area unit from the field's is refused, never converted
+    w = _wd("cbre_land_area_unit_")
+    qs = _ask(w, [rec_n])
+    cn = _canonical(w, [_prop(1, "Kestrel Reach", warehouseArea=125000, areaUnit="sq ft")])
+    _answer(w, {qs[0]["id"]: "10,562 sq m (the GIA)"})
+    ck(_bridge(w, cn) == 0 and not _repairs(w) and "never converts a unit" in _bridge.out,
+       f"'10,562 sq m' against a sq ft field is refused and disclosed, not converted "
+       f"{ascii(_bridge.out[:90])}")
+
+
 def one_helper() -> None:
     print("\n7. ONE attributed-repair helper, shared by all three answer bridges")
     ck(hasattr(RUN, "AnswerRepairs"), "run.AnswerRepairs exists")
@@ -431,6 +499,7 @@ def main() -> int:
     the_answer_lands()
     the_clearing_verb()
     fails_closed()
+    area_answers()
     one_helper()
     record_count_is_gone()
     print("\nSTATUS:", "ALL-PASS" if not FAILS else "BLOCKED")

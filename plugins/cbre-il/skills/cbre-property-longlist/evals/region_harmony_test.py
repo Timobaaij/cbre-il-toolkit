@@ -281,6 +281,59 @@ def main() -> int:
     ck("--ledger" in src and "updates" in src[i_harm:i_harm + 200],
        "...and passes the ledger updates list, so every change gets a trace row")
 
+    # ---- 9. a compass-only macro-region label never binds a bracketed district (15a) ----
+    print("\ncompass-only labels:")
+    nm = lambda s: (E._dataset_region(ds, s) or {})  # noqa: E731
+    ne = nm("North East")
+    ck(ne.get("nuts") != "UKJ28" and "UKC" in str(ne.get("sources", "")) + str(ne.get("notes", "")),
+       f"'North East' resolves to the UKC aggregate, not UKJ28 ({ne.get('name')!r})")
+    ck(nm("South West").get("nuts") != "UKJ27" and nm("South West").get("name") == "South West England",
+       "'South West' resolves to UKK, not UKJ27 'West Sussex (South West)'")
+    ck(nm("West Sussex (North East)").get("nuts") == "UKJ28",
+       "'West Sussex (North East)' still resolves to UKJ28")
+    ck(nm("West").get("name") == "West",
+       "a region whose WHOLE name is a direction (IE042 'West') still binds by name")
+    import build_regions_dataset as B
+    ck("north east" not in B._name_variants("West Sussex (North East)")
+       and "bozen" in B._name_variants("Bolzano (Bozen)"),
+       "a rebuild no longer indexes a compass-only bracket piece (a local name still is)")
+
+    # ---- 10. a blank region beside a bound code reads the dataset name (15b) --------
+    print("\nblank region filled from the bound code:")
+    staffs = ds["regions"]["UKG24"]["name"]
+    c10 = canon([{"id": 1, "city": "Corby", "region": "East Midlands",
+                  "lat": CORBY[2]["lat"], "lng": CORBY[2]["lng"]},
+                 {"id": 2, "city": "Stafford", "region": "", "regionCode": "UKG24"},
+                 {"id": 3, "city": "Stafford", "region": "TBC", "regionCode": "UKG24"},
+                 {"id": 4, "city": "Stafford", "region": "Staffordshire", "regionCode": "UKG24"}])
+    E.bind_region_codes(c10, ds)
+    u10 = []
+    n10 = E.fill_region_from_code(c10, ds, u10)
+    p10 = {p["id"]: p for p in c10["properties"]}
+    ck(p10[2]["region"] == staffs and p10[3]["region"] == staffs and n10 == 2,
+       f"a blank and a 'TBC' region beside UKG24 read the dataset name {staffs!r} (n={n10})")
+    ck(p10[4]["region"] == "Staffordshire" and p10[1]["region"] == "East Midlands",
+       "a stated region is never overwritten")
+    ck(len(u10) == 2 and all(u["field"] == "region" and "regions_dataset" in u["source_file"]
+                             and "derived from the regions dataset" in u["conflict_note"]
+                             for u in u10),
+       "each fill gets a ledger row naming the regions dataset, marked as derived")
+    ck({e["id"] for e in c10["meta"].get("regionFromCode", [])} == {2, 3},
+       "...and meta.regionFromCode records which labels are derived")
+    c10h = copy.deepcopy(c10)  # without id 4, whose 'Staffordshire' IS a second stated level
+    c10h["properties"] = [p for p in c10h["properties"] if p["id"] != 4]
+    ck(E.harmonise_regions(c10h, ds, [], []) == 0
+       and c10h["properties"][0]["region"] == "East Midlands",
+       "a derived label is not a stated LEVEL: harmonisation does not fire on it")
+    ck(E.fill_region_from_code(c10, ds, []) == 0 and p10[2]["region"] == staffs,
+       "a re-run recognises its own fill and changes nothing")
+    p10[3]["regionCode"] = "ZZ999"
+    E.fill_region_from_code(c10, ds, [])
+    ck(p10[3]["region"] == "TBC" and p10[2]["region"] == staffs,
+       "a fill whose code no longer binds is restored to what it replaced")
+    i_fill = src.find("fill_region_from_code(canonical", i_branch)
+    ck(i_bind < i_fill < i_harm, "enrich calls fill_region_from_code right after the bind")
+
     if fails:
         print(f"\nREGION HARMONY TEST: FAIL ({len(fails)})")
         for f in fails:

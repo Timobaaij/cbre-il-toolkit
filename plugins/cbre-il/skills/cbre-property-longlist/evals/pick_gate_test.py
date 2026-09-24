@@ -62,6 +62,14 @@ def main() -> int:
     ck(V("carParking", -3) == "fail", "a negative count fails")
     ck(V("truckParking", 99999) == "fail", "an absurd count fails")
     ck(V("overheadDoors", 2.5) == "fail", "a fractional door count fails")
+    ck(V("loadingDocks", "two dock level loading doors") == "pass",
+       "a spelled-out count passes (it was struck to tbd)")
+    ck(V("loadingDocks", "twenty-four dock doors") == "pass", "...including a hyphenated one")
+    ck(V("loadingDocks", "dock doors") == "fail", "...but prose with no count still fails")
+    ck(merge.N.word_number("twenty-four dock doors") == 24
+       and merge.N.word_number("fifty-one doors") is None
+       and merge.N.normalize_number("two dock doors") is None,
+       "word_number reads 24, refuses >50, and normalize_number is unchanged")
     ck(V("clearHeight", "12.5 m") == "pass", "a metric eaves height passes")
     ck(V("clearHeight", 15) == "pass", "a bare metric eaves height passes")
     ck(V("clearHeight", 400) == "fail", "an absurd eaves height fails")

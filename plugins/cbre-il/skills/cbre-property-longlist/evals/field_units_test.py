@@ -80,6 +80,35 @@ ck("area_factor refuses it", N.area_factor("perches", "sq ft") is None)
 ck("...so a caller must not convert - asserted at the factor, which is the only place that "
    "could invent one", N.area_factor("perches", "sq ft") is None)
 
+print("\nAfter the real merge converts it, the field's unit label follows the number:")
+# the reader's `plotAreaUnit` named the SOURCE unit; left alone it shipped "174240 acres"
+import json, subprocess, tempfile  # noqa: E401,E402
+_d = Path(tempfile.mkdtemp(prefix="cbre_units_"))
+(_d / "inputs").mkdir()
+_recs = [dict(rec(park="Acre Park", city="Corby", warehouseArea=100000, plotArea=4,
+                  plotAreaUnit="acres"), developer="Dev", country="GB"),
+         dict(rec(park="Perch Park", city="Rugby", warehouseArea=90000, plotArea=5000,
+                  plotAreaUnit="perches"), developer="Dev", country="GB")]
+for _r in _recs:
+    _r["__meta"]["locator_base"] = "page 1"
+(_d / "r.json").write_text(json.dumps(_recs), encoding="utf-8")
+subprocess.run([sys.executable, str(ROOT / "helpers" / "merge.py"), "--records", str(_d / "r.json"),
+                "--source-dir", str(_d / "inputs"), "--out", str(_d / "c.json"),
+                "--ledger", str(_d / "l.csv")], capture_output=True, text=True,
+               encoding="utf-8", errors="replace")
+_props = ({q.get("park"): q for q in json.loads((_d / "c.json").read_text(encoding="utf-8"))
+           .get("properties") or []} if (_d / "c.json").exists() else {})
+_a = _props.get("Acre Park") or {}
+ck("4 acres converts to 174,240 in the sq ft dataset", _a.get("plotArea") == 174240,
+   str(_a.get("plotArea")))
+ck("...and plotAreaUnit is the dataset unit (or absent), never the source's 'acres'",
+   _a.get("plotAreaUnit") in (None, _a.get("areaUnit")),
+   f"plotAreaUnit={_a.get('plotAreaUnit')!r} areaUnit={_a.get('areaUnit')!r}")
+_w = _props.get("Perch Park") or {}
+ck("a WITHHELD figure (unrecognised unit) takes its unit label with it",
+   "plotArea" not in _w and "plotAreaUnit" not in _w,
+   f"plotArea={_w.get('plotArea')!r} plotAreaUnit={_w.get('plotAreaUnit')!r}")
+
 print("\nRents and currency are untouched by any of this:")
 ck("area_factor knows nothing about currency", N.area_factor("GBP", "EUR") is None)
 

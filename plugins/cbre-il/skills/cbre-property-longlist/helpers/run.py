@@ -505,7 +505,15 @@ _FIELD_RULES = (
     "(5) A VALUE IS ONE SCALAR, NEVER a list or a nested object, whatever the field: when the "
     "page states several items for one field (several agents, several sustainability badges), "
     "join them into ONE string yourself, e.g. semicolon-separated. A list or object on an open "
-    "field fails validate-data immediately."
+    "field fails validate-data immediately. "
+    "(6) A QUOTED ANNUAL TOTAL RENT ('GBP 750,000 per annum exclusive') goes VERBATIM, with its "
+    "basis, in `quotingRentTotal` - never in warehouseRent/warehouseRentVal, never divided by an "
+    "area into a per-area rate. "
+    "(7) `clearHeight` is CLEAR (or haunch) height. If the page prints ONLY an eaves height, put it "
+    "in clearHeight WITH the qualifier ('12m eaves'), never a bare '12m'; if it prints both, the "
+    "clear figure goes in clearHeight and eaves in the open key `eavesHeight`. "
+    "(8) Per-field provenance goes under `__meta.prov`, never in a top-level `prov` key - "
+    "validate-data refuses a top-level one."
 )
 
 def _reader_field_list() -> list:
@@ -558,9 +566,14 @@ def call(module, *cmd, check=True) -> int:
 
     if QUIET:
         buf = _Buf()
+        missing_mod = None
         try:
             with redirect_stdout(buf), redirect_stderr(buf):
                 rc = _invoke()
+        except ModuleNotFoundError as e:  # a missing PACKAGE is not an unreadable file
+            buf.write(f"\n{type(e).__name__}: {e}")
+            missing_mod = (e.name or "").split(".")[0] or None
+            rc = 1
         except Exception as e:  # crash isolation
             buf.write(f"\n{type(e).__name__}: {e}")
             rc = 1
@@ -569,7 +582,18 @@ def call(module, *cmd, check=True) -> int:
             # captured tail: it can be an exception class name + an absolute path
             # (FileNotFoundError ... C:\\Users\\...). The orchestrator still has the full
             # captured output on stderr / in the scorecard; the broker gets a neutral line.
-            print("  (this step could not be completed - a file could not be read)")
+            # A package name carries no path, so that one IS named: 'a file could not be read'
+            # sent the host looking for a bad file when the fix was a pip install.
+            if missing_mod:
+                try:                      # the name pip knows it by ('yaml' -> 'pyyaml')
+                    import preflight as _pf
+                    missing_mod = dict(_pf.DEPS).get(missing_mod, missing_mod)
+                except Exception:
+                    pass
+                print(f"  (this step could not be completed - missing Python package "
+                      f"'{missing_mod}')")
+            else:
+                print("  (this step could not be completed - a file could not be read)")
         return rc
 
     print(f"\n$ {module.__name__} {' '.join(argv[1:])}")
@@ -1021,6 +1045,71 @@ def _free_text_value(current, raw):
     return True, s
 
 
+# An answer to an AREA doubt, offered or free text: ONE figure, its area unit, and optionally
+# the broker's own explanation in brackets - '45,434 sq ft (all office lines combined: ...)'.
+# The measured run refused that answer on officeArea (92 chars, over _FREE_TEXT_MAX_CHARS),
+# refused '113,690 sq ft (...)' on warehouseArea (the bracket is not a unit word), and landed
+# the SHORTER ones with the explanation inside the value. The bracket is attribution, not data.
+_AREA_ANSWER_RX = re.compile(
+    r"([0-9](?:[0-9,.]|\s(?=[0-9]))*)\s*"
+    r"(sq\.?\s*m\.?|sqm|m2|m²|sq\.?\s*ft\.?|sqft|ft2|ft²|"
+    r"square\s+(?:feet|foot|met(?:re|er)s?)|ha|hectares?|acres?)"
+    r"\s*(?:\((.*)\))?\s*\.?", re.I | re.S)
+
+
+def _area_fields() -> frozenset:
+    """merge's own set of area fields (`_AREA_GATE_FIELDS`), so the lander and the gate cannot
+    disagree about which fields carry an area. Empty on a merge.py without it: the area path is
+    then simply not taken and the answer goes through the ordinary landers, as before."""
+    try:
+        import merge as _merge
+        return frozenset(getattr(_merge, "_AREA_GATE_FIELDS", ()) or ())
+    except Exception:
+        return frozenset()
+
+
+def _area_answer(raw):
+    """(number, canonical unit, the figure-and-unit as typed, note or None) for an answer that is
+    one figure plus an AREA unit, optionally followed by '(...)'; None for anything else (no
+    unit, a range, an alternative, a question back), which then takes the ordinary path."""
+    s = str(raw or "").strip()
+    if "?" in s:
+        return None
+    m = _AREA_ANSWER_RX.fullmatch(s)
+    if not m:
+        return None
+    import normalize as _N
+    if _N.is_range(m.group(1)):
+        return None
+    v = _N.normalize_number(m.group(1))
+    unit = _N.area_unit_of(m.group(2))
+    if v is None or v <= 0 or unit is None:
+        return None
+    n = int(v) if float(v).is_integer() else v
+    return n, unit, s[:m.end(2)].strip(), ((m.group(3) or "").strip() or None)
+
+
+def _field_area_unit(prop: dict, current):
+    """The unit the FIELD is in: the one its current text states, else the property's areaUnit.
+    None when neither says - the answer then lands in its own stated unit, never converted."""
+    import normalize as _N
+    if isinstance(current, str) and _N.area_unit_of(current):
+        return _N.area_unit_of(current)
+    return _N.area_unit_of((prop or {}).get("areaUnit"))
+
+
+def _area_value(current, parsed, field_unit):
+    """(ok, value) for a parsed area answer, typed as the field is typed: a number field gets the
+    number, a text field gets '45,434 sq ft'. Refused when the answer's unit is a DIFFERENT
+    area unit from the field's: converting it here would be the 10.76x class."""
+    n, unit = parsed[0], parsed[1]
+    if isinstance(current, bool) or (field_unit and unit != field_unit):
+        return False, None
+    if isinstance(current, (int, float)):
+        return True, n
+    return True, f"{n:,} {unit}"
+
+
 def _doubt_anchor_cards(stamp: dict, by_park: dict) -> list:
     """[(anchor index, shipped card)] for a landable doubt, ONE per resolvable anchor.
 
@@ -1213,8 +1302,22 @@ def agent_doubt_repairs(work: Path, cfg: dict, canonical_path: Path) -> int:
             rid = "ad-" + str(q_id)[:10] + ("" if i is None else "-" + str(i))
             value = None
             shown = picked
+            note = None
+            refused_why = (f"it does not reduce cleanly to the field's own type "
+                           f"({type(cur).__name__})")
             if not clear:
-                if picked is not None:
+                area = (_area_answer(picked if picked is not None else raw)
+                        if field in _area_fields() else None)
+                if area is not None:
+                    # an AREA answer, offered or free text, through ONE reader: the figure and
+                    # unit become the value, the broker's bracketed explanation goes to `why`
+                    f_unit = _field_area_unit(prop, cur)
+                    _ok, value = _area_value(cur, area, f_unit)
+                    shown, note = area[2], area[3]
+                    if not _ok and f_unit and area[1] != f_unit:
+                        refused_why = (f"it is stated in {area[1]} and the field is in {f_unit}, "
+                                       f"and the lander never converts a unit")
+                elif picked is not None:
                     _ok, value = _answer_as_field_type(cur, picked)
                 else:
                     # free text: lands only when it coerces CLEANLY (see _free_text_value)
@@ -1236,8 +1339,7 @@ def agent_doubt_repairs(work: Path, cfg: dict, canonical_path: Path) -> int:
                              "verified_by": f"broker (exit-13 answer to {q_id})"}
                     print(f"(orchestrator: the reader-doubt answer to {q_id} ({str(raw).strip()!r}) "
                           f"was NOT applied to property {prop.get('id')} '{_prop_label(prop)}' "
-                          f"{field}: it does not reduce cleanly to the field's own type "
-                          f"({type(cur).__name__}), and the lander never interprets an answer. "
+                          f"{field}: {refused_why}, and the lander never interprets an answer. "
                           f"To apply it, paste this into work/repairs.json with the value written "
                           f"as the field is typed: {json.dumps(_skel, ensure_ascii=False)})")
                     continue
@@ -1247,7 +1349,8 @@ def agent_doubt_repairs(work: Path, cfg: dict, canonical_path: Path) -> int:
             chan.add(rid, prop, field, value,
                      ("broker answered the exit-13 reader-doubt question on "
                       + field + ": " + ("the source states no value for it" if clear
-                                        else f"the value is '{shown}'")),
+                                        else f"the value is '{shown}'")
+                      + (f"; the broker's note: {note}" if note else "")),
                      verified_by=f"broker (exit-13 answer to {q_id})",
                      clear=clear, source_file=str(stamp.get("source_file") or ""),
                      question_id=str(q_id))
@@ -1500,7 +1603,15 @@ def blocked_gate_names() -> list:
 def load_yaml(p: Path) -> dict:
     if not p.exists():
         return {}
-    import yaml
+    try:
+        import yaml
+    except ImportError:
+        # PyYAML absent: one plain sentence (stdout - an MCP shell host drops stderr), never a
+        # traceback, and the same safe-defaults degradation as a malformed file below
+        print(f"NOTE: missing Python package 'pyyaml' - install with: \"{sys.executable}\" -m pip "
+              f"install --user pyyaml. Until then project.yaml is not read and safe defaults "
+              f"are used.")
+        return {}
     try:
         return yaml.safe_load(p.read_text(encoding="utf-8-sig")) or {}
     except Exception as e:
@@ -3759,6 +3870,16 @@ def main() -> None:
         if not QUIET:
             print("(technical detail: " + "; ".join(_probs[:12]) + ")", file=sys.stderr)
         sys.exit(4)  # distinct from "no sources" (2) - a different fix for the orchestrator
+    # MISSING PACKAGES, named ONCE, up front, as the one pip line that fixes them - quiet mode
+    # included, on stdout. Not a stop: every reader still degrades exactly as it did; what
+    # changes is that the host is no longer left to find out stage by stage. Nothing prints
+    # when all are present.
+    try:
+        _deps = preflight.deps_line()
+    except Exception:
+        _deps = ""
+    if _deps:
+        print(_deps)
 
     # Import the helper modules ONCE (here, not at module load, so run.py still
     # imports cleanly on a machine missing an optional reader). The heavy deps
@@ -6539,6 +6660,7 @@ def main() -> None:
     # parking-count correction, and the stamp now says so.
     stamp = work / ".enrich.stamp"
     enr_key = "|".join(sorted(enr_args))
+    enr_rc = None           # enrich's rc THIS pass; None = not run (resumed / --from / --only)
     if enr_args:
         _stage("enrichment")
         step("Adding maps and extras")
@@ -6586,12 +6708,29 @@ def main() -> None:
             # --ledger so every enrichment-filled field (lat/lng/country, drive-times,
             # region figures) gets a trace row - the audit artefact must never
             # contradict the deliverable.
-            call(enrich, canonical, *enr_args, "--cache-dir", work,
-                 "--ledger", ledger_csv, check=False)
+            enr_rc = call(enrich, canonical, *enr_args, "--cache-dir", work,
+                          "--ledger", ledger_csv, check=False)
+            # STAMP ONLY A COMPLETE ENRICH. The stamp used to be written after ANY enrich,
+            # failed or offline included, so the resumed pass skipped enrichment and re-read
+            # the stale `postcodes_unasked` it left behind - an exit-8 web round on a host
+            # whose own network was fine. A pass that failed, or left stated postcodes unasked,
+            # is not one to resume from: no stamp (and a stale one is dropped), so the next
+            # pass re-runs enrich and asks again.
+            _unasked = 0
+            if "--geocode" in enr_args:
+                try:
+                    _unasked = (json.loads(canonical.read_text(encoding="utf-8-sig"))
+                                .get("meta", {}).get("enrichment", {})
+                                .get("postcodes_unasked") or 0)
+                except Exception:
+                    _unasked = None   # unreadable -> not provably complete -> no stamp
             try:
-                stamp.write_text(json.dumps({"v": _ENRICH_STAMP_V, "args": enr_key,
-                                             "hash": _enrich_input_hash(canonical)}),
-                                 encoding="utf-8")
+                if enr_rc == 0 and _unasked == 0:
+                    stamp.write_text(json.dumps({"v": _ENRICH_STAMP_V, "args": enr_key,
+                                                 "hash": _enrich_input_hash(canonical)}),
+                                     encoding="utf-8")
+                elif stamp.exists():
+                    stamp.unlink()
             except Exception:
                 pass
     elif stamp.exists():
@@ -6660,6 +6799,27 @@ def main() -> None:
                     (cl / "launch.json").write_text(json.dumps(launch, indent=2), encoding="utf-8")
                 except Exception:
                     pass
+                # WHY the live path was skipped, from what this pass already holds (no probe):
+                # an exit 8 on a host that HAS network is otherwise indistinguishable from the
+                # sandbox case, and the two need different fixes.
+                _why = []
+                if enr_rc is None:
+                    _why.append("enrichment was not re-run this pass (resumed or skipped by "
+                                "--from/--only)")
+                elif enr_rc != 0:
+                    _why.append(f"the enrichment step failed this pass (rc={enr_rc})")
+                _geo_gaps = " ".join(str(g) for g in (((canon_data.get("meta") or {})
+                                                       .get("enrichmentGapsByLayer") or {})
+                                                      .get("geocode") or []))
+                if "unreachable" in _geo_gaps:
+                    _why.append("the geocoder was unreachable from this process (offline or "
+                                "blocked; the circuit breaker stopped after the first failure)")
+                _no_cc = sum(1 for p in canon_data.get("properties", [])
+                             if not isinstance(p.get("lat"), (int, float))
+                             and _filled(p.get("city")) and not _filled(p.get("country")))
+                if _no_cc:
+                    _why.append(f"{_no_cc} coordinate-less card(s) with no known country")
+                _why_s = "; ".join(_why) or "not recorded by this pass"
                 if QUIET:
                     # A neutral step marker only. It is ALWAYS the Cowork sandbox; the
                     # orchestrator PROBES which tools are present and uses the FIRST available -
@@ -6670,7 +6830,8 @@ def main() -> None:
                     # same way).
                     print("Adding maps and extras")
                     _say_orchestrator(
-                        f"(orchestrator: web enrichment needed ({n_req} request(s)). PROBE tools, "
+                        f"(orchestrator: web enrichment needed ({n_req} request(s)); live path "
+                        f"skipped because: {_why_s}. PROBE tools, "
                         f"use the FIRST present: (1) mcp__shell - re-run this command THROUGH it "
                         f"(direct live fetch, no page); (2) Playwright - data: URL fetcher per "
                         f"request in {work}/web_requests.json (navigate request['data_url'], read "
@@ -6681,7 +6842,8 @@ def main() -> None:
                         f"web_enrich.py ingest --work {work}, re-run. WebFetch CANNOT reach these "
                         f"API hosts - it is not a path.)")
                 else:
-                    print(f"\nWEB ENRICHMENT NEEDED ({n_req} request(s)). It is ALWAYS the Cowork "
+                    print(f"\nWEB ENRICHMENT NEEDED ({n_req} request(s)). Live path skipped "
+                          f"because: {_why_s}. It is ALWAYS the Cowork "
                           f"sandbox; PROBE which tools are present and use the FIRST available: "
                           f"(1) mcp__shell (native, has network) - re-run this command THROUGH it; "
                           f"the helpers hit the live APIs and bake the caches directly, no page. "

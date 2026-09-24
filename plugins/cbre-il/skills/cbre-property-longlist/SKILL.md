@@ -57,7 +57,8 @@ python helpers/run.py --project "<project folder>" --client "<Name>" [--geocode 
 `--project` derives all three paths and creates the missing ones. **Move the zip and the email
 folder in as they are** - do not unpack them by hand and do not pull the attachments out.
 Intake unpacks each `.zip` into `<zipname>_unpacked/` and writes each email's attachments into
-`<yyyy-mm-dd>_<subject>_attachments/`, both INSIDE `1. Input`, and both are idempotent, so
+`<yyyy-mm-dd>_<subject>_attachments/` (a second same-day email on the same subject gets a short
+hash suffix, `_<6 hex>_attachments/`), both INSIDE `1. Input`, and both are idempotent, so
 re-running changes nothing and the unpacked files keep their mtimes (which is what lets the
 resumed run skip the decks it already read). Unpacking by hand loses the `.from_email.json`
 sidecar, and with it the ledger's record of which email carried which brochure. Anything else at the top

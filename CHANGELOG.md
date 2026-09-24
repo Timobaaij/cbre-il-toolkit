@@ -7,6 +7,63 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.18.0] — 2026-09-24
+
+Marketplace 1.18.0: **CBRE I&L Toolkit 1.13.0** — dashboard template v45 → **v46**. UK I&L
+Toolkit unchanged at 1.7.0.
+
+### Changed — property longlist, template v46
+- **KPI figures no longer wrap their tile.** The hero value is held on one line and a range
+  now picks its suffix at each end, so a 25,000 to 1,000,000 range reads `25k - 1.0m` instead
+  of `25 - 1000k` spilling out of the box.
+- **Filter labels wrap instead of being cut short**, so "Min Warehouse Area" is readable at
+  1440px.
+- **The photo count on a card moves bottom-left**, so it no longer sits on top of the Compare
+  tick-box. The modal hero keeps it bottom-right.
+- **A stated annual total rent now has somewhere to go.** A new `quotingRentTotal` field is the
+  fallback for Total annual rent — used **only** when no area × rate total can be computed. It
+  ships verbatim, with no basis line, no monthly figure and no back-calculated rate, because a
+  figure the source never broke down should not be broken down for it.
+- **A property's nearest 400k+ city is never crowded out** of the "Major cities" group by
+  smaller towns that happen to be closer.
+
+### Fixed
+- **v46 as uploaded would have blocked every run near a major city, for anyone with
+  `jsonschema` installed.** The new major-city feature writes points of interest with type
+  `city_major`, and the dashboard builder was updated to show them — but the canonical
+  schema's list of allowed types was not, so `validate-data` rejected the data its own
+  pipeline had just written (`'city_major' is not one of ['port', 'rail', 'air', 'border',
+  'city']`) and the run stopped at exit 5. Three of the skill's own simulators caught it:
+  `conformance_sim_test`, `master_list_external_test` and `cowork_sim`.
+
+  **Why it wasn't visible upstream:** without `jsonschema`, `validate-data` falls back to a
+  reduced check that never enforces that list. I confirmed all three simulators pass with it
+  missing and fail with it present — so an author without the package gets a green suite, and
+  a user with it gets a hard stop. It mattered more in this release than it would have before,
+  because the new dependency report in `preflight` now tells users to install `jsonschema`.
+
+  Fixed by adding `city_major` to the schema's allowed types, which is what the rest of the
+  code already assumed: `enrich` writes it deliberately as its own type, `build_dashboard`
+  admits it, and it has its own search radius. All three simulators now pass **with and
+  without** `jsonschema`.
+
+### Added
+- Four evals: `kpi_format_test`, `major_cities_test`, `stated_total_rent_test`, and
+  `preflight_deps_test` for the new dependency report in `preflight`, which now names any
+  missing Python package and gives the exact install command.
+
+### Worth knowing
+- **`open_field_scalar_test` was never a code bug.** Listed here for many releases as one of
+  three long-standing failures, it passes on this release **and** the previous one once
+  `jsonschema` is installed. It was a missing dependency the whole time. That leaves two
+  genuinely failing evals, `extract_test` and `plan_reject_test`, both unchanged.
+- The author's integrity manifest now matches the files as shipped — the Windows line-ending
+  problem that forced a regeneration on every earlier release is fixed at source.
+
+### Security
+- Re-applied the example-name fix (`Pearson, Sam` → `Hale, Robin`) and preserved
+  `vendor/README.md` again; both were missing from the upload.
+
 ## [1.17.0] — 2026-09-24
 
 Marketplace 1.17.0: **UK I&L Toolkit 1.7.0** gains a fourth skill. CBRE I&L Toolkit unchanged
@@ -1380,6 +1437,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.18.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.18.0
 [1.17.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.17.0
 [1.16.3]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.16.3
 [1.16.2]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.16.2

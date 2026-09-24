@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -70,6 +71,8 @@ CONTEXT_DEFAULT = (
 # shared tail. Only the reader templates carry one today; any template may.
 COMMON_SPLIT = "<!-- COMMON-SPLIT"
 COMMON_DIRNAME = "common"
+# where a wipe MOVES the previous pass's prompts (a subdirectory, so it is never "pending")
+DONE_DIRNAME = "_done"
 
 # what the {{COMMON_POINTER}} slot reads in a single-file rendering (render() / the CLI): the
 # prompt is complete as printed, so the pointer has nothing to point at.
@@ -233,10 +236,23 @@ def _safe_id(job_id) -> str:
     return re.sub(r"[^\w\-.]+", "_", str(job_id)).strip("_.") if job_id else ""
 
 
-def _wipe_md(d: Path) -> None:
+def _wipe_md(d: Path, done: Path, repoint: tuple[bytes, bytes] | None = None) -> None:
+    """MOVE every *.md in `d` into `done` (same name, overwriting) rather than deleting it.
+
+    Deleting them meant one deck could not be re-dispatched later without a whole new pass.
+    They must still LEAVE `d`, because the handoff treats every top-level file there as a
+    pending job. A stub's pointer is an ABSOLUTE path into prompts/common/, and that file is
+    moved (or overwritten by the next pass) too, so `repoint` rewrites that one path in the
+    moved copy to its `_done/common/` twin; every other byte is kept."""
     for old in d.glob("*.md"):
         try:
-            old.unlink()
+            done.mkdir(parents=True, exist_ok=True)
+            data = old.read_bytes()
+            if repoint and repoint[0] in data:
+                (done / old.name).write_bytes(data.replace(*repoint))
+                old.unlink()
+            else:
+                old.replace(done / old.name)
         except OSError:
             pass
 
@@ -255,16 +271,21 @@ def write_prompts(work, jobs, wipe: bool = True) -> list:
     The common file is written BEFORE its first stub and is named common/<kind>.md; should two
     jobs of one kind ever render a different tail (a different manifest in one pass), the
     second gets common/<kind>--<sha8>.md rather than overwriting the first. Wiping clears the
-    common dir too, so a stale common half can never be pointed at by a fresh stub."""
+    common dir too, so a stale common half can never be pointed at by a fresh stub; the
+    previous pass's files are MOVED to prompts/_done/ (common/ to _done/common/), not deleted,
+    so an earlier deck's prompt can still be re-dispatched by hand."""
     out_dir = Path(work) / "prompts"
     common_dir = out_dir / COMMON_DIRNAME
+    done_dir = out_dir / DONE_DIRNAME
     written: list = []
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
         common_dir.mkdir(parents=True, exist_ok=True)
         if wipe:
-            _wipe_md(out_dir)
-            _wipe_md(common_dir)
+            old_c = str(common_dir.resolve()) + os.sep
+            new_c = str((done_dir / COMMON_DIRNAME).resolve()) + os.sep
+            _wipe_md(out_dir, done_dir, (old_c.encode("utf-8"), new_c.encode("utf-8")))
+            _wipe_md(common_dir, done_dir / COMMON_DIRNAME)
     except Exception as e:  # an unwritable work dir must never stop the spine
         print(f"  (prompt rendering skipped: {e})")
         return []

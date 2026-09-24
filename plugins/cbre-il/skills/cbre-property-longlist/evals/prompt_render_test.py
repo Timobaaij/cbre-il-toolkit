@@ -5,7 +5,8 @@ Asserts the four properties that make rendered dispatch prompts safe to hand out
 (1) every shipped template renders with no unresolved {{SLOT}} left behind;
 (2) the load-bearing clauses of the reader contract survive rendering (the historically
     dropped rules - the pasted-short field list class of failure - are pinned by string);
-(3) write_prompts() wipes stale prompts per pass and names files <kind>[--<job>].md;
+(3) write_prompts() wipes stale prompts per pass (MOVING them to prompts/_done/, so an earlier
+    deck can be re-dispatched) and names files <kind>[--<job>].md;
 (4) the renderer is fail-loud in render() (unfilled slot / missing template raise) and
     fail-SOFT in write_prompts() (a bad job is skipped, never a crash) - the spine must
     survive any rendering failure.
@@ -13,6 +14,7 @@ Asserts the four properties that make rendered dispatch prompts safe to hand out
 Run: python evals/prompt_render_test.py"""
 from __future__ import annotations
 
+import os
 import re
 import sys
 import tempfile
@@ -119,11 +121,37 @@ def main() -> int:
             "MANIFEST_PATH": "m.json", "OUTPUT_PATH": "o.json"})])
         check(len(f1) == 1 and f1[0].name == "reader-text--Bratislava__a0807f12_vision.md",
               "job files named <kind>--<job>.md")
+        common1 = work / "prompts" / "common" / "reader-text.md"
+        stub1_bytes = f1[0].read_bytes()
+        common1_bytes = common1.read_bytes() if common1.exists() else b""
         f2 = PR.write_prompts(work, [("g-images", None,
                                       {"WORK": "w", "REVIEWS_ROUND_DIR": "r"})])
         check(len(f2) == 1 and f2[0].name == "g-images.md",
               "singleton jobs named <kind>.md")
         check(not f1[0].exists(), "stale prompts from a prior pass are wiped")
+        # ...wiped by MOVING them to prompts/_done/, so one deck can be re-dispatched later
+        top = sorted(p.name for p in (work / "prompts").glob("*.md"))
+        check(top == ["g-images.md"],
+              f"prompts/ holds ONLY the new pass's job, so the handoff sees one pending job ({top})")
+        done = work / "prompts" / "_done"
+        done_stub, done_common = done / f1[0].name, done / "common" / "reader-text.md"
+        repointed = stub1_bytes.replace(
+            (str(common1.parent.resolve()) + os.sep).encode("utf-8"),
+            (str(done_common.parent.resolve()) + os.sep).encode("utf-8"))
+        check(bool(common1_bytes) and done_common.exists()
+              and done_common.read_bytes() == common1_bytes,
+              "the earlier pass's common half is in _done/common/, byte-identical")
+        check(done_stub.exists() and repointed != stub1_bytes
+              and done_stub.read_bytes() == repointed,
+              "the earlier stub is in _done/, byte-identical but for its pointer, which now "
+              "names _done/common/")
+        ptr = [ln for ln in done_stub.read_text(encoding="utf-8").splitlines()
+               if ln.strip().endswith("reader-text.md")] if done_stub.exists() else []
+        check(len(ptr) == 1 and Path(ptr[0].strip()).is_file()
+              and Path(ptr[0].strip()).read_bytes() == common1_bytes,
+              f"...and that pointer resolves to the earlier common half ({ptr})")
+        check(not list((work / "prompts" / "common").glob("*.md")),
+              "prompts/common/ no longer holds the earlier pass's common half")
 
         # (4a) fail-soft: an unknown kind and an under-filled job are skipped, never raised
         bad = PR.write_prompts(work, [("no-such-kind", None, {}),

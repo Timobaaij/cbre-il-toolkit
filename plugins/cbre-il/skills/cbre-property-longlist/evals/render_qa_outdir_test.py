@@ -11,10 +11,19 @@ client's work directory on every run that omits --out. `launch.json` got the cor
 
 This test never launches a browser - it only checks what `main()`'s argparse setup RESOLVES
 the default to, by monkeypatching `playwright_check` to capture its `out` argument. Offline.
+
+ALSO PINNED: the INSTALLED-BROWSER fallback. 'pip install playwright' without 'playwright
+install chromium' made the default launch raise, and the check fell to the structural floor
+(NEEDS-PREVIEW-MCP) on Windows hosts that had Edge all along. A stub Playwright whose default
+launch raises and whose `channel="msedge"` launch works must now render for real; with no
+browser at all, the -1 branch must print the install command.
 """
 from __future__ import annotations
+import contextlib
+import io
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -53,6 +62,61 @@ def _run_main_capturing_out(argv):
     return captured.get("out")
 
 
+def _run_with_stub_playwright(argv, launchable: set):
+    """Run render_qa.main() against a stub `playwright.sync_api` whose chromium.launch(**kw)
+    succeeds only for the channels in `launchable` ('' = the bundled Chromium). Returns
+    (the launch kwargs tried, stdout, exit code)."""
+    tried = []
+
+    class _Page:
+        def on(self, *a): pass
+        def goto(self, *a): pass
+        def wait_for_timeout(self, *a): pass
+        def eval_on_selector_all(self, *a): return 2
+        def evaluate(self, expr): return 2 if "PROPS" in expr else None
+        def screenshot(self, path, full_page=False): Path(path).write_bytes(path.encode())
+
+    class _Browser:
+        def new_page(self, **k): return _Page()
+        def close(self): pass
+
+    class _Chromium:
+        def launch(self, **kw):
+            tried.append(kw)
+            if kw.get("channel", "") not in launchable:
+                raise RuntimeError("Executable doesn't exist - run 'playwright install'")
+            return _Browser()
+
+    @contextlib.contextmanager
+    def sync_playwright():
+        yield types.SimpleNamespace(chromium=_Chromium())
+
+    api = types.ModuleType("playwright.sync_api")
+    api.sync_playwright = sync_playwright
+    saved = {k: sys.modules.get(k) for k in ("playwright", "playwright.sync_api")}
+    sys.modules["playwright"] = types.ModuleType("playwright")
+    sys.modules["playwright.sync_api"] = api
+    class _Buf(io.StringIO):              # main() calls sys.stdout.reconfigure()
+        def reconfigure(self, **k): pass
+
+    saved_argv, buf, code = sys.argv, _Buf(), None
+    sys.argv = argv
+    try:
+        with contextlib.redirect_stdout(buf):
+            try:
+                R.main()
+            except SystemExit as e:
+                code = e.code
+    finally:
+        sys.argv = saved_argv
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    return tried, buf.getvalue(), code
+
+
 def main() -> int:
     work = Path(tempfile.mkdtemp(prefix="cbre_rq_outdir_"))
     html = work / "built.html"
@@ -76,6 +140,27 @@ def main() -> int:
     print("== --out-dir alias still works ==")
     out3 = _run_main_capturing_out(["render_qa.py", str(html), "--out-dir", str(explicit)])
     ck(out3 == explicit, f"--out-dir alias resolves the same way, got {out3!r}")
+
+    print()
+    print("== bundled Chromium missing, Edge installed: renders with Edge ==")
+    shots = work / "edge_shots"
+    tried, out, code = _run_with_stub_playwright(
+        ["render_qa.py", str(html), "--out", str(shots)], {"msedge"})
+    ck(tried[:2] == [{}, {"channel": "msedge"}],
+       f"the default launch is tried first, then channel='msedge' ({tried})")
+    ck("NEEDS-PREVIEW-MCP" not in out and "STATUS: ALL-PASS" in out and code == 0,
+       f"a real render ran - STATUS is not NEEDS-PREVIEW-MCP (exit {code}, "
+       f"{[ln for ln in out.splitlines() if ln.startswith('STATUS')]})")
+    ck("installed msedge" in out, "...and the output says which browser rendered it")
+
+    print()
+    print("== no browser at all: the fallback path names the install command ==")
+    tried, out, code = _run_with_stub_playwright(
+        ["render_qa.py", str(html), "--out", str(shots)], set())
+    ck([k.get("channel") for k in tried] == [None, "msedge", "chrome"],
+       f"Edge and then Chrome are tried before giving up ({tried})")
+    ck("-m playwright install chromium" in out,
+       "the -1 branch prints `python -m playwright install chromium`")
 
     print()
     if FAILS:

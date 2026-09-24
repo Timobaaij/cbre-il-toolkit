@@ -930,12 +930,21 @@ def _total_rent(p: dict, monthly: bool = False) -> str:
     """Total rent = GLA x rate, mirroring the dashboard's totalAnnualRent: split into
     warehouse + office when a separate office rate exists, else the single warehouse
     rate over total GLA (warehouse + office area). 'tbd' when no positive warehouse
-    rate/area. Same currency only (no FX); areas are already aligned by merge."""
+    rate/area. Same currency only (no FX); areas are already aligned by merge.
+
+    v46: when there is no total to compute (no positive per-area rate or area), the ANNUAL total
+    falls back to the source's own stated `quotingRentTotal` ('£750,000 per annum exclusive'),
+    verbatim and marked '(as stated)' - mirroring the dashboard's quotedTotalRent(). A computed
+    total always wins. Nothing is derived from the string: the monthly total stays 'tbd' and no
+    per-area rate is backed out of it."""
+    q = p.get("quotingRentTotal")
+    stated = (f"{q.strip()} (as stated)" if not monthly and isinstance(q, str) and q.strip()
+              and not _is_tbd(q) else C.BLANK)
     wr, wa = p.get("warehouseRentVal"), p.get("warehouseArea")
     if not isinstance(wr, (int, float)) or isinstance(wr, bool) or wr <= 0:
-        return C.BLANK
+        return stated
     if not isinstance(wa, (int, float)) or isinstance(wa, bool) or wa <= 0:
-        return C.BLANK
+        return stated
     oa = p.get("officeAreaVal")
     oa = oa if isinstance(oa, (int, float)) and not isinstance(oa, bool) and oa > 0 else 0
     orr = p.get("officeRentVal")

@@ -136,11 +136,27 @@ matters, because most of the data needs no network at all:
 - Python deps: `pypdf`, `python-pptx`, `openpyxl`, `Pillow`, `rapidfuzz`, `jsonschema`,
   `PyYAML`, `requests`, plus a PDF engine - `PyMuPDF` (fitz) preferred, otherwise `pypdfium2`
   + `pdfplumber` via `fitz_shim` (automatic; see "No network / no pip needed" - the bundled
-  wheel usually makes this moot).
+  wheel usually makes this moot). On a host with pip, install them with the SAME interpreter
+  that runs the skill:
+  ```
+  "<path to python.exe>" -m pip install --user pymupdf pillow python-pptx pdfplumber openpyxl pyyaml requests jsonschema
+  ```
+  `run.py` (and `helpers/preflight.py`) checks these at start and, when any is missing, prints
+  ONE line of exactly this form naming only the missing ones and the interpreter's own path;
+  nothing prints when all are present. A bundled `vendor/` wheel that matches the interpreter
+  counts as present (the Cowork path); the manylinux PyMuPDF wheel does not match Windows, so
+  there `pymupdf` is named rather than silently falling back to `fitz_shim`.
+- **Windows + the Claude desktop app (MSIX package):** the packaged app redirects
+  `%APPDATA%\Claude` (`AppData\Roaming\Claude`) into its own virtualised store, so a Python
+  installed OUTSIDE the package cannot see plugin/skill files that live there - the helpers
+  appear missing or the run cannot start. Copy the skill folder somewhere both can see first
+  (e.g. `%TEMP%\cbre-property-longlist`) and run `python "%TEMP%\cbre-property-longlist\helpers\run.py" ...`.
 - Optional: `pillow-heif` (HEIC images; degrades silently if absent), `extract-msg` (a
   preferred-if-present reader for `.msg`; when it is absent `helpers/msg_reader.py` reads the
   OLE2/CFB container with the standard library alone, attachment bytes included, so a `.msg`
-  folder is a first-class input with no pip and no network), `playwright` (only `render_qa.py`'s headless screenshots), and
+  folder is a first-class input with no pip and no network), `playwright` (only `render_qa.py`'s headless screenshots: `pip install playwright`, then
+  `python -m playwright install chromium`; on Windows `render_qa.py` also tries the installed
+  Edge, then Chrome, when the bundled Chromium is absent), and
   **LibreOffice** (headless `soffice` - the only reliable PPTX slide renderer: with it, vision
   rasterisation and slide heroes cover vector/text-only slides too; without it both degrade to
   the slides' embedded pictures).

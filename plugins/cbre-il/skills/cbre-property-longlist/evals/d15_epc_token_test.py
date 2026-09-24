@@ -131,6 +131,15 @@ def main() -> int:
         ck(V("epc", s) == "pass", f"epc {ascii(s)} -> pass ({V('epc', s)})")
 
     print()
+    print("== 2c. standard UK notation (band then score, no anchor word) passes ==")
+    # D15 UK notation. Each of these returned "fail" and was STRUCK to tbd: no anchor word, and the
+    # band is followed by a score rather than "rated". Includes a U+2010 hyphen and a per-use list
+    # split on ";" where EVERY part must carry a rating.
+    for s in ("C-73", "B‐48", "A-24", "C 62", "A 20", "B-44", "A24", "C56", "A++",
+              "'A+' (-2) offices; 'A' (6) warehouse", "A – 24"):
+        ck(V("epc", s) == "pass", f"epc {ascii(s)} -> pass ({V('epc', s)})")
+
+    print()
     print("== 3. a string with NO rating token still FAILS (the gate must not become a rubber stamp) ==")
     for s in (NO_RATING,
               "EPC assessment shows a modern building",
@@ -156,7 +165,14 @@ def main() -> int:
               "85,000 sq ft, Grade A",
               # the anchor and the score are real, but the band letter is a new sentence's first
               # word - the full stop is exactly what the guard exists to refuse
-              "EPC rating of 85. A modern building of 250,000 sq ft."):
+              "EPC rating of 85. A modern building of 250,000 sq ft.",
+              # D15 UK notation adversarials: the band-then-score branch is anchored, a four-digit
+              # run is a year, the trailing use words are a closed list (an address is not one),
+              # and a ";" list passes only when EVERY part carries a rating
+              "A copy of the EPC is available upon request.",
+              "A 2023",
+              "A 12 Smith Street",
+              "A-24; garble"):
         ck(V("epc", s) == "fail", f"epc {ascii(s)} -> fail ({V('epc', s)})")
     ck(V("epc", "EPC assessment shows a modern building") != V("epc", PANATTONI),
        "the two prose strings get DIFFERENT verdicts: the words are not what is judged, the token is")
@@ -193,6 +209,10 @@ def main() -> int:
     after = dict(clean)
     merge._route_certifications(after)
     ck(after == clean, "a clean pair is untouched")
+    uk = {"epc": "C-73", "breeam": "Very Good", "__meta": {}}
+    merge._route_certifications(uk)
+    ck(uk.get("epc") == "C-73" and uk.get("breeam") == "Very Good",
+       "a UK-notation epc beside a BREEAM grade is not re-routed (the widened gate's second consumer)")
     # informational only: a prose epc that ALSO carries a BREEAM grade word is the router's B5
     # mirror case; recorded here so a reader of this eval knows where the two rules meet
     mixed = {"epc": "EPC A. BREEAM Excellent.", "__meta": {}}
