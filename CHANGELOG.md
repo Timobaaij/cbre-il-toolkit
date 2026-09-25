@@ -7,6 +7,49 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.19.0] — 2026-09-25
+
+Marketplace 1.19.0: **CBRE I&L Toolkit 1.14.0** gains an eighth skill. UK I&L Toolkit unchanged
+at 1.7.0.
+
+### Added
+- **`cbre-engagement-letter` — an engagement or mandate letter in the CBRE house layout.**
+  Cover, letter page, instruction, services, team, remuneration, exclusivity, term, a
+  jurisdiction-specific terms clause, an approval block and the Thank you page, the same every
+  time, with the content adapted to the requirement. It covers occupier search, lease,
+  purchase, build-to-suit, sale and leaseback and capital markets mandates **anywhere in
+  Europe**, which is why it lives in this plugin rather than the UK one.
+
+  It **asks before it drafts**, in one message, and always asks three things it treats as easy
+  to get wrong: the **jurisdiction** (which CBRE entity signs — the search geography is not the
+  answer, since one entity can contract a five-country search), the **fee basis and abortive
+  fee** (it never picks a structure or a number), and whether the letter is **signable or
+  scope-only**. Contracting entities and terms regimes come from a per-country table; a
+  country not in it is asked about rather than guessed. Anything unknown becomes a yellow
+  placeholder, so the user is never blocked, and it never invents an entity, address, fee,
+  date or job title. It can offer to search the user's email for the team, but only searches
+  once they agree.
+
+  **Revisions are where it is strictest**, because rebuilding a letter the user has already
+  edited silently throws their edits away. The user's own latest file is always the base;
+  changes are made in place with `edit_docx.py`, where every edit must match exactly one
+  paragraph or the script stops; and `compare_text.py` lists every difference before anything
+  is delivered. Every delivered file carries a new version number, so an old file card in the
+  chat can never be mistaken for the current letter.
+
+  The update notifier was not in the upload; it has been added at `scripts/version_check.py`
+  and wired into the start of the workflow.
+
+  **Verified on install, not just parsed:** the bundled example built into a valid letter and
+  listed its open placeholders; rendered to **8 pages** matching the documented structure,
+  with **no em or en dashes** (the skill's own rule); a one-line edit changed exactly one
+  paragraph and the comparison reported exactly **1 difference**; and an edit that matched
+  nothing was **refused** without writing a file. Checked for personal data with particular
+  care, since engagement letters name clients and signatories: the example is fully
+  anonymised (`Example Client`, every name and entity a placeholder), the template's hidden
+  document properties name `CBRE` rather than a person, and the only real entities anywhere
+  are CBRE's own public legal entities.
+
 ## [1.18.1] — 2026-09-24
 
 Marketplace 1.18.1: **CBRE I&L Toolkit 1.13.1**. UK I&L Toolkit unchanged at 1.7.0.
@@ -1459,6 +1502,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.19.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.19.0
 [1.18.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.18.1
 [1.18.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.18.0
 [1.17.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.17.0

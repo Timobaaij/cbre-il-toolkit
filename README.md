@@ -1,7 +1,7 @@
 # CBRE I&L Toolkit
 
 CBRE Industrial & Logistics skills for [Claude](https://www.claude.com/) — branded
-decks, occupier briefs, outreach angles, property longlists, site-tour apps,
+decks, engagement letters, occupier briefs, outreach angles, property longlists, site-tour apps,
 warehouse-network maps, and on-brand writing. Packaged as a Claude plugin so the whole
 team can install it in a couple of clicks.
 
@@ -10,6 +10,7 @@ team can install it in a couple of clicks.
 | Skill | What it does |
 |-------|--------------|
 | **Corporate decks** | Polished, CBRE-branded PowerPoint decks built from your content. |
+| **Engagement letter** | A CBRE-branded engagement or mandate letter in the house layout, for any occupier or capital markets mandate in Europe. Asks the open questions first (always the jurisdiction and contracting entity), marks anything unknown as a yellow placeholder, and revises your own edited copy in place rather than rebuilding it. |
 | **Occupier brief** | A short, dense, internal pre-meeting brief on a target company: a CBRE-branded A4 document, a Source Ledger where every figure traces to a retrievable source, and a Verification Sheet. Runs a four-way research fan-out under a hard search budget, then one independent QA round. |
 | **Outreach angles** | A ranked sheet of evidence-backed reasons to contact a company now — each with a trigger, a way in, and a ready-to-send email hook — as a shareable CBRE-branded HTML file. |
 | **Property longlist** | An interactive longlist dashboard from a folder of brochures, emails, and spreadsheets. |

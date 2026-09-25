@@ -1,0 +1,284 @@
+{
+ "title": "Engagement Letter Example Client",
+ "client": "Example Client",
+ "footer_line": "CBRE | Industrial & Logistics",
+ "cover_lines": [
+  "[[Client legal entity]]",
+  "Attn. [[Contact name]]",
+  "[[Street and number]]",
+  "[[Postcode and city]]",
+  "[[Country]]",
+  "Company Registration No. [[number]]"
+ ],
+ "salutation": "Dear [[Name]],",
+ "letter_paragraphs": [
+  "Following our recent conversation, we are pleased to set out the basis on which CBRE will act for Example Client (the Client) in its search for a new distribution centre (DC) in Central Europe. The Client needs additional capacity to serve its growing e-commerce volumes in the region. The search covers Czechia and Slovakia, within one hour's drive of Brno.",
+  "The deciding criterion is availability: the building must be operational by [[date]]. This letter records the requirement, the services CBRE will provide, the team that will deliver them and how we are remunerated, together with the matters that fall outside our scope.",
+  "I should be grateful if you would confirm your acceptance of this appointment by signing and returning a copy of this letter. On receipt of the signed copy, we will start work on the instruction.",
+  "We look forward to working with you. If in the meantime you have any questions on any aspect of the contents, please do not hesitate to contact us."
+ ],
+ "signatories": [
+  {
+   "name": "[[Name]]",
+   "role": "[[Role]]"
+  },
+  {
+   "name": "[[Name]]",
+   "role": "[[Role]]"
+  }
+ ],
+ "blocks": [
+  {
+   "h1": "The instruction"
+  },
+  {
+   "h2": "The requirement"
+  },
+  {
+   "p": "The Client is looking for an existing building or a development project that can be delivered in time. The general principles below summarise the requirement."
+  },
+  {
+   "table": {
+    "style": "detail",
+    "header": [
+     "Item",
+     "Detail"
+    ],
+    "widths": [
+     4253,
+     5657
+    ],
+    "rows": [
+     [
+      "Purpose",
+      "Regional DC for e-commerce and store replenishment"
+     ],
+     [
+      "Search area",
+      "Within one hour's drive of Brno, in Czechia or Slovakia"
+     ],
+     [
+      "Availability",
+      "Operational by [[date]]"
+     ],
+     [
+      "Warehouse",
+      "20,000-25,000 sq m, with the option to expand by 5,000 sq m"
+     ],
+     [
+      "Office and welfare",
+      "1,000 sq m"
+     ],
+     [
+      "Clear height",
+      "12 m"
+     ],
+     [
+      "Lease term",
+      "Ten years preferred"
+     ]
+    ]
+   }
+  },
+  {
+   "h1": "The services"
+  },
+  {
+   "p": "CBRE represents the Client as occupier from the first market search through to signing the lease and handover of the building. The work runs in three phases."
+  },
+  {
+   "h3": "Phase 1: Search and shortlist"
+  },
+  {
+   "bullets": [
+    "Send a confidential search request to landlords, developers and our network in Czechia and Slovakia",
+    "Identify suitable existing buildings and development projects, including options that are not openly marketed",
+    "Test each option against the requirement, starting with the delivery date and the expansion option",
+    "Compile a longlist of suitable options and advise on the market rent at each location",
+    "Agree a shortlist with the Client and arrange site visits"
+   ]
+  },
+  {
+   "h3": "Phase 2: Proposals and negotiation"
+  },
+  {
+   "bullets": [
+    "Draft the Request for Proposal (RFP) based on the Client's requirements",
+    "Analyse the proposals received and prepare a financial comparison",
+    "Negotiate rent, term, incentives and the delivery date with landlords and developers",
+    "Draft counter proposals and update the financial comparison"
+   ]
+  },
+  {
+   "h3": "Phase 3: Contracting and delivery"
+  },
+  {
+   "bullets": [
+    "Draft the Letter of Intent",
+    "Negotiate the commercial terms of the lease agreement and support the Client's legal advisers in finalising it",
+    "Attend the handover and check the delivery report"
+   ]
+  },
+  {
+   "p": "The overview above is a brief outline of our services and will be specified in more detail as the process develops. Where needed, we can coordinate other parties, such as technical consultants, environmental consultants and lawyers. All steps take place in close dialogue with the Client, and you will be kept updated through calls, written updates and meetings."
+  },
+  {
+   "h2": "Outside our scope"
+  },
+  {
+   "p": "So that there is no misunderstanding, the following do not form part of this instruction:"
+  },
+  {
+   "bullets": [
+    "Technical due diligence, including structural surveys",
+    "Legal advice, contract drafting and permitting",
+    "Tax and accounting advice",
+    "Any formal valuation of a property"
+   ]
+  },
+  {
+   "pagebreak": true
+  },
+  {
+   "h1": "Our team"
+  },
+  {
+   "p": "The contact details for our team are as follows:"
+  },
+  {
+   "table": {
+    "style": "team",
+    "header": [
+     "Name",
+     "Role",
+     "Email"
+    ],
+    "widths": [
+     2150,
+     3900,
+     3925
+    ],
+    "rows": [
+     [
+      "[[Name]]",
+      "[[Role]]",
+      "[[Email]]"
+     ],
+     [
+      "[[Name]]",
+      "[[Role]], Czechia",
+      "[[Email]]"
+     ],
+     [
+      "[[Name]]",
+      "[[Role]], Slovakia",
+      "[[Email]]"
+     ]
+    ]
+   }
+  },
+  {
+   "p": "[[Lead]] leads the instruction and is the Client's single point of contact. The local teams run the market search, site visits and landlord negotiations in their own markets."
+  },
+  {
+   "pagebreak": true
+  },
+  {
+   "h1": "Remuneration"
+  },
+  {
+   "table": {
+    "style": "fee",
+    "header": [
+     "Item",
+     "Fee"
+    ],
+    "rows": [
+     [
+      "Lease acquisition",
+      [
+       "[[Fee basis agreed with the user]]"
+      ]
+     ],
+     [
+      "Abortive fee",
+      "[[Abortive fee agreed with the user]]"
+     ],
+     [
+      "Third-party costs",
+      [
+       "CBRE is not responsible for the costs of third parties instructed in connection with the search, including legal, tax and technical advisers.",
+       "The Client reimburses CBRE for out-of-pocket costs incurred during the engagement that the Client has approved in advance in writing and that we document."
+      ]
+     ]
+    ]
+   }
+  },
+  {
+   "h2": "VAT"
+  },
+  {
+   "p": "All fees and expenses are exclusive of VAT, which will be charged at the applicable rate."
+  },
+  {
+   "h2": "Payment of fees and expenses"
+  },
+  {
+   "p": "[[Who is invoiced and when.]] Our invoices are due for payment within 30 days of issue. We reserve the right to charge interest calculated on a daily basis from the 31st day following the date of issue at the statutory rate of interest, and to charge any reasonable debt collection costs we incur in the recovery of amounts properly due."
+  },
+  {
+   "h2": "The process and exclusivity"
+  },
+  {
+   "p": "CBRE acts exclusively for the Client on this search and represents only the interests of the Client. CBRE will not act as adviser to, or provide services to, any landlord, developer or other third party in connection with this instruction unless the Client agrees otherwise in writing. In practice this exclusivity means the following:"
+  },
+  {
+   "bullets": [
+    "CBRE is the exclusive real estate adviser for this search; no other real estate consultant will be instructed on it",
+    "CBRE is the point of contact towards landlords, developers and agents on behalf of the Client",
+    "CBRE coordinates the search, the negotiations and the finalisation of the commercial terms, in line with the section \"The services\" above",
+    "If a landlord, developer or third-party consultant approaches the Client directly in connection with this search, the Client will refer them to CBRE"
+   ]
+  },
+  {
+   "h2": "Term"
+  },
+  {
+   "p": "This agreement takes effect on the date of signing and runs for 12 (twelve) months. After that period it may be continued by a written amendment signed by both parties."
+  },
+  {
+   "p": "Either party may terminate the agreement at any time on 30 (thirty) days written notice."
+  },
+  {
+   "h2": "[[Terms heading per jurisdiction]]"
+  },
+  {
+   "p": "[[Terms clause per jurisdiction, see references/jurisdictions.md]]"
+  },
+  {
+   "p": "If you have any questions or would like a further explanation of the contents of this letter, please do not hesitate to contact us."
+  },
+  {
+   "p": "We look forward to working with your organisation."
+  },
+  {
+   "empty": true
+  },
+  {
+   "approval": {
+    "cbre_entity": "[[CBRE contracting entity]]",
+    "client_entity": "[[Client legal entity]]",
+    "cbre_name": "[[Signatory]]",
+    "cbre_function": "[[Function]]"
+   }
+  }
+ ],
+ "thank_you_contacts": [
+  {
+   "name": "[[Name]]",
+   "role": "[[Role]]",
+   "phone": "[[Phone]]",
+   "email": "[[Email]]"
+  }
+ ]
+}
