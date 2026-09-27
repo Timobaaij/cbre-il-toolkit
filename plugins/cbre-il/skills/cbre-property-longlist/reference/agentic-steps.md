@@ -21,7 +21,9 @@ rendered prompt.
   town-centre geocode and no coordinate is ever model-invented. Falls back to a `.msg`/`.eml`
   folder (`extract_email.py`) when the MCP is absent, **and the fallback now saves and routes
   attachment bytes like the Outlook path does**: intake writes each email's attachments into
-  `<yyyy-mm-dd>_<subject>[_<6 hex>]_attachments/` beside it before classification, so by the time you
+  `<yyyy-mm-dd>_<subject>[_<6 hex>]_attachments/` beside it before classification (an existing
+  folder whose `.from_email.json` names the message is reused, whatever its name, and a sidecar
+  key someone added by hand is kept), so by the time you
   are dispatched they are ordinary decks in the manifest with their own page citations. You do
   not have to fetch or describe them. Inline images (under 20 KB, or a Content-ID with no
   filename) are already excluded. If an email's attachments could NOT be extracted,
@@ -60,12 +62,18 @@ rendered prompt.
   the SAME map blind into the `*_mapcheck.json` output. `run.py` diffs the two maps in pure
   Python and surfaces any field/basis disagreement to the Gaps Report (ADVISORY - the first
   map still drives the parse).
-- **Intake cluster labels (exit 3, OPTIONAL job):** when `inventory.json` holds
-  `confidence:"low"` filename clusters and `work/intake_clusters.json` does not exist, the
-  round also renders `prompts/cluster-labels.md` - an isolated agent judges the named stems
-  and writes the input-hashed cache. Absence of the output keeps the deterministic regex, so
-  this job never blocks. This sets ONLY `inputs.clusters` (a routing/scaffold label + the
-  `market.countries` seed) - the card's displayed region/city stay brochure-derived.
+- **Intake cluster labels (exit 3, OPT-IN job):** only when `project.yaml` sets
+  `inputs.cluster_labels: agent` (2026-09-26, fix 1.3 - the auto-dispatched job cost 74k tokens
+  for 7 stems and changes no card field), `inventory.json` holds `confidence:"low"` filename
+  clusters, `work/intake_clusters.json` does not exist and no `work/intake_clusters.SKIP` declines
+  it, the round also renders `prompts/cluster-labels.md` with one line per stem carrying
+  everything the run knows about it (file path, the email it arrived with, the current label) -
+  the agent does not open `inventory.json`. It writes the input-hashed cache. Absence of the
+  output keeps the deterministic regex, so this job never blocks. A label may RENAME a cluster,
+  never merge two decks the filenames keep apart (intake refuses that and says so). This sets
+  ONLY the routing label mirrored into `inputs.clusters` - the card's displayed region/city stay
+  brochure-derived. Delete the cache or create `intake_clusters.SKIP` to go back to the
+  filename labels on the next pass.
 - **Photo match (exit 9 - brochures that are photos for known properties):** when `run.py`
   exits 9 and writes `work/photo_match_manifest.json`, some brochures yielded no text but the
   run already holds the property data from another source, so each brochure is most likely a

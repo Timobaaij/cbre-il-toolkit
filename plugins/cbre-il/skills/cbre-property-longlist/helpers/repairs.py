@@ -168,6 +168,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -289,6 +290,17 @@ LEDGER_PROV_RECORD_TYPE = "property"
 # "tbd" either: the whole point of the verb is that the field was WITHDRAWN, not set to the
 # sentinel, and a report row that cannot tell those apart is the ambiguity this replaces.
 CLEARED = "(cleared)"
+# 2026-09-26 test run (fix 3.15): merge's `retract_superseded_gap_rows` now also marks a merge
+# VALUE row that a later repair (or post-repair derived) row replaced: record_type becomes
+# "superseded" and its conflict_note starts with this prefix, the pre-mark note kept after
+# " || was: ". Such a row is still merge's attribution of a value to a file, so
+# `read_provenance` keeps reading it - see there for why that must not depend on the pass.
+SUPERSEDED_BY_REPAIR_PREFIX = "SUPERSEDED BY REPAIR:"
+# 2026-09-26 test run (fix 3.12): the plausibility-strike note used to say "ships tbd" and now
+# says "ships <normalize.BLANK>" (fix 3.17). A pre-change canonical still carries the old
+# spelling, so the known-shape match reads BOTH; `(?!\w)` rather than `\b` so a non-word
+# sentinel spelling would still match.
+_SHIPS_SENTINEL_RX = re.compile(r"\bships (tbd|" + re.escape(_N.BLANK) + r")(?!\w)", re.I)
 
 _SCHEMA_REQUIRED_FIELDS = None
 
@@ -413,6 +425,13 @@ def read_provenance(path) -> list | None:
     property, and a `repair`/`override` row is a disclosed correction whose field already has
     its own property row - striking off one of those would let a correction delete itself.
 
+    ONE MORE ROW SHAPE COUNTS (2026-09-26 test run, fix 3.15): a merge value row that merge's
+    ledger retraction marked `record_type=superseded` because a later repair (or post-repair
+    derived) row replaced its value - recognisable by a non-gap `source_type` and a note that
+    starts with SUPERSEDED_BY_REPAIR_PREFIX. It is still merge's attribution of that field to
+    that file; only the VALUE moved. Without it a strike's targets would depend on whether an
+    earlier pass had already marked the row, the resumed-vs-full flip `apply` warns against.
+
     -> None when there is no ledger to read. "I could not look" and "that file contributed
     nothing" are different answers and must never print the same one."""
     p = Path(str(path or ""))
@@ -426,11 +445,21 @@ def read_provenance(path) -> list | None:
         pass
     try:
         with open(p, newline="", encoding="utf-8-sig") as fh:
-            return [r for r in csv.DictReader(fh)
-                    if (r.get("record_type") or "").strip() == LEDGER_PROV_RECORD_TYPE
-                    and (r.get("source_type") or "").strip().lower() != "gap"]
+            return [r for r in csv.DictReader(fh) if _is_provenance_row(r)]
     except Exception:
         return None
+
+
+def _is_provenance_row(r: dict) -> bool:
+    """The row filter behind `read_provenance`: a live merge `property` row, or a merge value
+    row marked superseded by a repair (fix 3.15). Never a gap row, in either shape."""
+    if (r.get("source_type") or "").strip().lower() == "gap":
+        return False
+    rt = (r.get("record_type") or "").strip()
+    if rt == LEDGER_PROV_RECORD_TYPE:
+        return True
+    return rt == "superseded" and str(r.get("conflict_note") or "").lstrip().startswith(
+        SUPERSEDED_BY_REPAIR_PREFIX)
 
 
 def _prov_index(rows) -> dict:
@@ -544,6 +573,23 @@ def _same(a, b) -> bool:
     if isinstance(a, (int, float)) and isinstance(b, (int, float)):
         return float(a) == float(b)
     return str(a).strip() == str(b).strip()
+
+
+def _same_area_text(a, b) -> bool:
+    """True when two area STRINGS state the same figure in the same unit ("4,614 sq ft" and
+    "4614 sq ft"). Both the number and the unit must parse; anything unparseable is False.
+
+    2026-09-26 test run (fix 3.3c compat): merge now writes a bare officeArea as
+    "<n,nnn> <unit>" when the record's own source states the unit. A value-format repair
+    written before that change (`expect` "4614", `set` "4614 sq ft") would read the new
+    shipped form as drift and SUPERSEDE; this is the narrow "already applied" test that lets
+    it re-apply exactly as before. Used for `officeArea` only (see `apply`)."""
+    try:
+        na, nb = _N.normalize_number(a), _N.normalize_number(b)
+        ua, ub = _N.area_unit_of(str(a)), _N.area_unit_of(str(b))
+    except Exception:
+        return False
+    return na is not None and na == nb and ua is not None and ua == ub
 
 
 # The absence family for the `expect` guard ONLY (SEAM-13). It DELEGATES to
@@ -931,6 +977,26 @@ def _resolve(props: list, prop_ref: dict) -> tuple[int | None, str | None]:
     return hits[0], None
 
 
+def _alias_promotions(canonical: dict) -> dict:
+    """{(property id as str, canonical field): the off-spec alias key merge promoted into it}.
+
+    2026-09-26 test run (fix 3.5a compat): merge's strict alias step now moves an EXACT synonym
+    key (`levelAccessDoors` -> `overheadDoors`) into a blank canonical field and lists each move
+    in `canonical.meta.aliasPromotions` as {id, field, aliasKey}. A hand repair written before
+    that did the same move (`set` the canonical field, `unset` the alias) must still apply after
+    a re-merge, and its `unset` must say the key went because merge promoted it, not "check the
+    spelling". Read defensively: an absent or malformed list is {} (today's behaviour)."""
+    out: dict = {}
+    try:
+        for e in ((canonical.get("meta") or {}).get("aliasPromotions") or []):
+            if isinstance(e, dict) and e.get("field") and e.get("aliasKey") \
+                    and e.get("id") is not None:
+                out[(str(e["id"]).strip(), str(e["field"]))] = str(e["aliasKey"])
+    except Exception:
+        return {}
+    return out
+
+
 def apply(canonical: dict, entries: list, base_dir: Path | None = None,
           provenance: list | None = None) -> dict:
     """Apply in place. Returns a report dict with the five REPORT_KEYS.
@@ -950,6 +1016,7 @@ def apply(canonical: dict, entries: list, base_dir: Path | None = None,
     # every key ANY property carried before this batch: the same dataset-wide set `run` hands
     # `load` as `extra_fields`, frozen here so one entry's new key cannot license the next
     ds_keys = {k for q in props if isinstance(q, dict) for k in q}
+    promoted = _alias_promotions(canonical)
     for e in entries:
         rid = e["id"]
         idx, fail = _resolve(props, e["property"])
@@ -1123,10 +1190,20 @@ def apply(canonical: dict, entries: list, base_dir: Path | None = None,
         # is already absent, which reads as absence to `expect` - its own success, so a guarded
         # `unset`/`strike` must not supersede itself either.
         clears = set(unset) | set(struck)
+        # 2026-09-26 test run, two narrow widenings of "already applied", both for a re-merge
+        # that now does at SOURCE what an older hand repair did (the repair still applies and
+        # still writes its ledger row; nothing about real drift changes):
+        #  * fix 3.5a: merge promoted this entry's own `unset` alias key into the canonical
+        #    field this entry `set`s - the same move, so the promoted value is not drift;
+        #  * fix 3.3c: merge reformatted a bare officeArea ("4614") into "<n,nnn> <unit>" and
+        #    this entry sets the same figure in the same unit.
         wrong = [k for k, v in exp.items()
                  if not _expect_same(p.get(k), v)
                  and not (k in sets and _same(p.get(k), sets[k]))
-                 and not (k in clears and _absent_like(p.get(k)))]
+                 and not (k in clears and _absent_like(p.get(k)))
+                 and not (k in sets and promoted.get((str(pid), k)) in set(unset))
+                 and not (k == "officeArea" and k in sets
+                          and _same_area_text(p.get(k), sets[k]))]
         if wrong:
             rep["superseded"].append({
                 "id": rid,
@@ -1166,9 +1243,15 @@ def apply(canonical: dict, entries: list, base_dir: Path | None = None,
         absent = [k for k in unset if k not in p and k not in struck]
         if absent:
             prov_fields = (prov or {}).get(str(pid)) or {}
+            # fix 3.5a compat: alias key -> canonical field, for the keys merge promoted HERE
+            promo_here = {a: f for (i, f), a in promoted.items() if i == str(pid)}
             notes = []
             for k in absent:
-                if k in prov_fields:
+                if k in promo_here:
+                    notes.append(f"{k!r} was promoted into {promo_here[k]} by merge's strict "
+                                 f"alias step (the same datum under its canonical name), so the "
+                                 f"key is already gone - a correct entry, doing nothing")
+                elif k in prov_fields:
                     notes.append(f"{k!r} is already absent and the Source Ledger still credits "
                                  f"property {pid} with it, so this clear landed on an earlier "
                                  f"run - a correct entry, doing nothing")
@@ -1181,12 +1264,23 @@ def apply(canonical: dict, entries: list, base_dir: Path | None = None,
                                  f"Ledger row on property {pid} - check the spelling against "
                                  f"work/properties/ (a clear cannot create a field, so this is "
                                  f"a no-op, not a malformed entry)")
+            # 2026-09-26 test run (fix 1.10): two ADDITIVE flags naming the "correct entry, doing
+            # nothing" readings, so the quiet report can count them instead of re-printing the
+            # same sentence every pass. `landed_earlier` is exactly the predicate behind the
+            # "landed on an earlier run" note; `alias_promoted` is the fix-3.5a reading (every
+            # absent key either landed earlier or was promoted by merge, at least one promoted).
+            # A misspelling or a never-stated field sets neither and still prints in full.
+            landed = all(k in prov_fields for k in absent)
             rep["stale"].append({
                 "id": rid,
                 "reason": (f"`unset` asked to clear {', '.join(absent)} on property {pid}, which "
                            f"carries {'none of them' if len(absent) > 1 else 'no such key'} - "
                            f"CLEARED nothing and wrote NO {LEDGER_NAME} row. "
                            + "; ".join(notes) + "."),
+                "landed_earlier": landed,
+                "alias_promoted": (not landed
+                                   and all(k in prov_fields or k in promo_here for k in absent)
+                                   and any(k in promo_here for k in absent)),
             })
             # The REST of the entry still runs. A `set` beside an already-satisfied clear must
             # be re-applied and must re-write its own ledger row on every run, or resume (which
@@ -1260,17 +1354,47 @@ def apply(canonical: dict, entries: list, base_dir: Path | None = None,
                 # as false to a broker as a "ships tbd" note about a value now restored.
                 kept_marker = f"kept '{ch['from']}')" if ch["from"] is not None else None
                 for i, note in enumerate(conflicts):
+                    # already annotated, by a known shape or by the catch-all below: idempotent
+                    # across passes, never a second tail on one note
                     if not isinstance(note, str) or not note.startswith(prefix) \
-                            or "[RESOLVED" in note:
+                            or "[RESOLVED" in note or "[SUPERSEDED by repair" in note:
                         continue
-                    if "ships tbd" in note:
+                    _ships = _SHIPS_SENTINEL_RX.search(note)
+                    if _ships:
+                        # the note's own sentinel spelling is echoed back ("not tbd" stays
+                        # byte-identical for a pre-3.17 note; a "ships TBC" note reads "not TBC")
                         conflicts[i] = (f"{note} [RESOLVED by repair {rid}: the card now ships "
-                                        f"{ch['to']!r}, not tbd - see \"Manual corrections "
-                                        f"applied (property-level repairs)\" below.]")
+                                        f"{ch['to']!r}, not {_ships.group(1)} - see \"Manual "
+                                        f"corrections applied (property-level repairs)\" "
+                                        f"below.]")
                     elif kept_marker and kept_marker in note:
                         conflicts[i] = (f"{note} [RESOLVED by repair {rid}: the card now ships "
                                         f"{ch['to']!r}, not {ch['from']!r} - see \"Manual "
                                         f"corrections applied (property-level repairs)\" below.]")
+                    elif "does NOT reconcile" in note:
+                        # Third stale shape (2026-09-26 QA round): merge's own computed-office
+                        # note ("computed from itemised office lines, but does NOT reconcile
+                        # ... leaves N sq ft unexplained"). A repair that SETS this very field
+                        # replaces the computed figure the note reasons about, so the note is
+                        # stale the instant the repair lands; without this branch the Gaps
+                        # Report kept asserting a defect the data no longer had (G-trace, G-honesty
+                        # blocking findings on id 17 officeArea).
+                        conflicts[i] = (f"{note} [RESOLVED by repair {rid}: the card now ships "
+                                        f"{ch['to']!r} - see \"Manual corrections applied "
+                                        f"(property-level repairs)\" below.]")
+                    else:
+                        # 2026-09-26 test run (fix 3.12): CATCH-ALL. The three shapes above are
+                        # an allow-list, and every other note about this field ("the source
+                        # itemises office space ... NOT summed", a source-internal disagreement)
+                        # survived a repair unannotated, so the Gaps Report reasoned about a
+                        # value the card no longer ships. Annotated, never deleted: the note is
+                        # still real audit history. The prefix needs the colon, so an
+                        # `officeAreaVal:` note is never touched by an `officeArea` repair.
+                        try:
+                            conflicts[i] = (f"{note} [SUPERSEDED by repair {rid}: the card now "
+                                            f"ships {ch['to']!r}]")
+                        except Exception:
+                            continue
         media = {}
         for slot, rel in (e.get("media") or {}).items():
             src = Path(rel)
@@ -1376,11 +1500,110 @@ def ledger_rows(rep: dict) -> list[dict]:
     return rows
 
 
-def format_report(rep: dict) -> list[str]:
-    """Operator-facing lines, in the same voice as the override outcomes run.py prints."""
+# --- THE REPAIR CONTRACT, AS THE HANDOFFS PRINT IT (2026-09-26 test run, fix 1.7) ----------
+# The shape of a repairs.json entry lived only in this module's docstring, `validate_entries`
+# and reference/per-property.md, so an orchestrator handed "fix and re-run" at exit 6 / exit 15
+# had to go and read them (the real run wrote 65 entries). `contract_hint` prints the contract
+# INTO the handoff. It is derived LIVE - twins from `_derived_twins()`, the twin rule from
+# `_rederive_available()`, the denied list from DENIED_FIELDS - so the printed rule can never
+# drift from the rule `validate_entries` enforces (an eval proves the example itself passes).
+CONTRACT_EXAMPLE = {
+    "id": "rp-001",
+    "property": {"key": "<repair key from work/properties/<dir>/notes.md>", "id": 1},
+    "expect": {"<field>": "<the card's CURRENT value>"},
+    "set": {"<field>": "<new value>"},
+    "why": "<one sentence>",
+    "verified_by": "<who decided>",
+    "source_file": "<file the value is on>",
+    "source_locator": "<page/cell>",
+}
+
+
+def _twin_pairs_text(twins: dict) -> str:
+    """'a->b, c<->d' from a source->twin registry; a pair registered both ways prints once."""
+    out, done = [], set()
+    for f in sorted(twins):
+        t = twins[f]
+        if f in done:
+            continue
+        if twins.get(t) == f:
+            a, b = sorted((f, t))
+            out.append(f"{a}<->{b}")
+            done.update((f, t))
+        else:
+            out.append(f"{f}->{t}")
+            done.add(f)
+    return ", ".join(out)
+
+
+def contract_hint(work=None) -> list[str]:
+    """The repairs.json entry contract as a few handoff lines (fix 1.7). NEVER raises: any
+    failure returns [] and the handoff prints exactly what it printed before. Contains no
+    'dispatch' wording (the exit-15 handoff pins its absence)."""
+    try:
+        lines = [
+            "  repairs.json = a JSON LIST, one object per correction (re-applied every pass): "
+            + json.dumps(CONTRACT_EXAMPLE, ensure_ascii=False),
+            "  required: id (unique), property (key and/or id), why, verified_by, and at least "
+            "one of set / unset / strike_from_source / media; source_file + source_locator "
+            "optional (non-empty when present)",
+            "  unset: [\"<field>\"] REMOVES the key (never write \"tbd\" to clear); expect guards "
+            "the entry - a mismatch is SUPERSEDED and applies nothing",
+        ]
+        twins, _src = _derived_twins()
+        if twins:
+            pairs = _twin_pairs_text(twins)
+            if _rederive_available():
+                lines.append(f"  derived twins ({pairs}): merge re-derives the twin after "
+                             f"repairs on this installation, so setting the SOURCE alone is "
+                             f"enough; if you also set the twin, give the SAME figure")
+            else:
+                lines.append(f"  derived twins ({pairs}): THIS installation cannot re-derive - "
+                             f"an entry that sets/unsets a source MUST set/unset its twin in the "
+                             f"SAME entry (refused otherwise)")
+        else:
+            lines.append("  derived twins: none registered on this installation "
+                         "(merge.DERIVED_TWINS not found), so no twin rule applies")
+        lines.append(f"  never repairable: {', '.join(sorted(DENIED_FIELDS))} "
+                     f"(use \"media\" for hero/plan images)")
+        if work is not None:
+            lines.append(f"  dry-run before re-running: python \"{Path(__file__).resolve()}\" "
+                         f"check --work \"{Path(work)}\"")
+        return lines
+    except Exception:
+        return []
+
+
+def _unmoved(ch) -> bool:
+    """An applied change that moved nothing: a set whose value already stood (`_same`), or a
+    clear/strike whose field was already absent. The same reading as run.py's `_repair_moved`
+    (D14), with `_same` so int/float and whitespace noise is not counted as movement."""
+    if not isinstance(ch, dict):
+        return False
+    if ch.get("cleared"):
+        return bool(ch.get("already_absent"))
+    return _same(ch.get("from"), ch.get("to"))
+
+
+def format_report(rep: dict, compact: bool = False) -> list[str]:
+    """Operator-facing lines, in the same voice as the override outcomes run.py prints.
+
+    `compact` (2026-09-26 test run, fix 1.10; run.py passes its QUIET flag) COUNTS instead of
+    lists the two re-applied no-ops that dominated every pass of a long run (83 of 85 applied
+    lines and all 9 stale lines on the measured final pass): a change that moved nothing
+    (`_unmoved`) and a stale clear flagged `landed_earlier` / `alias_promoted`. Everything else
+    prints exactly as before - moved values, a CLEARED real value, media, NOT struck, a typo
+    stale, AMBIGUOUS, SUPERSEDED, INVALID. Every entry stays in work/repairs_report.json. The
+    default (False) is byte-identical to the pre-change output."""
     out = []
+    n_same, same_ids = 0, []
     for a in rep.get("applied", []):
         for f, ch in (a.get("changed") or {}).items():
+            if compact and _unmoved(ch):
+                n_same += 1
+                if a.get("id") not in same_ids:
+                    same_ids.append(a.get("id"))
+                continue
             if ch.get("cleared"):
                 out.append(f"  - {a['id']}: property {a.get('property_id')} {f}: CLEARED, was "
                            f"{ch['from']!r}"
@@ -1401,9 +1624,38 @@ def format_report(rep: dict) -> list[str]:
                        f"{', '.join(a['protected'])} - structural, media-owned or "
                        f"schema-required. Replace a hero with `media`; re-state an identity "
                        f"field with `set`.")
+    landed_ids, promo_ids = [], []
+    if compact:
+        for s in rep.get("stale", []):
+            if isinstance(s, dict) and s.get("landed_earlier") is True:
+                landed_ids.append(s.get("id"))
+            elif isinstance(s, dict) and s.get("alias_promoted") is True:
+                promo_ids.append(s.get("id"))
+
+        def _ids(ids):
+            head = ", ".join(str(i) for i in ids[:12])
+            return head + (f" +{len(ids) - 12} more" if len(ids) > 12 else "")
+        if n_same:
+            k = len(same_ids)
+            out.append(f"  = {n_same} repaired value(s) on {k} entr{'y' if k == 1 else 'ies'} "
+                       f"already held their repaired value - re-applied, nothing moved (each is "
+                       f"in work/repairs_report.json; --verbose lists them)")
+        if landed_ids:
+            out.append(f"  = {len(landed_ids)} clear(s) already landed on an earlier pass - "
+                       f"correct entries, doing nothing: {_ids(landed_ids)} "
+                       f"(work/repairs_report.json)")
+        if promo_ids:
+            out.append(f"  = {len(promo_ids)} clear(s) of an alias key merge's strict alias step "
+                       f"already promoted into its canonical field - correct entries, doing "
+                       f"nothing: {_ids(promo_ids)} (work/repairs_report.json)")
+    _counted = set(landed_ids) | set(promo_ids)
     for key, tag in (("stale", "STALE REPAIR"), ("ambiguous", "AMBIGUOUS REPAIR"),
                      ("superseded", "SUPERSEDED REPAIR")):
         for s in rep.get(key, []):
+            if key == "stale" and compact and isinstance(s, dict) \
+                    and (s.get("landed_earlier") is True or s.get("alias_promoted") is True) \
+                    and s.get("id") in _counted:
+                continue
             out.append(f"[{tag}] {s['id']} {s['reason']}")
     for s in rep.get("invalid", []):
         out.append(f"[INVALID REPAIR] {s} - this entry does NOTHING until it is fixed.")

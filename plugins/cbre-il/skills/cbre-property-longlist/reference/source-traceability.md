@@ -10,8 +10,8 @@ Every populated property field (and every explicit `"tbd"`) is one row, so every
 | 2 | `record_type` | extractor/merge | `property` / `poi` / `region` / `override` (a manual `work/overrides.json` correction - `grep ,override,` lists every manual touch) / `offspec` (an off-spec pre-merge disclosure) |
 | 3 | `field` | extractor | canonical field name (`warehouseRent`, `clearHeight`, `photo`...) **required** |
 | 4 | `value` | extractor | value written to canonical (or `tbd`/`—`/`null`) **required** |
-| 5 | `source_file` | extractor | exact input filename or email subject **required** |
-| 6 | `source_locator` | extractor | `page 4` / `slide 4` / `Sheet1!C12` / `email <date>` **required** |
+| 5 | `source_file` | extractor | exact input filename - for a .msg/.eml the message's FILE name; the subject only on the Outlook MCP path, where there is no file **required** |
+| 6 | `source_locator` | extractor | `page 4` / `slide 4` / `Sheet1!C12` / `email <date> from <sender> (<file>)` **required** |
 | 7 | `source_type` | extractor | `pdf`/`pptx`/`xlsx`/`image`/`email`/`msg`/`web`/`osrm`/`poi_library`/`gap` **required** |
 | 8 | `extractor` | extractor | which extractor produced it (`E-pdf`, `E-xlsx`) |
 | 9 | `confidence` | Stage 2 | High / Medium / Low |
@@ -20,7 +20,7 @@ Every populated property field (and every explicit `"tbd"`) is one row, so every
 
 Required at merge (a row missing any is rejected): `field, value, source_file, source_locator, source_type`.
 
-- `source_locator` - where exactly: `page 4`, `slide 4`, `Sheet1!C12`, `email <date>`, `page 4 (description)`. A derived companion value (e.g. the rent display synthesised from `warehouseRentVal`) carries its basis field's locator plus `(derived from <field>)`.
+- `source_locator` - where exactly: `page 4`, `slide 4`, `Sheet1!C12`, `email <date> from <sender> (<file>)` (a part the message does not state is omitted; one thread repeats a subject and a date, so the sender and the file are what name the message - 2026-09-26, fix 3.11), `page 4 (description)`. A derived companion value (e.g. the rent display synthesised from `warehouseRentVal`) carries its basis field's locator plus `(derived from <field>)`.
 - `source_type` - `pdf | pptx | xlsx | image | email | msg | web | osrm | poi_library | gap` (`gap` = the positive record that a sentinel value was genuinely absent in all sources; `web`/`osrm`/`poi_library` rows are upserted by `enrich.py --ledger` for everything enrichment fills, so the ledger never contradicts the deliverable).
 - `confidence` - High (a DETERMINISTIC structured extract: a tracker cell or an email field) / Medium (an LLM read - a brochure **text interpretation** or a **vision transcription** - or an image-read / enriched value) / Low (inferred); merge derives this from the row's real source, and Medium/Low are the G-honesty spot-check priorities. (Brochure fields are interpreted by the isolated sub-agent, so they are Medium, not High - an LLM read is a less-certain source than a structured tracker.)
 - `conflict_note` - if sources disagreed, the discarded value + which won and why.

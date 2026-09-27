@@ -282,7 +282,11 @@ def _country_kv(country) -> dict:
 #   1/2 - pre-versioning (implicit)
 #   3   - aids integrity: an entry with no page renders is no longer accepted while the host CAN
 #         render; entries carry `visual_aids` and, when degraded, `aids_degraded`.
-PREP_SCHEMA = 3
+#   4   - (2026-09-26 test run, fixes 1.2 / 3.21 / 3.22) deck-level `render_sheets` and
+#         `candidate_sheets`; candidates annotated `masked` / `visible_fraction` / `off_page`;
+#         pages carry `images_below_hero_floor`. Only PENDING decks re-prep (the manifest lists
+#         only those); page renders on disk are reused.
+PREP_SCHEMA = 4
 
 
 def _stamp_path(out_dir: Path, path: Path) -> Path:
@@ -299,7 +303,12 @@ def _visual_aids(entry: dict) -> dict:
     renders = sum(1 for p in pages if p.get("render"))
     cands = sum(len(p.get("candidates") or []) for p in pages)
     sheets = sum(1 for p in pages if p.get("candidates_sheet"))
+    # additive (fixes 1.2 / 3.22): the deck-level sheets, and the photos the hero floor keeps
+    # out of reach, so the media-harvest gate can tell "no candidates" from "all too small"
     return {"pages": len(pages), "renders": renders, "candidates": cands, "sheets": sheets,
+            "render_sheets": len(entry.get("render_sheets") or []),
+            "candidate_sheets": len(entry.get("candidate_sheets") or []),
+            "below_floor_images": sum(int(p.get("images_below_hero_floor") or 0) for p in pages),
             "mode": entry.get("mode")}
 
 
@@ -374,6 +383,11 @@ def _entry_aids_intact(entry: dict, path: Path) -> bool:
             for sh in (pg.get("candidates_sheet") or []):
                 if sh and not Path(sh).exists():
                     return False
+        # the deck-level sheets too (fix 1.2): the reader is told they ARE its batch
+        for key in ("render_sheets", "candidate_sheets"):
+            for sh in (entry.get(key) or []):
+                if sh and not Path(sh).exists():
+                    return False
         aids = _visual_aids(entry)
         if aids["pages"] and aids["renders"] == 0 and _can_render(path):
             return False
@@ -382,19 +396,39 @@ def _entry_aids_intact(entry: dict, path: Path) -> bool:
         return False
 
 
-def _write_candidate_thumbs(path: Path, page_index: int, out_dir: Path) -> list[dict]:
+def _page_facts(path: Path, page_index: int) -> dict:
+    """IMG.page_image_facts, fail-safe: any error -> {} (no annotation keys, today's manifest)."""
+    try:
+        facts = IMG.page_image_facts(path, page_index)
+        return facts if isinstance(facts, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_candidate_thumbs(path: Path, page_index: int, out_dir: Path,
+                            facts: dict | None = None) -> list[dict]:
     """Write a small thumbnail PNG per hero-size embedded candidate of a page and return
     [{index, image (abs path), w, h}]. The `index` EQUALS the candidate's position in
     IMG.candidates_for_page (the SAME stable filtered order merge re-derives via
     embedded_by_index), so the sub-agent's chosen heroRef binds the exact image. The
     thumbnail is only what the sub-agent LOOKS at; the chosen ref (not the thumbnail) is
     what reaches the record, so determinism / built.html bytes are untouched. Never raises -
-    a thumbnail it cannot decode/write is simply omitted (an honest absence, not a crash)."""
+    a thumbnail it cannot decode/write is simply omitted (an honest absence, not a crash).
+
+    2026-09-26 test run, fix 3.21: each candidate is ANNOTATED, never filtered, from the page's
+    placement facts - `masked: true` (drawn through a soft mask, so its raw tile can be a solid
+    silhouette), `visible_fraction` (only when known and < 0.95) and `off_page: true` (placed
+    wholly outside the visible page). The keys appear only when true / known, so a clean page's
+    entry is byte-identical to before; the thumbnail stays the faithful extract (the pixels merge
+    would bind)."""
     out: list[dict] = []
     try:
         cands = IMG.candidates_for_page(path, page_index)
     except Exception:
         return out
+    if facts is None:
+        facts = _page_facts(path, page_index) if cands else {}
+    by_xref = (facts or {}).get("by_xref") or {}
     for c in cands:
         thumb = out_dir / f"{path.stem}_p{page_index}_c{c['index']}.png"
         try:
@@ -403,9 +437,33 @@ def _write_candidate_thumbs(path: Path, page_index: int, out_dir: Path) -> list[
             C.atomic_save_image(im, thumb)
         except Exception:
             continue  # undecodable candidate - skip it, never abort the page
-        out.append({"index": c["index"], "image": str(thumb.resolve()),
-                    "w": c["w"], "h": c["h"]})
+        ent = {"index": c["index"], "image": str(thumb.resolve()), "w": c["w"], "h": c["h"]}
+        try:
+            f = by_xref.get(c.get("xref")) or {}
+            if f.get("masked") is True:
+                ent["masked"] = True
+            v = f.get("visible")
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                if v < 0.95:
+                    ent["visible_fraction"] = round(float(v), 2)
+                if v == 0.0:
+                    ent["off_page"] = True
+        except Exception:
+            pass
+        out.append(ent)
     return out
+
+
+def _cand_caption(page_no, c: dict, with_page: bool) -> str:
+    """ASCII caption for one candidate tile: `index K` on a per-page sheet, `page_no N / index K`
+    on a deck sheet, plus ` off-page` / ` masked` (fix 3.21) so the flag is visible ON the tile."""
+    cap = (f"page_no {page_no} / index {c.get('index')}" if with_page
+           else f"index {c.get('index')}")
+    if c.get("off_page") is True:
+        cap += " off-page"
+    if c.get("masked") is True:
+        cap += " masked"
+    return cap
 
 
 def _write_candidate_montage(path: Path, page_index: int, out_dir: Path,
@@ -421,18 +479,68 @@ def _write_candidate_montage(path: Path, page_index: int, out_dir: Path,
     IS a single image). Never raises - a sheet that cannot be written is an honest absence,
     exactly like a thumbnail that cannot be decoded.
 
-    The page number stays in the MANIFEST key, never in a caption: only the candidate
-    `index` is captioned, so the one thing the agent must read off the sheet is a small
-    integer it also has in the JSON."""
+    The page number stays in the MANIFEST key, never in a caption: the candidate `index` is
+    captioned (plus ` off-page` / ` masked` when the manifest says so, fix 3.21), so what the
+    agent must read off the sheet is a small integer it also has in the JSON. The deck-level
+    sheets (_write_deck_sheets) are the ones that caption the page."""
     if not cands or len(cands) < 2:
         return None
     try:
         import contact_sheet as CSH
-        out = CSH.tile_native(cands, Path(out_dir) / f"{path.stem}_p{page_index}_sheet.png",
+        cells = [{"index": c.get("index"), "image": c.get("image"),
+                  "caption": _cand_caption(page_index, c, with_page=False)} for c in cands]
+        out = CSH.tile_native(cells, Path(out_dir) / f"{path.stem}_p{page_index}_sheet.png",
                               tile_px=CANDIDATE_THUMB_EDGE)
         return out or None
     except Exception:
         return None
+
+
+def _write_deck_sheets(path: Path, pages: list, out_dir: Path) -> dict:
+    """The deck-level contact sheets (2026-09-26 test run, fix 1.2):
+    `{"render_sheets": [...], "candidate_sheets": [...]}`, absolute paths, `[]` when nothing tiles.
+
+    WHY: the aids were per page, so a reader opened every page's render and every page's sheet -
+    ~12 image reads per deck on a live 22-deck run, and under a host that caps parallel tool calls
+    at 3 each extra read is another ~17 s round trip. Tiling ACROSS pages turns that into ~3-4
+    reads. Each tile is still pasted at native size (contact_sheet.tile_native, which now also
+    keeps every canvas under the vision pixel budget and paginates rather than shrink), every
+    page render and every candidate is tiled in page then index order (none dropped), and the
+    per-page `render` / `candidates` / `candidates_sheet` stay exactly as before, as the zoom and
+    as the fallback for an entry without these keys. Names deliberately avoid `{stem}_p*` and
+    `{stem}_s*`, which vision_prep deletes when a deck goes raster. Never raises."""
+    out = {"render_sheets": [], "candidate_sheets": []}
+    try:
+        import contact_sheet as CSH
+    except Exception:
+        return out
+    out_dir = Path(out_dir)
+    try:
+        rcells = []
+        for pg in pages or []:
+            if pg.get("render"):
+                cap = f"page_no {pg.get('page_no')}" + (" low_text" if pg.get("low_text") else "")
+                rcells.append({"index": pg.get("page_no"), "image": pg["render"], "caption": cap})
+        if rcells:
+            out["render_sheets"] = CSH.tile_native(
+                rcells, out_dir / f"{path.stem}_deck_renders.png",
+                tile_px=PAGE_RENDER_THUMB_EDGE) or []
+    except Exception:
+        out["render_sheets"] = []
+    try:
+        ccells = []
+        for pg in pages or []:
+            for c in pg.get("candidates") or []:
+                if c.get("image"):
+                    ccells.append({"index": c.get("index"), "image": c["image"],
+                                   "caption": _cand_caption(pg.get("page_no"), c, with_page=True)})
+        if ccells:
+            out["candidate_sheets"] = CSH.tile_native(
+                ccells, out_dir / f"{path.stem}_deck_candidates.png",
+                tile_px=CANDIDATE_THUMB_EDGE) or []
+    except Exception:
+        out["candidate_sheets"] = []
+    return out
 
 
 def _write_page_render(path: Path, page_index: int, out_dir: Path) -> str | None:
@@ -495,7 +603,9 @@ def _text_deck_entry(path: Path, region: str, country: str, page_texts: list[str
     for pno, text in enumerate(page_texts):
         t = (text or "").strip()
         low_text = len(t) < TEXT_PAGE_MIN_CHARS
-        _cands = _write_candidate_thumbs(path, pno, out_dir)
+        # placement facts read ONCE per page (fixes 3.21 / 3.22); {} on any failure
+        _facts = _page_facts(path, pno) if source_type != "pptx" else {}
+        _cands = _write_candidate_thumbs(path, pno, out_dir, facts=_facts)
         page = {"page_no": pno, "locator": f"{unit} {pno + 1}", "text": text,
                 "candidates": _cands,
                 # ONE tiled image of the same candidates, so the page costs one read
@@ -507,6 +617,14 @@ def _text_deck_entry(path: Path, region: str, country: str, page_texts: list[str
             # RECORD, but offered so the agent can pick it as plan_page / an image_page. The
             # contract (reference/interpretation.md) says NEVER emit a record for a low_text page.
             page["low_text"] = True
+        # fix 3.22: photos the 640x400 hero floor keeps out of reach, so "the render shows
+        # photos but there are no candidates" reads as what it is, not as an extraction failure
+        try:
+            _below = int(_facts.get("below_floor") or 0)
+        except Exception:
+            _below = 0
+        if _below > 0:
+            page["images_below_hero_floor"] = _below
         pages.append(page)
     # candidate + render extraction opens the deck via IMG's shared doc cache; release the
     # handle so the prep step never holds the source file open (on Windows a held handle blocks
@@ -515,6 +633,8 @@ def _text_deck_entry(path: Path, region: str, country: str, page_texts: list[str
         IMG.close_doc_cache()
     except Exception:
         pass
+    # fix 1.2: every page's render and every candidate tiled ACROSS pages (per-page aids kept)
+    sheets = _write_deck_sheets(path, pages, out_dir)
     # `cluster_label`, NOT `region` (B51). This string is derived from the input FILENAME by
     # intake's clustering; it exists so the sub-agent's output file lands in the right slot. It
     # is not evidence, and `region` is also a real displayed field - handing an agent a
@@ -523,7 +643,9 @@ def _text_deck_entry(path: Path, region: str, country: str, page_texts: list[str
     # than an absent key on an agent-facing handoff.
     return {"source_file": path.name, "source_type": source_type,
             "cluster_label": region, "cluster_label_is_routing_only": True,
-            **_country_kv(country), "mode": "text", "pages": pages}
+            **_country_kv(country), "mode": "text", "pages": pages,
+            "render_sheets": sheets.get("render_sheets") or [],
+            "candidate_sheets": sheets.get("candidate_sheets") or []}
 
 
 def prepare(path: Path, region: str, country: str, out_dir, dpi: int = 180,

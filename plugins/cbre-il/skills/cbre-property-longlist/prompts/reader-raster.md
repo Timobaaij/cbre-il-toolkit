@@ -24,32 +24,35 @@ Fresh context; you are never shown the orchestrator's view or another agent's ou
    message required by rule 2, one line naming the batch (which pages) is that line.
 2. THE PAGE IMAGES ARE READ IN BACK-TO-BACK BATCHES OF FIVE, NEVER ONE PER MESSAGE. They are a
    fixed set of independent reads you know in full once you have printed your deck's manifest
-   entry: request them in batches of up to FIVE per message, consecutively, with nothing else
-   between the batches. Five rather than all, because a raster page is a 180-dpi full-page
-   render (about 1500 x 2100 px, several MB each) and a long deck in one message risks the
-   request payload ceiling; the text-mode aids are 384 to 480 px thumbnails, which is why that
-   prompt takes every page at once. Opening one page and choosing the next read from what you
-   saw IS the failure: measured on a live run, that loop cost 7 to 23 round trips per deck at
-   roughly 17 s each (D1).
-3. Maximum three tool calls per message, with ONE exception: the page `image` reads of rule 2.
-   Nothing else here needs more than two calls in one message (the contract beside your
-   manifest print; the write beside its check), so the cap costs no round trip; it stays as the
-   brake on runaway fan-out and applies again to everything else.
+   entry: request them in batches of up to FIVE per message (FIVE, or the host cap if lower),
+   consecutively, with nothing else between the batches. Five rather than all, because a
+   raster page is a 180-dpi full-page render (about 1500 x 2100 px, several MB each) and a long
+   deck in one message risks the request payload ceiling; the text-mode aids are 384 to 480 px
+   thumbnails, which is why that prompt takes every page at once. Opening one page and
+   choosing the next read from what you saw IS the failure: measured on a live run, that loop
+   cost 7 to 23 round trips per deck at roughly 17 s each (D1). Where a per-message tool-call
+   cap applies (the Run context states one, or a call is DENIED for exceeding one), send the
+   batch as consecutive messages of that size, each carrying the next reads of the SAME fixed
+   list and nothing else: that is still the one batch, and still no read chosen from what you
+   saw.
+3. Maximum three tool calls per message, with ONE exception: the page `image` reads of rule 2,
+   which still respect a host per-message cap (rule 2). Nothing else here needs more than two
+   calls in one message (your manifest print; the write beside its check), so the cap costs no
+   round trip; it stays as the brake on runaway fan-out and applies again to everything else.
 4. Keep reasoning short; build the records in sections as you go.
 5. Wall-clock is your MESSAGE count (each one is a round trip), never your tool-call count. A
-   well-run deck is 4 + ceil(pages / 5) messages: this shared instruction; the contract with
-   your manifest entry; the image batches; the write. Tool calls come to about pages + 5. Past
-   that count with nothing written, stop and request everything you still need in as few
+   well-run deck is 4 + ceil(pages / 5) messages: this shared instruction (the contract is
+   inside it); your manifest-entry print; the image batches; the write. Tool calls come to
+   about pages + 5. Past that count with nothing written, stop and request everything you still need in as few
    messages as rule 2 allows. Tool-call budget 60 is the hard ceiling: there, deliver an honest
    partial answer rather than a complete one that never arrives, with anything unverified under
    WHAT I COULD NOT ESTABLISH in your final message.
 6. You may NOT spawn further agents.
 
-## Your contract
-Follow it exactly: the "Raster mode" section, which inherits every text-mode `__meta` rule
-except where it says otherwise. Request it in the SAME message as your manifest-entry print
-(both paths are known now) and act on the entry only once you have read it:
-{{SKILL_DIR}}/reference/interpretation.md
+## Your contract (RASTER mode)
+The "Raster mode" section governs, and it inherits every text-mode `__meta` rule
+except where it says otherwise.
+{{READER_CONTRACT}}
 
 ## The field registry (rendered from the manifest's `fields`; a FLOOR, not a ceiling)
 Each line is `name: type. format`: `type` is the JSON shape the pipeline validates the value
@@ -63,6 +66,11 @@ you capture.
 - One record per property page; `prov[field]` = "<locator> (vision transcription)".
 - Capture EVERY field the page shows, incl. stated negatives; open schema; scalar values only;
   write values the way the page prints them (units inside the value).
+- EVERY PAGE IS A DATA PAGE, whatever its topic: every fact it states about the property, its
+  site or its surroundings is captured, for every record it applies to (descriptive camelCase key
+  when no canonical home). Examples readers have missed (drive times, rail access, labour figures,
+  sustainability features) are illustrations, never a limit. Before you write, SWEEP every page
+  image once more for a stated fact in no field yet; it costs no call.
 - Rents ANNUAL (x12 a monthly quote, noted in `prov`); `areaUnit`/`rentUnit` read off the page,
   never inferred from the country; NEVER convert a figure yourself (Python owns all arithmetic).
 - A quoted annual TOTAL rent ("GBP 750,000 per annum exclusive") goes VERBATIM, with its basis, in
@@ -73,6 +81,27 @@ you capture.
   `plan_page`, `heroRef`/`planRef` per the contract; `source_lang` too.
   On a deck of MORE THAN ONE page `image_pages` and `plan_page` are REQUIRED keys - `[]` / `null`
   are good answers, an OMISSION is not (it cannot be told apart from a reader who saw nothing).
+  Record shape (a JSON ARRAY of these; prov is INSIDE __meta, never beside the fields):
+```json
+[{"park": "...", "warehouseArea": "12,500 sq m", "areaUnit": "sq m",
+  "__meta": {"source_type": "pdf", "source_file": "<copied from the manifest>",
+             "locator_base": "page 3", "page_no": 2, "source_lang": "en",
+             "prov": {"park": "page 3 (vision transcription)",
+                      "warehouseArea": "page 3 (vision transcription)"},
+             "plan_page": null, "image_pages": [2]}}]
+```
+  A top-level "prov" is REFUSED by the validator: never write one.
+- A unit the source marks let, sold, leased, occupied or otherwise NOT AVAILABLE (any language)
+  and that has its own specification is still emitted: `status` VERBATIM with its prov, and
+  `"__meta": {"not_an_option": true}`; the broker decides. Under offer / reserved: `status`
+  verbatim, no flag. A neighbour only LABELLED let/sold on a site plan is context: no record.
+- Doors: level-access / ground-level / drive-in / roller-shutter doors (any language) ->
+  `overheadDoors`; dock-level doors / levellers -> `loadingDocks`; never a descriptive open key
+  for either. An unsplit door total -> VERBATIM under `loadingDoors`, both counts absent.
+- A printed TOTAL area goes in `__meta.statedTotalArea` + `statedTotalUnit` exactly as printed.
+  A LONE TOTAL IS SHIPPED AS PRINTED: a figure labelled as the whole building with NO
+  warehouse-only line printed goes in `warehouseArea` exactly as printed AND in those two keys;
+  never subtract the office yourself - Python raises the basis question.
 - TWO OR MORE RECORDS FROM ONE DECK DO NOT SHARE A HERO PAGE where the deck offers a distinct
   photo page per record: before you write, compare the records' `page_no`; where two coincide,
   move one to a page carrying a real photo of its own property. One usable photo in the whole
@@ -103,7 +132,15 @@ you capture.
   arithmetic on (an area, a rent, a count) EVERY option LEADS WITH THE FIGURE AND ITS UNIT
   exactly as printed: `"24,230 sq ft (all three office lines combined)"` is valid, `"all three
   office lines combined"` is refused. NEVER offer a total you did not read: offer the individual
-  printed figures and say in `question` they may need combining; Python owns all arithmetic.
+  printed figures and say in `question` they may need combining; set `"combinable": true` when
+  those options are DISJOINT printed PARTS of ONE quantity (office lines per floor,
+  compartments, phases) in ONE unit, so Python can offer their sum; Python owns all arithmetic.
+  EVERY FIGURE YOU OFFER IN A DOUBT IS ALSO DATA: the governing one is the doubt's `field` (and
+  its `default`), every other printed figure ships under a descriptive camelCase key keeping the
+  quantity word (`officeGroundFloor`, `warehouseUnitA`) with its own prov; a figure only inside
+  a doubt is invisible to the card, the ledger and every gate. `default` is copied VERBATIM
+  from `options` (the option your records reflect); on a doubt about the property count
+  (`affects: "count"`) that is REQUIRED.
   Lacking either part, the doubt is still disclosed but the broker's answer is recorded and
   DROPPED (D13, D4). A doubt about no field says `affects` = `"count"` / `"display"` /
   `"ledger"`. `"tbd"` stays the answer for an unstated value; a doubt never replaces reading.
@@ -112,3 +149,5 @@ you capture.
 ## Final message
 One short paragraph: how many records, which pages, how many MESSAGES you sent (the wall-clock
 measure of rule 5), then WHAT I COULD NOT ESTABLISH.
+
+{{READER_CONTRACT_BODY}}

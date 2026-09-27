@@ -105,7 +105,7 @@ class _FakeIMG:
         return []
 
     def best_plan_page_render(self, src, pages, budget, cache_dir=None, near_miss=None,
-                              own_figures=None):
+                              own_figures=None, reader_declined=False):
         """TIER 5, the DETERMINISTIC fallback - and the tier the incident report blames for
         binding an interior photo into the Site Plan slot.
 
@@ -117,7 +117,8 @@ class _FakeIMG:
         KEEP THE SIGNATURE IN STEP WITH THE REAL ONE. Every new keyword merge passes must be
         accepted here, or the call raises TypeError into that same bare `except` and this whole
         tier silently stops being tested again - which is the exact failure the docstring above
-        records. (`own_figures` added 2026-08-20 with the own-schedule plan ranking.)"""
+        records. (`own_figures` added 2026-08-20 with the own-schedule plan ranking;
+        `reader_declined` added 2026-09-26, fix 3.9 - merge passes it only when True.)"""
         self.calls.append(("best_plan_page_render", Path(src).name, tuple(pages)))
         return (OTHER, sorted(pages)[0]) if pages else (None, None)
 

@@ -210,8 +210,12 @@ _AVAIL_TIMING_RX = re.compile(
     r"|\b(?:practical\s+completion|(?-i:PC)|completion|delivery|ready\s+for\s+occupation)\s+"
     r"(?:(?:due|expected|anticipated|scheduled|targeted|in|by|from|of)\s+)*"
     + _AVAIL_DATE + r"\b", re.I)
-# a date beside one of these is when the unit was TAKEN, not when it can be occupied
-_AVAIL_TAKEN_RX = re.compile(r"\b(?:under\s+offer|let\s+agreed|sold|leased)\b", re.I)
+# a date beside one of these is when the unit was TAKEN, not when it can be occupied.
+# 2026-09-26 test run (3.5a): ONE copy, in normalize.py, because _common.promotable_alias needs
+# the same words and _common must not import merge. The getattr fallback keeps an older
+# normalize.py (a half-updated tree) working exactly as before.
+_AVAIL_TAKEN_RX = getattr(N, "AVAIL_TAKEN_RX", None) or re.compile(
+    r"\b(?:under\s+offer|let\s+agreed|sold|leased)\b", re.I)
 
 
 def _route_availability(rec: dict) -> dict:
@@ -240,6 +244,121 @@ def _route_availability(rec: dict) -> dict:
                                    f"status/availability)").strip()
         break
     return rec
+
+
+_ALIAS_KEY_RX = re.compile(r"\(alias key ([A-Za-z0-9_]+)\)")
+
+
+def _alias_plan(rec: dict) -> list:
+    """[(canonical field, open key)] that `_promote_aliases` would move, in ALIAS_PROMOTIONS
+    order. Pure. For each field, only while the canonical slot is unknown (absent or a sentinel;
+    a stated "None" is data - the `_route_availability` test), the FIRST open key in sorted order
+    that is not a canonical field and that `_common.promotable_alias` maps to it. Any further
+    alias key for the same field stays an open key: one slot never takes two values."""
+    table = getattr(C, "ALIAS_PROMOTIONS", None) or {}
+    fn = getattr(C, "promotable_alias", None)
+    if not table or fn is None:
+        return []
+    canon = C.canonical_property_fields()
+    keys = sorted(k for k in rec if isinstance(k, str) and k != "__meta" and k not in canon)
+    used, plan = set(), []
+    for field in table:
+        if not N.looks_unknown(rec.get(field)):
+            continue
+        for k in keys:
+            if k in used:
+                continue
+            if fn(k, rec.get(k)) == field:
+                plan.append((field, k))
+                used.add(k)
+                break
+    return plan
+
+
+def _promote_aliases(rec: dict) -> dict:
+    """STRICT alias promotion (2026-09-26 test run, fix 3.5a), BEFORE clustering.
+
+    A reader that stores a stated value under an EXACT synonym of a blank canonical field
+    (`levelAccessDoors: "4"` beside no `overheadDoors`; `availableFrom` beside no `earlyAccess`)
+    shipped the canonical field "absent in all sources" and the value as an auto-shown extra -
+    the real run needed seven hand repairs, each `set` canonical + `unset` alias. This moves the
+    value into its home: `rec[field] = v`, the open key is deleted, the provenance locator moves
+    WITH the value and says so ("... (alias key levelAccessDoors)", which is how
+    canonical.meta.aliasPromotions and repairs' in-flight compat find it), the key leaves
+    `__meta.new_fields`, and `__meta.alias_promoted` records {from, to}.
+
+    The synonym test is `_common.promotable_alias` - the SAME predicate the capture-symmetry
+    gate's strict tier uses, so a gate FAIL means exactly "merge would have promoted this and did
+    not". Near-synonyms (asset manager / practical completion / eaves height / an unsplit
+    `loadingDoors` total) are refused there, never here.
+
+    Called after `_normalise_offspec` and BEFORE `_route_certifications` / `_route_availability`,
+    so a promoted `epcRating` that is really a BREEAM grade is still re-filed and a dedicated
+    `availableFrom` wins over timing fished out of `status`. FAIL-SAFE: any error leaves the
+    record exactly as it was (today's behaviour; the gate's finding still fires) with one
+    stderr line."""
+    if not isinstance(rec, dict):
+        return rec
+    meta0 = rec.get("__meta") if isinstance(rec.get("__meta"), dict) else {}
+    try:
+        plan = _alias_plan(rec)
+    except Exception as e:  # noqa: BLE001
+        print(f"(alias promotion skipped for {meta0.get('source_file', '?')}: "
+              f"{type(e).__name__}: {e})", file=sys.stderr)
+        return rec
+    if not plan:
+        return rec
+    _snap = dict(rec)
+    _msnap = None
+    try:
+        meta = rec.setdefault("__meta", {})
+        _msnap = dict(meta)
+        prov = meta.get("prov")
+        if not isinstance(prov, dict):
+            prov = {}
+            meta["prov"] = prov
+        else:
+            prov = dict(prov)          # never mutate a prov map another record may share
+            meta["prov"] = prov
+        nf = [x for x in (meta.get("new_fields") or []) if x not in {k for _f, k in plan}]
+        done = list(meta.get("alias_promoted") or [])
+        for field, k in plan:
+            v = rec.pop(k)
+            rec[field] = v
+            old = prov.pop(k, None)
+            if isinstance(old, dict):
+                old = old.get("locator")
+            base = str(old or meta.get("locator_base") or "").strip()
+            prov[field] = f"{base} (alias key {k})".strip()
+            done.append({"from": k, "to": field})
+        if "new_fields" in meta or nf:
+            meta["new_fields"] = nf
+        meta["alias_promoted"] = done
+    except Exception as e:  # noqa: BLE001
+        rec.clear()
+        rec.update(_snap)
+        if _msnap is not None:
+            rec["__meta"] = _msnap
+        print(f"(alias promotion skipped for {meta0.get('source_file', '?')}: "
+              f"{type(e).__name__}: {e})", file=sys.stderr)
+    return rec
+
+
+def alias_promotions_of(prov: dict) -> list:
+    """[(field, alias key)] read back off a MERGED prov map (field -> {locator, ...}): the
+    fields whose shipped value came through `_promote_aliases`. Parsed from the locator, which
+    is what rides into the ledger, so the canonical's `meta.aliasPromotions` and the ledger
+    can never disagree. Never raises."""
+    out = []
+    try:
+        for f, p in (prov or {}).items():
+            loc = p.get("locator") if isinstance(p, dict) else p
+            m = _ALIAS_KEY_RX.search(str(loc or ""))
+            if m:
+                out.append((f, m.group(1)))
+    except Exception:  # noqa: BLE001
+        return []
+    return out
 
 
 # ---------------------------------------------------------------------------- #
@@ -721,13 +840,33 @@ def _is_office_total_key(tokens: list[str]) -> bool:
     return stem in (["office"], ["offices"])
 
 
+_STOREY_TOKENS = frozenset({"floors", "storeys", "storey"})
+
+
 def _area_candidate(key: str, value, record_unit: str | None):
-    """(magnitude, unit or None, tokens) when `value` is a single stated AREA, else None."""
+    """(magnitude, unit or None, tokens) when `value` is a single stated AREA, else None.
+
+    2026-09-26 test run (3.2c): a STOREY word in the key ("threeStoreyOffices") names how the
+    office is built, not what the figure measures - the real run dropped a printed
+    "20,000 sq ft (1,858 sq m)" line that way and the office sum came out half. For the tokens
+    floors / storeys / storey ONLY, the key is not refused when its VALUE is a text that states
+    an explicit area unit itself. `officeStoreys: 3` and "2 floors" state no area unit and are
+    still refused; every other non-area token (height, rent, parking, ...) is unchanged."""
     if isinstance(value, bool) or isinstance(value, (dict, list)) or value is None:
         return None
     tokens = _key_tokens(key)
-    if any(t in _OFFICE_NON_AREA for t in tokens):
-        return None
+    _non_area = {t for t in tokens if t in _OFFICE_NON_AREA}
+    if _non_area:
+        _storey_ok = False
+        if _non_area <= _STOREY_TOKENS and isinstance(value, str) \
+                and "%" not in value and not _RENT_SHAPE_RX.search(value):
+            try:
+                _p = _area_text_value(value)
+                _storey_ok = bool(_p and _p[1])
+            except Exception:  # noqa: BLE001 - fail safe: refuse, as before
+                _storey_ok = False
+        if not _storey_ok:
+            return None
     if isinstance(value, (int, float)):
         if value <= 0 or not any(t in _OFFICE_UNIT_MARKERS for t in tokens):
             return None          # a bare number under a key that never says "area": not an area
@@ -1119,6 +1258,31 @@ def _area_text_value(v):
     return (float(num), N.area_unit_of(s))
 
 
+_BARE_NUMBER_RX = re.compile(r"\d{1,3}(?:[,.   ]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d+)?")
+
+
+def _bare_number(v) -> bool:
+    """Is `v` a BARE positive figure with no unit or words ('4614', '4,614', 4614)? (3.3c)"""
+    if isinstance(v, bool):
+        return False
+    if isinstance(v, (int, float)):
+        return v > 0
+    if not isinstance(v, str):
+        return False
+    s = v.strip()
+    if not s or not _BARE_NUMBER_RX.fullmatch(s):
+        return False
+    n = N.normalize_number(s)
+    return n is not None and n > 0
+
+
+def _fmt_thousands(v: float) -> str:
+    """The grouping `derive_office_sum` writes: '4,614' when integral, else up to 2 decimals."""
+    if float(v).is_integer():
+        return f"{int(v):,}"
+    return f"{v:,.2f}".rstrip("0").rstrip(".")
+
+
 def _as_month(v):
     """(year, month) at MONTH precision, or None - so an ISO date and 'April 2026' compare."""
     s = str(v).strip()
@@ -1168,7 +1332,10 @@ def _values_equivalent(field: str, a, b) -> bool:
 
 
 _ENUM_GATE_FIELDS = {"breeam", "epc"}
-_COUNT_GATE_FIELDS = {"loadingDocks", "overheadDoors", "truckParking", "carParking"}
+# 2026-09-26 (3.3/3.5a): ONE count-field constant, `_common.COUNT_FIELDS`; the literal stays as the
+# fallback for a half-updated tree.
+_COUNT_GATE_FIELDS = set(getattr(C, "COUNT_FIELDS", None)
+                         or {"loadingDocks", "overheadDoors", "truckParking", "carParking"})
 _FEET_RX = re.compile(r"\b(?:ft|feet|foot)\b|'", re.I)
 # D15: the EPC gate matches a rating TOKEN inside the string, not the whole string.
 #
@@ -1709,6 +1876,20 @@ def shipped_forbidden_conflicts(clusters: list[list[dict]]) -> list[str]:
                     if (a.get("__meta") or {}).get("source_file") == \
                             (b.get("__meta") or {}).get("source_file"):
                         continue
+                    # 2026-09-26 test run (3.16): two stated, DIFFERENT postal codes AND two
+                    # stated, different towns are two addresses - not "one building described
+                    # twice". Generic: match's own postal-code reader (whitespace removed,
+                    # upper-cased, no country parsing) and match.norm. Any error falls through
+                    # to today's test, so a note is never lost to a bug here.
+                    try:
+                        if match._postcode_conflict(a, b):
+                            _ca, _cb = match.norm(a.get("city")), match.norm(b.get("city"))
+                            if _ca and _cb and _ca != _cb \
+                                    and not N.looks_unknown(a.get("city")) \
+                                    and not N.looks_unknown(b.get("city")):
+                                continue
+                    except Exception:
+                        pass
                     if match.pair_class(a, b) == "forbidden" \
                             and _forbidden_identity(a, b):
                         hit = True
@@ -1821,6 +2002,65 @@ def apply_source_authority(clusters: list[list[dict]], authority: str) -> tuple:
             if link:
                 entry["likely_same_as"] = link
         except Exception as e:
+            entry["headline_error"] = f"{type(e).__name__}: {e}"
+        entries.append(entry)
+    return kept, entries
+
+
+def apply_not_available(clusters: list[list[dict]], answers, declined=()) -> tuple:
+    """Split settled clusters into (kept, entries) per the broker's answers to the exit-13
+    "the source marks this building let / sold - keep it?" questions (2026-09-26 test run, 3.10b).
+
+    The reader flags such a record (`__meta.not_an_option: true`, with the source's status as the
+    marker; clarify also reads the legacy `__meta.not_available` spellings), clarify asks, and the
+    broker's answer lands HERE, on the settled clusters, beside `apply_source_authority` and with
+    the same three safety properties, because this can remove a property from a longlist:
+      * a cluster drops ONLY when EVERY record in it carries the marker AND its question was
+        answered "exclude" - a tracker row (or any second source) still listing the building
+        keeps it, and junk / a decline / no answer keep it (dropping is never a default);
+      * if the filter would empty the dataset, NOTHING is dropped (fail open);
+      * every drop is returned as a `meta.excluded` entry with `excluded_by: "not_available"`,
+        the question ids and the reason, and deliver.py names it under its own heading.
+    Deliberately NO `likely_same_as`, so the lost-card check cannot misread a let building
+    beside its sibling units as a lost card. Errors keep every cluster (today's behaviour)."""
+    try:
+        import clarify as _CQ
+    except Exception:  # noqa: BLE001
+        return list(clusters or []), []
+    kept, dropped = [], []
+    for cl in clusters or []:
+        try:
+            recs = [r for r in (cl or []) if isinstance(r, dict)]
+            if recs and all(_CQ.not_available_marker(r) for r in recs) \
+                    and all(_CQ.not_available_decision(answers or {}, declined or (), r) == "exclude"
+                            for r in recs):
+                dropped.append(cl)
+            else:
+                kept.append(cl)
+        except Exception:  # noqa: BLE001 - one bad cluster never drops anything
+            kept.append(cl)
+    if not dropped:
+        return kept, []
+    if not kept:
+        return list(clusters or []), []   # fail OPEN, exactly like apply_source_authority
+    entries = []
+    for dcl in dropped:
+        qids = sorted({_CQ.not_available_qid(r) for r in dcl if isinstance(r, dict)})
+        marker = next((m for m in (_CQ.not_available_marker(r) for r in dcl) if m), "not available")
+        entry = {
+            "name": cluster_label(dcl),
+            "source_files": sorted({str((r.get("__meta") or {}).get("source_file") or "")
+                                    for r in dcl if (r.get("__meta") or {}).get("source_file")}),
+            "excluded_by": "not_available",
+            "question_ids": qids,
+            "why": (f"the source marks it '{marker}' and you chose to exclude it "
+                    f"(question {', '.join(qids)})"),
+        }
+        try:
+            hl = _cluster_headline(dcl)
+            if hl:
+                entry["headline"] = hl
+        except Exception as e:  # noqa: BLE001
             entry["headline_error"] = f"{type(e).__name__}: {e}"
         entries.append(entry)
     return kept, entries
@@ -2161,11 +2401,14 @@ def merge_cluster(cluster: list[dict], decisions: dict | None = None,
                             f"Kept the precedence default '{chosen}', which passes that same gate."
                             + (f" {conflicts.get(field, '')}" if conflicts.get(field) else ""))
                     else:
-                        out[field] = "tbd"
+                        # 2026-09-26 test run (3.17): the strike writes THE blank sentinel, not a
+                        # hard-coded "tbd" - a field outside STRING_FIELDS (epc) shipped 'tbd'
+                        # because fill_render_sentinels never maps it.
+                        out[field] = N.BLANK
                         conflicts[field] = (
                             f"BOTH values rejected for {field}: the LLM pick '{pv}' and the "
                             f"precedence default '{chosen}' each fail the {field} plausibility "
-                            f"gate, so the field is struck to tbd rather than shipping an "
+                            f"gate, so the field is struck to {N.BLANK} rather than shipping an "
                             f"unverified value. Confirm the real value with the agent.")
         # B3: gate the PRECEDENCE WINNER as well. The gate used to run ONLY on an LLM override, so
         # it could protect the default but never catch it - which is how an impossible BREEAM 'A+'
@@ -2219,17 +2462,31 @@ def merge_cluster(cluster: list[dict], decisions: dict | None = None,
                       f"it is worth re-reading the correction against its evidence."
                     + (f" {conflicts[field]}" if conflicts.get(field) else ""))
             else:
-                out[field] = "tbd"
+                out[field] = N.BLANK   # 3.17: the one blank sentinel (was a literal "tbd")
                 # T1 wording: the note must never accuse the SOURCE of implausibility - on a live
                 # run this exact note shipped against values the source plainly printed (struck by
                 # a parse/band defect, since fixed). It names the PARSED value, the gate, and the
                 # two honest next steps; the extract still holds the original for the broker.
+                # 2026-09-26 test run (3.17): TWO wordings. A struck text with NO digit in it
+                # ("Available upon request") is not a bad figure - it is a phrase with no figure,
+                # and calling it "the parsed value ... may be a parse or unit error" misdescribed
+                # it. `\d` is Unicode-aware, so the split is language-safe.
+                _nofig = not re.search(r"\d", str(_bad))
+                if _nofig:
+                    _strike_note = (
+                        f"the source prints '{_bad}' for {field} (from {_src}): a phrase with no "
+                        f"figure in it, so it cannot pass the {field} plausibility band and the "
+                        f"card ships {N.BLANK}. Ask the agent for the actual value; if the source "
+                        f"prints one elsewhere, restore it via work/repairs.json.")
+                else:
+                    _strike_note = (
+                        f"the parsed value '{_bad}' (from {_src}) falls outside the {field} "
+                        f"plausibility band, so the card ships {N.BLANK} rather than a figure "
+                        f"that may be a parse or unit error. Check the source page: if it "
+                        f"genuinely prints this value, restore it via work/repairs.json; "
+                        f"otherwise confirm the real value with the agent.")
                 conflicts[field] = (
-                    f"the parsed value '{_bad}' (from {_src}) falls outside the {field} "
-                    f"plausibility band, so the card ships tbd rather than a figure that may be a "
-                    f"parse or unit error. Check the source page: if it genuinely prints this "
-                    f"value, restore it via work/repairs.json; otherwise confirm the real value "
-                    f"with the agent."
+                    _strike_note
                     + (f" {conflicts[field]}" if conflicts.get(field) else ""))
             # A15/honesty: the STRUCK originals, one entry per struck field per property, so the
             # honesty report can show WHAT was withdrawn beside its conflict line instead of the
@@ -2365,10 +2622,47 @@ def _page_allowed(i: int, s: str, p: int, anchor_owner: dict, claims: dict) -> b
     return (owner == i) or (owner is _PAGE_UNCLAIMED and claims.get((s, p)) == {i})
 
 
+def _gallery_page_allowed(i: int, s: str, p: int, anchor_owner: dict, claims: dict) -> bool:
+    """CAROUSEL ownership (2026-09-26 test run, 3.20): a page its readers CO-CLAIM is shared by
+    the co-claimants, the way gallery_reach shares a page that names several of them. A page
+    ANOTHER single property anchors is still never shared. The PLAN slot keeps _page_allowed's
+    one-owner rule - a shared drawing there is the wrong-bind this corpus had.
+
+    Measured: three records of one deck, all `page_no 0` and `image_pages [0, 1]`. Page 0 was
+    anchored by three clusters (so owned by nobody) and page 1 claimed by all three, and the
+    one-owner rule made both pages foreign to every one of them - three one-image cards while a
+    1173x729 photograph sat on the page all three readers named."""
+    owner = anchor_owner.get((s, p), _PAGE_UNCLAIMED)
+    if owner == i:
+        return True
+    if owner is _PAGE_UNCLAIMED:
+        return i in claims.get((s, p), set())
+    return False
+
+
+def build_gallery_foreign_pages(clusters: list[list[dict]], source_dir: Path) -> list[dict[str, set]]:
+    """`build_foreign_pages` for the CAROUSEL (3.20): the same shape, over `_gallery_page_allowed`,
+    so a page several properties co-claim and nobody (or several) anchors is shared by their
+    carousels. With no co-claimed page anywhere this equals `build_foreign_pages` exactly."""
+    pages_per_cluster, anchor_owner, claims = _deck_ownership(clusters, source_dir)
+    foreign: list[dict[str, set]] = []
+    for i, pbs in enumerate(pages_per_cluster):
+        fmap: dict[str, set] = {}
+        for s, pgs in pbs.items():
+            bad = {p for p in pgs if not _gallery_page_allowed(i, s, p, anchor_owner, claims)}
+            if bad:
+                fmap[s] = bad
+        foreign.append(fmap)
+    return foreign
+
+
 def build_foreign_pages(clusters: list[list[dict]], source_dir: Path) -> list[dict[str, set]]:
     """UNIQUE-CLAIMANT GUARD (pure Python, deterministic over the post-merge clusters).
-    Python ENFORCES that every deck page feeds AT MOST ONE property's carousel, so no
+    Python ENFORCES that every deck page feeds AT MOST ONE property's PLAN slot, so no
     brochure topology can cross-contaminate even if the LLM over-claims image_pages.
+    (2026-09-26, 3.20: the CAROUSEL now uses `build_gallery_foreign_pages`, which shares a page
+    several readers co-claim and nobody anchors; a page another property anchors is still
+    foreign to every carousel.)
 
     Returns a list parallel to `clusters`: foreign[i][src] = the set of cluster i's OWN
     claimed pages that are FOREIGN to it (owned/claimed by another property) and must be
@@ -2743,8 +3037,39 @@ def plan_reach_pages(clusters: list[list[dict]], source_dir: Path) -> list[dict[
 # NO page at all, it is a whole-park brochure that never identifies a page as this unit's, and
 # the reach is EMPTY - rule 2 included. MULTI-CLAIMANT decks are unchanged in kind: a page must
 # still be settled decisively by one claimant's distinct figures.
+def _deck_claims_explicit(clusters: list, owners, s: str, source_dir: Path) -> bool:
+    """3.8: did the reader of deck `s` make EXPLICIT page claims - does at least one record of
+    this deck (among the claimant clusters) carry a NON-EMPTY validated `image_pages`? An `[]`
+    or an absent key does not count: the contract lets `[]` mean "no visual aid" (the recall case
+    the reach was built for)."""
+    for i in owners:
+        for r in clusters[i]:
+            m = r.get("__meta") or {}
+            if not _meta_image_pages(m):
+                continue
+            rs = _resolve_source(source_dir, m.get("source_file", ""))
+            if rs and str(rs) == s:
+                return True
+    return False
+
+
+def _cluster_plan_pages(cluster: list, s: str, source_dir: Path, n: int) -> set:
+    """The reader-named `plan_page`s of this cluster's records on deck `s` (ints in range)."""
+    out: set = set()
+    for r in cluster:
+        m = r.get("__meta") or {}
+        pp = m.get("plan_page")
+        if not isinstance(pp, int) or isinstance(pp, bool) or not 0 <= pp < n:
+            continue
+        rs = _resolve_source(source_dir, m.get("source_file", ""))
+        if rs and str(rs) == s:
+            out.add(pp)
+    return out
+
+
 def gallery_reach_pages(clusters: list[list[dict]], source_dir: Path,
-                        park_level: list | None = None) -> list[dict[str, set]]:
+                        park_level: list | None = None,
+                        scope_out: list | None = None) -> list[dict[str, set]]:
     """Per cluster, the EXTRA pages it may draw CAROUSEL photos from: pages of a deck it
     touches that NO cluster claims and NO cluster anchors, gated as described above. Parallel
     to `clusters`, same shape as `build_foreign_pages` / `plan_reach_pages`. Never raises; an
@@ -2754,9 +3079,23 @@ def gallery_reach_pages(clusters: list[list[dict]], source_dir: Path,
     cluster's reach admitted under the SHARED-PARK rule ({src: {pages}}). Pure disclosure - the
     return value is unaffected and nothing reads it back - so `media_decisions.json` can tell an
     auditor which carousel pages are park-level (and therefore appear on a sibling card too)
-    rather than unit-specific."""
+    rather than unit-specific.
+
+    CLAIMED PAGES ONLY on an explicitly-claimed multi-record deck (2026-09-26 test run, 3.8).
+    When several properties draw on one deck AND its reader assigned pages to records (at least
+    one record carries a non-empty `image_pages`), a page the reader left unassigned is a
+    deliberate exclusion, not a shareable one: a two-unit deck shipped its "indicative images"
+    page - which the reader had left out - on one unit's card as park-level. So such a deck
+    reaches only each record's own named `plan_page` (the one claimed page outside page_no U
+    image_pages; attach_media still subtracts plan_offlimits and foreign pages). Single-claimant
+    decks, and multi-claimant decks with no non-empty image_pages anywhere (all `[]` or absent),
+    are unchanged. `scope_out` (optional, OUT, parallel to clusters) gets {src: "claimed_only"}
+    for every such deck, for media_considered's `gallery_scope`. On an error deciding it, the
+    deck falls back to today's reach."""
     if park_level is not None:
         park_level[:] = [dict() for _ in clusters]
+    if scope_out is not None:
+        scope_out[:] = [dict() for _ in clusters]
     pages_per_cluster, anchor_owner, claims = _deck_ownership(clusters, source_dir)
     touched: dict[str, set] = {}             # deck -> the clusters that draw on it
     for i, pbs in enumerate(pages_per_cluster):
@@ -2774,6 +3113,23 @@ def gallery_reach_pages(clusters: list[list[dict]], source_dir: Path,
         unclaimed = {p for p in range(n) if p not in spoken}
         if not unclaimed:
             continue
+        if len(owners) > 1:
+            # 3.8: an explicitly-claimed multi-record deck draws on claimed pages only
+            try:
+                _strict = _deck_claims_explicit(clusters, owners, s, source_dir)
+            except Exception:  # noqa: BLE001 - fall back to today's reach
+                _strict = False
+            if _strict:
+                for i in owners:
+                    try:
+                        add = _cluster_plan_pages(clusters[i], s, source_dir, n) & unclaimed
+                    except Exception:  # noqa: BLE001
+                        add = set()
+                    if add:
+                        out[i].setdefault(s, set()).update(add)
+                    if scope_out is not None:
+                        scope_out[i][s] = "claimed_only"
+                continue
         figs = {i: _identity_figures_wide(clusters[i]) for i in owners}
         page_figs = {p: _page_figures(IMG._page_plaintext(Path(s), p)) for p in range(n)}
         if len(owners) == 1:
@@ -2915,9 +3271,17 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
                  considered: dict | None = None,
                  plan_reach: dict[str, set] | None = None,
                  gallery_reach: dict[str, set] | None = None,
-                 gallery_park_level: dict[str, set] | None = None
+                 gallery_park_level: dict[str, set] | None = None,
+                 gallery_foreign: dict[str, set] | None = None,
+                 gallery_scope: dict[str, str] | None = None
                  ) -> tuple[str, str | None, dict | None, dict | None, list, list]:
     """(photo_uri, plan_uri, photo_rec, plan_rec, tried_pages, gallery) for a merged property.
+
+    `gallery_foreign` (2026-09-26, 3.20): the CAROUSEL's foreign set
+    (`build_gallery_foreign_pages`), which shares a co-claimed, unanchored page between its
+    claimants. When None the carousel uses `foreign_pages`, exactly as before; the plan tiers
+    always use `foreign_pages` / `plan_offlimits`. `gallery_scope` (3.8, disclosure only):
+    {src: "claimed_only"} from `gallery_reach_pages(scope_out=)`, written to `considered`.
 
     Photo precedence (honours 'PPTX is the preferred IMAGE source'): a picture an
     extractor already embedded on a record first, else the source page's hero
@@ -3124,6 +3488,8 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
 
     gallery_reach_used: dict[str, set] = {}
     park_level_used: dict[str, set] = {}   # DISCLOSURE ONLY - the shared-park subset of the reach
+    # 3.20: the carousel subtracts ITS foreign set (co-claimed pages shared); None -> today's
+    _gf = gallery_foreign if gallery_foreign is not None else foreign_pages
     for src_str, pgs in sorted(pages_by_src.items()):
         # TIER 1 - the property's OWN claimed pages. The deterministic anti-leak guard
         # (computed once over ALL clusters) tells us which of these pages are FOREIGN
@@ -3134,7 +3500,7 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
         # here). A cluster's own page_no is normally its own anchor (not foreign), so that
         # is a DEFENSIVE guard - if a clustering anomaly made two properties anchor the
         # same page it is foreign to both, and this prevents the empty-set whole-deck leak.
-        _harvest(src_str, pgs - (foreign_pages or {}).get(src_str, set()))
+        _harvest(src_str, pgs - (_gf or {}).get(src_str, set()))
     for src_str in sorted(pages_by_src):
         # TIER 2 - the CAROUSEL REACH: pages of this deck that NO property claims and NO
         # property anchors, admitted only where the deck itself attributes them to this
@@ -3144,7 +3510,7 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
         # genuinely fire. Never a substitute for tier 1 - it only fills the slots tier 1 left.
         reach = ((gallery_reach or {}).get(src_str, set())
                  - (plan_offlimits or {}).get(src_str, set())
-                 - (foreign_pages or {}).get(src_str, set()))
+                 - (_gf or {}).get(src_str, set()))
         if reach:
             gallery_reach_used[src_str] = set(reach)
             pl = (gallery_park_level or {}).get(src_str, set()) & reach
@@ -3199,9 +3565,14 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
             try:
                 # the property's OWN schedule figures, so a park deck carrying a masterplan per
                 # unit binds THIS unit's, not a neighbouring unit's (see images._plan_rank)
+                # 3.9: the reader saw the renders and named no plan -> pixels alone never bind.
+                # Passed ONLY when True, so every default call is byte-identical to before.
+                _rdk = ({"reader_declined": True}
+                        if _reader_declined_plan(cluster, src_str, source_dir) else {})
                 uri, pno = IMG.best_plan_page_render(Path(src_str), sorted(allowed),
                                                      budget_kb, image_cache, near_miss=_nm,
-                                                     own_figures=_identity_figures(cluster))
+                                                     own_figures=_identity_figures(cluster),
+                                                     **_rdk)
             except Exception:
                 uri, pno = None, None
             for _e in _nm:
@@ -3237,8 +3608,36 @@ def attach_media(cluster: list[dict], source_dir: Path, budget_kb: int,
         _record_considered(considered, source_dir, pages_by_src, foreign_pages, plan_offlimits,
                            plan_rejected, photo, photo_rec, plan, plan_rec, gallery, _nm_acc,
                            excl_by_src, plan_reach, gallery_reach_used, promoted,
-                           park_level_used)
+                           park_level_used, gallery_foreign=gallery_foreign,
+                           gallery_scope=gallery_scope)
     return photo, plan, photo_rec, plan_rec, tried, gallery
+
+
+def _reader_declined_plan(cluster: list, src_str: str, source_dir: Path) -> bool:
+    """3.9: did this deck's reader LOOK at the page renders and name NO plan page? True iff the
+    cluster's records on deck `src_str` are non-empty, EVERY one carries the key `plan_page`
+    present and null, none carries an int `planRef`, and at least one has a NON-EMPTY
+    `image_pages` - the proof the reader had renders (an `[]` may mean "no visual aid"). Then
+    the Tier-5 detector must not bind a page on pixels alone. False on any error (today's
+    behaviour)."""
+    try:
+        recs = []
+        for r in cluster or []:
+            m = r.get("__meta") or {}
+            rs = _resolve_source(source_dir, m.get("source_file", ""))
+            if rs and str(rs) == str(src_str):
+                recs.append(m)
+        if not recs:
+            return False
+        for m in recs:
+            if "plan_page" not in m or m.get("plan_page") is not None:
+                return False
+            pr = m.get("planRef")
+            if isinstance(pr, int) and not isinstance(pr, bool):
+                return False
+        return any(_meta_image_pages(m) for m in recs)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _compose_gallery(photo, candidates, max_n: int = None, hero_pinned: bool = False) -> tuple:
@@ -3314,7 +3713,7 @@ def _slot_prov(rec: dict | None, slot: str) -> dict | None:
 def _record_considered(out: dict, source_dir, pages_by_src, foreign_pages, plan_offlimits,
                        plan_rejected, photo, photo_rec, plan, plan_rec, gallery, near_miss,
                        excl_by_src, plan_reach=None, gallery_reach=None, promoted=None,
-                       park_level=None) -> None:
+                       park_level=None, gallery_foreign=None, gallery_scope=None) -> None:
     """Fill `out` with ONE cluster's media consideration set. PURE RECORDING - no caller branch
     reads it, so it cannot change a single byte of the dataset.
 
@@ -3322,19 +3721,30 @@ def _record_considered(out: dict, source_dir, pages_by_src, foreign_pages, plan_
     deck pages were in reach, which were taken away by which rule, what was bound, and what was
     never looked at. Every set here is the SAME object the harvest itself used (`pages_by_src`,
     `foreign_pages`, `plan_offlimits`, `plan_rejected`, `exclude_refs`), never a re-derivation,
-    so the record cannot disagree with what happened."""
+    so the record cannot disagree with what happened.
+
+    2026-09-26 (3.20 / 3.8): when `gallery_foreign` is given, `foreign` / `looked` /
+    `claimed_looked` report what the CAROUSEL really subtracted, and `gallery_shared` lists the
+    claimed pages the one-owner plan rule refuses but the carousel shares with co-claimants.
+    When `gallery_scope` is given each deck records `gallery_scope`: "claimed_only" (an
+    explicitly-claimed multi-record deck, 3.8) or "reach". Both keys are absent otherwise, so a
+    caller that passes neither gets today's record byte for byte."""
     decks: dict = {}
     for src_str, pgs in sorted((pages_by_src or {}).items()):
         name = Path(src_str).name
         claimed = sorted(int(p) for p in pgs)
-        foreign = sorted(int(p) for p in ((foreign_pages or {}).get(src_str, set()) & set(pgs)))
+        pforeign = sorted(int(p) for p in ((foreign_pages or {}).get(src_str, set()) & set(pgs)))
+        if gallery_foreign is not None:
+            foreign = sorted(int(p) for p in ((gallery_foreign or {}).get(src_str, set()) & set(pgs)))
+        else:
+            foreign = pforeign
         offl = sorted(int(p) for p in (plan_offlimits or {}).get(src_str, set()))
         rej = sorted(p for p in claimed
                      if _plan_is_rejected(plan_rejected, name, p))
         excl = {str(k): sorted(v) for k, v in sorted((excl_by_src or {}).get(src_str, {}).items())}
         # pages nobody claimed that the PLAN SLOT could additionally reach (plan_reach_pages)
         reach = sorted(int(p) for p in ((plan_reach or {}).get(src_str, set())
-                                        - set(offl) - set(foreign)))
+                                        - set(offl) - set(pforeign)))
         # pages nobody claimed that the CAROUSEL could additionally reach (gallery_reach_pages),
         # already net of the same two guards where it was applied
         greach = sorted(int(p) for p in (gallery_reach or {}).get(src_str, set()))
@@ -3358,6 +3768,10 @@ def _record_considered(out: dict, source_dir, pages_by_src, foreign_pages, plan_
             "plan_rejected": rej,
             "exclude_refs": excl,
         }
+        if gallery_foreign is not None:
+            decks[name]["gallery_shared"] = sorted(set(pforeign) - set(foreign))
+        if gallery_scope is not None:
+            decks[name]["gallery_scope"] = str((gallery_scope or {}).get(src_str) or "reach")
     out.update({
         "decks": decks,
         "hero": {"bound": bool(photo_rec is not None),
@@ -4099,6 +4513,67 @@ def _ledger_after_rederive(path: Path, derived: list) -> list[str]:
     return lines
 
 
+# 3.15: the prefix repairs.read_provenance reads back (repairs.SUPERSEDED_BY_REPAIR_PREFIX; the
+# eval pins the two equal) and the separator that keeps a marked row's original note.
+SUPERSEDED_BY_REPAIR_PREFIX = "SUPERSEDED BY REPAIR:"
+_WAS_SEP = " || was: "
+
+
+def _retract_superseded_value_rows(rows: list) -> tuple:
+    """The value-row half of `retract_superseded_gap_rows` (3.15). Marks in place; returns
+    (run-log lines, moved?)."""
+    def _k(r):
+        return (str(r.get("property_id")), str(r.get("field")))
+
+    def _gap(r):
+        return (r.get("source_type") or "").strip().lower() == "gap"
+
+    last: dict = {}                         # the LAST repair/derived row per key, clears included
+    for r in rows:
+        rt = (r.get("record_type") or "").strip()
+        if rt in ("repair", DERIVED_RECORD_TYPE) and not _gap(r):
+            last[_k(r)] = r
+    sup_by: dict = {}
+    for key, r in last.items():
+        rt = (r.get("record_type") or "").strip()
+        if rt == "repair" and "CLEARED this field" in str(r.get("conflict_note") or ""):
+            continue                        # a clear supersedes nothing
+        sup_by[key] = r
+    lines: list = []
+    moved = False
+    for r in rows:
+        if _gap(r) or str(r.get("extractor") or "").strip() == "T-translate":
+            continue
+        rt = (r.get("record_type") or "").strip()
+        note = str(r.get("conflict_note") or "")
+        marked = rt == SUPERSEDED_RECORD_TYPE and note.startswith(SUPERSEDED_BY_REPAIR_PREFIX)
+        if rt != "property" and not marked:
+            continue
+        orig = (note.split(_WAS_SEP, 1)[1] if _WAS_SEP in note else "") if marked else note
+        key = _k(r)
+        sup = sup_by.get(key)
+        if sup is not None:
+            srt = (sup.get("record_type") or "repair").strip()
+            new = (f"{SUPERSEDED_BY_REPAIR_PREFIX} merge wrote this value from "
+                   f"{r.get('source_file') or '?'}; a later {srt} row ({sup.get('source_file', '')}: "
+                   f"{sup.get('source_locator', '')}) supplies {_short(sup.get('value'), 40)!r}, "
+                   f"which is what the card ships. Kept so the change is visible; NOT the live "
+                   f"value." + (f"{_WAS_SEP}{orig}" if orig else ""))
+            if rt != SUPERSEDED_RECORD_TYPE or note != new:
+                r["record_type"] = SUPERSEDED_RECORD_TYPE
+                r["conflict_note"] = new
+                moved = True
+                lines.append(f"  - ledger: property {key[0]} {key[1]}: value row marked superseded "
+                             f"by the {srt} row")
+        elif marked:
+            r["record_type"] = "property"
+            r["conflict_note"] = orig
+            moved = True
+            lines.append(f"  - ledger: property {key[0]} {key[1]}: value row RESTORED, its "
+                         f"superseding row is gone")
+    return lines, moved
+
+
 def retract_superseded_gap_rows(ledger) -> list[str]:
     """Mark every gap row a later row SUPERSEDES; restore one whose superseder is gone. (F24)
 
@@ -4126,16 +4601,36 @@ def retract_superseded_gap_rows(ledger) -> list[str]:
     `source_type == "gap"`, so a marked row is invisible to them exactly as it was before, and
     the row still records what merge knew at merge time.
 
+    VALUE ROWS TOO (2026-09-26 test run, fix 3.15). Merge's own VALUE row stayed live beside the
+    repair row that replaced it (two properties shipped one figure while the ledger's property row
+    still said another). A second pass marks such a row the same way: `record_type` becomes
+    "superseded" and the note starts `SUPERSEDED BY REPAIR:` (repairs.read_provenance reads that
+    prefix back, so a strike picks the same targets whether or not a pass has marked the row),
+    naming the superseding row, with the row's original note kept after " || was: ". Superseders
+    are `repair` and `derived` rows that carry a value - a CLEAR is not one (the field is absent
+    and repairs' "already absent" note reads the merge row, so marking it would make that note a
+    false "check the spelling"); when the LAST repair row for a field is a clear, nothing
+    supersedes. Candidates are `property` rows (never gap rows, never the translation rows
+    translate.py writes after repairs). `source_type` and `value` stay, so trace-coverage still
+    counts the row. Restored, with its original note, once its superseder is gone.
+
     `ledger` is a path (read, marked, rewritten only when a row moved) or a list of rows (marked
     in place). Returns run-log lines."""
     path = Path(ledger) if isinstance(ledger, (str, Path)) else None
     rows = _read_ledger(path) if path is not None else list(ledger or [])
-    live: dict = {}
-    for r in rows:
-        if (r.get("source_type") or "").strip().lower() != "gap":
-            live[(str(r.get("property_id")), str(r.get("field")))] = r
     lines: list = []
     moved = False
+    try:
+        _v_lines, _v_moved = _retract_superseded_value_rows(rows)
+        lines.extend(_v_lines)
+        moved = moved or _v_moved
+    except Exception as _e:  # noqa: BLE001 - fail safe: value rows untouched, gap pass as before
+        lines.append(f"  - ledger: value-row retraction skipped ({type(_e).__name__}: {_e})")
+    live: dict = {}
+    for r in rows:
+        if (r.get("source_type") or "").strip().lower() != "gap" \
+                and (r.get("record_type") or "").strip() != SUPERSEDED_RECORD_TYPE:
+            live[(str(r.get("property_id")), str(r.get("field")))] = r
     for r in rows:
         if (r.get("source_type") or "").strip().lower() != "gap":
             continue
@@ -4380,6 +4875,7 @@ def main() -> None:
 
     for _r in all_records:            # v22 Phase 1: quarantine off-spec structures pre-merge
         _normalise_offspec(_r)
+        _promote_aliases(_r)          # 3.5a: an EXACT synonym key fills its blank canonical slot
         _route_certifications(_r)     # B5: an EPC never ships as a BREEAM grade
         _route_availability(_r)       # stated availability timing reaches earlyAccess
 
@@ -4502,6 +4998,21 @@ def main() -> None:
                       f"master list; each is named in the Gaps Report)")
         except Exception as e:
             print(f"  (master list not applied: {e})", file=sys.stderr)
+    # 3.10b: a building the SOURCE marks let / sold, which the broker chose to exclude at exit 13.
+    # Applied on the settled clusters like the two filters above; run.py's conflict path mirrors
+    # it so the property ids agree. No answer / no flag -> nothing changes (byte-identical).
+    if getattr(args, "answers", ""):
+        try:
+            import clarify as _CQ
+            _na_st = _CQ.load_state(Path(args.answers))
+            clusters, _na = apply_not_available(clusters, _na_st.get("answers") or {},
+                                                _na_st.get("declined") or ())
+            if _na:
+                EXCLUDED = list(EXCLUDED) + list(_na)
+                print(f"  ({len(_na)} option(s) excluded - the source marks them no longer "
+                      f"available and you chose to exclude them; each is named in the Gaps Report)")
+        except Exception as e:
+            print(f"  (not-available exclusions not applied: {e})", file=sys.stderr)
     FIELD_DECISIONS = {}  # conflict_id -> {pick, reason} (cross-source value-conflict sub-agent)
     if args.field_decisions and Path(args.field_decisions).exists():
         try:
@@ -4564,6 +5075,7 @@ def main() -> None:
                                # so the property rows keep their existing order and bytes
     meta_offspec = []   # v22 Phase 1: off-spec keys quarantined pre-merge (-> Gaps Report)
     meta_newfields = []  # B7: brand-new scalar keys KEPT and auto-shown (-> Gaps Report)
+    meta_alias_promotions = []  # 3.5a: [{id, field, aliasKey}] (-> repairs in-flight compat)
     placeholder_audit: dict = {}  # prop id -> discarded image candidates (audited, never silent)
     regions_on = bool(((_load_yaml(args.project_yaml) or {}).get("enrichment") or {}).get("regions"))
     # UNIQUE-CLAIMANT GUARD: precompute, once over ALL clusters, the per-deck pages each
@@ -4580,8 +5092,18 @@ def main() -> None:
     # CAROUSEL REACH over the same unclaimed pages (gallery_reach_pages) - the same ownership
     # base, its own recall-tuned attribution. Fourth and last projection, same place.
     gallery_park_level: list = []
+    gallery_scope_by_cluster: list = []   # 3.8 disclosure: {src: "claimed_only"} per cluster
     gallery_reach_by_cluster = gallery_reach_pages(clusters, source_dir,
-                                                   park_level=gallery_park_level)
+                                                   park_level=gallery_park_level,
+                                                   scope_out=gallery_scope_by_cluster)
+    # 3.20: the CAROUSEL's own foreign set - a co-claimed, unanchored page is shared by its
+    # claimants' carousels (never their plan slot). On error: None -> today's foreign_pages.
+    try:
+        gallery_foreign_by_cluster = build_gallery_foreign_pages(clusters, source_dir)
+    except Exception as _e:  # noqa: BLE001
+        print(f"(shared-page carousel ownership not applied: {type(_e).__name__}: {_e})",
+              file=sys.stderr)
+        gallery_foreign_by_cluster = None
     plan_near_miss_all: list = []  # per-property near-miss plan pages -> Gaps Report (light Fix 4)
     # THE CONSIDERED SET (per PROPERTY, not per brochure). One entry per merged property
     # recording every deck page that was in reach, every rule that took one away, what bound and
@@ -4818,6 +5340,29 @@ def main() -> None:
                         f"{prov[fld].get('locator', '')} "
                         f"(stated as {_raw:g} {_u}; converted at {f:g} "
                         f"{area_unit} per {_u})").strip()
+        # 2026-09-26 test run (3.3c): ONE shape for officeArea. A BARE figure ("4614") is written
+        # as "4,614 sq ft" ONLY when its OWN supplier record states the unit (prov
+        # areaUnitOfSource), that unit IS the dataset unit (so merge converted nothing - never a
+        # unit merge itself converted into), and the supplier is not a tracker (xlsx stores
+        # officeArea raw; its areaUnit may be the extractor's own acres->sq ft conversion). An
+        # INTEGRAL figure only: a grouped decimal ("2,235.5") reads back through
+        # normalize_number as 2.2355, so a decimal keeps today's value and value-format asks.
+        # officeAreaVal is untouched. Fail-safe: any error leaves officeArea as it was.
+        try:
+            _oa = merged.get("officeArea")
+            _po = prov.get("officeArea")
+            if isinstance(_po, dict) and _bare_number(_oa):
+                _ou = N.area_unit_of(str(_po.get("areaUnitOfSource") or ""))
+                _ov = float(N.normalize_number(str(_oa)))
+                if _ou in ("sq ft", "sq m") and _ou == area_unit \
+                        and str(_po.get("source_type") or "").lower() != "xlsx" \
+                        and _ov.is_integer():
+                    merged["officeArea"] = f"{_fmt_thousands(_ov)} {_ou}"
+                    _po["locator"] = (f"{_po.get('locator', '')} (printed as '{_oa}'; {_ou} is "
+                                      f"the unit the same source states for its areas)").strip()
+        except Exception as _e:  # noqa: BLE001
+            print(f"(officeArea shape left as printed for property {i}: "
+                  f"{type(_e).__name__}: {_e})", file=sys.stderr)
         if _withheld:
             withheld_units[i] = list(_withheld)
         if _unparseable:
@@ -4852,7 +5397,11 @@ def main() -> None:
             considered=_cluster_considered,
             plan_reach=plan_reach_by_cluster[i - 1],
             gallery_reach=gallery_reach_by_cluster[i - 1],
-            gallery_park_level=(gallery_park_level[i - 1] if gallery_park_level else None))
+            gallery_park_level=(gallery_park_level[i - 1] if gallery_park_level else None),
+            gallery_foreign=(gallery_foreign_by_cluster[i - 1]
+                             if gallery_foreign_by_cluster else None),
+            gallery_scope=(gallery_scope_by_cluster[i - 1]
+                           if gallery_scope_by_cluster else None))
         if _cluster_considered:
             _cluster_considered["id"] = i
             _cluster_considered["property"] = (merged.get("park") or merged.get("city")
@@ -4991,6 +5540,11 @@ def main() -> None:
                 if _k in merged:
                     meta_newfields.append({"property_id": i, "key": _k,
                                            "source_file": _r.get("__meta", {}).get("source_file", "")})
+        # 3.5a: the SHIPPED fields whose value came through the strict alias step, read off
+        # the merged prov locator (the ledger's own text), for repairs' in-flight compat.
+        for _af, _ak in alias_promotions_of(prov):
+            if _af in merged and not N.looks_unknown(merged.get(_af)):
+                meta_alias_promotions.append({"id": i, "field": _af, "aliasKey": _ak})
         # P1-4: one EXPLICIT correction row per applied override, emitted HERE and not at load
         # time because property_id only exists after clustering. This is the auditable artefact:
         # `grep ,override, source_ledger.csv` lists every manual touch in one command, and the
@@ -5226,6 +5780,10 @@ def main() -> None:
     # byte-identical to before this change.
     if meta_newfields:
         meta["newFields"] = meta_newfields
+    # 3.5a: CONDITIONAL like newFields (additive; the schema's meta allows extra keys). Read by
+    # repairs.py, so an in-flight hand repair that did the same move still applies cleanly.
+    if meta_alias_promotions:
+        meta["aliasPromotions"] = meta_alias_promotions
     if plan_near_miss_all:
         meta["planNearMiss"] = plan_near_miss_all
     if unit_assumptions:  # an ASSUMED unit is an honest gap, never a silent stamp

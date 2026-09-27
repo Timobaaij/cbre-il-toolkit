@@ -123,7 +123,8 @@ never misdiagnose):
       output path), plus any outstanding email ingestion the handoff names, then re-run.
  15 = a BLOCKING QA FINDING is unresolved: implement each fix, record it with
       `gate_runner.py qa-round resolve --work <work> --id <id> --because "<what changed>"`,
-      then re-run. Advisory findings are never fixed - they ship in the Gaps Report.
+      then re-run. Advisory findings ship disclosed in the Gaps Report; fix one only when it is
+      one edit AND changes what a reader concludes, and `resolve` it if you do.
  16 = a CORRECTION FILE holds INVALID ENTRIES and the run refused to start. Fired at STARTUP,
       before any stage does work, with EVERY fault in work/overrides.json and work/repairs.json
       printed in one pass. The ONE action: read the printed fault list and FIX the NAMED
@@ -217,7 +218,7 @@ import json
 import re
 import sys
 import time
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -242,6 +243,16 @@ STAGE_ORDER = ("folder scan", "extract", "master list", "merge", "enrichment", "
 # stage: the user decides scope while the decks are still unread, so the run pays for the decks
 # it was asked for. The vocabulary places it after extract because --from "master list" must
 # mean "re-open the scope decision and everything after it", not "re-read the trackers".
+
+# TIMING-ONLY LABELS (2026-09-26 test run, fix 2.6). Recorded in timings.json exactly like a
+# stage, but NEVER part of the vocabulary above: not valid for --from/--only (an operator could
+# otherwise type a cut that has no skip guard) and never skipped (`_stage_skipped` returns False
+# for any name outside STAGE_ORDER). They exist because the deck render/candidate prep runs
+# physically inside the "master list" span, so a 54 s prep was booked to the scope decision and
+# the one instrument meant to attribute time pointed at the wrong stage. `_timing_part` opens one
+# around a sub-span and re-opens the enclosing stage afterwards; `_timings_payload` folds the
+# enclosing stage's two halves back into ONE entry.
+TIMING_ONLY_LABELS = ("vision prep",)
 
 # Stages that NEVER skip, under any flag. The pre-build gates, the post-build gates, the
 # freeze (which lives inside gates:pre, at ALL-PASS) and the QA window are the ONLY things
@@ -322,16 +333,61 @@ def _close_open_stage(now: float | None = None) -> None:
         cur["seconds"] = round((time.perf_counter() if now is None else now) - t0, 3)
 
 
+@contextmanager
+def _timing_part(label: str):
+    """Book a SUB-SPAN of the open stage to the timing-only `label` (2026-09-26, fix 2.6).
+
+    Closes the enclosing stage, opens `label`, and on the way out re-opens the enclosing stage
+    under its own name, so the seconds after the sub-span land where they did before. The two
+    halves of the enclosing stage are folded back into one entry by `_timings_payload`.
+
+    `label` is a VARIABLE on purpose: stage_control_test pins exactly one `_stage("<name>")`
+    literal per vocabulary name, and a sub-span must not add one. It cannot raise past its own
+    `finally` - a timing instrument must never change what a pass does; an exit mid-span is
+    closed by atexit like any other open stage."""
+    parent = ""
+    try:
+        if _STAGE_LOG and "_t0" in _STAGE_LOG[-1]:
+            parent = str(_STAGE_LOG[-1].get("stage") or "")
+        _stage(label)
+    except Exception:
+        pass
+    try:
+        yield
+    finally:
+        try:
+            if parent:
+                _stage(parent)
+            else:
+                _close_open_stage()
+        except Exception:
+            pass
+
+
 def _timings_payload() -> dict:
     """The documented shape: {started, total_s, stages:[{stage, seconds, resumed}]}.
 
     Built by projecting the log onto exactly those three per-stage keys, so the private
-    bookkeeping key (`_t0`) can never leak into the artefact an eval or a maintainer reads."""
+    bookkeeping key (`_t0`) can never leak into the artefact an eval or a maintainer reads.
+
+    COALESCED BY NAME, first-seen order (2026-09-26, fix 2.6): a stage split by a
+    `_timing_part` sub-span appears in the log twice, and the artefact must still say ONE
+    number per stage (seconds summed, `resumed` concatenated). Without a sub-span every name
+    occurs once per process, so the output is exactly what it was before."""
+    merged: dict = {}
+    for s in _STAGE_LOG:
+        name = s["stage"]
+        ent = merged.get(name)
+        if ent is None:
+            merged[name] = {"stage": name, "seconds": float(s.get("seconds", 0.0) or 0.0),
+                            "resumed": list(s.get("resumed") or [])}
+        else:
+            ent["seconds"] = round(ent["seconds"] + float(s.get("seconds", 0.0) or 0.0), 3)
+            ent["resumed"].extend(list(s.get("resumed") or []))
     return {
         "started": _RUN_STARTED_ISO,
         "total_s": round(time.perf_counter() - _RUN_T0, 3),
-        "stages": [{"stage": s["stage"], "seconds": s.get("seconds", 0.0),
-                    "resumed": list(s.get("resumed") or [])} for s in _STAGE_LOG],
+        "stages": list(merged.values()),
     }
 
 
@@ -1161,11 +1217,25 @@ def _recorded_only_doubt_answers(work: Path) -> list:
         st = _CQ.load_state(work)
         titles = st.get("titles") or {}
         land = st.get("landable") or {}
+        _shipped = getattr(_CQ, "answer_is_as_shipped", None)
         out = []
         for qid, raw in (st.get("answers") or {}).items():
-            ah = str((titles.get(qid) or {}).get("answer_handling") or "")
-            if ah.startswith("recorded only") and qid not in land and not _CQ.is_decline(raw):
-                out.append(str(qid))
+            t = titles.get(qid) or {}
+            ah = str(t.get("answer_handling") or "")
+            if not (ah.startswith("recorded only") and qid not in land and not _CQ.is_decline(raw)):
+                continue
+            # 2026-09-26 test run, fix 3.18: a count / no-field doubt with an `answer_route` is
+            # handled by its route (a re-read of the deck, or a disclosure), never by a hand
+            # repair; and an answer that keeps the cards EXACTLY as shipped needs nothing at all.
+            # The measured run reprinted a paste-a-repair template every pass for one of each.
+            if t.get("answer_route"):
+                continue
+            try:
+                if callable(_shipped) and _shipped(t, raw):
+                    continue
+            except Exception:
+                pass
+            out.append(str(qid))
         return sorted(out)
     except Exception:
         return []
@@ -1193,10 +1263,33 @@ def _recorded_only_guidance(work: Path, ids: list) -> list:
         answers = st.get("answers") or {}
     except Exception:
         return out
+    try:
+        _no_field = str(getattr(_CQ, "ANSWER_RECORDED_NO_FIELD", "") or "")[:44]
+    except Exception:
+        _no_field = ""
     for qid in ids or []:
         t = titles.get(qid) or {}
         raw = str(answers.get(qid) or "").strip()
         plan = t.get("to_apply_by_hand")
+        # 2026-09-26 test run, fix 3.18: a doubt that named NO canonical field and has no
+        # `answer_route` (asked before routes existed, or a no-field display doubt with no
+        # options) carried a template whose field is a placeholder, reprinted every pass - and
+        # for a doubt about how many options ship (the measured "one record or three?") no
+        # repair can ever satisfy it: a repair edits a card, it cannot create or remove one. The
+        # title keeps too little text to tell the two apart, so ONE line, no JSON, that is true
+        # for both: what a re-read does for a count answer, what a hand repair needs otherwise.
+        if (_no_field and not t.get("answer_route")
+                and str(t.get("answer_handling") or "").startswith(_no_field)):
+            out.append(f"(orchestrator: the broker answered {qid} with {raw!r}: recorded and "
+                       f"disclosed in the Gaps Report, and nothing was written to a card because "
+                       f"the reader named no canonical field. If the answer changes how many "
+                       f"options the deck yields, no repair can carry it: re-read that deck with "
+                       f"the decision in its reader prompt's Run context. If it names one card's "
+                       f"value, write a work/repairs.json entry for that field by hand for "
+                       f"{', '.join(t.get('affected') or []) or 'the record the question names'}, "
+                       f"with `expect` set to the card's current value, a `why`, and `verified_by` "
+                       f"naming the broker and {qid}.)")
+            continue
         if not isinstance(plan, dict) or not plan.get("entries"):
             out.append(f"(orchestrator: the broker answered {qid} with {raw!r}; that question was "
                        f"asked before this run recorded a repair plan for it, so to apply the "
@@ -1282,6 +1375,28 @@ def agent_doubt_repairs(work: Path, cfg: dict, canonical_path: Path) -> int:
             continue
         field = str(stamp.get("field") or "")
         raw = answers.get(q_id)
+        # 2026-09-26 test run, fix 3.2c: ONE POLICY ANSWER, FANNED OUT. A member of a
+        # combine_policy question carries `via_policy` on its stamp; with no direct answer of
+        # its own (a direct per-card answer always wins), its answer is DERIVED here from the
+        # policy answer (`policy_member_answer`) - no state key holds it, so nothing is written
+        # to clarify state post-merge. A declined policy means every card keeps what shipped;
+        # "ask me per card" and anything unrecognised derive nothing (the member is then asked
+        # per card by `group_combinable` on the next pass).
+        pol, praw = "", None
+        if ((raw is None or not str(raw).strip()) and stamp.get("via_policy")
+                and q_id not in declined):
+            pol = str(stamp.get("via_policy"))
+            if pol in declined:
+                continue
+            praw = answers.get(pol)
+            if praw is None or not str(praw).strip():
+                continue
+            try:
+                raw = _CQ.policy_member_answer(stamp, praw)
+            except Exception as _e:     # fail safe: the card keeps what shipped
+                print(f"(policy answer {pol} not applied to {q_id}: {type(_e).__name__}: {_e}; "
+                      f"the card keeps what shipped)")
+                raw = None
         if not field or q_id in declined or raw is None or not str(raw).strip():
             continue
         if _CQ.is_decline(raw):
@@ -1293,6 +1408,23 @@ def agent_doubt_repairs(work: Path, cfg: dict, canonical_path: Path) -> int:
         clear = _CQ.is_not_stated(raw)
         picked = {_CQ._norm_answer(o): o
                   for o in (stamp.get("options") or [])}.get(a_norm)
+        # 2026-09-26 test run, fix 3.2b: the broker picked PYTHON'S SUM of the printed lines
+        # (the option clarify synthesised for a `combinable` doubt). What lands is the sum's own
+        # value text ('10,855 sq ft'), never the option string with its bracket, and the `why`
+        # names every part; the source prints no combined figure, so no page is cited.
+        comb = stamp.get("combinable") if isinstance(stamp.get("combinable"), dict) else {}
+        comb_vt = ""
+        if (comb and picked is not None and not clear and comb.get("option")
+                and picked == str(comb.get("option")) and str(comb.get("value_text") or "").strip()):
+            comb_vt = str(comb.get("value_text")).strip()
+        comb_parts = [str(p) for p in (comb.get("parts") or [])] if comb_vt else []
+        if pol:
+            head = (f"broker answered the exit-13 policy question {pol} ('{str(praw).strip()}') "
+                    f"for every card whose {field} is printed as several lines: ")
+            vby = f"broker (exit-13 policy answer to {pol}, applied to {q_id})"
+        else:
+            head = "broker answered the exit-13 reader-doubt question on " + field + ": "
+            vby = f"broker (exit-13 answer to {q_id})"
         for i, prop in cards:
             cur = prop.get(field)
             if cur is None:
@@ -1306,9 +1438,15 @@ def agent_doubt_repairs(work: Path, cfg: dict, canonical_path: Path) -> int:
             refused_why = (f"it does not reduce cleanly to the field's own type "
                            f"({type(cur).__name__})")
             if not clear:
-                area = (_area_answer(picked if picked is not None else raw)
+                area = (None if comb_vt else
+                        _area_answer(picked if picked is not None else raw)
                         if field in _area_fields() else None)
-                if area is not None:
+                if comb_vt:
+                    _ok, value, _why_no = _combined_value(cur, comb_vt, field, prop)
+                    shown = comb_vt
+                    if not _ok and _why_no:
+                        refused_why = _why_no
+                elif area is not None:
                     # an AREA answer, offered or free text, through ONE reader: the figure and
                     # unit become the value, the broker's bracketed explanation goes to `why`
                     f_unit = _field_area_unit(prop, cur)
@@ -1343,18 +1481,166 @@ def agent_doubt_repairs(work: Path, cfg: dict, canonical_path: Path) -> int:
                           f"To apply it, paste this into work/repairs.json with the value written "
                           f"as the field is typed: {json.dumps(_skel, ensure_ascii=False)})")
                     continue
+                # 3.2c NO-OP GUARD, fan-out only (a direct answer is untouched): a policy answer
+                # reaching a card that ALREADY shows that value (merge's own sum, typically)
+                # writes no repair - it would change nothing and print a no-op line every pass.
+                if pol and _same_card_value(cur, value):
+                    continue
             if not chan.ok:
                 chan.refuse()
                 break
+            if comb_vt:
+                body = (f"the value is '{comb_vt}', Python's sum of the {len(comb_parts)} printed "
+                        f"lines ({' + '.join(comb_parts)}); the source prints no combined figure")
+            elif clear:
+                body = ("the broker chose to leave it unstated (the source prints several lines "
+                        "and no combined figure)" if pol else "the source states no value for it")
+            else:
+                body = f"the value is '{shown}'"
             chan.add(rid, prop, field, value,
-                     ("broker answered the exit-13 reader-doubt question on "
-                      + field + ": " + ("the source states no value for it" if clear
-                                        else f"the value is '{shown}'")
-                      + (f"; the broker's note: {note}" if note else "")),
-                     verified_by=f"broker (exit-13 answer to {q_id})",
+                     head + body + (f"; the broker's note: {note}" if note else ""),
+                     verified_by=vby,
                      clear=clear, source_file=str(stamp.get("source_file") or ""),
                      question_id=str(q_id))
     return chan.flush()
+
+
+def _combined_value(cur, value_text: str, field: str, prop: dict) -> tuple:
+    """(ok, value, refused_why) for Python's combined figure (3.2b) typed as the FIELD is typed.
+
+    A text field gets `value_text` VERBATIM: clarify spelled it so `normalize_number` reads it
+    back exactly (a comma-decimal sum is written European), whereas re-formatting it here with
+    `{:,}` would turn '3.234,75 sq m' into '3,234.75 sq m', which normalize misreads. A number
+    field gets the sum. An area field whose own unit differs from the sum's is refused, never
+    converted (the 10.76x class)."""
+    if isinstance(cur, bool):
+        return False, None, ""
+    if field in _area_fields():
+        area = _area_answer(value_text)
+        if area is None:
+            return False, None, ""
+        f_unit = _field_area_unit(prop, cur)
+        if f_unit and area[1] != f_unit:
+            return False, None, (f"it is stated in {area[1]} and the field is in {f_unit}, "
+                                 f"and the lander never converts a unit")
+        if isinstance(cur, (int, float)):
+            return True, area[0], ""
+        return True, value_text, ""
+    ok, value = _answer_as_field_type(cur, value_text)
+    return ok, value, ""
+
+
+def _same_card_value(cur, value) -> bool:
+    """Would writing `value` leave the card exactly as it is? Numbers compare through
+    `normalize_number` and must agree on the area unit they state (both stating none agrees);
+    text that carries no number compares case- and space-insensitively. False when unsure, so
+    the repair is written (the fail-safe direction: a no-op repair is noise, a skipped one is
+    a lost answer)."""
+    try:
+        import normalize as _N
+        if isinstance(cur, bool) or isinstance(value, bool):
+            return cur is value
+        a, b = _N.normalize_number(cur), _N.normalize_number(value)
+        if a is None or b is None:
+            if a is None and b is None:
+                return " ".join(str(cur).split()).lower() == " ".join(str(value).split()).lower()
+            return False
+        if abs(float(a) - float(b)) > 1e-6:
+            return False
+        ua = _N.area_unit_of(cur) if isinstance(cur, str) else None
+        ub = _N.area_unit_of(value) if isinstance(value, str) else None
+        return ua == ub
+    except Exception:
+        return False
+
+
+def _shows_expected(cur, expected: dict, prop: dict) -> bool:
+    """Does the shipped card's value equal the figure merge was EXPECTED to compute (3.2c)?
+    Within 0.5, in the same area unit (the card text's own, else the property's areaUnit).
+    True when it cannot tell (no number on either side): the recheck then leaves the doubt
+    settled rather than re-asking on a guess."""
+    import normalize as _N
+    ev = (expected or {}).get("value")
+    v = _N.normalize_number(cur)
+    if v is None or ev is None:
+        return True
+    try:
+        ev = float(ev)
+    except (TypeError, ValueError):
+        return True
+    cu = (_N.area_unit_of(cur) if isinstance(cur, str) else None) \
+        or _N.area_unit_of((prop or {}).get("areaUnit"))
+    eu = _N.area_unit_of((expected or {}).get("unit")) or (str((expected or {}).get("unit") or "")
+                                                            or None)
+    if cu and eu and cu != eu:
+        return False
+    return abs(float(v) - ev) <= 0.5
+
+
+def merge_settled_recheck(work: Path, canonical_path) -> list:
+    """THE SAFETY NET under a doubt closed WITHOUT asking because merge's own sum already shows
+    the combined figure (2026-09-26 test run, fix 3.2c; `clarify.WHY_MERGED`).
+
+    That closure is a PREDICTION made pre-merge from ONE record (`merge_expect`). The shipped
+    card can disagree: another source stating an office total beats `derive_office_sum`, or an
+    override moved the figure. A doubt closed on a prediction that did not come true would ship
+    the reader's torn-over figure with a Gaps Report line claiming the pipeline's sum is shown.
+    So, post-merge: every WHY_MERGED entry is resolved to its card by its stored anchors; when
+    the card's value of the field differs from the `expected` figure, the entry is removed from
+    `suppressed` and its stored per-card question (`question_payload`) is returned, for the
+    existing post-merge exit-13 door to ask. Asked once (non-blocking), so this re-opens a doubt
+    at most once. An entry already asked / answered / declined / stamped is left alone, and a
+    card that shows NO value is left alone too (the lander lands only on a populated field, so
+    asking would promise a landing that cannot happen). Any error: [] and one printed line."""
+    try:
+        import clarify as _CQ
+        import _common as C
+        import match as _M
+        why = getattr(_CQ, "WHY_MERGED", None)
+        if not why:
+            return []
+        st = _CQ.load_state(work)
+        sup = st.get("suppressed") or {}
+        ents = {k: v for k, v in sup.items()
+                if isinstance(v, dict) and v.get("why_not_asked") == why
+                and isinstance(v.get("question_payload"), dict)}
+        if not ents:
+            return []
+        closed = (set(st.get("asked") or []) | set(st.get("answers") or {})
+                  | set(st.get("declined") or []) | set(st.get("landable") or {}))
+        data = C.load_canonical(Path(canonical_path))
+        by_park: dict = {}
+        for p in (data.get("properties") or []):
+            if isinstance(p, dict):
+                by_park.setdefault(_M.norm(p.get("park")), []).append(p)
+        out, reopen = [], []
+        for qid, e in sorted(ents.items()):
+            if qid in closed:
+                continue
+            q = e["question_payload"]
+            field = str(q.get("field") or "")
+            anchors = e.get("anchors") or q.get("anchors") or []
+            if not field or not (isinstance(anchors, list) and anchors):
+                continue
+            differs = False
+            for _i, prop in _doubt_anchor_cards({"anchors": anchors}, by_park):
+                cur = prop.get(field)
+                if cur is not None and not _shows_expected(cur, e.get("expected") or {}, prop):
+                    differs = True
+            if differs:
+                qq = {k: v for k, v in q.items() if k != "over_cap"}
+                qq["id"] = str(qid)
+                out.append(qq)
+                reopen.append(str(qid))
+        if reopen:
+            for k in reopen:
+                sup.pop(k, None)
+            _CQ.save_state(work, st)
+        return out
+    except Exception as e:
+        print(f"(merge-settled recheck skipped: {type(e).__name__}: {e}; the doubts merge settled "
+              f"stay disclosed as settled)")
+        return []
 
 
 def excluded_figure_questions(work: Path, cfg: dict, canonical_path: Path) -> list:
@@ -1448,7 +1734,7 @@ def excluded_figure_questions(work: Path, cfg: dict, canonical_path: Path) -> li
     return pending
 
 
-def value_format_clarify(work: Path, canonical: Path) -> tuple:
+def value_format_clarify(work: Path, canonical: Path, emit: bool = True) -> tuple:
     """Bridge the value-format gate's findings to the broker via clarify (B59 -> exit 13).
 
     Returns (repairs_written, waivers_written, pending_questions). An ANSWERED unit
@@ -1456,7 +1742,11 @@ def value_format_clarify(work: Path, canonical: Path) -> tuple:
     gates on the next pass); a DECLINE ('leave as is' / skip / SKIP_ALL) becomes a
     waiver the gate ships-bare-but-notes; anything undecided is emitted as a BLOCKING
     exit-13 question. Idempotent per pass: repairs are keyed vf-<qid>, waivers are a
-    set, and clarify's own state machinery owns ask-once/decline semantics."""
+    set, and clarify's own state machinery owns ask-once/decline semantics.
+
+    `emit=False` (2026-09-26 test run, fix 3.7b) returns the pending questions WITHOUT writing
+    questions.json: the spine batches them with the arithmetic-basis questions into ONE emit,
+    because two emits in one pass would leave only the second batch in questions.json."""
     import clarify as _CQ
     import _common as C
     try:
@@ -1533,7 +1823,152 @@ def value_format_clarify(work: Path, canonical: Path) -> tuple:
     if n_wv:
         C.atomic_write_text(wv_path, json.dumps(wv_list, ensure_ascii=False, indent=2))
     pend = _CQ.pending(work, qs) + pend_extra
-    if pend:
+    if pend and emit:
+        _CQ.emit(work, pend)
+    return n_rep, n_wv, pend
+
+
+def _fig(x) -> str:
+    """A figure for a sentence only ('64,000' / '1,234.5'); never parsed back."""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return str(x)
+    if v.is_integer():
+        return f"{int(v):,}"
+    return f"{v:,.2f}".rstrip("0").rstrip(".")
+
+
+def arithmetic_basis_clarify(work: Path, canonical: Path, emit: bool = True) -> tuple:
+    """Bridge the arithmetic gate's `warehouse_is_total` findings to the broker (2026-09-26 test
+    run, fix 3.7b), modelled on `value_format_clarify`. Returns (repairs, waivers, pending).
+
+    THE SHAPE. A deck prints ONE whole-building total and no warehouse-only line; the reader
+    ships that total as warehouseArea (the contract says so: never subtract office space
+    yourself), so with the stated office beside it the dashboard's total area over-counts by
+    the office and the gate blocks. Which basis is right is the broker's decision, and in the
+    measured run it was taken in chat and hand-written as two repairs with no question id.
+    Now it is a BLOCKING exit-13 question (clarify.arithmetic_basis_questions), and:
+      * AB_DERIVE -> ONE attributed repair `ab-<qid>`: warehouseArea = printed total minus
+        printed office, computed HERE by Python, cited to the source file and never to a page
+        (the value is composed, not printed - see AnswerRepairs.add);
+      * AB_KEEP, or a decline -> a waiver in work/arithmetic_waivers.json carrying the three
+        figures it was given; the gate honours it ONLY while they still match;
+      * anything else -> re-asked with the rejection appended.
+    A decision on file for figures that have since CHANGED is never stretched over the new ones:
+    the gate refuses the stale waiver, and the question RE-FIRES under a figures-keyed id, so the
+    broker decides again for what the card now shows. `emit=False` returns the pending questions
+    for the spine's one combined emit. An unreadable findings file returns (0, 0, []), i.e. the
+    gate's own exit-6 remedy stands."""
+    import clarify as _CQ
+    import _common as C
+    try:
+        findings = json.loads((Path(work) / "arithmetic_findings.json")
+                              .read_text(encoding="utf-8-sig"))
+        if not isinstance(findings, list):
+            return 0, 0, []
+    except Exception:
+        return 0, 0, []
+    qs = _CQ.arithmetic_basis_questions(findings)
+    if not qs:
+        return 0, 0, []
+    answers = _CQ.ingest_answers(work)
+    declined = _CQ.declined_ids(work)
+    data = C.load_canonical(Path(canonical))
+    by_id = {str(p.get("id")): p for p in data.get("properties") or [] if isinstance(p, dict)}
+    wv_path = Path(work) / "arithmetic_waivers.json"
+    chan = AnswerRepairs(work, "arithmetic-basis")
+    try:
+        wv_list = json.loads(wv_path.read_text(encoding="utf-8-sig")) or []
+        if not isinstance(wv_list, list):
+            wv_list = []
+    except Exception:
+        wv_list = []
+    n_wv = 0
+    asked_qs, pend_extra = [], []
+    for q in qs:
+        qid = str(q.get("id") or "")
+        pid = str(q.get("property_id"))
+        wa, oa, total = q.get("warehouseArea"), q.get("officeAreaVal"), q.get("stated_total")
+        u = str(q.get("area_unit") or "").strip()
+        eff = dict(q)
+        mode = "decline" if qid in declined else _CQ.arithmetic_basis_mode(answers.get(qid))
+        # the gate emits a finding only when no waiver matches its CURRENT figures, so a
+        # keep/decline with a waiver already on file for this question means the figures moved
+        prior = [w for w in wv_list if isinstance(w, dict) and str(w.get("id")) == pid
+                 and str(w.get("question_id") or "").startswith(qid)]
+        if mode in ("keep", "decline") and prior:
+            sig = f"{float(wa):.2f}|{float(oa):.2f}|{float(total):.2f}"
+            rid_q = qid + "-" + hashlib.sha1(sig.encode("utf-8")).hexdigest()[:6]
+            ex = prior[-1].get("expect") if isinstance(prior[-1].get("expect"), dict) else {}
+            eff["id"] = rid_q
+            eff["question"] = (str(q.get("question") or "") +
+                               f" (Asked again: the earlier decision on {qid} was for warehouse "
+                               f"{_fig(ex.get('warehouseArea'))}, office "
+                               f"{_fig(ex.get('officeAreaVal'))} and total "
+                               f"{_fig(ex.get('statedTotal'))} {u}; the figures have changed.)")
+            mode = ("decline" if rid_q in declined
+                    else _CQ.arithmetic_basis_mode(answers.get(rid_q)))
+            if mode == "":
+                raw2 = answers.get(rid_q)
+                if raw2 is None or not str(raw2).strip():
+                    asked_qs.append(eff)
+                    continue
+        eid = str(eff["id"])
+        raw = answers.get(eid)
+        if mode == "derive":
+            prop = by_id.get(pid)
+            if not prop or not chan.ok:
+                if not chan.ok:
+                    chan.refuse()
+                continue
+            v = float(total) - float(oa)
+            v = int(round(v)) if abs(v - round(v)) < 1e-9 else round(v, 4)
+            rid = "ab-" + eid[:10] + ("" if eid == qid else "-" + eid[-6:])
+            if chan.has(rid):
+                # already written on an earlier pass and the gate STILL finds the shape: the
+                # repair did not take (SUPERSEDED / refused) - say so, never write a second one
+                print(f"(orchestrator: the arithmetic-basis repair {rid} for {eid} is already in "
+                      f"work/repairs.json, yet property {pid} '{_prop_label(prop)}' still shows the "
+                      f"printed total as its warehouse area - check the repairs report for a "
+                      f"SUPERSEDED or INVALID line on {rid}; nothing new was written.)")
+                continue
+            chan.add(rid, prop, "warehouseArea", v,
+                     (f"broker answered the exit-13 arithmetic-basis question: the source prints "
+                      f"only the building total {_fig(total)} {u} and no warehouse-only line; "
+                      f"warehouse area = printed total {_fig(total)} minus printed office "
+                      f"{_fig(oa)} = {_fig(v)} {u} (derived by Python, not a printed "
+                      f"figure)").replace("  ", " "),
+                     verified_by=f"broker (exit-13 answer to {eid})",
+                     source_file=str(q.get("source_file") or ""), question_id=eid)
+            continue
+        if mode in ("keep", "decline"):
+            if not any(isinstance(w, dict) and str(w.get("id")) == pid
+                       and str(w.get("question_id") or "") == eid for w in wv_list):
+                wv_list.append({
+                    "id": q.get("property_id"),
+                    "expect": {"warehouseArea": wa, "officeAreaVal": oa, "statedTotal": total},
+                    "question_id": eid,
+                    "why": ("broker kept the printed total as the warehouse area (exit-13 "
+                            "arithmetic-basis question)" if mode == "keep" else
+                            "broker declined the exit-13 arithmetic-basis question: the printed "
+                            "total stays as the warehouse area, disclosed")})
+                n_wv += 1
+            continue
+        if raw is not None and str(raw).strip():
+            # an unrecognised answer is RE-ASKED with the rejection spelled out - never guessed
+            qx = dict(eff)
+            qx["question"] = (str(eff.get("question") or "") +
+                              f" (Your previous answer '{raw}' matched neither option - answer "
+                              f"'{_CQ.AB_KEEP}' or '{_CQ.AB_DERIVE}' exactly, or 'skip'.)")
+            pend_extra.append(qx)
+            continue
+        asked_qs.append(eff)
+    n_rep = chan.flush()
+    if n_wv:
+        C.atomic_write_text(wv_path, json.dumps(wv_list, ensure_ascii=False, indent=2))
+    pend = _CQ.pending(work, asked_qs) + pend_extra
+    if pend and emit:
         _CQ.emit(work, pend)
     return n_rep, n_wv, pend
 
@@ -1872,6 +2307,25 @@ def _is_current(out, inputs, stage: str = "", exclude_dir=None) -> bool:
     return out_m >= newest_in
 
 
+def _cluster_cache_stamp_ok(work) -> bool:
+    """True when inventory.json was built from the cluster-label cache that is on disk NOW.
+
+    2026-09-26 test run, fix 3.1 (label rollback). `_is_current` skips an input that does not
+    exist, so DELETING work/intake_clusters.json (or declining it with intake_clusters.SKIP)
+    never made inventory.json stale: a label that had fused two decks outlived the file that
+    made it, pass after pass. intake main records `cluster_cache_sha` (sha1 of the cache bytes,
+    "" when absent or declined) and this compares it with the file as it stands, through the
+    SAME `intake.cluster_cache_stamp` recipe so the two sides cannot disagree. An old inventory
+    has no key and reads as "" - equal when there is no cache (no rescan), one deterministic
+    rescan when a cache exists. Any read error -> False: re-running intake is the safe side."""
+    try:
+        import intake as _IN
+        _inv = json.loads((Path(work) / "inventory.json").read_text(encoding="utf-8-sig"))
+        return str(_inv.get("cluster_cache_sha") or "") == str(_IN.cluster_cache_stamp(work) or "")
+    except Exception:
+        return False
+
+
 def _resumed(label: str) -> None:
     """One quiet 'skipped, already up to date' note in verbose mode; silent for brokers.
 
@@ -2206,19 +2660,22 @@ def _write_decision_trail(work: Path, record_files: list, n_xlsx: int, interpret
 
 
 def _full_view_for_humans(work: Path, folder) -> None:
-    """F20: write the FULL per-property view (media included) because a pre-build gate has
-    BLOCKED this pass and a human is about to open work/properties/ to see why. The ordinary
-    pass writes the data half only (see the projection stage); this is the one place the
-    media half is written by the spine, so the 50-second, 80 MB rebuild is paid exactly when
-    someone will look at it. Prints one line naming the exact command that produces the same
-    view by hand (B5's `rebuild_command`), and never raises: a projection failure must not
-    hide the gate verdict it is decorating."""
+    """F20: write the FULL per-property view (media included) because a human is about to open
+    work/properties/: a pre-build gate has BLOCKED this pass, or (2026-09-26, fix 2.2) the
+    independent QA reviewers are about to be dispatched at exit 14 - G-images is told to verify
+    image claims against the per-property media, and on the real run it had none. The ordinary
+    pass writes the data half and CARRIES a media half whose inputs are unchanged (per-property
+    stamps, project_properties.py); this is where the spine writes the rest, so a full render is
+    paid once and later calls reuse it. Prints one line naming the exact command that produces
+    the same view by hand (B5's `rebuild_command`) and how many halves were reused, and never
+    raises: a projection failure must not hide the verdict or the handoff it is decorating."""
     try:
         import project_properties as _pp   # not `_proj`: an eval anchors on the stage's import
         _pr = _pp.build(work, source_dir=folder, image_cache=work / ".image_cache",
                         media_view="always")
         print(f"(full per-property view written for review: {_pr['count']} folder(s) under "
-              f"work/properties/ incl. media; rebuild by hand with: "
+              f"work/properties/ incl. media ({_pr.get('carried', 0)} unchanged and reused, "
+              f"{_pr.get('rebuilt', 0)} rebuilt); rebuild by hand with: "
               + _pp.rebuild_command(work, folder, work / ".image_cache") + ")", file=sys.stderr)
     except Exception as _e:
         print(f"(full per-property view skipped: {type(_e).__name__}: {_e})", file=sys.stderr)
@@ -2496,6 +2953,84 @@ def _load_records(f) -> list:
     return _RECFILE_CACHE[key]
 
 
+def _hoist_vision_prov(work: Path, extract: Path) -> list:
+    """Move a reader's top-level `prov` under `__meta.prov`, ON DISK, at record load
+    (2026-09-26 test run, fix 1.5a).
+
+    3 of 22 readers on one run wrote `prov` beside the fields. The validator refused each (a
+    top-level prov is quarantined by merge, so every ledger row would lose its locator) and the
+    only remedy was re-dispatching the whole reader - 120-145 k tokens for a slip that moves no
+    value. The move is lossless and purely structural, so the spine does it itself; the pure
+    rule lives in `vision_validate.hoist_toplevel_prov` (a different locator already under
+    __meta is never overwritten - it stays top level and the validator still names it).
+
+    WHY HERE AND ON DISK, not inside validate(): validate() is also a standalone checker that
+    must not rewrite files, and every downstream reader (merge, the master list, the ledger)
+    reads the FILE, so only an on-disk fix makes them all agree. Same precedent as the
+    needs_raster rewrite just below the call site.
+
+    Returns the notes written this call. Fail-safe per file: a failed write drops the cached
+    (hoisted) parse so the in-memory fix cannot outlive it, and the validator refuses exactly as
+    it did before this existed. Each fix is logged once to work/vision/structural_fixes.json."""
+    out: list = []
+    try:
+        import vision_validate as _VV
+        hoist = getattr(_VV, "hoist_toplevel_prov", None)
+        if hoist is None:
+            return out
+        import _common as _C
+    except Exception as e:
+        print(f"  (structural prov fix unavailable: {type(e).__name__}: {e})", file=sys.stderr)
+        return out
+    for vf in sorted(Path(extract).glob("*_vision.json")):
+        try:
+            recs = _load_records(vf)
+            if not recs:
+                continue
+            notes = hoist(recs)
+            if not notes:
+                continue
+            try:
+                _C.atomic_write_text(vf, json.dumps(recs, ensure_ascii=False))
+            except Exception as e:
+                _RECFILE_CACHE.pop(str(vf), None)
+                print(f"  (structural prov fix not written for {vf.name}: {e})", file=sys.stderr)
+                continue
+            at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+            for n in notes:
+                out.append(dict(n, file=vf.name, at=at))
+            if not QUIET:
+                print(f"  (structural fix: moved a top-level `prov` under `__meta.prov` in "
+                      f"{len(notes)} record(s) of {vf.name} - no value changed; logged in "
+                      f"work/vision/structural_fixes.json)", file=sys.stderr)
+        except Exception as e:
+            _RECFILE_CACHE.pop(str(vf), None)
+            print(f"  (structural prov fix skipped for {vf.name}: {e})", file=sys.stderr)
+    if out:
+        try:
+            log = Path(work) / "vision" / "structural_fixes.json"
+            try:
+                cur = json.loads(log.read_text(encoding="utf-8-sig")) if log.exists() else {}
+            except Exception:
+                cur = {}
+            fixes = cur.get("fixes") if isinstance(cur, dict) else None
+            fixes = [f for f in (fixes or []) if isinstance(f, dict)]
+            seen = {(f.get("file"), f.get("record"), tuple(f.get("moved") or [])) for f in fixes}
+            for n in out:
+                k = (n["file"], n.get("record"), tuple(n.get("moved") or []))
+                if k not in seen:
+                    seen.add(k)
+                    fixes.append({"file": n["file"], "record": n.get("record"),
+                                  "park": n.get("park", ""), "moved": list(n.get("moved") or []),
+                                  "kept_top_level": list(n.get("kept_top_level") or []),
+                                  "at": n["at"]})
+            _C.atomic_write_text(log, json.dumps({"v": 1, "fixes": fixes}, ensure_ascii=False,
+                                                 indent=1))
+        except Exception as e:
+            print(f"  (structural fix log not written: {e})", file=sys.stderr)
+    return out
+
+
 def _deck_is_low_quality(files) -> bool:
     """True when MOST of a deck's records parsed poorly - the parser read the pages
     but could not extract usable data (a table/narrative layout it was not built
@@ -2705,6 +3240,237 @@ def _save_force_raster(work: Path, decks: set) -> None:
                                            ensure_ascii=False, indent=1))
     except Exception:
         pass
+
+
+# --------------------------------------------------------------------------- #
+# 3.18 RE-READ A DECK WITH THE BROKER'S DECISION (2026-09-26 test run).
+#
+# A reader doubt about HOW MANY options a deck yields ("one property or two?") has no repair
+# that can carry its answer: a repair edits a card, it cannot create or remove one. The measured
+# run printed a paste-a-repair skeleton for two such answers on every pass. Now clarify routes a
+# count doubt from a brochure deck to "reread" (`answer_route`), and an answer that picks one of
+# its options OTHER than the as-shipped one (`clarify.reread_requests`) re-reads that deck ONCE,
+# with the decision in its reader prompt's Run context. The same idiom as force_raster: a
+# durable per-deck file, because the request is derived from state that later passes change.
+#
+#   work/vision/reread.json = {"schema_version": 1, "decks": {_vkey(deck file name): {
+#       qid, key, source_file, answer, question, output, prior, started, done}}}
+#
+# The prior output is MOVED to work/extract/_prior_reads/ (never deleted, principle 4); the
+# non-recursive `extract.glob("*_vision.json")` never loads it, so the deck becomes an
+# interpretation target. A new output marks the entry done and it never re-fires. Re-answering
+# as shipped (or skip) before the re-read ran restores the prior output - the escape hatch. No
+# reread.json means exactly today's behaviour; every step fails safe to it with one line.
+# --------------------------------------------------------------------------- #
+REREAD_FILE = "reread.json"
+PRIOR_READS_DIR = "_prior_reads"
+
+
+def _reread_path(work: Path) -> Path:
+    return Path(work) / "vision" / REREAD_FILE
+
+
+def _load_reread(work: Path) -> dict:
+    """{"schema_version": 1, "decks": {...}}; an empty map on a missing or unreadable file."""
+    try:
+        raw = json.loads(_reread_path(work).read_text(encoding="utf-8-sig"))
+        decks = raw.get("decks") if isinstance(raw, dict) else None
+        if isinstance(decks, dict):
+            return {"schema_version": 1,
+                    "decks": {str(k): v for k, v in decks.items() if isinstance(v, dict)}}
+    except Exception:
+        pass
+    return {"schema_version": 1, "decks": {}}
+
+
+def _save_reread(work: Path, st: dict) -> None:
+    """Write only on a change; drop the file when nothing is recorded (no stale state)."""
+    p = _reread_path(work)
+    import _common as _C
+    decks = (st or {}).get("decks") or {}
+    if not decks:
+        if p.exists():
+            p.unlink()
+        return
+    text = json.dumps({"schema_version": 1, "decks": decks}, ensure_ascii=False, indent=1,
+                      sort_keys=True)
+    try:
+        if p.exists() and p.read_text(encoding="utf-8-sig") == text:
+            return
+    except Exception:
+        pass
+    p.parent.mkdir(parents=True, exist_ok=True)
+    _C.atomic_write_text(p, text)
+
+
+def _reread_output(work: Path, entry: dict, src_name: str):
+    """The deck's own interpretation output path (the durable deck_outputs map, else the one the
+    entry recorded when it moved the prior), or None."""
+    rel = load_deck_outputs(work).get(_vkey(src_name)) or str((entry or {}).get("output") or "")
+    return (_deck_output_path(work, {"output": rel}), rel) if rel else (None, "")
+
+
+def _prior_abs(work: Path, entry: dict):
+    """The moved prior output as a path: stored work-dir-relative ('extract/_prior_reads/..'),
+    so a work dir copied elsewhere still finds it; an absolute one is honoured as is."""
+    prior = str((entry or {}).get("prior") or "")
+    if not prior:
+        return None
+    p = Path(prior)
+    return p if p.is_absolute() else Path(work) / p
+
+
+def _restore_prior(work: Path, entry: dict, src_name: str) -> str:
+    """Put a moved prior output back when the deck's output is missing (an undone re-read).
+    Returns a short line for the log, '' when nothing was done."""
+    pp = _prior_abs(work, entry)
+    if pp is None:
+        return ""
+    out, _rel = _reread_output(work, entry, src_name)
+    if out is None or out.exists() or not pp.exists():
+        return ""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    pp.replace(out)
+    _RECFILE_CACHE.pop(str(out), None)
+    return f"(re-read of '{src_name}' withdrawn: its earlier output was restored to {out})"
+
+
+def _plan_rereads(work: Path) -> dict:
+    """Merge clarify's re-read requests into work/vision/reread.json; returns its `decks` map.
+
+    A pending (not done) entry whose request vanished (re-answered as shipped, or skipped) or
+    whose answer key changed gets its moved prior output RESTORED before it is dropped or
+    replaced, so a re-read the broker withdraws never costs the deck its records. A done entry
+    is history: kept, and replaced only when a NEW answer asks for another re-read. Free-text
+    answers on a re-read question schedule nothing; one line asks for an option instead."""
+    import clarify as _CQ
+    if not callable(getattr(_CQ, "reread_requests", None)):
+        return {}
+    _sf = str(getattr(_CQ, "STATE_FILE", "") or "clarify_state.json")
+    if not (Path(work) / _sf).exists() and not _reread_path(work).exists():
+        return {}
+    _CQ.ingest_answers(work)
+    reqs: dict = {}
+    for r in _CQ.reread_requests(work) or []:
+        sf = str(r.get("source_file") or "")
+        if sf:
+            reqs[_vkey(Path(sf).name)] = r
+    st = _load_reread(work)
+    decks = st["decks"]
+    for k in sorted(set(decks) | set(reqs)):
+        e, r = decks.get(k), reqs.get(k)
+        if e is not None and e.get("started") and not e.get("done"):
+            # the re-read already RAN (its new output is on disk): it is done, whatever the
+            # answer says now - a finished re-read is never silently undone
+            try:
+                _o, _ = _reread_output(work, e, Path(str(e.get("source_file") or k)).name)
+                if _o is not None and _o.exists():
+                    e["done"] = True
+            except Exception:
+                pass
+        if e is not None and r is not None and str(e.get("key")) == str(r.get("key")):
+            continue                                   # unchanged request
+        if e is not None and e.get("done") and r is None:
+            continue                                   # history: the re-read already happened
+        if e is not None and not e.get("done"):
+            try:
+                ln = _restore_prior(work, e, Path(str(e.get("source_file") or k)).name)
+                if ln:
+                    print(ln)
+            except Exception as _e:
+                print(f"(re-read of '{e.get('source_file')}': its earlier output could not be "
+                      f"restored ({type(_e).__name__}: {_e}); it is kept in "
+                      f"work/extract/{PRIOR_READS_DIR}/)")
+        if r is None:
+            decks.pop(k, None)
+            continue
+        decks[k] = {"qid": str(r.get("qid") or ""), "key": str(r.get("key") or ""),
+                    "source_file": str(r.get("source_file") or ""),
+                    "answer": str(r.get("answer") or ""),
+                    "question": str(r.get("question") or "")[:400],
+                    "output": "", "prior": "", "started": False, "done": False}
+    _save_reread(work, st)
+    for u in (getattr(_CQ, "reread_unmatched", lambda _w: [])(work) or []):
+        _say_orchestrator(
+            f"(orchestrator: the answer to {u.get('qid')} ({str(u.get('answer'))!r}) is not one of "
+            f"its options, so no re-read was scheduled and it stays recorded and disclosed. To act "
+            f"on it, re-answer {u.get('qid')} in work/answers.json with one of: "
+            f"{'; '.join(repr(o) for o in (u.get('options') or []))}.)")
+    return decks
+
+
+def _reread_context(entry: dict) -> str:
+    """The Run-context text a re-read deck's reader prompt carries (fix 3.18). Additive: every
+    contract rule above it stands; it names the decision and where the previous output went."""
+    prior = str((entry or {}).get("prior") or "")
+    if not prior:
+        prior = "nowhere (no earlier output was on disk)"
+    elif not Path(prior).is_absolute():
+        prior = "work/" + prior
+    return (f"- BROKER DECISION for this deck (exit-13 answer to {entry.get('qid')}). The question "
+            f"was: \"{entry.get('question')}\". The broker answered: \"{entry.get('answer')}\". "
+            f"Read the deck again and emit the records so they reflect this decision; every "
+            f"contract rule above is unchanged. Your previous output was moved to {prior} and is "
+            f"NOT your input - read the deck itself.")
+
+
+def _reread_slot(text: str) -> str:
+    """The CONTEXT slot for a re-read deck: the decision, plus the host fact the default Run
+    context would have carried (fix 2.4's tool-call cap), so passing CONTEXT loses nothing. The
+    default's '(none recorded by the pipeline ...)' line is NOT kept - it would contradict the
+    decision the pipeline just recorded."""
+    try:
+        import prompts_render as _pr
+        n = _pr.host_tool_cap()
+        return str(text) + (_pr.HOST_FACT_TEMPLATE.format(n=n) if n else "")
+    except Exception:
+        return str(text)
+
+
+def _apply_reread(work: Path, src_name: str, decks: dict | None = None) -> tuple:
+    """(force, context) for ONE deck in the deck loop (fix 3.18). `force` makes the deck an
+    interpretation target this pass; `context` is the Run-context text for its reader prompt.
+
+    Not started: the deck's current output (if any) is MOVED to
+    work/extract/_prior_reads/<output stem>.<key>.json and the entry marked started, so the
+    deck is re-read. Started, and an output exists again: the re-read ran - marked done, never
+    re-fired. Started, no output yet: still forced (the orchestrator has not dispatched it; the
+    exit-3 streak accounting bounds that, and re-answering as shipped undoes it)."""
+    decks = _plan_rereads(work) if decks is None else decks
+    e = (decks or {}).get(_vkey(src_name))
+    if not isinstance(e, dict) or e.get("done"):
+        return False, None
+    out, rel = _reread_output(work, e, src_name)
+    st = _load_reread(work)
+    k = _vkey(src_name)
+    cur = st["decks"].get(k)
+    if not isinstance(cur, dict) or str(cur.get("key")) != str(e.get("key")):
+        return False, None
+    if not cur.get("started"):
+        if out is not None and out.exists():
+            dest_dir = Path(work) / "extract" / PRIOR_READS_DIR
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / f"{out.stem}.{cur.get('key')}.json"
+            n = 1
+            while dest.exists():                       # never overwrite an earlier prior
+                dest = dest_dir / f"{out.stem}.{cur.get('key')}.{n}.json"
+                n += 1
+            out.replace(dest)
+            _RECFILE_CACHE.pop(str(out), None)
+            try:
+                cur["prior"] = dest.relative_to(Path(work)).as_posix()
+            except ValueError:
+                cur["prior"] = str(dest)
+        cur["output"] = rel
+        cur["started"] = True
+        _save_reread(work, st)
+    elif out is not None and out.exists():
+        cur["done"] = True
+        _save_reread(work, st)
+        e.update(cur)
+        return False, None
+    e.update(cur)
+    return True, _reread_context(cur)
 
 
 def photo_match_candidates(targets: list, force_raster: set) -> list:
@@ -3647,6 +4413,82 @@ def _say_orchestrator(msg: str) -> None:
     print(msg)
 
 
+def _say_repair_contract(work: Path) -> None:
+    """Print the repairs.json entry contract under a correction handoff (2026-09-26 test run,
+    fix 1.7). Exits 6 and 15 name `work/repairs.json` as a remedy, but the entry shape lived only
+    in code and docs, so the orchestrator had to go and read repairs.py to write one. The lines
+    come from `repairs.contract_hint`, derived LIVE from the registry (twins, denied fields), so
+    they cannot drift from what the validator accepts. Print only; any failure prints nothing
+    and the exit is unchanged."""
+    try:
+        import repairs as _R
+        for ln in _R.contract_hint(work):
+            _say_orchestrator(ln)
+    except Exception:
+        pass
+
+
+PRINT_DIGESTS = "print_digests.json"   # work/<this>: {"v":1,"digests":{key: sha256[:16]}}
+
+
+def _print_once(work: Path, key: str, content: str, full_lines: list, repeat_lines: list,
+                handoff: bool = False) -> None:
+    """Print `full_lines` the first time `content` is seen, `repeat_lines` on later passes
+    (2026-09-26 test run, fix 1.10).
+
+    A resumed run re-reports re-applied state as news on every pass: the real run reprinted a
+    1,652-char duplicate-file note and two ~600-char recorded-only doubt templates on all 13
+    passes. "First time" cannot be read from the data for those two, so a digest of the content
+    is kept in work/print_digests.json and the full text prints only when it CHANGES.
+
+    --verbose always prints the full lines. `handoff=True` routes every line through
+    `_say_orchestrator`, so a repeat is still one `(orchestrator: ...)` line per item on every
+    pass - an instruction the orchestrator needs is never suppressed, only shortened. FAIL SAFE:
+    no digest store (a fresh work dir, an old one, an unreadable or unwritable file) means the
+    full text, exactly as before this existed. The full text itself must stay reachable in an
+    artefact the caller names in `repeat_lines`."""
+    emit = _say_orchestrator if handoff else print
+    lines = list(full_lines)
+    store_digest = None
+    try:
+        digest = hashlib.sha256(str(content).encode("utf-8")).hexdigest()[:16]
+        path = Path(work) / PRINT_DIGESTS
+        cur: dict = {}
+        try:
+            if path.exists():
+                cur = json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            cur = {}
+        digests = cur.get("digests") if isinstance(cur, dict) else None
+        digests = dict(digests) if isinstance(digests, dict) else {}
+        if QUIET and digests.get(key) == digest:
+            lines = list(repeat_lines)
+        elif digests.get(key) != digest:
+            store_digest = (path, digests, digest)
+    except Exception:
+        lines = list(full_lines)
+        store_digest = None
+    for ln in lines:
+        emit(ln)
+    if store_digest is not None:
+        try:
+            path, digests, digest = store_digest
+            digests[key] = digest
+            _write_if_changed(path, json.dumps({"v": 1, "digests": digests}, sort_keys=True,
+                                               indent=1))
+        except Exception:
+            pass   # the next pass prints the full text again - the safe side
+
+
+def _clarify_state_answers(work: Path) -> dict:
+    """{question id: the broker's raw answer} off work/clarify_state.json; {} on any problem."""
+    try:
+        import clarify as _CQ
+        return dict((_CQ.load_state(work) or {}).get("answers") or {})
+    except Exception:
+        return {}
+
+
 def _render_dispatch_prompts(work: Path, jobs: list, wipe: bool = True) -> str:
     """P1 (prompts-as-files): render the canonical dispatch prompt per pending job to
     <work>/prompts/ and return the one-line handoff sentence naming them ('' when nothing
@@ -3668,6 +4510,71 @@ def _render_dispatch_prompts(work: Path, jobs: list, wipe: bool = True) -> str:
             f"dispatch each as an isolated sub-agent whose prompt is that file's contents "
             f"VERBATIM (append run-specific facts only under its 'Run context' heading, "
             f"never edit above it).")
+
+
+def _render_reader_repairs(work: Path, vision_files, v_errors) -> str:
+    """Render ONE bounded `reader-repair` prompt per refused interpretation output and return the
+    handoff sentence naming them ('' when nothing rendered) - 2026-09-26 test run, fix 1.5b.
+
+    Before this, the vision-invalid exit had one remedy: re-dispatch the whole reader, 120-145 k
+    tokens, for errors that are usually a missing page_no or one bad index. The repair prompt
+    (prompts/reader-repair.md) carries the file to correct in place, the validator's errors for
+    THAT file only, the one legal record shape and a "move, never retype" rule; resuming the
+    agent that wrote the file costs 2-14 k.
+
+    wipe=False on purpose: wave-2 reader prompts may still be pending in prompts/ and must not
+    be moved to _done/ by a repair. Every error string validate() emits starts with the file's
+    name (`<name>: ...` or `<name> record k ...`), which is how errors are routed to files.
+    Best-effort: any failure prints one line and returns '', i.e. today's behaviour (the [FAIL]
+    lines above it still print in full)."""
+    try:
+        import prompts_render as _pr
+        jobs = []
+        pdir = Path(work) / "prompts"
+        for vf in vision_files or []:
+            vf = Path(vf)
+            errs = [e for e in (v_errors or []) if isinstance(e, str)
+                    and (e.startswith(vf.name + ":") or e.startswith(vf.name + " record "))]
+            if not errs:
+                continue
+            deck = ""
+            try:
+                recs = json.loads(vf.read_text(encoding="utf-8-sig"))
+                if isinstance(recs, list):
+                    for r in recs:
+                        if isinstance(r, dict) and isinstance(r.get("__meta"), dict):
+                            deck = str(r["__meta"].get("source_file") or "")
+                            break
+            except Exception:
+                deck = ""
+            sid = _pr._safe_id(vf.stem)
+            orig = ""
+            for cand in (pdir / "_done" / f"reader-text--{sid}.md",
+                         pdir / "_done" / f"reader-raster--{sid}.md",
+                         pdir / f"reader-text--{sid}.md", pdir / f"reader-raster--{sid}.md"):
+                if cand.exists():
+                    orig = str(cand)
+                    break
+            jobs.append(("reader-repair", vf.stem, {
+                "DECK_NAME": deck or vf.stem,
+                "OUTPUT_PATH": str(vf),
+                "ERRORS": "\n".join("- " + e for e in errs),
+                "ORIGINAL_PROMPT": orig or "(not on disk - reference/interpretation.md is the "
+                                           "contract)"}))
+        if not jobs:
+            return ""
+        files = _pr.write_prompts(work, jobs, wipe=False)
+    except Exception as e:
+        print(f"  (repair prompts not rendered: {type(e).__name__}: {e})", file=sys.stderr)
+        return ""
+    if not files:
+        return ""
+    names = ", ".join(Path(f).name for f in files)
+    return (f"(orchestrator: {len(files)} repair prompt(s) rendered - {names} in "
+            f"{Path(work) / 'prompts'}. Each is a SMALL bounded correction of ONE output file, "
+            f"not a re-read: prefer RESUMING the reader agent that wrote that file with the "
+            f"prompt's contents; otherwise give ONE fresh agent the file's contents VERBATIM. "
+            f"Never re-dispatch the full reader for these errors. Then re-run the same command.)")
 
 
 def _yield_stdout_lines(notes, link_ix, report_path) -> list[str]:
@@ -4127,12 +5034,30 @@ def main() -> None:
     # which is the whole point - the run's own outputs are excluded, its declared inputs are not.
     # This is the SAME exclusion intake.discover(exclude_dir=...) already applies to its walk;
     # the predicate simply never got it. ONLY this call site passes it.
+    # 2026-09-26 test run, fix 3.1: ...and the inventory must have been built from the cluster
+    # cache as it stands NOW (`_cluster_cache_stamp_ok`): `_is_current` skips a missing input, so
+    # deleting or declining the cache used to leave a fused label in place forever. Out of scope
+    # (--from/--only past the folder scan) keeps today's behaviour: the stamp is not consulted.
+    _fs_resumed = False
     if _is_current(work / "inventory.json", [folder, work / "intake_clusters.json"],
-                   stage="folder scan", exclude_dir=work) and proj.exists():
+                   stage="folder scan", exclude_dir=work) and proj.exists() \
+            and (_stage_skipped("folder scan") or _cluster_cache_stamp_ok(work)):
         _resumed("folder scan")
+        _fs_resumed = True
     else:
         call(intake, folder, "--out-dir", work, "--client", args.client)
     inv = json.loads((work / "inventory.json").read_text(encoding="utf-8-sig"))
+    # 2026-09-26 test run, fix 3.24: an input on a path longer than Windows allows is NOT in the
+    # run, and that must be said on EVERY pass, once. intake prints the line itself when it runs,
+    # but `call` swallows a helper's stdout in quiet mode and intake does not run at all on a
+    # resumed pass - so the spine prints it from the inventory in exactly those two cases.
+    if _fs_resumed or QUIET:
+        try:
+            _lpw = intake.long_path_warning(inv)
+        except Exception:
+            _lpw = ""
+        if _lpw:
+            print(_lpw)
     # SEAM-3: a cluster label's close-call NOTE (the label agent's one-line reasoning, kept by
     # intake as inventory.json["cluster_label_notes"]) lands in the Gaps Report's "Noted, not
     # put to you" through clarify's suppressed ledger, so the reasoning behind a routing name
@@ -4140,8 +5065,12 @@ def main() -> None:
     # `clarify.materiality` honours ahead of any kind table, because the note cannot change a
     # card: labels are routing names, never evidence. `replace_kind` re-keys a re-labelled
     # stem instead of leaving its old note beside the new one. No deliver.py change needed.
+    # 2026-09-26 test run, fix 3.1: an EMPTY list (labels declined, refused or rolled back) must
+    # still reach `replace_kind`, or the old notes stay in the Gaps Report naming labels that no
+    # longer exist. note_suppressed writes only on a change, so an unchanged empty list is free;
+    # an old inventory without the key keeps today's no-op.
     _cl_notes = [n for n in (inv.get("cluster_label_notes") or []) if isinstance(n, dict)]
-    if _cl_notes:
+    if _cl_notes or "cluster_label_notes" in inv:
         try:
             import clarify as _CQn
             _CQn.note_suppressed(work, [{
@@ -4159,12 +5088,17 @@ def main() -> None:
                   f"{type(_e).__name__}: {_e})", file=sys.stderr)
     # INTAKE-001: surface byte-identical duplicate inputs intake skipped (extracted once,
     # not twice) - honest + quiet-aware, never a silent drop. (.get for an old inventory.)
+    # Fix 1.10 (2026-09-26 test run): printed in full the first time the list is seen (and
+    # always under --verbose); an unchanged list is one short line naming where it lives.
     _dups = inv.get("skipped_duplicates") or []
     if _dups:
         _dmsg = "; ".join(f"{d['file']} (identical to {d['duplicate_of']})" for d in _dups)
-        print((f"Note: skipped {len(_dups)} duplicate file(s) - exact copies of inputs I "
-               f"already have: {_dmsg}") if QUIET
-              else f"NOTE: skipped {len(_dups)} byte-identical duplicate input(s): {_dmsg}")
+        _dfull = ((f"Note: skipped {len(_dups)} duplicate file(s) - exact copies of inputs I "
+                   f"already have: {_dmsg}") if QUIET
+                  else f"NOTE: skipped {len(_dups)} byte-identical duplicate input(s): {_dmsg}")
+        _print_once(work, "skipped_duplicates", _dmsg, [_dfull],
+                    [f"Note: {len(_dups)} duplicate file(s) still skipped - the same list as an "
+                     f"earlier pass (work/inventory.json -> skipped_duplicates)."])
     cfg = load_yaml(proj)
     enr = cfg.get("enrichment", {})
     # dashboard chrome language (Stage-0 Q3): the --language flag overrides project.yaml
@@ -4315,6 +5249,10 @@ def main() -> None:
     def _count(f):
         return len(_load_records(f))
 
+    # STRUCTURAL PROV FIX (fix 1.5a), FIRST, before vision_done / vision_validate: a top-level
+    # `prov` is moved under `__meta.prov` on disk, so a structural slip never costs a re-read.
+    _hoist_vision_prov(work, extract)
+
     # NEEDS-RASTER ESCALATION (consume it BEFORE vision_done / vision_validate): a text
     # deck the interpretation sub-agent found garbled/unusable writes a stub record
     # {__meta:{source_file, needs_raster:true}} into <region>_vision.json
@@ -4379,20 +5317,45 @@ def main() -> None:
         return extract / f"{_slug(rel)[:40]}_{h}_{suffix}.json"
 
     # SCOPE, DECIDED BY THE USER, APPLIED BEFORE THE EXPENSIVE STEP. An answered master list
-    # (work/master_list.json, the "master list" stage below) names the brochure clusters the
+    # (work/master_list.json, the "master list" stage below) names the brochure decks the
     # user struck off. Those decks are never prepped, never rendered and never dispatched to a
     # reader agent - which is the entire economic argument for putting the sheet here rather
     # than after the merge, where the Kapdaa run's source-authority question effectively asked
     # the same thing and asked it once every deck had already been read. Empty on the first
     # pass and on a headless run, so both behave exactly as they did before this existed.
+    # 2026-09-26 test run, fix 3.1: the skip is keyed on the deck FILE (lower basename), not on
+    # the cluster label. The label is a routing name that a relabel changes, and a label-keyed
+    # skip then silently stopped applying an answered No, so the deck was read anyway.
+    # `excluded_deck_files` also reads a legacy per-cluster sheet through each row's
+    # source_files, so it holds before that sheet is migrated (the master-list stage below).
     import master_list as _ML
-    _ml_skip_clusters = _ML.excluded_cluster_labels(work)
+    try:
+        _ml_skip_files = set(_ML.excluded_deck_files(work))
+    except Exception as _e:
+        # fail safe: today's label-keyed skip, expressed as that cluster's files
+        print(f"  (master list: per-file scope not read - {type(_e).__name__}: {_e}; "
+              f"using the per-cluster answers)", file=sys.stderr)
+        try:
+            _ml_skip_labels = _ML.excluded_cluster_labels(work)
+        except Exception:
+            _ml_skip_labels = set()
+        _ml_skip_files = {Path(str(_f)).name.lower()
+                          for _reg, _c in (inv.get("clusters") or {}).items()
+                          if _reg in _ml_skip_labels and isinstance(_c, dict)
+                          for _f in [*(_c.get("pdfs") or []), *(_c.get("pptxs") or []),
+                                     *([_c["pdf"]] if _c.get("pdf") else []),
+                                     *([_c["pptx"]] if _c.get("pptx") else [])]}
+    # 2026-09-26 test run, fix 3.18: a broker answer asking for a deck to be RE-READ with their
+    # decision (a count doubt answered with an option other than the as-shipped one). Planned
+    # once here; each deck is checked in the loop below. Fails safe to today's behaviour.
+    _reread_ctx: dict = {}          # _vkey(deck file name) -> Run-context text for its prompt
+    try:
+        _rereads = _plan_rereads(work)
+    except Exception as _e:
+        _rereads = {}
+        print(f"(re-reads not planned: {type(_e).__name__}: {_e}; any such answer stays "
+              f"recorded and disclosed)")
     for region, cl in inv["clusters"].items():
-        if region in _ml_skip_clusters:
-            if not QUIET:
-                print(f"  ({region}: you marked it No on the master list - its deck(s) are not "
-                      f"read; it is named in the Gaps Report)")
-            continue
         # ABSENCE, NOT A SENTINEL (F7). This used to mint the two-question-mark placeholder,
         # which then travelled into the deck entry and the reader prompt. Measured on a live run:
         # five of seven readers said, unprompted, that they had to derive the country themselves
@@ -4415,9 +5378,26 @@ def main() -> None:
         # honest GAP, never an interpretation target.
         for rel in [*pdfs, *pptxs]:
             src = folder / rel
+            if src.name.lower() in _ml_skip_files:
+                if not QUIET:
+                    print(f"  ({src.name}: you marked it No on the master list - it is not "
+                          f"read; it is named in the Gaps Report)")
+                continue
+            # fix 3.18: a scheduled re-read MOVES this deck's output aside (so it is not done)
+            # and carries the broker's decision into its reader prompt
+            _rr_force = False
+            if _rereads:
+                try:
+                    _rr_force, _rr_text = _apply_reread(work, src.name, _rereads)
+                    if _rr_text:
+                        _reread_ctx[_vkey(src.name)] = _rr_text
+                except Exception as _e:
+                    _rr_force = False
+                    print(f"(re-read of '{src.name}' not scheduled: {type(_e).__name__}: {_e}; "
+                          f"the answer stays recorded and disclosed)")
             # a deck the sub-agent escalated to raster (needs_raster) must be re-prepped,
             # NOT treated as already-done by the region-level supersede/has_vision guard
-            _done = _vision_supersedes(work, region, src.name) or has_vision
+            _done = (_vision_supersedes(work, region, src.name) or has_vision) and not _rr_force
             if src.name in force_raster and _done:
                 # the raster pass has since written real records: the escalation is SATISFIED,
                 # so retire it. Without this the persisted set would force a re-read forever.
@@ -4869,9 +5849,16 @@ def main() -> None:
             is correct: the row then shows its filename-derived label and the user judges it on
             that, rather than on a number the run made up from a cover page it could not read.
             """
+            # 2026-09-26 test run, fix 2.1: parse page 1 only (`max_pages=1`). The whole deck was
+            # parsed and every page but the first thrown away - 10.3 s of a 16 s segment on 23
+            # decks; the page-1 text is byte-identical. The page filter below stays, so an older
+            # extract_pdf without the parameter (TypeError) still yields the same text.
             try:
                 import extract_pdf as _xp
-                blocks = _xp.font_grouped_blocks(p) or []
+                try:
+                    blocks = _xp.font_grouped_blocks(p, max_pages=1) or []
+                except TypeError:
+                    blocks = _xp.font_grouped_blocks(p) or []
             except Exception:
                 return ""
             return "\n".join(str(b.get("text") or "") for b in blocks
@@ -4887,16 +5874,39 @@ def main() -> None:
         # 37 s of a ~45 s Cowork window on a live run, which is why that run kept dying short
         # of its final gate. `expected_hash` digests the same Row ID set without opening a
         # single PDF; only an unanswered or changed inputs set goes on to build_auto.
-        _ml_expect = ("" if _ml_external else
-                      _ML.expected_hash(_ml_by_file, inv.get("clusters") or {}))
-        if not _ml_external and not _stage_skipped("master list") \
-                and _ML.is_answered(work, _ml_expect):
+        # 2026-09-26 test run, fix 2.1: a stage put OUT of scope (--from repairs, the re-entry
+        # the spine prints at exits 5/6/15) used to skip the cheap answered check and fall into
+        # the full enumeration, whose rows the `_stage_skipped` block below then discards: 12.6 s
+        # of a 16 s segment spent building a sheet nobody is shown. Out of scope or settled
+        # upstream now enumerates nothing; the block below still records `_resumed`.
+        _ml_skip = bool(_ml_external) or _stage_skipped("master list")
+        _ml_clusters = inv.get("clusters") or {}
+        _ml_expect = "" if _ml_skip else _ML.expected_hash(_ml_by_file, _ml_clusters)
+        _ml_answered = False
+        if not _ml_skip:
+            _ml_answered = _ML.is_answered(work, _ml_expect)
+            # 2026-09-26 test run, fix 3.1: deck rows are now one per deck FILE. A sheet answered
+            # under the old per-cluster rows (or while a label had fused two decks) that provably
+            # answered THIS inputs set is re-keyed in place instead of re-asked. Re-checked with
+            # is_answered, so a migration that did not land exactly re-opens exit 17 with every
+            # answer carried forward (today's route for a changed input). Fail-safe inside.
+            if not _ml_answered and _ML.migrate_per_file(work, _ml_by_file, _ml_clusters):
+                _ml_answered = _ML.is_answered(work, _ml_expect)
+                if _ml_answered:
+                    print("  (master list: answered sheet re-keyed to one row per deck file - "
+                          "nothing re-asked)")
+        if _ml_skip:
+            _ml_auto = {}  # out of scope or settled upstream: the enumeration would be discarded
+        elif _ml_answered:
             _ml_auto = {"rows": [], "input_hash": _ml_expect, "answered_without_enumeration": True}
         else:
-            _ml_auto = ({} if _ml_external else
-                        _ML.build_auto(work, _ml_by_file, inv.get("clusters") or {}, folder,
-                                       _first_page_text, emails=inv.get("emails") or [],
-                                       email_attachments=inv.get("email_attachments") or []))
+            # corpus_key (fix 2.1): inventory's content hash of every input, so an unchanged
+            # corpus reuses master_candidates_auto.json instead of re-reading every cover page;
+            # "" (an old inventory) keeps today's uncached build.
+            _ml_auto = _ML.build_auto(work, _ml_by_file, _ml_clusters, folder,
+                                      _first_page_text, emails=inv.get("emails") or [],
+                                      email_attachments=inv.get("email_attachments") or [],
+                                      corpus_key=str(inv.get("input_hash") or ""))
     except Exception as _e:
         # BEST-EFFORT ENUMERATION, DELIBERATE HARD STOP ONLY WHEN IT SUCCEEDS. A crash while
         # inventorying candidates must not wedge a run behind a sheet that cannot be built; the
@@ -4947,12 +5957,21 @@ def main() -> None:
                       "OUTPUT_PATH": str(work / _ML.MODEL_CANDIDATES),
                       "EMAIL_NOTE": (f"{len(inv.get('emails') or [])} .msg/.eml file(s) in "
                                      f"{folder}" if inv.get("emails")
-                                     else "no email files in this run - skip that half")})])
+                                     else "no email files in this run - skip that half"),
+                      # 2026-09-26 test run, fix 1.6: build_auto has just written every message
+                      # body (cross-email paragraphs de-duplicated) to work/email_bodies.md, so
+                      # the agent reads ONE file instead of opening each .msg/.eml. When it is
+                      # missing the slot says so and names the source files (today's route).
+                      "EMAIL_BODIES": (
+                          str(work / _ML.EMAIL_BODIES)
+                          if inv.get("emails") and (work / _ML.EMAIL_BODIES).exists()
+                          else ("none - this run has no email files" if not inv.get("emails")
+                                else f"not available - read the .msg/.eml files in {folder}"))})])
                 _n_deck = sum(1 for r in _ml_rows if r.get("source_type") == "Brochure")
                 _ml_msg = (
                     f"MASTER LIST: {len(_ml_rows)} candidate option(s) found "
                     f"({len(_ml_rows) - _n_deck} from trackers/emails, {_n_deck} brochure "
-                    f"cluster(s)). The USER decides which are built, before the decks are read. "
+                    f"deck(s)). The USER decides which are built, before the decks are read. "
                     f"Do all four, in order: (1) dispatch the rendered master-list prompt to add "
                     f"the email-only rows and adjudicate the duplicate groups -> "
                     f"{work / _ML.MODEL_CANDIDATES}; (2) run "
@@ -4994,6 +6013,13 @@ def main() -> None:
     vision_files = sorted(extract.glob("*_vision.json"))
     if vision_files:
         import vision_validate
+        # A repair stub from an earlier refusal leaves prompts/ before re-validating: if its
+        # output still fails, the branch below renders a fresh one (fix 1.5b). Best-effort.
+        try:
+            import prompts_render as _pr_rk
+            _pr_rk.retire_kind(work, "reader-repair")
+        except Exception:
+            pass
         v_errors, v_warnings = vision_validate.validate(work, source_dir=folder)
         if v_warnings:
             notes_file = work / "vision" / "validation_notes.md"
@@ -5014,6 +6040,11 @@ def main() -> None:
                 _say_orchestrator(_sp)
             for e in v_errors:
                 _say_orchestrator(f"  [FAIL] {e}" if not QUIET else f"  {e}")
+            # fix 1.5b: a bounded repair prompt per refused file, so the remedy is a small
+            # correction of that file rather than a full re-read of its deck
+            _rr = _render_reader_repairs(work, vision_files, v_errors)
+            if _rr:
+                _say_orchestrator(_rr)
             _exit_round_trip(work, 3, _attempts, "brochure/tracker interpretation",
                              diagnosis=[f"vision record invalid: {e}" for e in v_errors])
     for vf in vision_files:
@@ -5029,29 +6060,32 @@ def main() -> None:
     interpret_decks = []  # manifest entries already prepped (text decks + prepped rasters)
     failed_preps: list = []
     raster_targets = []   # (src, region, country) decks that need the raster path
-    if extant.get("interpret_prep") and vision_targets:
-        for s, region, country in vision_targets:
-            if Path(s).name in force_raster:
-                # the sub-agent found this text deck garbled -> force the raster path
-                # (do NOT let interpret_prep route it back to text on its text layer)
-                raster_targets.append((s, region, country))
-                continue
-            try:
-                ent = extant["interpret_prep"].prepare(s, region, country, work / "vision",
-                                                        force=True, resume=RESUME)
-            except Exception as e:
-                failed_preps.append(Path(s).name)
-                if not QUIET:
-                    print(f"(interpretation prep failed for {Path(s).name}: {e})")
-                continue
-            if ent.get("mode") == "text" and ent.get("pages"):
-                interpret_decks.append(ent)
-            else:
-                # raster mode (or a text deck with no readable pages) -> the page-image
-                # path; let photo-match consider it (it has no usable text)
-                raster_targets.append((s, region, country))
-    elif vision_targets:
-        raster_targets = list(vision_targets)
+    # Booked to the timing-only "vision prep" label, not to "master list" (2026-09-26, fix 2.6):
+    # the page renders and candidate thumbnails are the dearest thing in this span.
+    with _timing_part("vision prep"):
+        if extant.get("interpret_prep") and vision_targets:
+            for s, region, country in vision_targets:
+                if Path(s).name in force_raster:
+                    # the sub-agent found this text deck garbled -> force the raster path
+                    # (do NOT let interpret_prep route it back to text on its text layer)
+                    raster_targets.append((s, region, country))
+                    continue
+                try:
+                    ent = extant["interpret_prep"].prepare(s, region, country, work / "vision",
+                                                            force=True, resume=RESUME)
+                except Exception as e:
+                    failed_preps.append(Path(s).name)
+                    if not QUIET:
+                        print(f"(interpretation prep failed for {Path(s).name}: {e})")
+                    continue
+                if ent.get("mode") == "text" and ent.get("pages"):
+                    interpret_decks.append(ent)
+                else:
+                    # raster mode (or a text deck with no readable pages) -> the page-image
+                    # path; let photo-match consider it (it has no usable text)
+                    raster_targets.append((s, region, country))
+        elif vision_targets:
+            raster_targets = list(vision_targets)
 
     # VISUAL AIDS ACCOUNTING. A text-mode deck's agent is asked to pick __meta.plan_page and
     # __meta.image_pages by LOOKING at a per-page render and candidate thumbnails. When those
@@ -5319,9 +6353,17 @@ def main() -> None:
             # it is part of the manifest contract (reference/interpretation.md).
             "contract": str((HERE.parent / "reference" / "interpretation.md").resolve()),
             "record_schema_path": str((HERE.parent / "templates" / "record_schema.json").resolve()),
-            "contract_reads": ("Read `contract` and `record_schema_path` ONCE for this whole "
-                               "round, before dispatching - not once per deck. They are the "
-                               "same bytes for every deck in this manifest."),
+            # 2026-09-26 (fix 1.11): addressed to the readers. It used to tell whoever read the
+            # manifest to load both files "before dispatching", and the only party that reads
+            # it whole is the orchestrator, which dispatches rendered prompt files verbatim and
+            # needs neither (about 17 k tokens a run when obeyed).
+            "contract_reads": ("For the READER sub-agents, not the dispatching orchestrator. "
+                               "Each rendered reader prompt (work/prompts/common/<kind>.md) "
+                               "carries its mode's contract, so do NOT read contract or "
+                               "record_schema_path to dispatch: dispatch the rendered prompt "
+                               "files verbatim. A reader reads its common file ONCE; contract "
+                               "is the full reference it falls back to only when that file "
+                               "says the condensed contract was not rendered."),
             "output_pattern": ("EACH DECK CARRIES ITS OWN `output` PATH - write that path VERBATIM "
                                "(a JSON array of records), exactly as the tracker `jobs` do. Do NOT "
                                "derive a filename from the cluster label: two decks can share a "
@@ -5434,22 +6476,24 @@ def main() -> None:
 
     if interpret_decks:
         _write_manifest(interpret_decks)  # text decks present even before raster prep
-    if extant.get("vision_prep"):
-        for s, region, country in vision_targets:
-            try:
-                ent = extant["vision_prep"].prepare(s, region, country, work / "vision", force=True)
-                if ent.get("pages"):
-                    ent["mode"] = "raster"
-                    interpret_decks.append(ent)
-                    _write_manifest(interpret_decks)  # incremental: a shell-cap kill keeps progress
-                else:
+    with _timing_part("vision prep"):   # the raster half of the same prep (fix 2.6)
+        if extant.get("vision_prep"):
+            for s, region, country in vision_targets:
+                try:
+                    ent = extant["vision_prep"].prepare(s, region, country, work / "vision",
+                                                        force=True)
+                    if ent.get("pages"):
+                        ent["mode"] = "raster"
+                        interpret_decks.append(ent)
+                        _write_manifest(interpret_decks)  # incremental: a shell-cap kill keeps progress
+                    else:
+                        failed_preps.append(Path(s).name)
+                except Exception as e:
                     failed_preps.append(Path(s).name)
-            except Exception as e:
-                failed_preps.append(Path(s).name)
-                if not QUIET:
-                    print(f"(raster prep failed for {Path(s).name}: {e})")
-    elif vision_targets:
-        failed_preps += [Path(s).name for s, _r, _c in vision_targets]
+                    if not QUIET:
+                        print(f"(raster prep failed for {Path(s).name}: {e})")
+        elif vision_targets:
+            failed_preps += [Path(s).name for s, _r, _c in vision_targets]
     # A deck that opened but could be neither text-interpreted NOR rasterised (e.g. a
     # vector/textless PPTX with no python-pptx AND no LibreOffice) is a GENUINE gap, not a
     # silent drop (P1-1): fold it into the unreadable list with a typed reason. ALSO carry
@@ -5514,22 +6558,39 @@ def main() -> None:
         # P1: render the canonical dispatch prompt per pending job (decks by mode, tracker
         # author + blind-verify jobs) so the orchestrator dispatches file contents verbatim.
         _prompt_jobs = []
+        _reread_lines = []
         for _d in interpret_decks:
             _o = _deck_output_path(work, _d)
+            _slots = {"DECK_NAME": str(_d.get("source_file") or ""),
+                      "SOURCE_TYPE": str(_d.get("source_type") or ""),
+                      "PAGE_COUNT": len(_d.get("pages") or []),
+                      # An INSTRUCTION when the manifest states no country, never a placeholder
+                      # a reader could copy into the field (F7). The deck entry omits the key
+                      # entirely (interpret_prep / vision_prep `country_kv`), so this is the one
+                      # place the reader is told what to do about it.
+                      "COUNTRY": (str(_d.get("country")) if _d.get("country")
+                                  else "not stated in this manifest - read it off the deck"),
+                      "MANIFEST_PATH": str(manifest),
+                      "OUTPUT_PATH": str(_o) if _o else str(_d.get("output") or "")}
+            # fix 3.18: a re-read deck's prompt carries the broker's decision in its per-deck
+            # Run context (above COMMON-SPLIT, so it reaches this deck's reader only)
+            _rrc = _reread_ctx.get(_vkey(Path(str(_d.get("source_file") or "")).name))
+            if _rrc:
+                _slots["CONTEXT"] = _reread_slot(_rrc)
+                _rre = (_rereads or {}).get(_vkey(Path(str(_d.get("source_file") or "")).name)) or {}
+                _rrp = str(_rre.get("prior") or "")
+                _rrp = (_rrp if Path(_rrp).is_absolute() else "work/" + _rrp) if _rrp \
+                    else "nowhere (no earlier output was on disk)"
+                _reread_lines.append(
+                    f"(orchestrator: '{_d.get('source_file')}' is RE-READ this round because the "
+                    f"broker answered {_rre.get('qid')} with {str(_rre.get('answer'))!r}; its "
+                    f"prompt carries that decision in its Run context - dispatch it verbatim. The "
+                    f"previous output was moved to {_rrp}, never deleted; re-answering "
+                    f"{_rre.get('qid')} as shipped before the re-read runs puts it back.)")
             _prompt_jobs.append((
                 "reader-text" if _d.get("mode") == "text" else "reader-raster",
                 Path(str(_d.get("output") or _d.get("source_file") or "deck")).stem,
-                {"DECK_NAME": str(_d.get("source_file") or ""),
-                 "SOURCE_TYPE": str(_d.get("source_type") or ""),
-                 "PAGE_COUNT": len(_d.get("pages") or []),
-                 # An INSTRUCTION when the manifest states no country, never a placeholder a
-                 # reader could copy into the field (F7). The deck entry omits the key entirely
-                 # (interpret_prep / vision_prep `country_kv`), so this is the one place the
-                 # reader is told what to do about it.
-                 "COUNTRY": (str(_d.get("country")) if _d.get("country")
-                             else "not stated in this manifest - read it off the deck"),
-                 "MANIFEST_PATH": str(manifest),
-                 "OUTPUT_PATH": str(_o) if _o else str(_d.get("output") or "")}))
+                _slots))
         for _j in interpret_trackers:
             _o = _deck_output_path(work, _j)
             _prompt_jobs.append((
@@ -5542,25 +6603,21 @@ def main() -> None:
         # SAME exit-3 round as a rendered prompt instead of an SKILL.md-prose inline
         # judgement task. Absence of the output keeps the deterministic regex - so this
         # job never blocks and never gets a pending predicate.
+        # 2026-09-26 test run, fix 1.3: OPT-IN ONLY. Auto-dispatched, the job cost 74k tokens for
+        # 7 stems and changed no card field (a label is a routing name; readers read the country
+        # off the deck; geocoding keys on each record's own address). It now runs only when
+        # project.yaml sets `inputs.cluster_labels: agent`, never with work/intake_clusters.SKIP
+        # or a cache already written, and its STEMS slot carries everything known per stem (file,
+        # carrying email, current label), so the agent never opens the 36 KB inventory.json.
+        # `intake.cluster_label_job` owns all of that and returns None on any error (fail-safe:
+        # the deterministic filename label stands, the no-LLM path every offline run takes).
         try:
             _inv3 = json.loads((work / "inventory.json").read_text(encoding="utf-8-sig"))
-            _lowc = sorted({str(s)
-                            for _cl in (_inv3.get("clusters") or {}).values()
-                            if isinstance(_cl, dict) and _cl.get("confidence") == "low"
-                            for s in (_cl.get("stems") or [])})
-            _cih = str(_inv3.get("cluster_input_hash") or _inv3.get("input_hash") or "")
+            _cl_job = intake.cluster_label_job(_inv3, cfg, work)
         except Exception:
-            _lowc, _cih = [], ""
-        if _lowc and _cih and not (work / "intake_clusters.json").exists():
-            _stems = ", ".join(_lowc[:40])
-            if len(_lowc) > 40:  # never a silent cap - name the remainder's location
-                _stems += (f" (+{len(_lowc) - 40} more low-confidence stems - read the "
-                           f"full list from inventory.json's clusters)")
-            _prompt_jobs.append(("cluster-labels", None,
-                                 {"STEMS": _stems,
-                                  "INVENTORY_PATH": str(work / "inventory.json"),
-                                  "OUTPUT_PATH": str(work / "intake_clusters.json"),
-                                  "CLUSTER_INPUT_HASH": _cih}))
+            _cl_job = None
+        if _cl_job:
+            _prompt_jobs.append(("cluster-labels", None, _cl_job))
         _pl = _render_dispatch_prompts(work, _prompt_jobs)
         # SETUP RIDES THE FRONT OF THIS MESSAGE (B63). No form answer feeds this round, so
         # bundling costs nothing and saves a round-trip - but it goes FIRST and as an
@@ -5593,6 +6650,10 @@ def main() -> None:
             _say_orchestrator(msg)
         else:
             print("\n" + msg)
+        # fix 3.18: one line per deck re-read with a broker decision (every pass it is pending,
+        # like the [pending] lines: it names what the orchestrator must dispatch)
+        for _ln in _reread_lines:
+            _say_orchestrator(_ln)
         # P3: the guard's exact pending predicates - a deck is pending while its own output
         # file does not exist; a tracker while neither its map output nor a .SKIP does.
         _diag = []
@@ -5744,7 +6805,37 @@ def main() -> None:
         # doubts ride along and are filtered out (and recorded) by clarify.pending,
         # so they reach the Gaps Report without costing a round-trip. (B62)
         _questions += _clarify.photo_confirm_questions(photo_doubts)
-        _questions += _clarify.agent_doubt_questions(_recs_for_q)
+        # 2026-09-26 test run, fix 3.2c: never-asked COMBINABLE per-card doubts on one field
+        # become ONE policy question (fanned out per card by agent_doubt_repairs), and a lone
+        # card whose sum merge's own office derivation already shows is closed without asking
+        # (disclosed as "settled by merge", re-checked post-merge by merge_settled_recheck).
+        # The cap is re-applied after grouping, so a policy question costs ONE slot. On any
+        # error: the per-card questions exactly as before, and one printed line.
+        _ad0 = _clarify.agent_doubt_questions(_recs_for_q)
+        _ad = _ad0
+        try:
+            _adg, _ad_settled = _clarify.group_combinable(work, _ad0)
+            _adg = _clarify.apply_doubt_cap(_adg)
+            if _ad_settled:
+                # recorded BEFORE they leave the list: a settled doubt is never dropped silently
+                _clarify.note_suppressed(work, _ad_settled, why=_clarify.WHY_MERGED)
+            _ad = _adg
+        except Exception as _e:
+            print(f"(combinable doubts not grouped: {type(_e).__name__}: {_e}; each is asked "
+                  f"per card)")
+            try:
+                _ad = _clarify.apply_doubt_cap(_ad0)
+            except Exception:
+                _ad = _ad0
+        _questions += _ad
+        # fix 3.10b: a building the SOURCE marks let / sold / otherwise not available is a
+        # non-blocking broker question (keep it, showing the source's status, or exclude it);
+        # merge.apply_not_available drops it on "exclude", disclosed in meta.excluded
+        try:
+            _questions += _clarify.not_available_questions(_recs_for_q)
+        except Exception as _e:
+            print(f"(not-available questions not raised: {type(_e).__name__}: {_e}; every such "
+                  f"card ships showing the source's own status)")
     else:
         # HEADLESS asks nothing, but a doubt a reader took the trouble to record must
         # still reach the broker somewhere. record_schema.json has always promised
@@ -5761,6 +6852,13 @@ def main() -> None:
                                  why=_clarify.WHY_LEDGER)
         _clarify.note_suppressed(work, [q for q in _hd if _clarify.is_material(q)],
                                  why=_clarify.WHY_HEADLESS)
+        # fix 3.10b: headless asks nothing, so a source-marked let/sold building ships as a card
+        # showing the source's own status - and the Gaps Report says it was not asked about
+        try:
+            _clarify.note_suppressed(work, _clarify.not_available_questions(_recs_for_q),
+                                     why=_clarify.WHY_HEADLESS)
+        except Exception as _e:
+            print(f"(not-available records not disclosed as unasked: {type(_e).__name__}: {_e})")
     def _ask_and_exit(questions, quiet_intro, reason, extra=""):
         """The ONE emit site - questions are BATCHED here, never dripped.
 
@@ -5870,8 +6968,18 @@ def main() -> None:
         # (~line 1041): without this, a stray non-canonical object (a leaked provenance/meta map)
         # would surface as a spurious 'field conflict' to the field-decision sub-agent, and a
         # locator-shaped scalar could skew a grey pair. No-op for canonical records / ledger / Gaps.
+        # Fix 3.5a (2026-09-26 test run): then the strict alias promotion, as merge.main does
+        # right after the quarantine, so conflict_candidates sees the fields merge will actually
+        # adjudicate (a `levelAccessDoors` value is an `overheadDoors` value there too).
+        # getattr-guarded: an older merge.py without it enumerates exactly as before.
+        _promote_al = getattr(_merge, "_promote_aliases", None)
         for _r in _all_recs:
             _merge._normalise_offspec(_r)
+            if _promote_al is not None:
+                try:
+                    _promote_al(_r)
+                except Exception:
+                    pass
         # THE USER'S OWN DUPLICATE GROUPS PRE-ANSWER THE PAIRS THEY COVER. A group on the master
         # list is the person who owns the deliverable saying "these are one building". Exit 10
         # exists to ask a sub-agent that same question about pairs NOBODY has answered, so
@@ -6048,6 +7156,16 @@ def main() -> None:
             else:
                 clusters, _ = _merge.apply_source_authority(
                     clusters, _clarify.settled_authority(_answers))
+            # 2026-09-26 test run, fix 3.10b: the SAME not-available filter merge.main applies
+            # after those two (same state read, same order), so a let/sold building the broker
+            # excluded is absent here too and the conflict ids match merge's. No answer -> no-op.
+            try:
+                _na_st = _clarify.load_state(work)
+                clusters, _ = _merge.apply_not_available(clusters, _na_st.get("answers") or {},
+                                                         _na_st.get("declined") or ())
+            except Exception as _e:
+                print(f"(not-available exclusions not applied on the conflict path: {_e})",
+                      file=sys.stderr)
         # The surfaced AUTO pairs join the open-pair set while the pairs round is open: a
         # 'different' verdict on one changes cluster membership exactly as a grey 'same' does,
         # so a conflict adjudicated against it now would be re-keyed and re-asked (the 44 ->
@@ -6578,37 +7696,90 @@ def main() -> None:
     # F18: say which answers were RECORDED ONLY, exactly as their question's `answer_handling`
     # warned, so nobody is told a card will change when the question itself said it would not.
     _ro = _recorded_only_doubt_answers(work)
+    _ro_file = work / "recorded_only_repairs.md"
     if _ro:
-        print(f"({len(_ro)} answered reader-doubt question(s) recorded but NOT applied to a card, "
-              f"as each question's `answer_handling` said (the reader named no canonical field, "
-              f"no candidate values, or an option that does not lead with a figure): "
-              f"{', '.join(_ro[:6])}"
-              + (" ..." if len(_ro) > 6 else "")
-              + ". The answers are kept in work/clarify_state.json and shown in the Gaps Report; "
-              f"a value that must reach a card goes in work/repairs.json, and the lines below "
-              f"give each one ready to paste.)")
+        _ro_head = (f"({len(_ro)} answered reader-doubt question(s) recorded but NOT applied to a "
+                    f"card, as each question's `answer_handling` said (the reader named no "
+                    f"canonical field, no candidate values, or an option that does not lead with "
+                    f"a figure): {', '.join(_ro[:6])}"
+                    + (" ..." if len(_ro) > 6 else "")
+                    + ". The answers are kept in work/clarify_state.json and shown in the Gaps "
+                    f"Report; a value that must reach a card goes in work/repairs.json, and the "
+                    f"lines below give each one ready to paste.)")
         # D13: the same plan the ask-time handoff printed, now with the broker's actual answer
         # beside it, so applying it is a paste and not a reverse-engineering exercise
-        for _ln in _recorded_only_guidance(work, _ro):
-            print(_ln)
+        _ro_guid = _recorded_only_guidance(work, _ro)
+        # Fix 1.10 (2026-09-26 test run): the ~600-char paste-ready entries reprinted on every
+        # pass. The full text is ALWAYS in work/recorded_only_repairs.md; it prints in full when
+        # a question, an answer or a plan changes (or under --verbose), and otherwise one
+        # `(orchestrator: ...)` line per question still names it on every pass.
+        _ro_text = "\n\n".join([_ro_head] + _ro_guid)
+        try:
+            _write_if_changed(_ro_file, _ro_text + "\n")
+            _ro_saved = True
+        except Exception:
+            _ro_saved = False
+        if _ro_saved:
+            _ro_ans = _clarify_state_answers(work)
+            _ro_rep = ([f"({len(_ro)} answered reader-doubt question(s) still recorded only - "
+                        f"unchanged since an earlier pass; full text: {_ro_file})"]
+                       + [f"(orchestrator: {q} (answered {str(_ro_ans.get(q, '')).strip()!r}) is "
+                          f"still RECORDED ONLY - unchanged since an earlier pass; its paste-ready "
+                          f"work/repairs.json entry is in {_ro_file}.)" for q in _ro])
+            _print_once(work, "recorded_only_doubts", _ro_text, [_ro_head] + _ro_guid, _ro_rep,
+                        handoff=True)
+        else:   # the file is not there to point at - print the full text, as before
+            for _ln in [_ro_head] + _ro_guid:
+                _say_orchestrator(_ln)
+    elif _ro_file.exists():
+        try:   # an earlier pass's list is no longer true - never leave it claiming otherwise
+            _write_if_changed(_ro_file, "(no answered reader-doubt question is recorded only as "
+                                        "of the latest pass - every recorded answer has landed "
+                                        "or been declined)\n")
+        except Exception:
+            pass
     _xf_pend = excluded_figure_questions(work, cfg, canonical)
-    if _xf_pend:
+    # 2026-09-26 test run, fix 3.2c: a doubt closed pre-merge because merge's own sum was
+    # PREDICTED to show the combined figure is re-opened when the shipped card shows something
+    # else (another source's stated total beat the derivation). It leaves through this same
+    # post-merge door, in the same ONE emit, so there is still a single questions.json.
+    _rq_pend: list = []
+    try:
+        import clarify as _CQrc
+        if _CQrc.clarify_mode(work, cfg) == "interactive":
+            _rq_pend = merge_settled_recheck(work, canonical)
+    except Exception as _e:
+        print(f"(merge-settled recheck skipped: {type(_e).__name__}: {_e})")
+        _rq_pend = []
+    if _xf_pend or _rq_pend:
         import clarify as _CQ35
-        _xf_pend = _CQ35.pending(work, _xf_pend)
+        _xf_pend = _CQ35.pending(work, list(_xf_pend) + list(_rq_pend))
         if _xf_pend:
             _CQ35.emit(work, _xf_pend)
+            _n_rq = sum(1 for q in _xf_pend if str(q.get("kind") or "") != "excluded_figure")
+            _n_xf = len(_xf_pend) - _n_rq
             if QUIET:
-                print("One of your excluded sources disagrees with a shipped option's "
-                      "size - your call which figure the card shows.")
+                if _n_xf:
+                    print("One of your excluded sources disagrees with a shipped option's "
+                          "size - your call which figure the card shows.")
+                if _n_rq:
+                    print("A figure I expected to combine for you came out differently on the "
+                          "finished card - your call which figure it shows.")
+            _what = " and ".join(
+                x for x in ((f"{_n_xf} excluded-figure question(s)" if _n_xf else ""),
+                            (f"{_n_rq} re-opened reader-doubt question(s) (the card does not "
+                             f"show the combined figure merge was expected to compute)"
+                             if _n_rq else "")) if x)
             _say_orchestrator(
-                f"(orchestrator: {len(_xf_pend)} excluded-figure question(s) for the "
+                f"(orchestrator: {_what} for the "
                 f"BROKER (exit 13) in {work / 'questions.json'} - put them to the user "
                 f"in ONE plain message, write work/answers.json, re-run. Unanswered "
-                f"ships the disclosed conflict as before.)")
+                f"ships the disclosed value as before.)")
             # The answer arrives through the ANSWER channel (clarify_state.json is a merge
             # input), so it applies pre-merge even though it lands as a repair. (A26)
             print(_reentry("premerge"))
-            _exit_round_trip(work, 13, _attempts, "excluded-figure confirmation",
+            _exit_round_trip(work, 13, _attempts, "excluded-figure confirmation" if not _n_rq
+                             else "post-merge confirmation",
                              diagnosis=[f"question '{q['id']}' pending: asked once; "
                                         f"any answer or silence settles it next pass"
                                         for q in _xf_pend])
@@ -7062,7 +8233,10 @@ def main() -> None:
                     print(f"({_n_coerced} repaired propert(y/ies) passed back through the render "
                           f"coercion - the same pass the override channel gets pre-merge.)",
                           file=sys.stderr)
-            for _line in _repairs.format_report(_rrep):
+            # Fix 1.10 (2026-09-26 test run): quiet mode counts a re-applied value that did not
+            # move and a clear that landed on an earlier pass instead of listing them (83 + 9 of
+            # 95 lines on the real run's final pass); every entry stays in repairs_report.json.
+            for _line in _repairs.format_report(_rrep, compact=QUIET):
                 print(_line)
             # F24: a repair that moved a field with a DERIVED twin (officeArea -> officeAreaVal)
             # left the twin at merge's pre-repair value; re-derive now, and name any region-bind
@@ -7077,6 +8251,18 @@ def main() -> None:
                 _lrows = _repairs.ledger_rows(_rrep)
                 if _lrows:
                     _ledger_append(work / "source_ledger.csv", _lrows)
+                # Fix 3.15 (2026-09-26 test run): the retraction inside _rederive_after_repairs
+                # runs BEFORE this pass's repair rows exist, so the value and gap rows a repair
+                # supersedes stayed live beside it until yet another pass. Re-run it now that
+                # the repair rows are written. Marks, never deletes; idempotent.
+                try:
+                    import merge as _merge_lr
+                    for _ln in _merge_lr.retract_superseded_gap_rows(work / "source_ledger.csv"):
+                        if not QUIET:
+                            print(_ln)
+                except Exception as _e:
+                    print(f"(ledger retraction skipped: {type(_e).__name__}: {_e})",
+                          file=sys.stderr)
                 if not QUIET:
                     print(f"({_n_rep} property repair(s) applied - each has a `repair` row in "
                           f"the Source Ledger and a line in the Gaps Report.)", file=sys.stderr)
@@ -7174,8 +8360,13 @@ def main() -> None:
                       f"read-only; corrections go in work/repairs.json"
                       + (f"; {_pr['unassigned']} unclaimed deck page(s) in properties/_unassigned/"
                          if _pr.get("unassigned") else "") + ")", file=sys.stderr)
-                print("(media half skipped - written automatically if a pre-build gate blocks; "
-                      "to write it now: "
+                # fix 2.2: a media half whose inputs are unchanged is now CARRIED, not deleted
+                # (.get - an older project_properties, or an eval stub, returns no such key)
+                _carried = _pr.get("carried") or 0
+                print((f"(media half: {_carried} folder(s) carried unchanged from an earlier "
+                       f"full view; the rest skipped - " if _carried else "(media half skipped - ")
+                      + "written automatically if a pre-build gate blocks or before the QA "
+                        "review; to write it now: "
                       + _proj.rebuild_command(work, folder, work / ".image_cache") + ")",
                       file=sys.stderr)
         except Exception as _e:
@@ -7196,10 +8387,13 @@ def main() -> None:
     # B-gate-automation: input-accounting and capture-symmetry are both fully mechanical
     # and deterministic, so the spine runs them itself instead of asking the orchestrator
     # to remember a manual step "alongside the batch". input-accounting can genuinely
-    # block (a whole source vanished with nothing recorded); capture-symmetry always
-    # returns 0 (it is an advisory cross-source asymmetry report for the G-honesty/G-trace
-    # reviewers) - appending its result to g1 is harmless and keeps its notes in the same
-    # scorecard file the reviewers already read.
+    # block (a whole source vanished with nothing recorded); capture-symmetry is an advisory
+    # cross-source asymmetry report for the G-honesty/G-trace reviewers with ONE blocking
+    # tier (2026-09-26 test run, fix 3.5): a strict-alias false absence - a value under an
+    # exact synonym (`levelAccessDoors`) that merge would have promoted into its blank
+    # canonical field and did not - returns 1 until fixed or acked (`strict_alias_ok=<pid>:
+    # <key>`). Appending its result to g1 is what makes that tier block, with no code here;
+    # every other finding stays rc 0, and its notes stay in the scorecard the reviewers read.
     g1.append(run_gate(gate_runner, "input-accounting", canonical, "--work", work))
     g1.append(run_gate(gate_runner, "capture-symmetry", "--work", work))
     # ...and its twin one layer over: capture-symmetry asks whether a reader skipped FIELDS a
@@ -7219,7 +8413,13 @@ def main() -> None:
     g1.append(run_gate(gate_runner, "images", canonical))
     # P1-1: pre-build, so an over-derived GLA (and the rent computed from it) is caught before a
     # dashboard is ever built. Inert on any dataset whose sources state no total of their own.
-    g1.append(run_gate(gate_runner, "arithmetic", canonical))
+    # 2026-09-26 test run, fix 3.7b: the findings go to a JSON file for the arithmetic-basis
+    # bridge (a printed building total read as the warehouse area is a BROKER question, exit 13),
+    # and the broker's "keep the printed total" decisions come back as figure-guarded waivers.
+    ar_rc = run_gate(gate_runner, "arithmetic", canonical,
+                     "--emit-json", work / "arithmetic_findings.json",
+                     "--waivers", work / "arithmetic_waivers.json")
+    g1.append(ar_rc)
     # B59: a field must be WRITTEN the same way on every property that carries it. Sits beside
     # arithmetic because both police how a NUMBER reaches the client - arithmetic checks the
     # magnitude, this checks that the magnitude is legible. Live defect: divisibleFrom shipped
@@ -7316,28 +8516,68 @@ def main() -> None:
         # the orchestrator to ask the broker - the one documented prose ask. Bridge it:
         # answers become attributed repairs (applied before the gates next pass), declines
         # become waivers the gate notes, anything undecided is a BLOCKING broker question.
-        if vf_rc != 0:
-            vf_rep, vf_wv, vf_pend = value_format_clarify(work, canonical)
-            if vf_pend:
-                n_q = len(vf_pend)
+        # 2026-09-26 test run, fix 3.7b: the arithmetic gate's "printed total read as the
+        # warehouse area" shape is bridged the same way (arithmetic_basis_clarify: derive ->
+        # an attributed repair, keep/skip -> a figure-guarded waiver). Each bridge whose gate
+        # failed runs with emit=False and their questions leave in ONE emit, so questions.json
+        # holds both sets rather than only the last one written.
+        if vf_rc != 0 or ar_rc != 0:
+            vf_rep = vf_wv = ar_rep = ar_wv = 0
+            vf_pend: list = []
+            ar_pend: list = []
+            if vf_rc != 0:
+                vf_rep, vf_wv, vf_pend = value_format_clarify(work, canonical, emit=False)
+            if ar_rc != 0:
+                try:
+                    ar_rep, ar_wv, ar_pend = arithmetic_basis_clarify(work, canonical, emit=False)
+                except Exception as _e:   # fail safe: the gate's own exit-6 remedy stands
+                    print(f"(arithmetic-basis questions not raised: {type(_e).__name__}: {_e}; "
+                          f"the arithmetic gate's own remedy stands)")
+                    ar_rep = ar_wv = 0
+                    ar_pend = []
+            _g13 = list(vf_pend) + list(ar_pend)
+            if _g13:
+                import clarify as _CQg
+                _CQg.emit(work, _g13)
                 if QUIET:
-                    print("One of your files writes a value differently from its siblings - I need "
-                          "you to confirm its unit before I can finish.")
+                    if vf_pend:
+                        print("One of your files writes a value differently from its siblings - "
+                              "I need you to confirm its unit before I can finish.")
+                    if ar_pend:
+                        print("One of your sources prints a single building total and no "
+                              "warehouse-only figure - I need your call on which figure the card "
+                              "shows as warehouse area before I can finish.")
+                _kinds13 = " and ".join(x for x in (
+                    (f"{len(vf_pend)} value-format" if vf_pend else ""),
+                    (f"{len(ar_pend)} arithmetic-basis" if ar_pend else "")) if x)
                 _say_orchestrator(
-                    f"(orchestrator: {n_q} value-format clarification(s) needed (exit 13) - the "
+                    f"(orchestrator: {_kinds13} clarification(s) needed (exit 13) - the "
                     f"questions are in {work / 'questions.json'}; put the broker questions to the "
                     f"user in ONE plain message, write work/answers.json, re-run. An answer becomes "
-                    f"an attributed repair; 'leave as is' ships the bare value disclosed.)")
+                    f"an attributed repair"
+                    + ("; 'leave as is' ships the bare value disclosed" if vf_pend else "")
+                    + ("; 'skip' keeps the printed total as the warehouse area, disclosed"
+                       if ar_pend else "") + ".)")
                 print(_reentry("premerge"))  # an ANSWER is consumed by/before merge (A26)
-                _exit_round_trip(work, 13, _attempts, "value-format clarification",
+                _exit_round_trip(work, 13, _attempts, "value-format clarification" if not ar_pend
+                                 else ("arithmetic-basis clarification" if not vf_pend
+                                       else "value-format / arithmetic-basis clarification"),
                                  diagnosis=[f"question '{q.get('id')}' (asked_of: broker) pending: "
                                             f"no answer or decline for that exact id in "
-                                            f"work/answers.json" for q in vf_pend])
+                                            f"work/answers.json" for q in _g13])
             if vf_rep or vf_wv:
                 _say_orchestrator(
                     f"(orchestrator: value-format answers recorded - {vf_rep} repair(s) appended to "
                     f"work/repairs.json, {vf_wv} bare value(s) waived by broker decision. Re-run the "
                     f"same command: repairs apply before the gates.)")
+            if ar_rep or ar_wv:
+                _say_orchestrator(
+                    f"(orchestrator: arithmetic-basis answers recorded - {ar_rep} repair(s) appended "
+                    f"to work/repairs.json (warehouse area = printed total minus office, computed by "
+                    f"Python), {ar_wv} printed total(s) kept as the warehouse area by broker "
+                    f"decision in work/arithmetic_waivers.json. Re-run the same command: repairs "
+                    f"apply before the gates.)")
+            if vf_rep or vf_wv or ar_rep or ar_wv:
                 # A REPAIR applies post-merge, so merge and enrichment cannot be changed by it (A26)
                 print(_reentry("repair"))
         if QUIET:
@@ -7349,6 +8589,7 @@ def main() -> None:
         else:
             print(f"\nBLOCKED: {sum(1 for rc in g1 if rc != 0)} pre-build gate(s) red - not building. "
                   f"See {work / 'gate1_scorecard.md'}, fix, and re-run (resume skips clean stages).")
+        _say_repair_contract(work)   # fix 1.7: the repairs.json entry shape, derived live
         # THE OTHER MISSING HINT, and the one with the clearest case for being here: exit 6 is
         # where the blocking title-collision gate lands, and that gate's own message names a
         # `work/repairs.json` set as its remedy - the repair channel, whose cheap re-entry is
@@ -7499,6 +8740,10 @@ def main() -> None:
         if QUIET:
             step("Final checks - independent review")
             print("An independent check of the data runs before handover - one moment.")
+        # Fix 2.2 (2026-09-26 test run): the reviewers verify image claims against the
+        # per-property media, so it must exist BEFORE they are sent. The first call renders it
+        # (about 95 s on a 22-deck run); later calls reuse every half whose inputs are unchanged.
+        _full_view_for_humans(work, folder)
         _say_orchestrator(
             f"(orchestrator: independent QA review needed (exit 14). Dispatch ONE isolated "
             f"sub-agent per rendered prompt - {', '.join(sorted(k + '.md' for k in _missing))} "
@@ -7531,13 +8776,21 @@ def main() -> None:
     if _open_findings:
         if QUIET:
             print("The independent review found something I must fix before handover.")
+        # 2026-09-26 (fix 1.9): the advisory sentence used to forbid fixing any advisory,
+        # contradicting SKILL.md and `qa-round resolve` itself (it accepts advisory ids). Fix
+        # 2.8: several findings resolve in one call with --batch (all or nothing).
         _say_orchestrator(
             f"(orchestrator: {len(_open_findings)} blocking QA finding(s) unresolved "
             f"(exit 15). IMPLEMENT each fix, then record it: `gate_runner.py qa-round "
-            f"resolve --work \"{work}\" --id <id> --because \"<what you changed>\"`, then "
+            f"resolve --work \"{work}\" --id <id> --because \"<what you changed>\"` (several "
+            f"at once: `--batch <file.json>` holding "
+            f"[{{\"id\": \"<id>\", \"because\": \"<what you changed>\"}}]), then "
             f"re-run the same command. Ids + findings: `gate_runner.py qa-round status "
             f"--work \"{work}\"` (also in {work / 'qa_state.json'}). An ADVISORY finding "
-            f"is never fixed - it ships in the Gaps Report's Known limitations.)")
+            f"ships disclosed in the Gaps Report's Known limitations; fix one only when it is "
+            f"ONE edit AND changes what a reader concludes, then `qa-round resolve` its id the "
+            f"same way, or the Gaps Report keeps asserting a defect the pack no longer has.)")
+        _say_repair_contract(work)   # fix 1.7: a fix is often a repairs.json entry
         # THE THIRD MISSING HINT. A blocking QA finding is the most open-ended of the three:
         # the fix can be an attributed repair, an override, a re-read of an input, or a code
         # change - and `--from repairs` would SKIP the stage a code or input fix lands in. So

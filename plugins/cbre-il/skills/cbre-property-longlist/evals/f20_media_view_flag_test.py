@@ -17,6 +17,10 @@ hands you what you need to fix it - and that a skipped view SAYS it was skipped.
 `media/` is otherwise indistinguishable from a harvest that found nothing, which is a documented
 failure class in this skill.
 
+(2026-09-26, fix 2.2: a `never` pass now CARRIES a media half whose `.media_stamp.json` is
+current instead of deleting it; every fixture here is fresh and unstamped, so these cases pin
+the unstamped behaviour, and evals/media_view_incremental_test.py pins the carrying.)
+
 Offline. No network, no PDF engine, no image library beyond what a bound photo needs.
 """
 import base64

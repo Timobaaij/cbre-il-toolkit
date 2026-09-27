@@ -251,7 +251,11 @@ def main() -> int:
         ck(q.get("epc") == "A+", f"Bare: A+ ships ({ascii(str(q.get('epc')))})")
 
         q = by.get("Beta 120") or {}
-        ck(q.get("epc") == "tbd", f"No Rating: struck to tbd ({ascii(str(q.get('epc')))})")
+        # 2026-09-26 test run (fix 3.17): the strike ships the ONE unknown spelling the card uses
+        # (normalize.BLANK), not the pre-v45 literal 'tbd' that `epc` kept because it is not in
+        # STRING_FIELDS. Re-pointed, not loosened: a figure surviving the strike still fails here.
+        ck(q.get("epc") == merge.N.BLANK,
+           f"No Rating: struck to the BLANK sentinel {merge.N.BLANK!r} ({ascii(str(q.get('epc')))})")
         notes = _note_for(q.get("id"), "epc")
         ck(len(notes) == 1 and "plausibility band" in notes[0] and NO_RATING in notes[0],
            f"No Rating: ONE conflicts note naming the parsed value and the band ({ascii(notes[0][:90]) if notes else 'none'})")

@@ -208,8 +208,14 @@ def main() -> int:
        "every stage entry is exactly {stage, seconds, resumed} - no private bookkeeping key "
        "leaks into the artefact")
     _names = [s["stage"] for s in payload["stages"]]
-    ck(all(n in FROZEN for n in _names),
-       f"every recorded stage name is from the frozen vocabulary ({_names})")
+    # A timing-only label (fix 2.6, "vision prep") is recorded like a stage but is NOT part of
+    # the vocabulary; it must never be one either, or it would become a --from value with no
+    # skip guard.
+    _tol = tuple(getattr(R, "TIMING_ONLY_LABELS", ()))
+    ck(all(n in FROZEN or n in _tol for n in _names),
+       f"every recorded stage name is from the frozen vocabulary or a timing-only label ({_names})")
+    ck(bool(_tol) and not set(_tol) & set(R.STAGE_ORDER),
+       f"timing-only labels exist and are not stages ({_tol})")
     ck(all(isinstance(s["resumed"], list) for s in payload["stages"]),
        "`resumed` is a LIST of labels, not a boolean")
     _ex = [s for s in payload["stages"] if s["stage"] == "extract"][0]
@@ -268,8 +274,9 @@ def main() -> int:
         ck(bool(re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", str(_disk.get("started")))),
            f"started on disk is iso8601 ({_disk.get('started')!r})")
         _dn = [s.get("stage") for s in (_disk.get("stages") or [])]
-        ck(bool(_dn) and all(n in FROZEN for n in _dn),
-           f"the stages that actually ran are recorded, all from the vocabulary ({_dn})")
+        ck(bool(_dn) and all(n in FROZEN or n in _tol for n in _dn),
+           f"the stages that actually ran are recorded, all from the vocabulary or a "
+           f"timing-only label ({_dn})")
         ck(all(set(s) == {"stage", "seconds", "resumed"} and isinstance(s["resumed"], list)
                for s in (_disk.get("stages") or [])),
            "and every entry on disk has the same three keys, `resumed` still a list")

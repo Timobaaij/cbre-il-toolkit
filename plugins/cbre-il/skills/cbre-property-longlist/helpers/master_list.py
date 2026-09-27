@@ -52,7 +52,9 @@ the user's answer arrives between them.
 ROW IDENTITY IS THE WHOLE CONTRACT. Every answer is keyed on a Row ID that must survive a
 re-run, a re-sort of the sheet and a second email export. A tracker row is keyed on its source
 file plus the sheet!cell locator the extractor already recorded in `__meta.prov`; an email row
-the same way on its message; a brochure row on its cluster's file set. None of those depend on
+the same way on its message; a brochure row on its deck FILE (`deck_row_id`; it was the
+cluster's file set until 2026-09-26, fix 3.1 - a cluster is a grouping the run derives, and a
+relabel that fused two clusters re-opened an answered sheet). None of those depend on
 position in a list, so a user who sorts the sheet by size loses nothing.
 """
 from __future__ import annotations
@@ -68,6 +70,8 @@ WORKBOOK = "Master List.xlsx"
 MANIFEST = "master_list_manifest.json"
 ANSWERS = "master_list.json"                      # written by master_list_read.py
 EXTERNAL = "master_list_external.json"            # the disclosure a wrapper-owned scope leaves
+EMAIL_BODIES = "email_bodies.md"                  # every message body, for the exit-17 agent (1.6)
+PRE_SPLIT_BACKUP = "master_list.pre_split.json"   # the answered sheet before migrate_per_file
 
 # ------------------------------------------------------------------ scope owned upstream
 
@@ -193,10 +197,11 @@ def record_row_id(rec: dict) -> str:
     anyway, with every still-matching answer carried forward by Row ID.
     """
     src = Path(source_file(rec)).name
-    # `source_type` is consulted as well as the extension because an EMAIL record does not carry
-    # a filename in `source_file`: extract_email stamps the SUBJECT there ("RE: Packington Hill"),
-    # which ends in none of EMAIL_EXTS. Keying on the extension alone therefore filed every email
-    # record under the tracker family, and the row on the sheet said "Source file" where the user
+    # `source_type` is consulted as well as the extension because an EMAIL record did not always
+    # carry a filename in `source_file`: extract_email stamped the SUBJECT there ("RE: Packington
+    # Hill") until fix 3.11 (2026-09-26), and records written by that code are still on disk. A
+    # subject ends in none of EMAIL_EXTS, so keying on the extension alone filed those records
+    # under the tracker family, and the row on the sheet said "Source file" where the user
     # needed to read "Email" before deciding whether a one-line mention in prose is a real option.
     meta_type = str((rec.get("__meta") or {}).get("source_type") or "").strip().lower()
     fam = "email" if (src.lower().endswith(EMAIL_EXTS) or meta_type == "email") else "row"
@@ -247,6 +252,50 @@ def cluster_row_id(label: str, files) -> str:
     stem = Path(names[0]).stem if names else "deck"
     slug = re.sub(r"[^A-Za-z0-9]+", "_", stem).strip("_")[:40] or "deck"
     return f"deck:{slug}|{h}"
+
+
+def deck_row_id(rel, collide: bool = False) -> str:
+    """The Row ID for ONE DECK FILE - the unit of a master-list brochure row since fix 3.1.
+
+    2026-09-26 test run, fix 3.1. Rows used to be per CLUSTER, and a cluster is a grouping the
+    run derives (a region label, which an LLM label cache could rewrite). Fusing two singleton
+    clusters deleted two ids and minted one, so an answered sheet stopped matching and exit 17
+    re-fired on a sheet the broker had finished. An identity must come from the thing itself:
+    the file. The default id is BYTE-IDENTICAL to today's singleton-cluster id
+    (`cluster_row_id(None, [rel])`), so every all-singleton work dir - the common case, and the
+    real run's 23 of 23 - keeps its ids and is not re-asked.
+
+    `collide=True` when two CURRENT deck files share a basename (two site folders each holding
+    `photos.pdf`): the basename digest gave both the SAME id, one answer silently covering two
+    documents. Those ids digest the lowercased inputs-relative path instead."""
+    if not collide:
+        return cluster_row_id(None, [rel])
+    key = Path(str(rel)).as_posix().lower()
+    h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", Path(str(rel)).stem).strip("_")[:40] or "deck"
+    return f"deck:{slug}|{h}"
+
+
+def _cluster_files(cl: dict) -> list:
+    return [*(cl.get("pdfs") or ([cl["pdf"]] if cl.get("pdf") else [])),
+            *(cl.get("pptxs") or ([cl["pptx"]] if cl.get("pptx") else []))]
+
+
+def _deck_files(clusters: dict) -> list:
+    """[(label, file, collide)] for every deck file, clusters sorted by label, files in the
+    cluster's own order (pdfs, then pptxs). The ONE enumeration `_cluster_rows`,
+    `expected_hash` and `migrate_per_file` all walk, so the three cannot drift apart."""
+    out = []
+    for label, cl in sorted((clusters or {}).items()):
+        if not isinstance(cl, dict):
+            continue
+        for f in _cluster_files(cl):
+            out.append((label, f))
+    counts: dict = {}
+    for _label, f in out:
+        k = Path(str(f)).name.lower()
+        counts[k] = counts.get(k, 0) + 1
+    return [(label, f, counts[Path(str(f)).name.lower()] > 1) for label, f in out]
 
 
 def row_id_digest(rid) -> str:
@@ -726,6 +775,36 @@ def human_date(v) -> str:
         return ""
 
 
+def _sortable_date(v) -> str:
+    """An ISO-8601 UTC timestamp string for ORDERING messages ('' when unparseable).
+
+    Used only to put the earliest message first in email_bodies.md, so the earliest copy of a
+    repeated paragraph is the one printed in full. A .eml date is RFC 2822, a .msg one is ISO-ish;
+    both are normalised to UTC so a +0100 and a +0000 message sort by the instant they were sent."""
+    s = str(v or "").strip()
+    if not s:
+        return ""
+    import datetime as _dt
+    d = None
+    try:
+        from email.utils import parsedate_to_datetime
+        d = parsedate_to_datetime(s)
+    except Exception:
+        d = None
+    if d is None:
+        try:
+            d = _dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except Exception:
+            m = re.search(r"\d{4}-\d{2}-\d{2}", s)
+            return m.group(0) if m else ""
+    try:
+        if d.tzinfo is not None:
+            d = d.astimezone(_dt.timezone.utc).replace(tzinfo=None)
+        return d.isoformat(timespec="seconds")
+    except Exception:
+        return ""
+
+
 def email_source_text(sender_raw, date) -> str:
     """"Email: Alex Morgan (Cushman & Wakefield), 7 Sep 2026" - the Source an adult can read."""
     name, org = sender_parts(sender_raw)
@@ -768,8 +847,9 @@ def _record_rows(records_by_file: dict) -> list:
         for r in recs:
             if not isinstance(r, dict) or r.get("unreadable"):
                 continue
-            # Per record, not per file: an email record's `source_file` is its SUBJECT, so the
-            # file-level extension test alone labelled it "Source file". See record_row_id.
+            # Per record, not per file: an email record written before fix 3.11 has its SUBJECT
+            # as `source_file`, so the file-level extension test alone labelled it "Source
+            # file". See record_row_id.
             meta_type = str((r.get("__meta") or {}).get("source_type") or "").strip().lower()
             src_type = ("Email" if (low.endswith(EMAIL_EXTS) or meta_type == "email")
                         else "Tracker" if low.endswith(TRACKER_EXTS) else "Source file")
@@ -807,8 +887,14 @@ def _record_rows(records_by_file: dict) -> list:
     return rows
 
 
-def email_index(folder: Path, emails, email_attachments=None) -> list:
+def email_index(folder: Path, emails, email_attachments=None, bodies=None) -> list:
     """One entry per EMAIL MESSAGE on disk - for the EMAILS TAB, never for the Master list.
+
+    `bodies` (2026-09-26 test run, fix 1.6): pass a list and every message's BODY is appended to
+    it (plus its file, sender, date and attachments), for `write_email_bodies`. The parse below
+    already reads every body and used to throw it away, while the exit-17 agent opened the same
+    .msg files itself. A message no reader could open is appended with `unreadable: True`, so the
+    agent is told it exists rather than never hearing of it.
 
     WHY THIS IS NO LONGER A CANDIDATE ROW (defect A on the live run "Test Run Brochures Only").
     The previous version of this function put one MASTER-LIST row per .msg on the scope sheet,
@@ -877,21 +963,38 @@ def email_index(folder: Path, emails, email_attachments=None) -> list:
             recs = EM.extract(sub, save_attachment_bytes=False) or []
         except Exception:
             continue
-        # extract() reports the subject in __meta.source_file and not the filename it came from,
-        # so the messages are re-paired with the directory listing in the same sorted order the
-        # reader used. Both sides sort the same directory, so the pairing is positional only
-        # across a list neither side reorders.
         files = [p for p in sorted(sub.iterdir())
                  if p.is_file() and p.suffix.lower() in EMAIL_EXTS]
-        if len(files) != len(recs):
-            # A corrupt message is dropped by neither side (extract writes an `unreadable` stub),
-            # but if the counts ever diverge the pairing is a guess, and a guessed provenance on
-            # a scope sheet is worse than a missing row. Say nothing rather than mislabel.
+        # PAIR BY FILE NAME (2026-09-26 test run, fix 3.11). extract() now stamps the message's
+        # own file name in __meta.email_file. The old pairing was POSITIONAL against the sorted
+        # directory listing and gave up when the counts diverged - and they diverge whenever one
+        # .msg no reader can open returns no stub at all, which blanked the Emails tab for EVERY
+        # message in that directory. Positional pairing survives only as the legacy fallback for
+        # records that carry no file name, and only when the counts agree (a guessed provenance on
+        # a scope sheet is worse than a missing row).
+        by_name = {}
+        for r in recs:
+            if isinstance(r, dict):
+                fn = str((r.get("__meta") or {}).get("email_file") or "").strip()
+                if fn:
+                    by_name.setdefault(fn.lower(), r)
+        if by_name:
+            pairs = [(p, by_name.get(p.name.lower())) for p in files]
+        elif len(files) == len(recs):
+            pairs = list(zip(files, recs))
+        else:
             continue
-        for p, r in zip(files, recs):
-            if not isinstance(r, dict) or r.get("unreadable"):
-                continue
+        for p, r in pairs:
             rel = (Path(d) / p.name).as_posix() if d not in ("", ".") else p.name
+            if not isinstance(r, dict) or r.get("unreadable"):
+                if bodies is not None:
+                    bodies.append({"email_id": email_row_id(rel), "email_file": rel,
+                                   "file_name": p.name, "sender": "", "organisation": "",
+                                   "date": "", "iso": "", "subject": "", "attachments": [],
+                                   "body": "", "unreadable": True,
+                                   "error": str((r or {}).get("error") or "no reader could open it")
+                                   if isinstance(r, dict) else "no reader could open it"})
+                continue
             subject = str(r.get("subject") or "").strip()
             rid = email_row_id(rel)
             if rid in seen_ids:
@@ -899,11 +1002,19 @@ def email_index(folder: Path, emails, email_attachments=None) -> list:
             seen_ids.add(rid)
             atts = [a for a in _att_by_email.get(rel.lower(), []) if a]
             name, org = sender_parts(r.get("from"))
-            # source_files carries BOTH spellings on purpose: the attachment-era records stamp
-            # __meta.source_file as the email's FILENAME, while extract_email's own body records
-            # stamp it as the SUBJECT. The exclusion filter matches records to rows on that field,
-            # so an entry that listed only one of the two would accept the user's No and then
-            # fail to remove half of what the No was about.
+            if bodies is not None:
+                bodies.append({"email_id": rid, "email_file": rel, "file_name": p.name,
+                               "sender": name, "organisation": org,
+                               "date": human_date(r.get("date")),
+                               "iso": _sortable_date(r.get("date")),
+                               "subject": clean_subject(subject),
+                               "attachments": [Path(a).name for a in atts],
+                               "body": str(r.get("body") or "")})
+            # source_files carries BOTH spellings on purpose: records written before fix 3.11
+            # stamp __meta.source_file as the SUBJECT, records written since as the FILE NAME
+            # (as the attachment-era records always did). The exclusion filter matches records to
+            # rows on that field, so an entry that listed only one of the two would accept the
+            # user's No and then fail to remove half of what the No was about.
             rows.append({
                 "email_id": rid,
                 "email_file": rel,
@@ -923,11 +1034,125 @@ def email_index(folder: Path, emails, email_attachments=None) -> list:
     return rows
 
 
-def _cluster_rows(clusters: dict, folder: Path, first_page_text, emails=None) -> list:
-    """One candidate row per BROCHURE CLUSTER - the unit a reader agent is dispatched on.
+_PARA_MIN = 40   # a repeated paragraph shorter than this ("Thanks,", "Kind regards") is kept
 
-    Per cluster, not per file, because the cluster is what the run would read as one option and
-    what the user is therefore being asked about. Postcode and size come from the first page's
+
+def _para_key(p: str) -> str:
+    """The de-dup key of one paragraph: quote markers off each line, whitespace collapsed,
+    casefolded. A reply quoting an earlier message ("> We also have...") keys like the original."""
+    lines = [re.sub(r"^[\s>]+", "", ln) for ln in str(p or "").split("\n")]
+    return re.sub(r"\s+", " ", " ".join(lines)).strip().casefold()
+
+
+def write_email_bodies(work, bodies) -> Path | None:
+    """Write work/email_bodies.md - every message's body, once - and return its path.
+
+    2026-09-26 test run, fix 1.6. The exit-17 agent was sent to open the .msg/.eml files itself
+    (16 messages, 98 KB of bodies on the live run) while `email_index` had already parsed every
+    one of them and thrown the bodies away. This writes them out in ONE file, earliest message
+    first, each under a header carrying what the agent needs to cite it (file name, sender,
+    date, subject, inputs-relative path, the value to put in `source_files`, attachments).
+
+    CROSS-EMAIL PARAGRAPH DE-DUP. A thread repeats itself: on the live run a 223-char society
+    disclaimer and the requirement summary appeared ten times each. A paragraph (blank-line
+    split) whose key (`_para_key`, >= 40 chars) was printed earlier becomes `[= E<k> ¶<n>]`, and
+    the paragraph it points at is prefixed `¶<n> ` so the pointer resolves by eye. Nothing else
+    is shortened: URLs, map links and every unique paragraph are verbatim (-23 % of body text on
+    the live corpus, no information lost - the full text is always one marker away).
+
+    None when there is nothing to write (a stale file from an earlier pass is removed: it is a
+    derived work file, never an input). Atomic, UTF-8."""
+    p = Path(work) / EMAIL_BODIES
+    items = [b for b in (bodies or []) if isinstance(b, dict)]
+    if not items:
+        try:
+            if p.exists():
+                p.unlink()
+        except OSError:
+            pass
+        return None
+    items.sort(key=lambda b: (str(b.get("iso") or "9999"), str(b.get("file_name") or "").lower()))
+    para = "¶"
+    first = {}  # key -> (k, n) of the first printing
+    refs = set()  # (k, n) that some later paragraph points at
+    plan = []   # per message: [(text, pointer (k, n) or None)]
+    for k, b in enumerate(items, 1):
+        body = str(b.get("body") or "").replace("\r\n", "\n").replace("\r", "\n")
+        paras = [x.strip("\n") for x in re.split(r"\n[ \t]*\n", body) if x.strip()]
+        row = []
+        for n, text in enumerate(paras, 1):
+            key = _para_key(text)
+            if len(key) >= _PARA_MIN and key in first:
+                refs.add(first[key])
+                row.append((text, first[key]))
+            else:
+                if len(key) >= _PARA_MIN:
+                    first[key] = (k, n)
+                row.append((text, None))
+        plan.append(row)
+    out = [f"# Email bodies - {len(items)} message(s)", "",
+           "Read THIS file, never the .msg/.eml files: every message's body is below, with its "
+           "file name, sender and date.",
+           f"A paragraph that already appeared in an earlier message is replaced by "
+           f"[= E<k> {para}<n>]: the full text is the paragraph marked {para}<n> under ## E<k> "
+           f"above. Nothing else is shortened.", ""]
+    for k, (b, row) in enumerate(zip(items, plan), 1):
+        who = str(b.get("sender") or "") or "unknown sender"
+        if b.get("organisation"):
+            who += f" ({b['organisation']})"
+        out.append(f"## E{k} - {b.get('file_name') or ''}")
+        out.append(f"From: {who} | Date: {b.get('date') or 'not stated'} | "
+                   f"Subject: {b.get('subject') or '(no subject)'}")
+        out.append(f"Path: {b.get('email_file') or ''} | source_files value: "
+                   f"{b.get('file_name') or ''}")
+        atts = [str(a) for a in (b.get("attachments") or []) if a]
+        out.append("Attachments saved: " + ("; ".join(atts) if atts else "none"))
+        out.append("")
+        if b.get("unreadable"):
+            out.append(f"(This message could not be read by the run: {b.get('error') or 'unknown'}"
+                       f". Its body is not available here.)")
+            out.append("")
+            continue
+        if not row:
+            out.append("(empty body)")
+            out.append("")
+            continue
+        for n, (text, ptr) in enumerate(row, 1):
+            if ptr is not None:
+                out.append(f"[= E{ptr[0]} {para}{ptr[1]}]")
+            elif (k, n) in refs:
+                out.append(f"{para}{n} {text}")
+            else:
+                out.append(text)
+            out.append("")
+    text = "\n".join(out).rstrip("\n") + "\n"
+    _write_text(p, text)
+    return p
+
+
+def _write_text(p: Path, text: str) -> None:
+    """Atomic UTF-8 write through _common when it imports, a plain write otherwise."""
+    try:
+        import _common as _C
+        _aw = _C.atomic_write_text
+    except Exception:
+        _aw = None
+    if _aw is not None:
+        _aw(p, text)
+    else:
+        Path(p).write_text(text, encoding="utf-8")
+
+
+def _cluster_rows(clusters: dict, folder: Path, first_page_text, emails=None) -> list:
+    """One candidate row per BROCHURE FILE (fix 3.1, 2026-09-26; it was one per cluster).
+
+    Per FILE, because a file is the only thing whose identity the run does not derive: a cluster
+    is a grouping (a region label, which a label cache could rewrite), and fusing two clusters
+    deleted two answered rows and re-opened exit 17. The cluster label survives as `cluster`,
+    informational only. Two decks that are one document in two formats (a PDF and a PPTX sharing
+    a stem) are two rows, each saying so in its notes - NOT an automatic duplicate group, because
+    `seed_match_decisions` turns a group into `same` verdicts across every record of its decks.
+    Postcode and size come from the first page's
     text, which is the cheapest evidence that exists before the expensive read; it is explicitly
     NOT treated as data anywhere else - nothing from this row reaches a card. If the user
     includes the row, the reader agent reads the deck properly and overwrites all of this.
@@ -939,10 +1164,11 @@ def _cluster_rows(clusters: dict, folder: Path, first_page_text, emails=None) ->
     is document-derived or blank; a filename is never allowed into it, because a wrong town is a
     fact a colleague will act on and a blank one is a question they will ask.
 
-    The ROW ID is unchanged (`cluster_row_id`, a digest of the file set), because it is the
-    record's provenance locator and not its name. A better name must not re-open a row the user
-    has already answered, and neither must a better cluster label: see cluster_row_id for the
-    run on which it did.
+    The ROW ID is `deck_row_id` of the file - byte-identical to the singleton-cluster id it
+    replaces - because it is the record's provenance locator and not its name. A better name must
+    not re-open a row the user has already answered, and neither must a better cluster label:
+    see cluster_row_id for the run on which it did. `expected_hash` mirrors this loop through
+    the same `_deck_files` enumeration.
     """
     rows = []
     by_attachment = {}
@@ -950,15 +1176,15 @@ def _cluster_rows(clusters: dict, folder: Path, first_page_text, emails=None) ->
         for a in (e.get("attachment_paths") or []):
             by_attachment[Path(str(a)).as_posix().lower()] = e
             by_attachment[Path(str(a)).name.lower()] = e
-    for label, cl in sorted((clusters or {}).items()):
-        files = [*(cl.get("pdfs") or ([cl["pdf"]] if cl.get("pdf") else [])),
-                 *(cl.get("pptxs") or ([cl["pptx"]] if cl.get("pptx") else []))]
-        if not files:
-            continue
-        names = [Path(str(f)).name for f in files]
+    stems_by_cluster: dict = {}
+    for label, f, _c in _deck_files(clusters):
+        stems_by_cluster.setdefault(label, []).append(f)
+    for label, f, collide in _deck_files(clusters):
+        files = [f]
+        names = [Path(str(f)).name]
         head = ""
         try:
-            head = first_page_text(folder / files[0]) or ""
+            head = first_page_text(folder / f) or ""
         except Exception:
             head = ""
         pc = ""
@@ -971,12 +1197,8 @@ def _cluster_rows(clusters: dict, folder: Path, first_page_text, emails=None) ->
         if ms:
             size = _num(ms.group(1))
         name, town, from_fn, why = deck_name(label, files, head)
-        em = None
-        for f in files:
-            em = (by_attachment.get(Path(str(f)).as_posix().lower())
-                  or by_attachment.get(Path(str(f)).name.lower()))
-            if em:
-                break
+        em = (by_attachment.get(Path(str(f)).as_posix().lower())
+              or by_attachment.get(Path(str(f)).name.lower()))
         src = deck_source_text(em.get("sender_raw") if em else "",
                                em.get("date_raw") if em else "", bool(em))
         note = ("Postcode and size here are the deck's FIRST PAGE only - a cheap look, not the "
@@ -985,8 +1207,13 @@ def _cluster_rows(clusters: dict, folder: Path, first_page_text, emails=None) ->
             note += (" It arrived as an attachment to \"%s\"%s."
                      % (em.get("subject") or em.get("file_name"),
                         (" from " + em["sender"]) if em.get("sender") else ""))
+        twins = [Path(str(o)).name for o in stems_by_cluster.get(label, [])
+                 if o != f and Path(str(o)).stem.lower() == Path(str(f)).stem.lower()
+                 and Path(str(o)).suffix.lower() != Path(str(f)).suffix.lower()]
+        for tw in twins:
+            note += " The same deck is also on disk as %s; answer both the same way." % tw
         rows.append({
-            "row_id": cluster_row_id(label, files),
+            "row_id": deck_row_id(f, collide),
             "property": name,
             "source_type": "Brochure",
             "source": src,
@@ -1005,7 +1232,7 @@ def _cluster_rows(clusters: dict, folder: Path, first_page_text, emails=None) ->
                       if em and (em.get("sender") or em.get("organisation")) else ""),
             "files": names,
             "brochure": YES,
-            "brochure_detail": "Yes - %d deck(s) on disk: %s" % (len(names), "; ".join(names)),
+            "brochure_detail": "Yes - deck on disk: %s" % "; ".join(names),
             "notes": note,
         })
     return rows
@@ -1194,21 +1421,54 @@ def expected_hash(records_by_file: dict, clusters: dict) -> str:
     So the hash is computed here from the ids alone, the caller asks `is_answered` first, and
     the enumeration runs only for a sheet that is genuinely unanswered or whose inputs set has
     changed. This MUST digest exactly the id set build_auto digests: the same `_record_rows`
-    and the same per-cluster file list and `cluster_row_id`, in the same order; the eval pins
-    the equality. If _cluster_rows ever grows a new reason to skip a cluster, mirror it here.
+    and the same per-FILE deck ids (`_deck_files` + `deck_row_id`, fix 3.1: the same file
+    order and the same basename-collision rule), in the same order; the eval pins the equality.
+    If _cluster_rows ever grows a new reason to skip a file, mirror it here.
     """
     ids = [str(r.get("row_id") or "") for r in _record_rows(records_by_file)]
-    for label, cl in sorted((clusters or {}).items()):
-        files = [*(cl.get("pdfs") or ([cl["pdf"]] if cl.get("pdf") else [])),
-                 *(cl.get("pptxs") or ([cl["pptx"]] if cl.get("pptx") else []))]
-        if not files:
-            continue
-        ids.append(cluster_row_id(label, files))
+    for _label, f, collide in _deck_files(clusters):
+        ids.append(deck_row_id(f, collide))
     return fingerprint([{"row_id": i} for i in ids])
 
 
+_CACHE_CODE_FILES = ("master_list.py", "extract_email.py", "msg_reader.py", "extract_pdf.py")
+
+
+def _candidates_key(records_by_file, clusters, emails, email_attachments, corpus_key) -> str:
+    """The identity of one enumeration's INPUTS (fix 2.1): the corpus content hash, the deck
+    grouping, the attachment map, the non-deck records and the code that turns them into rows.
+    Any change rebuilds; an unchanged pass reuses master_candidates_auto.json without opening a
+    single PDF or .msg. The code digest covers the helpers the rows depend on, so an upgraded
+    skill never serves rows its predecessor built."""
+    here = Path(__file__).resolve().parent
+    code = hashlib.sha1()
+    for n in _CACHE_CODE_FILES:
+        try:
+            code.update((here / n).read_bytes())
+        except OSError:
+            code.update(n.encode("utf-8"))
+    recs = {k: v for k, v in sorted((records_by_file or {}).items())
+            if not Path(str(k)).name.lower().endswith(DECK_EXTS)}
+    atts = []
+    for e in (email_attachments or []):
+        if isinstance(e, dict):
+            atts.append([str(e.get("email") or ""),
+                         sorted(str(s.get("file") if isinstance(s, dict) else s)
+                                for s in (e.get("saved") or []))])
+    payload = {"v": 1, "code": code.hexdigest()[:12], "corpus": str(corpus_key),
+               "decks": {str(k): sorted(str(f) for f in _cluster_files(c))
+                         for k, c in sorted((clusters or {}).items()) if isinstance(c, dict)},
+               "emails": sorted(str(e) for e in (emails or [])),
+               "atts": sorted(atts),
+               "records": hashlib.sha1(json.dumps(recs, sort_keys=True, ensure_ascii=False,
+                                                  default=str).encode("utf-8")).hexdigest()}
+    return hashlib.sha1(json.dumps(payload, sort_keys=True, ensure_ascii=False)
+                        .encode("utf-8")).hexdigest()[:16]
+
+
 def build_auto(work: Path, records_by_file: dict, clusters: dict, folder: Path,
-               first_page_text, emails=None, email_attachments=None) -> dict:
+               first_page_text, emails=None, email_attachments=None,
+               corpus_key: str = "") -> dict:
     """Write work/master_candidates_auto.json - the spine's half of the candidate set.
 
     Three routes in, all deterministic: tracker records, email records an agent has already
@@ -1223,9 +1483,42 @@ def build_auto(work: Path, records_by_file: dict, clusters: dict, folder: Path,
 
     `emails` is the inventory's email list (paths relative to the inputs folder). It defaults to
     None so a caller that predates the email route gets the old behaviour rather than a TypeError.
+
+    `corpus_key` (2026-09-26 test run, fix 2.1): the inventory's content `input_hash`. When set,
+    the payload carries a `candidates_key` and a later call with the same inputs returns the
+    file on disk instead of re-reading every deck's first page and every .msg (12.6 s of a 16 s
+    `--from repairs` pass on the live run, all of it thrown away). Empty = no caching (today).
+    A cache hit also needs work/email_bodies.md on disk when the run has emails (fix 1.6).
     """
+    ckey = ""
+    if corpus_key:
+        try:
+            ckey = _candidates_key(records_by_file, clusters, emails, email_attachments,
+                                   corpus_key)
+            prev = _read_json(Path(work) / AUTO_CANDIDATES, {}) or {}
+            if (ckey and isinstance(prev, dict) and prev.get("candidates_key") == ckey
+                    and isinstance(prev.get("rows"), list)
+                    and (not emails or (Path(work) / EMAIL_BODIES).exists())):
+                return prev
+        except Exception as e:
+            print(f"  (master list: candidate cache not used - {type(e).__name__}: {e}; "
+                  f"rebuilding)")
+            ckey = ""
     rec_rows = _record_rows(records_by_file)
-    mail = email_index(folder, emails, email_attachments)
+    bodies = [] if emails else None
+    mail = email_index(folder, emails, email_attachments, bodies=bodies)
+    if emails:
+        try:
+            write_email_bodies(work, bodies)
+        except Exception as e:
+            # The slot then points the agent at the .msg/.eml files, which is today's route.
+            print(f"  (email bodies not written: {type(e).__name__}: {e} - the master-list agent "
+                  f"reads the .msg/.eml files instead)")
+    else:
+        try:
+            write_email_bodies(work, [])  # removes a stale file from a pass that had emails
+        except Exception:
+            pass
     # The email index is NOT a source of master-list rows (see `email_index`). It is read here
     # so a deck that arrived as an attachment can say who sent it and when, and it is written to
     # the candidates file so the builder can put every message on the Emails tab.
@@ -1245,6 +1538,8 @@ def build_auto(work: Path, records_by_file: dict, clusters: dict, folder: Path,
                    "from_brochures": sum(1 for r in rows if r["source_type"] == "Brochure"),
                    "messages": len(mail)},
     }
+    if ckey:
+        payload["candidates_key"] = ckey
     p = Path(work) / AUTO_CANDIDATES
     p.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
     return payload
@@ -1306,6 +1601,141 @@ def excluded_cluster_labels(work: Path) -> set:
             if answers and all(a == NO for a in answers)}
 
 
+def _deck_answer_files(ml: dict) -> tuple:
+    """(files under a deck row answered No, files under a deck row answered Yes), lower
+    basenames. A legacy per-cluster row contributes every file in its `source_files`."""
+    no, yes = set(), set()
+    for r in _rows_of(ml):
+        if not str(r.get("row_id") or "").startswith("deck:"):
+            continue
+        inc = str(r.get("include") or "")
+        files = {Path(str(f)).name.lower() for f in (r.get("source_files") or []) if f}
+        if inc == NO:
+            no |= files
+        elif inc == YES:
+            yes |= files
+    return no, yes
+
+
+def excluded_deck_files(work: Path) -> set:
+    """Lower basenames of the deck FILES the reader dispatch must skip (fix 3.1, 2026-09-26).
+
+    A file is skipped when a `deck:` row covering it is answered No and NO deck row covering it
+    is answered Yes - a Yes anywhere keeps the file read, the fail-open direction. Keyed on the
+    file, not on the cluster label: `excluded_cluster_labels` keyed on the label, so a relabel
+    made an answered No silently stop applying and the deck was read anyway. Legacy multi-file
+    rows are handled through their `source_files`. Headless / absent sheet -> empty set."""
+    ml = load_answers(work)
+    if not ml or ml.get("skipped"):
+        return set()
+    no, yes = _deck_answer_files(ml)
+    return no - yes
+
+
+def migrate_per_file(work: Path, records_by_file: dict, clusters: dict) -> bool:
+    """Re-key an answered sheet from per-CLUSTER deck rows to one row per deck FILE, in place.
+
+    2026-09-26 test run, fix 3.1. True ONLY when the answered sheet provably answered THIS
+    inputs set under another grouping, so no answer is guessed:
+      * master_list.json has rows and is not the headless bypass;
+      * fingerprint(current record-row ids + the sheet's own `deck:` ids) == its input_hash, i.e.
+        the records are unchanged and those deck ids are exactly the ones the sheet answered;
+      * the multiset of deck files under those rows == the current deck files;
+      * every current file's covering old rows AGREE on Include? and Run notes (two old rows
+        sharing a basename that disagree cannot be split honestly - the sheet is re-opened).
+    Then every deck row becomes one row per current file (`deck_row_id`), carrying include,
+    run_notes, duplicate_group and duplicate_status, `split_from` naming the old id when it
+    changed; the `run_notes` map is re-keyed, counts recomputed, input_hash set to
+    `expected_hash`, a `migrated` stamp added. The old file is backed up to
+    work/master_list.pre_split.json first (never overwritten once written) and the new one is
+    written atomically. Covers a multi-file region cluster (answered before fix 3.1) and a sheet
+    answered while a label had fused two decks. ANY exception -> False: the caller then re-opens
+    exit 17 with every answer carried forward, which is today's route for a changed input."""
+    try:
+        ml = load_answers(work)
+        if not ml or ml.get("skipped") or not _rows_of(ml):
+            return False
+        rows = _rows_of(ml)
+        old_deck = [r for r in rows if str(r.get("row_id") or "").startswith("deck:")]
+        if not old_deck:
+            return False
+        rec_ids = [str(r.get("row_id") or "") for r in _record_rows(records_by_file)]
+        old_ids = [str(r.get("row_id") or "") for r in old_deck]
+        if fingerprint([{"row_id": i} for i in rec_ids + old_ids]) != str(ml.get("input_hash") or ""):
+            return False
+        current = _deck_files(clusters)
+        cur_names = sorted(Path(str(f)).name.lower() for _l, f, _c in current)
+        old_names = sorted(Path(str(f)).name.lower() for r in old_deck
+                           for f in (r.get("source_files") or []) if f)
+        if not current or cur_names != old_names:
+            return False
+        cover: dict = {}
+        for r in old_deck:
+            for f in (r.get("source_files") or []):
+                if f:
+                    cover.setdefault(Path(str(f)).name.lower(), []).append(r)
+        new_deck = []
+        changed = False
+        id_map: dict = {}  # old id -> [new ids]
+        for label, f, collide in current:
+            base = Path(str(f)).name
+            olds = cover.get(base.lower()) or []
+            if not olds:
+                return False
+            if len({(str(o.get("include") or ""), str(o.get("run_notes") or "")) for o in olds}) > 1:
+                return False
+            src = olds[0]
+            oid = str(src.get("row_id") or "")
+            nid = deck_row_id(f, collide)
+            row = dict(src)
+            row["row_id"] = nid
+            row["source_files"] = [base]
+            if not row.get("cluster"):
+                row["cluster"] = str(label)
+            if nid != oid or len(src.get("source_files") or []) != 1:
+                row["split_from"] = oid
+                changed = True
+            new_deck.append(row)
+            for o in olds:
+                id_map.setdefault(str(o.get("row_id") or ""), []).append(nid)
+        if not changed:
+            return False  # nothing to re-key: the sheet is simply not for these inputs
+        _new_ids = {r["row_id"] for r in new_deck}
+        split = sum(1 for r in old_deck if str(r.get("row_id") or "") not in _new_ids)
+        others = [r for r in rows if not str(r.get("row_id") or "").startswith("deck:")]
+        new_rows = others + new_deck
+        notes = dict(ml.get("run_notes") or {})
+        for oid, nids in id_map.items():
+            if oid in notes:
+                txt = notes.pop(oid)
+                for nid in nids:
+                    notes[nid] = txt
+        new_hash = expected_hash(records_by_file, clusters)
+        out = dict(ml)
+        out["rows"] = new_rows
+        out["run_notes"] = notes
+        out["counts"] = {"rows": len(new_rows),
+                         "included": sum(1 for r in new_rows if str(r.get("include") or "") == YES),
+                         "excluded": sum(1 for r in new_rows if str(r.get("include") or "") == NO)}
+        out["migrated"] = {"from": "per-cluster deck rows",
+                           "at": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+                           "prior_input_hash": str(ml.get("input_hash") or ""),
+                           "rows_split": split}
+        out["input_hash"] = new_hash
+        work = Path(work)
+        backup = work / PRE_SPLIT_BACKUP
+        if backup.exists():
+            backup = work / ("master_list.pre_split.%s.json" % str(ml.get("input_hash") or "x"))
+        if not backup.exists():
+            _write_text(backup, (work / ANSWERS).read_text(encoding="utf-8-sig"))
+        _write_text(work / ANSWERS, json.dumps(out, ensure_ascii=False, indent=1))
+        return True
+    except Exception as e:
+        print(f"  (master list: per-file migration not applied - {type(e).__name__}: {e}; "
+              f"the sheet is re-opened with its answers carried forward)")
+        return False
+
+
 def excluded_rows(work: Path) -> list:
     ml = load_answers(work)
     if not ml or ml.get("skipped"):
@@ -1314,7 +1744,11 @@ def excluded_rows(work: Path) -> list:
 
 
 def _excluded_keys(ml: dict) -> tuple:
-    """(record ids, deck filenames) the user excluded, as two lookup sets."""
+    """(record ids, deck filenames) the user excluded, as two lookup sets.
+
+    A deck file under a No row that is ALSO under a Yes deck row is not excluded (fix 3.1): with
+    per-file rows that cannot happen on one sheet, but a legacy multi-file row beside a per-file
+    one could, and the fail-open reading is the only one that never deletes a wanted option."""
     rec_ids, deck_files = set(), set()
     for r in _rows_of(ml):
         if str(r.get("include") or "") != NO:
@@ -1324,7 +1758,8 @@ def _excluded_keys(ml: dict) -> tuple:
             deck_files |= {str(f).lower() for f in (r.get("source_files") or [])}
         elif rid:
             rec_ids.add(rid)
-    return rec_ids, deck_files
+    _no, _yes = _deck_answer_files(ml)
+    return rec_ids, deck_files - _yes
 
 
 def record_excluded(rec: dict, rec_ids: set, deck_files: set) -> bool:
@@ -1409,12 +1844,17 @@ def seed_match_decisions(records: list, work: Path) -> dict:
     out = {}
     for gid, rows in sorted(by_group.items()):
         recs: list = []
+        # id(record) -> the record-row ids that named it INDIVIDUALLY (fix 3.25). A record reached
+        # only through a deck row's file expansion has none.
+        named: dict = {}
         for r in rows:
             rid = str(r.get("row_id") or "")
             if rid.startswith("deck:"):
                 for f in (r.get("source_files") or []):
                     recs += members.get(f"file:{str(f).lower()}", [])
             else:
+                for rec in members.get(rid, []):
+                    named.setdefault(id(rec), set()).add(rid)
                 recs += members.get(rid, [])
         # de-duplicate by identity, keep order
         seen, uniq = set(), []
@@ -1427,6 +1867,17 @@ def seed_match_decisions(records: list, work: Path) -> dict:
                 a, b = uniq[a_i], uniq[b_i]
                 if _m.match_key(a) == _m.match_key(b) and a is b:
                     continue
+                # 2026-09-26 test run, fix 3.25. A deck row expands to EVERY record read from
+                # its file, so a group holding one multi-record deck used to seed `same` between
+                # two different units of that ONE brochure (units 1 and 2 of a park, each its own
+                # option) - a verdict nobody gave, which merges two options into one card. A pair
+                # from one source file is seeded only when each record was named by its OWN row
+                # (two tracker lines the broker grouped as the same building are their decision).
+                sa = Path(source_file(a)).name.lower()
+                if sa and sa == Path(source_file(b)).name.lower():
+                    na, nb = named.get(id(a), set()), named.get(id(b), set())
+                    if not (na and nb and na != nb):
+                        continue
                 out[_m.pair_id(a, b)] = {
                     "verdict": "same",
                     "reason": (f"the broker grouped these on the master list as duplicate "

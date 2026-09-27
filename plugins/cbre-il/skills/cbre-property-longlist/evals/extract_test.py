@@ -866,8 +866,17 @@ def email_cases() -> None:
     good = [d for d in out if not d.get("unreadable")]
     check(len(good) == 1 and good[0]["__meta"].get("date") == "2025-05-12",
           "H5: RFC-2822 date lands in __meta.date as ISO (newest-email-wins works)")
-    check(bool(good) and good[0]["__meta"]["locator_base"] == "email 2025-05-12",
-          "F9: locator matches the documented 'email <yyyy-mm-dd>' form")
+    # F9 re-pointed 2026-09-26 (fix 3.11): the locator names date, sender AND file, and
+    # source_file is the message's file name - a subject is not unique inside a thread.
+    _m9 = good[0]["__meta"] if good else {}
+    check(bool(good) and str(_m9.get("locator_base") or "").startswith("email 2025-05-12")
+          and "(offer.eml)" in str(_m9.get("locator_base") or "")
+          and "agent@example.com" in str(_m9.get("locator_base") or ""),
+          "F9: locator is the documented 'email <yyyy-mm-dd> from <sender> (<file>)' form "
+          f"(got {_m9.get('locator_base')!r})")
+    check(_m9.get("source_file") == "offer.eml" and _m9.get("subject") == "GLP Sziget II offer"
+          and _m9.get("email_file") == "offer.eml",
+          "F9: source_file is the .eml file name; the subject rides in __meta.subject")
     check(len(out) == 2 and any(d.get("unreadable") for d in out),
           "F23: a junk/corrupt file degrades to an explicit stub, not an empty record")
 

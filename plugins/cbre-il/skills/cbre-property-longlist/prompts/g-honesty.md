@@ -25,11 +25,26 @@ deck page text in `vision/manifest.json`, the decision audit trail (`match_decis
 re-derive them, they are the one under-capture signal no other gate can see), and the
 per-property views in `properties/`.
 
-Your two directions of failure, both blocking-grade when confirmed:
-- INVENTION: a value on a card that its cited source does not state.
-- UNDER-CAPTURE: a value the source plainly states that ships as `tbd` / "absent in all
-  sources". Check a struck-value pattern too - a figure the extract carries that canonical
-  lacks is a silent strike, not an absence.
+## Your scope - NEGATIVE claims and DISCLOSURE (G-trace owns the positive ones)
+You check what the pack says is ABSENT, and whether what it discloses is true:
+- UNDER-CAPTURE - you are its ONLY reviewer, and it ranks with invention: a value the source
+  plainly states that ships as a sentinel or an "absent in all sources" gap row. That includes
+  one held under an off-spec key, one that lives only inside a reader doubt's options, and one
+  misfiled under another field while its right home ships a gap. START from
+  `gate1_scorecard.md`'s capture-symmetry `[SIGNAL]` / `[FAIL]` lines (shadow keys, doubt-option
+  figures, asymmetries), then sweep each property's own deck text for every DISPLAYED field
+  that ships a gap. Check a struck-value pattern too - a figure the extract carries that
+  canonical lacks is a silent strike, not an absence.
+- SENTINEL DISCIPLINE: a sentinel only where the value is genuinely unknown; one sentinel form
+  on the page; every strike disclosed with a true reason.
+- DISCLOSURE ACCURACY: every Gaps Report and `meta.conflicts` line is true of the data AS
+  SHIPPED (not stale after a repair, not overstated, not a false duplicate); every decision
+  disagreement reaches the broker; the footer is intact.
+- ATTRIBUTION: every broker / repair attribution traces to `answers.json`,
+  `clarify_state.json` or `repairs.json`.
+
+OUT OF SCOPE - do not re-verify that a POPULATED value matches its page, locator precision,
+computed values, or match/basis decisions: G-trace owns them.
 
 ## Reading a delivered workbook
 - Any claim about a delivered `.xlsx` (the Longlist or the Source Ledger workbook) is made

@@ -63,8 +63,26 @@ orphan; anything unrecognised is left alone and listed. `index.json` is removed 
 written LAST, atomically, so a projection that crashed mid-write leaves a folder with no index
 rather than a stale one claiming completeness.
 
+THE MEDIA HALF IS CARRIED WHILE ITS INPUTS ARE UNCHANGED (2026-09-26 test run, fix 2.2). The
+media half used to have no identity, so every pass either deleted it (`never`) or re-rendered
+all of it (`always`): a blocked pass on a 22-deck run paid ~95 s to re-render 209 pages it had
+rendered the pass before, and a run whose gates passed never wrote a media view at all, so the
+QA reviewers told to "verify against the per-property media" had none. Now each property's
+`media/` carries a `.media_stamp.json` (and `_unassigned/` its own), written LAST, holding
+`media_key` - a hash over the images the card ships, the property's considered set, each
+considered deck's resolved path + size + mtime, the render parameters and the bytes of this
+module and images.py - plus the size and mtime of every file the half wrote. A half is CURRENT
+only when the key matches, nothing failed to write, and the files on disk are exactly the files
+the stamp lists; then it is carried (not deleted on `never`, not re-rendered on `always`). Any
+doubt - an unreadable stamp, a key that cannot be computed, a hand-edited file - means rebuild
+(`always`) or delete (`never`), which is the old behaviour. `force_media=True`
+(`--rebuild-media`) ignores the stamps. A carried half on a `never` pass says so in
+`property.json["__media"]["carried"]`, `notes.md` and `index.json["media_carried"]`; on an
+`always` pass it is by construction what a rebuild would write, so property.json reads the same.
+
 CLI:  python project_properties.py --work <dir> [--canonical <path>]
                                     [--media-view {auto,always,never}] [--no-media]
+                                    [--rebuild-media]
                                     [--source-dir <input folder>] [--image-cache <dir>]
 """
 from __future__ import annotations
@@ -72,6 +90,7 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
+import hashlib
 import json
 import os
 import re
@@ -122,6 +141,174 @@ _NUMBERED_DIR_RX = re.compile(r"^\d+-")
 # the root-level files this module owns: removed before a pass writes, so a crash mid-write
 # leaves no index claiming the folder is complete, and re-created last
 _OWNED_ROOT_FILES = ("index.json", "index.json.tmp", MEDIA_VIEW_MARKER)
+
+# --- THE MEDIA STAMP (2026-09-26 test run, fix 2.2) ---------------------------------------- #
+# Lives INSIDE the half it describes (`media/`, `_unassigned/`), so removing the half removes its
+# stamp and a stale stamp can never outlive its files. See the module docstring.
+MEDIA_STAMP = ".media_stamp.json"
+MEDIA_STAMP_VERSION = 1
+_DECISIONS_REL = "../media_decisions.json"   # the one media-half file outside media/
+_CARRY_NOTE = ("media half carried from an earlier full view - its inputs (images, considered "
+               "set, deck files, render code) are unchanged")
+
+
+def _code_fingerprint() -> str:
+    """sha256 over the bytes of this module and images.py - the code that decides what the media
+    half contains - so an image-code change invalidates every stamp by construction. "" on any
+    error, and an empty fingerprint never matches (no key is computed from it)."""
+    try:
+        here = Path(__file__).resolve()
+        h = hashlib.sha256()
+        for f in (here, here.parent / "images.py"):
+            h.update(f.name.encode("utf-8"))
+            h.update(b"\0")
+            h.update(f.read_bytes())
+            h.update(b"\0")
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def _key_params(code_fp: str, image_cache) -> bytes:
+    return json.dumps({"v": MEDIA_STAMP_VERSION, "code": code_fp, "dpi": CONSIDERED_DPI,
+                       "edge": CONSIDERED_MAX_EDGE, "maxp": CONSIDERED_MAX_PAGES,
+                       "cache": bool(image_cache)}, sort_keys=True).encode("utf-8")
+
+
+def _deck_stat(source_dir, entry: dict, deck_cache: dict) -> str:
+    """`name|resolved path|size|mtime_ns` for one deck entry (`name|-1` when it does not
+    resolve), cached per (name, recorded path) so a deck shared by many properties is resolved
+    once per build."""
+    name = str(entry.get("file") or Path(str(entry.get("path") or "")).name)
+    ck = (name, str(entry.get("path") or ""))
+    if ck in deck_cache:
+        return deck_cache[ck]
+    try:
+        deck = _resolve_deck(source_dir, entry)
+        if deck is None:
+            s = f"{name}|-1"
+        else:
+            st = deck.stat()
+            s = f"{name}|{deck}|{st.st_size}|{st.st_mtime_ns}"
+    except Exception:
+        s = f"{name}|-1"
+    deck_cache[ck] = s
+    return s
+
+
+def media_key(prop: dict, considered, source_dir, image_cache, code_fp: str,
+              deck_cache: dict | None = None) -> str | None:
+    """The identity of ONE property's media half: sha256 over the render parameters and code
+    fingerprint, the photo / plan / gallery strings the card ships, the property's considered
+    set (merge's media_considered.json entry) and each considered deck's stat. None on any
+    error or with no code fingerprint, and None is never reusable."""
+    if not code_fp:
+        return None
+    try:
+        deck_cache = {} if deck_cache is None else deck_cache
+        h = hashlib.sha256(_key_params(code_fp, image_cache))
+        for k in ("photo", "plan"):
+            h.update(b"\0")
+            h.update(str(prop.get(k) or "").encode("utf-8", "replace"))
+        for g in (prop.get("gallery") or []):
+            h.update(b"\0")
+            h.update(str(g).encode("utf-8", "replace"))
+        h.update(b"\x01")
+        h.update(json.dumps(considered or {}, sort_keys=True, default=str).encode("utf-8"))
+        decks = (considered or {}).get("decks") if isinstance(considered, dict) else None
+        for name, d in sorted((decks or {}).items()):
+            dd = dict(d) if isinstance(d, dict) else {}
+            dd["file"] = name
+            h.update(b"\0")
+            h.update(_deck_stat(source_dir, dd, deck_cache).encode("utf-8", "replace"))
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
+def _unassigned_key(unassigned: list, source_dir, image_cache, code_fp: str,
+                    deck_cache: dict | None = None) -> str | None:
+    """The same identity for `_unassigned/`: the unclaimed-page list, its decks' stats, the
+    render parameters and the code fingerprint. None on any error."""
+    if not code_fp:
+        return None
+    try:
+        deck_cache = {} if deck_cache is None else deck_cache
+        h = hashlib.sha256(_key_params(code_fp, image_cache))
+        h.update(b"\x02")
+        h.update(json.dumps(unassigned or [], sort_keys=True, default=str).encode("utf-8"))
+        for entry in (unassigned or []):
+            if isinstance(entry, dict):
+                h.update(b"\0")
+                h.update(_deck_stat(source_dir, entry, deck_cache).encode("utf-8", "replace"))
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
+def _listing(base: Path, with_decisions: bool) -> dict:
+    """{relative posix path: [size, mtime_ns]} for every file under `base` except the stamp
+    itself, plus `../media_decisions.json` when asked and present. Raises on I/O errors; every
+    caller treats that as "not current"."""
+    out = {}
+    if base.is_dir():
+        for f in sorted(base.rglob("*")):
+            if f.is_file() and not (f.parent == base and f.name == MEDIA_STAMP):
+                st = f.stat()
+                out[f.relative_to(base).as_posix()] = [st.st_size, st.st_mtime_ns]
+    if with_decisions:
+        dec = base.parent / "media_decisions.json"
+        if dec.is_file():
+            st = dec.stat()
+            out[_DECISIONS_REL] = [st.st_size, st.st_mtime_ns]
+    return out
+
+
+def _write_stamp(base: Path, key, extra: dict, with_decisions: bool) -> bool:
+    """Write `base/.media_stamp.json` LAST, after every file of the half. Never raises; a stamp
+    that cannot be written is simply absent, so the next pass rebuilds (today's cost)."""
+    if not key or not base.is_dir():
+        return False
+    try:
+        stamp = {"v": MEDIA_STAMP_VERSION, "key": key}
+        stamp.update(extra)
+        stamp["files"] = _listing(base, with_decisions)
+        stamp["at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        _write_json_atomic(base / MEDIA_STAMP, stamp)
+        return True
+    except Exception as e:
+        try:
+            (base / MEDIA_STAMP).unlink()
+        except Exception:
+            pass
+        print(f"(per-property view: media stamp not written for {base}: {type(e).__name__}: "
+              f"{e} - the half is rebuilt next time)", file=sys.stderr)
+        return False
+
+
+def _current_stamp(base: Path, key, with_decisions: bool) -> dict | None:
+    """The stamp of `base` when it is CURRENT, else None. Never raises. Current means: it parses,
+    it is this version, its key equals `key` (never None), nothing failed to write when it was
+    made, and the files on disk are EXACTLY the listed files with the listed size and mtime - so
+    a hand edit, a deleted render or a stray file all read as "rebuild"."""
+    if not key:
+        return None
+    try:
+        sp = base / MEDIA_STAMP
+        if not sp.is_file():
+            return None
+        s = json.loads(sp.read_text(encoding="utf-8"))
+        if not isinstance(s, dict) or s.get("v") != MEDIA_STAMP_VERSION or s.get("key") != key:
+            return None
+        if s.get("could_not_write"):
+            return None
+        files = s.get("files")
+        if not isinstance(files, dict):
+            return None
+        want = {str(k): [int(x) for x in v] for k, v in files.items()}
+        return s if _listing(base, with_decisions) == want else None
+    except Exception:
+        return None
 
 
 def _want_media(media_view, media: bool = True) -> bool:
@@ -184,7 +371,7 @@ def _rmtree(path: Path, retries: int = 2, pause: float = 0.4) -> list:
     return [path.name] + left
 
 
-def _prune_root(root: Path, keep: set) -> dict:
+def _prune_root(root: Path, keep: set, keep_unassigned: bool = False) -> dict:
     """Bring `properties/` to the state this pass will overwrite, BEFORE anything is written.
 
     Every entry is handled BY NAME; there is no blanket rmtree of the root any more:
@@ -193,7 +380,9 @@ def _prune_root(root: Path, keep: set) -> dict:
                                           park rename): removed, and named under `pruned`
       `_unassigned/`                      the media half's once-per-run folder: cleared here and
                                           rebuilt later only when media is written, so a skipped
-                                          pass never leaves a stale render behind
+                                          pass never leaves a stale render behind - UNLESS the
+                                          caller found its stamp CURRENT (`keep_unassigned`, fix
+                                          2.2), in which case it is carried as it stands
       the files this module owns          removed here, written LAST (see _OWNED_ROOT_FILES)
       anything else                       not ours: left alone and named under `unrecognised`
     A removal that fails is named under `could_not_prune` and on stderr. That is the whole
@@ -204,6 +393,8 @@ def _prune_root(root: Path, keep: set) -> dict:
     for child in sorted(root.iterdir(), key=lambda p: p.name):
         n = child.name
         if child.is_dir() and n in keep:
+            continue
+        if child.is_dir() and n == "_unassigned" and keep_unassigned:
             continue
         if child.is_dir() and (_NUMBERED_DIR_RX.match(n) or n == "_unassigned"):
             left = _rmtree(child)
@@ -231,9 +422,15 @@ def _write_json_atomic(path: Path, obj, indent: int = 1) -> None:
     os.replace(tmp, path)
 
 
-def _write_skip_marker(root: Path, cmd: str) -> None:
+def _write_skip_marker(root: Path, cmd: str, carried: int = 0, total: int = 0) -> None:
+    # fix 2.2: a `never` pass now CARRIES every media half whose inputs are unchanged, so the
+    # marker names how many folders still hold one; those say `"carried": true` instead
+    carried_line = (f"{carried} of {total} property folder(s) still hold a media half carried "
+                    f"from an earlier full view whose inputs are unchanged (index.json "
+                    f"media_carried); their `property.json` says `\"carried\": true`. The rest "
+                    f"were not written on this pass.\n\n" if carried else "")
     (root / MEDIA_VIEW_MARKER).write_text(
-        "# The media half of this view was NOT written on this pass\n\n"
+        "# The media half of this view was NOT written on this pass\n\n" + carried_line +
         "`--media-view never` (or `auto`, the default) writes `property.json`, `sources.csv`, "
         "`notes.md` and `index.json` for every property and SKIPS the expensive half: `media/`, "
         "`media/considered/`, `media_decisions.json` and `_unassigned/`. Their absence here means "
@@ -429,23 +626,33 @@ def _considered_for_property(out_dir: Path, entry: dict, written_media: dict,
 def write_property(prop: dict, out_dir: Path, ledger_rows: list, conflicts: list,
                    repairs: list, media: bool = True, considered: dict | None = None,
                    source_dir=None, image_cache=None, open_capture: list = (),
-                   rebuild_cmd: str = "") -> dict:
+                   rebuild_cmd: str = "", media_key: str | None = None,
+                   force_media: bool = False) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
-    # the media half of THIS directory from a previous pass goes first, whatever this pass
-    # writes: a stale media_decisions.json describing files that are no longer there is the same
-    # silent lie as a stale numbered folder, only one level down
     mdir = out_dir / "media"
-    media_left = _rmtree(mdir) if mdir.exists() else []
-    try:
-        (out_dir / "media_decisions.json").unlink()
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        media_left.append(f"media_decisions.json ({type(e).__name__})")
+    # fix 2.2: a media half whose stamp is CURRENT (same inputs, same code, files on disk exactly
+    # as written) is CARRIED - neither deleted on `never` nor re-rendered on `always`. Anything
+    # less than certain (no key, a forced rebuild, any stamp doubt) takes the old path below.
+    stamp = None if (force_media or not media_key) else _current_stamp(mdir, media_key, True)
+    carried = stamp is not None
+    media_left = []
+    if not carried:
+        # the media half of THIS directory from a previous pass goes first, whatever this pass
+        # writes: a stale media_decisions.json describing files that are no longer there is the
+        # same silent lie as a stale numbered folder, only one level down
+        media_left = _rmtree(mdir) if mdir.exists() else []
+        try:
+            (out_dir / "media_decisions.json").unlink()
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            media_left.append(f"media_decisions.json ({type(e).__name__})")
 
     view = {k: v for k, v in prop.items() if k not in ("photo", "plan", "gallery")}
     written = {}
-    if media:
+    if carried:
+        written = dict(stamp.get("written") or {})
+    elif media:
         mdir.mkdir(parents=True, exist_ok=True)
         raw, ext = _decode(prop.get("photo"))
         if raw:
@@ -467,7 +674,18 @@ def write_property(prop: dict, out_dir: Path, ledger_rows: list, conflicts: list
             names.append(name)
         if names:
             written["gallery"] = names
-    if media:
+    if carried and media:
+        # an `always` pass carrying a current half: by construction exactly what a rebuild would
+        # write (same inputs, same code), so property.json reads as a fresh full view would.
+        # index.json `media_carried` still records that nothing was re-rendered.
+        view["__media"] = written or {"note": "no image data on this property"}
+    elif carried:
+        # a `never` pass that did NOT write media but still HAS a current half on disk: say so,
+        # so it is never mistaken for either "written this pass" or "skipped"
+        view["__media"] = dict(written, carried=True,
+                               note=_CARRY_NOTE + ("" if written else
+                                                   "; no image data on this property"))
+    elif media:
         view["__media"] = written or {"note": "no image data on this property"}
     else:
         # NOT the "no image data" note above: that one means a full pass looked and found
@@ -483,16 +701,35 @@ def write_property(prop: dict, out_dir: Path, ledger_rows: list, conflicts: list
     # THE CONSIDERED SET: written only when merge recorded one for this property AND media files
     # are being written at all (--no-media means "no pixels", and that covers the discard pile).
     n_considered = 0
-    if media and isinstance(considered, dict) and considered:
+    failures: list = []
+    if carried:
+        n_considered = int(stamp.get("considered_files") or 0)
+        if stamp.get("considered"):
+            view["__media_considered"] = {
+                "files": n_considered,
+                "where": "media/considered/ - decisions in media_decisions.json"}
+    elif media and isinstance(considered, dict) and considered:
         try:
-            n_considered = _considered_for_property(out_dir, considered, written,
-                                                    source_dir, image_cache).get(
-                                                        "considered_files", 0)
+            _dec = _considered_for_property(out_dir, considered, written, source_dir,
+                                            image_cache)
+            n_considered = _dec.get("considered_files", 0)
+            for _d in (_dec.get("decks") or {}).values():
+                failures.extend(_d.get("could_not_write") or [])
             view["__media_considered"] = {
                 "files": n_considered,
                 "where": "media/considered/ - decisions in media_decisions.json"}
         except Exception as e:                # derived view: never let it fail the projection
             view["__media_considered"] = {"error": f"{type(e).__name__}: {e}"}
+            failures.append({"what": "considered set", "why": f"{type(e).__name__}: {e}"})
+    if media and not carried and media_key:
+        # LAST for the media half: after media/, media/considered/ and media_decisions.json, so a
+        # crash mid-write leaves no stamp. A half with any write failure is stamped with them and
+        # therefore never current - a host that could not render retries next time.
+        _write_stamp(mdir, media_key,
+                     {"written": written, "considered_files": n_considered,
+                      "considered": "files" in (view.get("__media_considered") or {}),
+                      "could_not_write": failures + [str(x) for x in media_left]},
+                     with_decisions=True)
     view["__repair_key"] = repair_key(prop)
     (out_dir / "property.json").write_text(
         json.dumps(view, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -513,7 +750,9 @@ def write_property(prop: dict, out_dir: Path, ledger_rows: list, conflicts: list
     lines += [f"- **repair key**: `{view['__repair_key']}`",
               f"- **city**: {_shown(prop.get('city'))}    **region**: {_shown(prop.get('region'))}",
               ""]
-    if not media:
+    if not media and carried:
+        lines += ["- **media**: carried from an earlier full view (inputs unchanged)", ""]
+    elif not media:
         lines += ["- **media**: NOT written on this pass (`--media-view never`). No `media/`, "
                   "`media/considered/` or `media_decisions.json` here means none was asked for, "
                   "not that the harvest found nothing. For the full view run:", "",
@@ -548,14 +787,22 @@ def write_property(prop: dict, out_dir: Path, ledger_rows: list, conflicts: list
     lines += ([f"- `{r['id']}` {', '.join(r.get('changed', {}))} - {r.get('why','')}"
                for r in repairs] or ["- none"]) + [""]
     (out_dir / "notes.md").write_text("\n".join(lines), encoding="utf-8")
+    # `_carried` is popped by build (it feeds index.json media_carried / media_rebuilt), so the
+    # per-property entries of index.json keep their shape
     return {"dir": out_dir.name, "media": written, "tbd": len(tbd),
-            "considered": n_considered}
+            "considered": n_considered, "_carried": carried}
 
 
 def build(work: Path, canonical_path: Path | None = None, media: bool = True,
-          source_dir=None, image_cache=None, media_view: str | None = None) -> dict:
+          source_dir=None, image_cache=None, media_view: str | None = None,
+          force_media: bool = False) -> dict:
     """`media_view` is contract C4's flag ("auto" | "always" | "never"); it wins over the older
-    `media` boolean when given. The spine passes it explicitly; see _want_media for the default."""
+    `media` boolean when given. The spine passes it explicitly; see _want_media for the default.
+
+    `force_media` (fix 2.2, CLI `--rebuild-media`) ignores every media stamp: `always` re-renders
+    every half, `never` deletes every half. Without it a half whose stamp is current is CARRIED.
+    The return dict gains `carried` / `rebuilt` (property folders) and `unassigned_carried`;
+    index.json gains `media_carried` / `media_rebuilt` / `unassigned_carried`. All additive."""
     work = Path(work)
     media = _want_media(media_view, media)
     cpath = Path(canonical_path) if canonical_path else work / "canonical.json"
@@ -604,41 +851,95 @@ def build(work: Path, canonical_path: Path | None = None, media: bool = True,
     names = {str(p.get("id")): f"{str(p.get('id')).zfill(2)}-"
                                f"{slug(p.get('park') or p.get('city') or 'property')}"
              for p in props}
-    prune = _prune_root(root, set(names.values()))
+    # fix 2.2: the identity of every media half, computed ONCE per build (the code fingerprint
+    # once, each deck's stat once). Computed even when `force_media`, because a forced rebuild
+    # must still leave stamps behind for the next pass to carry. Any error -> None -> rebuild.
+    try:
+        code_fp = _code_fingerprint()
+    except Exception:
+        code_fp = ""
+    deck_cache: dict = {}
+    keys = {str(p.get("id")): media_key(p, considered_by_id.get(str(p.get("id"))), source_dir,
+                                        image_cache, code_fp, deck_cache)
+            for p in props}
+    ua_key = _unassigned_key(unassigned, source_dir, image_cache, code_fp, deck_cache) \
+        if unassigned else None
+    ua_stamp = (None if (force_media or not ua_key)
+                else _current_stamp(root / "_unassigned", ua_key, False))
+    prune = _prune_root(root, set(names.values()), keep_unassigned=ua_stamp is not None)
     root.mkdir(parents=True, exist_ok=True)
     cmd = rebuild_command(work, source_dir, image_cache)
 
-    made = []
+    made, carried_dirs, rebuilt_dirs = [], [], []
     for p in props:
         pid = str(p.get("id"))
-        made.append(write_property(p, root / names[pid], by_id.get(pid, []),
-                                   conf_by_id.get(pid, []), rep_by_id.get(pid, []), media,
-                                   considered=considered_by_id.get(pid),
-                                   source_dir=source_dir, image_cache=image_cache,
-                                   open_capture=(data.get("meta", {})
-                                                 .get("openCapture") or {}).get(pid, []),
-                                   rebuild_cmd=cmd))
-    n_orphan = _write_unassigned(root, unassigned, source_dir, image_cache) if media else 0
-    if not media:
-        _write_skip_marker(root, cmd)
+        res = write_property(p, root / names[pid], by_id.get(pid, []),
+                             conf_by_id.get(pid, []), rep_by_id.get(pid, []), media,
+                             considered=considered_by_id.get(pid),
+                             source_dir=source_dir, image_cache=image_cache,
+                             open_capture=(data.get("meta", {})
+                                           .get("openCapture") or {}).get(pid, []),
+                             rebuild_cmd=cmd, media_key=keys.get(pid),
+                             force_media=force_media)
+        if res.pop("_carried", False):
+            carried_dirs.append(res["dir"])
+        elif media:
+            rebuilt_dirs.append(res["dir"])
+        made.append(res)
+    ua_carried = ua_stamp is not None
+    if ua_carried:
+        n_orphan = int(ua_stamp.get("total") or 0)
+    elif media:
+        ua_fail: list = []
+        n_orphan = _write_unassigned(root, unassigned, source_dir, image_cache,
+                                     failures_out=ua_fail)
+        if unassigned and ua_key:
+            _write_stamp(root / "_unassigned", ua_key,
+                         {"total": n_orphan, "could_not_write": ua_fail}, with_decisions=False)
+    else:
+        n_orphan = 0
+    # a `never` pass whose every media half (and _unassigned/, if the run has one) was carried
+    # skipped NOTHING, so it writes no skip marker; any folder lacking a current half keeps it
+    lacking = len(made) - len(carried_dirs)
+    ua_lacking = bool(unassigned) and not ua_carried
+    all_carried = bool(made) and not lacking and not ua_lacking
+    if not media and not all_carried:
+        _write_skip_marker(root, cmd, carried=len(carried_dirs), total=len(made))
     # the considered-set render loop opens each deck through IMG's shared doc cache; release the
     # handles before returning (on Windows a held handle blocks an in-process caller's temp-dir
-    # cleanup, and this projection owns no later image work).
+    # cleanup, and this projection owns no later image work). Only when images was imported at
+    # all: a pass that carried every half never touched it and need not pay its import.
     try:
-        import images as _IMG
-        _IMG.close_doc_cache()
+        _IMG = sys.modules.get("images")
+        if _IMG is not None:
+            _IMG.close_doc_cache()
     except Exception:
         pass
     index = {"count": len(made), "properties": made,
              # None, not 0, when the media half was skipped: "no unclaimed pages" is a finding,
              # "did not look" is not one, and the two must not share a value
-             "unassigned_pages": (n_orphan if media else None),
+             "unassigned_pages": (n_orphan if (media or ua_carried) else None),
              "media_view": ("always" if media else "never"),
+             # fix 2.2, additive: which folders' media halves were carried unchanged from an
+             # earlier full view, and which were (re)written on this pass
+             "media_carried": carried_dirs, "media_rebuilt": rebuilt_dirs,
+             "unassigned_carried": ua_carried,
              "pruned": prune["pruned"], "could_not_prune": prune["could_not_prune"],
              "unrecognised": prune["unrecognised"]}
     if not media:
-        index["media_note"] = (f"media/, media/considered/, media_decisions.json and _unassigned/ "
-                               f"were deliberately not written; see {MEDIA_VIEW_MARKER}")
+        if all_carried:
+            index["media_note"] = ("no media half was written on this pass, and none was "
+                                   "needed: every property folder (and _unassigned/, if any) "
+                                   "holds a media half carried from an earlier full view whose "
+                                   "inputs are unchanged (media_carried)")
+        else:
+            index["media_note"] = (f"media/, media/considered/, media_decisions.json and "
+                                   f"_unassigned/ were deliberately not written; see "
+                                   f"{MEDIA_VIEW_MARKER}"
+                                   + (f". {len(carried_dirs)} of {len(made)} property "
+                                      f"folder(s) still hold a media half carried from an "
+                                      f"earlier full view whose inputs are unchanged "
+                                      f"(media_carried)" if carried_dirs else ""))
         index["rebuild"] = cmd
     if prune["pruned"]:
         print(f"(per-property view: removed {len(prune['pruned'])} orphaned folder(s) no property "
@@ -647,16 +948,21 @@ def build(work: Path, canonical_path: Path | None = None, media: bool = True,
     _write_json_atomic(root / "index.json", index)
     return {"count": len(made), "root": str(root), "unassigned": n_orphan,
             "media_view": index["media_view"], "pruned": prune["pruned"],
-            "could_not_prune": prune["could_not_prune"]}
+            "could_not_prune": prune["could_not_prune"],
+            "carried": len(carried_dirs), "rebuilt": len(rebuilt_dirs),
+            "unassigned_carried": ua_carried}
 
 
-def _write_unassigned(root: Path, unassigned: list, source_dir=None, image_cache=None) -> int:
+def _write_unassigned(root: Path, unassigned: list, source_dir=None, image_cache=None,
+                      failures_out: list | None = None) -> int:
     """`properties/_unassigned/` - ONCE per run, the deck pages NO property claimed.
 
     These pages are the run's blind spot: no gallery scan, no plan tier and no placeholder audit
     ever reached them, so nothing else in the pipeline can even mention them. On a multi-property
     or whole-park donor deck that is exactly where a missed site plan sits. Same shape as a
-    property's considered/ folder, so it is read the same way. Returns the page count."""
+    property's considered/ folder, so it is read the same way. Returns the page count.
+    `failures_out` (fix 2.2) collects every render/candidate failure, so the folder's stamp can
+    record them and the next pass retries instead of carrying a partial folder."""
     if not unassigned:
         return 0
     out = root / "_unassigned"
@@ -672,6 +978,8 @@ def _write_unassigned(root: Path, unassigned: list, source_dir=None, image_cache
         files, failures = ([], [])
         if deck is not None and pages:
             files, failures = _write_considered(sub, deck, pages, image_cache)
+        if failures_out is not None:
+            failures_out.extend(failures)
         total += len(pages)
         index.append({"file": name, "deck_resolved": (str(deck) if deck else None),
                       "deck_pages": entry.get("deck_pages"),
@@ -687,7 +995,8 @@ def _write_unassigned(root: Path, unassigned: list, source_dir=None, image_cache
         "If a site plan or a usable photo is sitting in one of these folders, the fix is a "
         "record-level one: give the page to the property it shows via `__meta.image_pages` / "
         "`__meta.plan_page` (re-read the deck), not by editing anything here. This view is "
-        "DERIVED and rebuilt on every run.\n\n"
+        "DERIVED: rebuilt whenever its inputs change (and carried unchanged otherwise), "
+        "never read back.\n\n"
         "Page numbers are 0-BASED, matching `__meta.page_no`.\n",
         encoding="utf-8")
     (out / "index.json").write_text(
@@ -713,16 +1022,26 @@ def main() -> int:
                          "and candidate image each property had to choose from) and _unassigned/")
     ap.add_argument("--image-cache", dest="image_cache", default="",
                     help="the run's image cache dir (only used to reuse a PPTX->PDF conversion)")
+    ap.add_argument("--rebuild-media", dest="rebuild_media", action="store_true",
+                    help="ignore every media stamp and re-render the whole media half (a half "
+                         "whose inputs are unchanged is otherwise carried as it stands). Implies "
+                         "--media-view always unless never/--no-media is given explicitly")
     a = ap.parse_args()
     mv = "never" if a.no_media else a.media_view
+    if a.rebuild_media and mv == "auto":
+        mv = "always"          # "rebuild the media" with the default mode would delete it
     r = build(Path(a.work), Path(a.canonical) if a.canonical else None, media_view=mv,
               source_dir=(Path(a.source_dir) if a.source_dir else None),
-              image_cache=(Path(a.image_cache) if a.image_cache else None))
+              image_cache=(Path(a.image_cache) if a.image_cache else None),
+              force_media=bool(a.rebuild_media))
     print(f"OK per-property projection: {r['count']} property folder(s) -> {r['root']}"
           + (f"; {r['unassigned']} unclaimed deck page(s) -> {r['root']}/_unassigned"
              if r.get("unassigned") else "")
+          + (f"; media half: {r.get('carried', 0)} carried unchanged, "
+             f"{r.get('rebuilt', 0)} rebuilt" if (r.get("carried") or r.get("rebuilt")) else "")
           + (f"; media view skipped (--media-view {mv}), see {r['root']}/{MEDIA_VIEW_MARKER}"
-             if r.get("media_view") == "never" else "")
+             if r.get("media_view") == "never" and (Path(r["root"]) / MEDIA_VIEW_MARKER).exists()
+             else "")
           + (f"; pruned {len(r['pruned'])} orphaned folder(s)" if r.get("pruned") else "")
           + (f"; COULD NOT REMOVE {len(r['could_not_prune'])} stale entr(y/ies), see index.json"
              if r.get("could_not_prune") else ""))

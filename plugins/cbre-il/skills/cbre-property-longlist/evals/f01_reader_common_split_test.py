@@ -163,7 +163,11 @@ def main() -> int:
                   f"{kind}: registry renders a union type and the format")
             check("- `warehouseAreaSqm`: string | null. the square-metre figure" in common,
                   f"{kind}: registry renders the C1 example entry")
-            check("officeAreaVal" not in common,
+            # scoped to the REGISTRY block (2026-09-26, fix 1.1): the common file now also carries
+            # the rendered contract, whose doubts rule names `officeAreaVal` as the example of a
+            # numeric companion; what must never happen is the registry OFFERING it to fill
+            _reg = common.split("## The field registry", 1)[-1].split("## Load-bearing", 1)[0]
+            check("officeAreaVal" not in _reg and "- `officeAreaVal`" not in common,
                   f"{kind}: an orchestrator-filled entry is not offered to the reader")
             check("predates the typed registry" not in common,
                   f"{kind}: a fully typed registry carries no untyped fallback note")

@@ -164,6 +164,17 @@ def main() -> int:
        "'None', zero and a negative coordinate are filled")
     ck(GR._card_title({}) == "" and GR._card_title({"park": "tbd", "unit": "tbc"}) == "",
        "neither stated: NO title at all, exactly as titleStr returns falsy")
+    # 2026-09-26 test run (fix 3.6b): the v45 displayName precedence the copy had drifted from
+    ck(GR._card_title(prop(1, "Kestrel Reach", unit="Unit 4", displayName="  Titan, North  "))
+       == "Titan, North",
+       "a stated displayName IS the title (trimmed), whatever park and unit say - titleStr's "
+       "v45 precedence")
+    ck(GR._card_title({"displayName": "Titan"}) == "Titan",
+       "a displayName-only record has a title (the drifted copy called it blank)")
+    for sentinel in ("tbd", "TBC", "", "  ", None):
+        ck(GR._card_title(prop(1, "Kestrel Reach", unit="Unit 4", displayName=sentinel))
+           == "Kestrel Reach Unit 4",
+           f"a sentinel displayName ({sentinel!r}) is absence: park + unit as before")
     ck(GR._norm_title("  Kestrel   Reach\tUnit 4 ") == "kestrel reach unit 4",
        "_norm_title collapses every run of whitespace, trims and case-folds")
     # THE NON-BREAKING SPACE IS BUILT WITH chr(0xa0), NOT PASTED IN AS A BYTE, deliberately: a
@@ -233,8 +244,8 @@ def main() -> int:
          [prop(1, "Kestrel Reach Unit 4"), prop(2, "Kestrel Reach", unit="Unit 5")]),
         ("one park where only ONE record states a unit",
          [prop(1, "Kestrel Reach", unit="Unit 4"), prop(2, "Kestrel Reach")]),
-        ("an untitled record beside a titled one",
-         [prop(1, "tbd"), prop(2, "Kestrel Reach")]),
+        # (an untitled record beside a titled one used to pass here; since fix 3.6b a blank
+        # heading blocks on its own - section 6 pins that)
     ]
     for label, props in ok_cases:
         rp = coverage(props)
@@ -274,17 +285,32 @@ def main() -> int:
     # `<h3>` and the comparison table's column header interpolate it with NO fallback, so both
     # cards ship a BLANK heading. Skipping the empty title as "nothing to compare" would be a
     # miss, not a kindness.
-    print("\n6. two records that compose NO title collide (the chrome draws two blanks)")
-    for label, props in (
-            ("both sentinel parks", [prop(1, "tbd"), prop(2, "tbd")]),
-            ("both empty parks", [prop(1, ""), prop(2, "")]),
+    # 2026-09-26 test run (fix 3.6b): RE-POINTED. Two blanks used to block as a "collision" and
+    # ONE blank shipped. Now every record that composes no heading blocks ON ITS OWN, named by
+    # id, which is strictly stronger: two blanks name both ids as two findings.
+    print("\n6. a record that composes NO title blocks on its own (the chrome draws a blank)")
+    for label, props, ids in (
+            ("one sentinel park beside a titled card", [prop(1, "tbd"), prop(2, "Kestrel Reach")],
+             ["id=1"]),
+            ("a single-property run with no title", [prop(1, "", unit="")], ["id=1"]),
+            ("both sentinel parks", [prop(1, "tbd"), prop(2, "tbd")], ["id=1", "id=2"]),
+            ("both empty parks", [prop(1, ""), prop(2, "")], ["id=1", "id=2"]),
             ("one sentinel, one empty - the same blank heading either way",
-             [prop(1, "tbd"), prop(2, "")])):
+             [prop(1, "tbd"), prop(2, "")], ["id=1", "id=2"])):
         r6 = coverage(props)
-        ck(r6.returncode != 0 and "identical card title" in r6.stdout, f"{label}: blocks")
-        ck("EMPTY" in r6.stdout and "id=1" in r6.stdout and "id=2" in r6.stdout,
-           f"{label}: ...and the message says the heading is EMPTY rather than sending the "
-           f"reader off to look for a title, naming both ids")
+        ck(r6.returncode != 0 and "BLOCKED" in r6.stdout, f"{label}: blocks")
+        ck(r6.stdout.count("blank card title") == len(ids)
+           and all(f"property {i}" in r6.stdout for i in ids),
+           f"{label}: ...one 'blank card title' finding per blank record, naming {ids}")
+        ck("render EMPTY" in r6.stdout and "Never compose a name" in r6.stdout
+           and "repairs.json" in r6.stdout,
+           f"{label}: ...saying the heading renders EMPTY, with the source-cited remedy")
+        ck("identical card title" not in r6.stdout,
+           f"{label}: ...and no blank is ALSO reported as a collision")
+    # a displayName rescues a blank park: that card has a heading
+    r6d = coverage([prop(1, "tbd", displayName="Titan"), prop(2, "Kestrel Reach")])
+    ck(r6d.returncode == 0 and "blank card title" not in r6d.stdout,
+       "a sentinel park with a stated displayName is NOT blank (titleStr shows the displayName)")
 
     # ---------------- 7. the chrome's rule is still the rule this copies ------------------
     # THE COST OF DUPLICATING, PAID HERE. These markers are the exact clauses
@@ -294,6 +320,8 @@ def main() -> int:
     tmpl = (ROOT / "assets" / "dashboard_template.html").read_text(encoding="utf-8")
     for marker, why in (
             ("function titleStr(p){", "the composition still lives in titleStr"),
+            ("isAbsent(p.displayName)", "a sentinel displayName is still absence (fix 3.6b)"),
+            ("if(shown) return shown;", "a stated displayName still wins outright (fix 3.6b)"),
             ("isAbsent(p.park)", "a sentinel park is still absence"),
             ("isAbsent(p.unit)", "a sentinel unit is still absence"),
             ('replace(/[^a-z0-9]+/g, " ")',
@@ -303,6 +331,18 @@ def main() -> int:
             ('return name + " " + unit;', "the join is still a single space"),
             ('class="card-title">${titleStr(p)}', "the card heading still comes from it")):
         ck(marker in tmpl, f"{why} ({marker!r})")
+
+    # ---------------- 8. displayName decides collisions too (fix 3.6b) --------------------
+    print("\n8. displayName precedence reaches the collision check")
+    r8 = coverage([prop(1, "Kestrel Reach", displayName="Titan North"),
+                   prop(2, "Kestrel Reach", displayName="Titan South")])
+    ck(r8.returncode == 0 and "identical card title" not in r8.stdout,
+       "two cards on ONE park with DIFFERENT displayNames pass (the drifted copy blocked them)")
+    r8b = coverage([prop(1, "Kestrel Reach", displayName="Titan"),
+                    prop(2, "Harrier Point", displayName="titan")])
+    ck(r8b.returncode != 0 and "identical card title" in r8b.stdout
+       and "id=1 and id=2" in r8b.stdout,
+       "two cards with the SAME displayName block, whatever their parks say")
 
     print(f"\n{'FAILED: ' + str(len(fails)) if fails else 'ALL PASS'}")
     for f in fails:

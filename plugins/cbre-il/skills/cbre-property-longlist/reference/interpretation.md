@@ -32,6 +32,16 @@ be told apart.)
 You can also run the prep stage by hand:
 `python helpers/interpret_prep.py <file.pdf|.pptx> --region R --country C --out-dir work/vision`.
 
+**For maintainers: readers do not open this file.** `helpers/prompts_render.reader_contract()`
+renders every `reader-contract` block for the deck's mode (whole-line HTML-comment markers,
+`text`, `raster` or both, never nested, never inside a fenced block) into the reader prompt's
+common file, drops every `maintainer-only` block inside them, and appends the `__meta` key list
+from `templates/record_schema.json` (2026-09-26 test run, fix 1.1). A rule a reader must follow
+therefore goes INSIDE a block of its mode; a new section heading outside every block fails
+`evals/reader_contract_render_test.py` until it is placed on purpose; a `maintainer-only` block
+holds history only, never an instruction. If the render fails, the prompt falls back to
+pointing the reader at this whole file.
+
 ## How the mode is decided
 A deck is **text** mode when at least half its pages carry >= ~80 characters of
 extractable text; otherwise **raster**. The threshold is conservative: a
@@ -41,12 +51,19 @@ text path, while a mostly-image scan escalates to rasters. The `PDF engine:` lin
 `fitz_shim fallback (…)` is a wheel problem to FIX (native PyMuPDF would have read
 the text), not something to paper over by transcribing images.
 
+<!-- reader-contract: text raster -->
 ## Manifest format (`work/vision/manifest.json`)
+The manifest's `decks` array is the brochure interpretation contract: one entry per deck to
+read (its `jobs` array carries the non-brochure jobs; see "Tracker mode"). It also carries
+`"record_schema": "templates/record_schema.json"` and `output_pattern`: EACH DECK CARRIES ITS
+OWN `output` PATH - write it VERBATIM (a JSON array of records).
+<!-- /reader-contract -->
+<!-- reader-contract: text -->
+A **text** deck entry:
 ```json
-{
-  "decks": [
     {"source_file": "CBRE_Valencia_Options_TEDI.pdf", "source_type": "pdf",
-     "region": "Valencia", "country": "ES", "mode": "text",
+     "cluster_label": "Valencia", "cluster_label_is_routing_only": true,
+     "country": "ES", "mode": "text",
      "pages": [
        {"page_no": 0, "locator": "page 1",
         "text": "VALENCIA REGION\nOption 1\nCity Valencia\nTotal existing space 12,500 m2\n...",
@@ -55,44 +72,16 @@ the text), not something to paper over by transcribing images.
           {"index": 0, "image": "C:/.../work/vision/CBRE_Valencia_Options_TEDI_p0_c0.png",
            "w": 1600, "h": 900},
           {"index": 1, "image": "C:/.../work/vision/CBRE_Valencia_Options_TEDI_p0_c1.png",
-           "w": 800, "h": 600}
-        ]},
+           "w": 800, "h": 600, "masked": true}
+        ],
+        "candidates_sheet": ["C:/.../work/vision/CBRE_Valencia_Options_TEDI_p0_sheet.png"]},
        {"page_no": 1, "locator": "page 2", "text": "", "low_text": true,
         "render": "C:/.../work/vision/CBRE_Valencia_Options_TEDI_p1_render.png",
-        "candidates": []}
-     ]},
-    {"source_file": "Naves Cataluna.pdf", "source_type": "pdf",
-     "region": "Cataluna", "country": "ES", "mode": "raster",
-     "pages": [
-       {"page_no": 2, "locator": "page 3",
-        "image": "C:/.../work/vision/Naves Cataluna_p3.png",
-        "reason": "no extractable text/labels (image/scan/vector page)"}
-     ]}
-  ],
-  "jobs": [
-    {"kind": "tracker", "source_file": "Building_Data.xlsx", "source_type": "xlsx",
-     "region": "", "country": "", "input_hash": "8657b2cf",
-     "output": "work/extract/Building_Data_7667711a_map.json",
-     "sheets": [
-       {"sheet": "Sheet1",
-        "headers": ["Marketing Name", "Town", "Size", "Size Unit", "Office content",
-                    "Current quoting rent (£ per sq ft)", "..."],
-        "sample_rows": [["EVO 169", "Corby", "172867", "GIA", "13576", "8.5", "..."]],
-        "populated_columns": 19, "unmapped_headers": ["Building ID", "Size Unit", "..."]}
-     ]}
-  ],
-  "record_schema": "templates/record_schema.json",
-  "output_pattern": "EACH DECK CARRIES ITS OWN `output` PATH - write it VERBATIM (a JSON array of records)"
-}
+        "candidates": [], "candidates_sheet": null, "images_below_hero_floor": 2}
+     ],
+     "render_sheets": ["C:/.../work/vision/CBRE_Valencia_Options_TEDI_deck_renders.png"],
+     "candidate_sheets": ["C:/.../work/vision/CBRE_Valencia_Options_TEDI_deck_candidates.png"]}
 ```
-The `decks` array is the brochure interpretation contract (unchanged); the `jobs`
-array carries non-brochure interpretation jobs - presently `kind:"tracker"`. Both
-ride the SAME exit 3, so one dispatch covers every file that still needs reading.
-A `tracker` job carries each tracker SHEET's raw `headers` (in column order, the
-index is the position), up to a few `sample_rows` (cell strings, for disambiguating
-GIA vs warehouse), the dictionary's own `unmapped_headers` miss list (focus the
-model on the long tail), the `input_hash` to copy verbatim, and the `output` path
-to write.
 For a **text** deck EVERY page carries `page_no` (0-based), `locator` (1-based
 human label), `text` (the page's extracted text), `candidates` (the page's
 hero-size embedded images, each with a stable 0-based `index` and a thumbnail
@@ -101,26 +90,50 @@ thumbnail of the WHOLE-PAGE render - so a VECTOR site plan, invisible as an embe
 image, is visible - for picking `plan_page`; `null` when this deck cannot be
 rendered). A page with little/no extractable text carries `"low_text": true`: it is
 listed as **VISUAL reference only** (so you can pick it as `plan_page` or an
-`image_pages` entry) - **never emit a record for a `low_text` page**. For a
-**raster** deck each page carries `page_no`, `locator`, an `image` path and a
+`image_pages` entry) - **never emit a record for a `low_text` page**.
+A **text** deck entry also carries `render_sheets` (every page's `render` tiled at native
+size into as few images as fit, each tile captioned `page_no N`) and `candidate_sheets` (every
+page's candidates tiled the same way, captioned `page_no N / index K`); `[]` when there is
+nothing to tile or the host cannot tile. A candidate may carry `masked`, `visible_fraction` and
+`off_page`, and a page `images_below_hero_floor`; "Pick the hero image" below says what each
+means for your pick.
+<!-- /reader-contract -->
+<!-- reader-contract: raster -->
+A **raster** deck entry:
+```json
+    {"source_file": "Naves Cataluna.pdf", "source_type": "pdf",
+     "cluster_label": "Cataluna", "cluster_label_is_routing_only": true,
+     "country": "ES", "mode": "raster",
+     "pages": [
+       {"page_no": 2, "locator": "page 3",
+        "image": "C:/.../work/vision/Naves Cataluna_p3.png",
+        "reason": "no extractable text/labels (image/scan/vector page)"}
+     ]}
+```
+For a **raster** deck each page carries `page_no`, `locator`, an `image` path and a
 `reason` (a `null` image could not be rasterised - for PPTX this happens only without
 LibreOffice AND with no extractable picture; export such a slide manually).
+<!-- /reader-contract -->
 
 ## The interpretation sub-agent (orchestrator dispatches; isolated, fresh context)
 For each deck dispatch an isolated sub-agent given ONLY the manifest entry (the
 page text or the page-image paths) + this contract - never the orchestrator's
 view. The author is never the reviewer; the honesty gates below run blind.
 
+<!-- reader-contract: text raster -->
 ### Three rules that apply to EVERY mode (read these first)
 
 **The manifest's `cluster_label` is NOT evidence.** It is a filing and routing name derived from
 the input FILENAME (the entry also carries `cluster_label_is_routing_only: true`). It exists so
 your output file lands in the right slot, nothing more. Never copy it into `region`, `park`,
 `city` or any other record field, and never cite it to a page. Set `region` ONLY from text you can
-point at on a page; if the deck names no region, OMIT the field. This is not hypothetical: a live
+point at on a page; if the deck names no region, OMIT the field.
+<!-- maintainer-only -->
+This is not hypothetical: a live
 run whose label read `MPC2 Magna Park Corby, 100 Kettering Road, Weldon` shipped exactly that
 string as the property's region, cited to "page 1", on a deck where the token "MPC2" appears on
 zero pages. Three of eleven agents made the same mistake in one round.
+<!-- /maintainer-only -->
 
 **If you read a value from an IMAGE rather than the text layer** - a name on a cover logo, a
 figure in a rendered spec panel - append the marker `not in text layer` to that field's
@@ -142,11 +155,14 @@ a stated URL, so a composed one is both invention and wasted work.
 unit. If one figure uses a different unit from the rest of the deck - a site area in acres inside
 a sq ft brochure, which is the normal UK shape - set `<field>Unit` alongside it, e.g.
 `plotArea: 31.629` with `plotAreaUnit: "acres"`. **Never convert it yourself.** Python converts
-with exact factors and records the conversion in the ledger. Two agents on one run split on this:
+with exact factors and records the conversion in the ledger. Report the unit; let Python do the
+arithmetic.
+<!-- maintainer-only -->
+Two agents on one run split on this:
 one dropped a stated "31.629 acres (12.8 ha)" site area as an "honest gap", the other converted
 "30 ACRES" to sq ft citing a convention - and the dropped one shipped a ledger row claiming the
-source was silent about a figure printed on its own page 2. Report the unit; let Python do the
-arithmetic.
+source was silent about a figure printed on its own page 2.
+<!-- /maintainer-only -->
 
 **Declare the deck's language.** Set `__meta.source_lang` to the ISO-639-1 code of the language the
 deck is WRITTEN in (`en`, `es`, `pl`, `de`). You are reading the text anyway, so this costs you
@@ -162,18 +178,29 @@ records matching `templates/record_schema.json`:
   A `low_text` page is VISUAL reference only - **never emit a record for it** (it is
   a cover/divider/photo plate or a vector site-plan page, offered so you can name it
   as `plan_page` / an `image_pages` entry, not so it becomes its own property).
+- **A UNIT THE SOURCE MARKS AS NOT AVAILABLE is still emitted, flagged, never dropped by
+  you.** When a unit with its own specification is marked let, sold, leased, occupied or
+  otherwise not available (in any language), emit its record with `status` copied VERBATIM
+  (with its prov) and `"__meta": {"not_an_option": true}`; the broker decides whether it
+  stays. Under offer / reserved is still available: `status` verbatim, no flag. A
+  neighbouring unit that the page only LABELS let/sold on a site plan, with no specification
+  of its own, is context, not an option: no record.
 - **Fill EVERY field the page states. The manifest's `fields` array is the canonical
   registry and it is NOT a limit** - it is generated at run time from
   `_common.canonical_property_fields()`, so it is always the live set the pipeline
-  carries (52 reader-fillable names: `areaUnit, breeam, brochureLink, carParking,
+  carries.
+<!-- maintainer-only -->
+  (Maintainer orientation copy; the manifest's `fields` is authoritative. 52
+  reader-fillable names: `areaUnit, breeam, brochureLink, carParking,
   city, clearHeight, country, description, developer, displayName, district,
   districtProfile, divisibleFrom, earlyAccess, electricity, epc, expansionBuilding,
   expansionPark, floorLoad, incentives, landPrice, landlord, lat, leaseTerm, lng,
   loadingDocks, mapLink, motorway, officeArea, officeRent, overheadDoors, park,
   permitting, plotArea, postcode, quotingRentTotal, region, reit, rentFree, rentUnit, serviceCharge,
   sprinklers, status, streetViewLink, truckParking, unit, videoLink, warehouseArea,
-  warehouseAreaSqm, warehouseRent, warehouseRentVal, websiteLink`). Read `fields` from
-  the manifest rather than trusting this copy. Each entry is an OBJECT `{name, type,
+  warehouseAreaSqm, warehouseRent, warehouseRentVal, websiteLink`.)
+<!-- /maintainer-only -->
+  Each entry of `fields` is an OBJECT `{name, type,
   fills, format?}` (an older manifest carries bare names): `type` is the JSON shape the
   pipeline validates the value against, `format` says how to write it where the type
   alone is not enough, and the rendered reader prompt prints the same registry for you.
@@ -215,6 +242,7 @@ records matching `templates/record_schema.json`:
     the magnitude but genuinely cannot read its unit, return the number and say so in that
     field's `prov`: the deterministic `value-format` gate then catches the mismatch and the
     broker settles it, which is honest, whereas a unit you inferred is invention.
+<!-- maintainer-only -->
     This is not hypothetical: `divisibleFrom` shipped `"10,000 sq. m"` on twelve cards and
     a bare `"5000"` on the thirteenth, and `clearHeight` shipped `"10 m"` on twenty-three
     and a bare `"10"` on six, in one delivered client dashboard.
@@ -224,31 +252,50 @@ records matching `templates/record_schema.json`:
   turned each omission into a ledger row asserting "absent in all sources" - roughly
   100 false claims in a client deliverable, because a field the dataset carries for
   one property but not another is recorded as a positive absence, not as silence.
+<!-- /maintainer-only -->
+<!-- /reader-contract -->
 - **Orchestrator note (this is where it went wrong).** Do NOT paste an abbreviated
   field list into a sub-agent prompt. A list in the prompt reads as the specification
   and overrides this contract. Point the reader at the manifest's `fields` array, or
   pass that array verbatim.
+<!-- reader-contract: text raster -->
 - **`unit` IS THE OPTION'S OWN DESIGNATOR, AND IT IS WHAT MAKES ONE CARD DIFFERENT FROM THE
   NEXT.** When a page names a specific unit, phase, block or plot within a park - `Unit 3`,
   `Phase 2`, `Block A`, `Unit B2` - put that designator in **`unit`**, written EXACTLY as the
   page prints it (keep the word: `"Unit 3"`, not `"3"`; keep `"Phase 2"`, not `"2"`). `park`
   stays the park / scheme / estate name. Do **not** fold the designator into `park` yourself,
   and do not invent one: a park marketing a single building has no unit, and `unit` is then
-  simply absent. Why this matters more than it looks: the dashboard composes every title from
-  park + unit (card, map popup, map list, modal, compare column head, both compare chip sets,
-  Flyover slide and tooltip), and before this field existed two genuinely different units on one
-  park rendered as two IDENTICAL-looking cards - including in the comparison chips, at the exact
-  moment the broker is being asked to choose between them. The chrome suppresses the designator
+  simply absent. The chrome suppresses the designator
   when the park name already carries it, so a `park` of `"Kestrel Reach Unit 3"` beside a `unit`
   of `"Unit 3"` renders once and not twice; you do not need to second-guess that, and you should
   never strip a designator out of `park` to make room for it.
+<!-- maintainer-only -->
+  Why this matters more than it looks: the dashboard composes every title from
+  park + unit (card, map popup, map list, modal, compare column head, both compare chip sets,
+  Flyover slide and tooltip), and before this field existed two genuinely different units on one
+  park rendered as two IDENTICAL-looking cards - including in the comparison chips, at the exact
+  moment the broker is being asked to choose between them.
+<!-- /maintainer-only -->
 - **BREEAM and EPC are DIFFERENT fields - never fold one into the other.** `breeam` takes a
   BREEAM sustainability grade ONLY (Pass / Good / Very Good / Excellent / Outstanding, a
   `Target ...` prefix kept as printed). An EPC rating - a letter band like `A+`, `A`, `B` -
   goes in **`epc`**, which ships as Additional Details on the dashboard. A deck that prints
-  only an EPC leaves `breeam` ABSENT; do not put the band there to fill the field. This is not
+  only an EPC leaves `breeam` ABSENT; do not put the band there to fill the field.
+<!-- maintainer-only -->
+  This is not
   hypothetical: a tracker whose EPC column was treated as a BREEAM alias shipped an impossible
   "BREEAM A+" to a client card, cited to an empty BREEAM cell.
+<!-- /maintainer-only -->
+- **DOORS: a door a vehicle drives THROUGH is `overheadDoors`; a DOCK-LEVEL position is
+  `loadingDocks`.** `overheadDoors` takes the COUNT of doors a vehicle drives through at ground
+  or yard level, whatever the source calls them in any language (level access, ground level,
+  drive-in, roller shutter, sectional or up-and-over doors): the count as printed, a printed
+  qualifier kept (`"4 (level access)"`). `loadingDocks` takes the COUNT of DOCK-LEVEL loading
+  positions (dock doors, dock levellers, raised loading bays), as printed. Never a descriptive
+  open key such as `levelAccessDoors` for either: the card shows the two canonical fields, so an
+  open key leaves them reading "absent in all sources" beside the figure. A door total the
+  source does NOT split by kind goes VERBATIM under the open key `loadingDoors`, with both
+  counts left absent.
 - **CLEAR height and EAVES height are different measurements - keep the qualifier.**
   `clearHeight` takes the CLEAR (or haunch) height. If the page prints ONLY an eaves height,
   put it in `clearHeight` but KEEP the word as printed (`"12m eaves"`), never a bare `"12m"`:
@@ -273,10 +320,13 @@ records matching `templates/record_schema.json`:
   from the country, and do NOT convert the number** - merge converts arithmetically once it knows
   the true unit, and currency is never converted at all.
   Why this is not optional: nothing downstream can recover a missing unit. An area with no
-  `areaUnit` is stamped with the dataset's DOMINANT unit and **not converted**, so one metric deck
-  in a UK-dominant corpus shipped 12,500 sq ft against a true 134,549 - a **10.76x** error on the
-  client's card, carried into the annual-rent total. The magnitude guard cannot catch it (it is
-  asymmetric and blind across the whole realistic 5,000-50,000 m² range).
+  `areaUnit` is stamped with the dataset's DOMINANT unit and **not converted**, and the
+  magnitude guard cannot catch the result.
+<!-- maintainer-only -->
+  (Measured: one metric deck in a UK-dominant corpus shipped 12,500 sq ft against a true
+  134,549 - a **10.76x** error on the client's card, carried into the annual-rent total. The
+  magnitude guard is asymmetric and blind across the whole realistic 5,000-50,000 m² range.)
+<!-- /maintainer-only -->
   If the deck genuinely never states a unit, return the area and **omit** `areaUnit`: merge then
   records `areaUnitAssumed` and the Gaps Report says so under "Area units assumed", which is an
   honest gap rather than a false precision. Never write a unit you did not read.
@@ -295,20 +345,42 @@ records matching `templates/record_schema.json`:
   `{field: "<locator> (text interpretation)"}` for every field you set (the ledger
   and G-trace key on this; the `(text interpretation)` tag tells the reviewer the
   value came from interpreting the page text).
+  **The record shape: `prov` is INSIDE `__meta`, never beside the fields.** Your output is a
+  JSON ARRAY of these (raster mode: the tag is `(vision transcription)` and there is no
+  `heroRef` / `planRef`):
+```json
+[{"park": "...", "warehouseArea": "12,500 sq m", "areaUnit": "sq m",
+  "__meta": {"source_type": "pdf", "source_file": "<copied from the manifest>",
+             "locator_base": "page 3", "page_no": 2, "source_lang": "en",
+             "prov": {"park": "page 3 (text interpretation)",
+                      "warehouseArea": "page 3 (text interpretation)"},
+             "heroRef": 0, "planRef": null, "plan_page": null, "image_pages": [2]}}]
+```
+  A top-level `"prov"` is REFUSED by the validator: never write one.
+<!-- /reader-contract -->
+<!-- reader-contract: text -->
 - **Pick the hero image.** Each page lists `candidates` (its embedded images, each
   with an `index` and a thumbnail `image` path) and `candidates_sheet` - the SAME
-  candidates tiled into one image, each captioned with its `index`.
+  candidates tiled into one image, each captioned with its `index`. The deck entry ALSO
+  carries `render_sheets` and `candidate_sheets` (every page's `render`, and every page's
+  candidates, tiled into a few images captioned `page_no N` / `page_no N / index K`): where
+  they are present they ARE the batch below, and the per-page files are only the zoom.
   **Read `candidates_sheet` once per page rather than opening each `candidates[].image`
   in turn, and request EVERY page's sheet and `render` thumbnail in ONE message, opening
   NO image before that message.** The tiles are those exact thumbnails at their native
   size, so you lose no detail, and it costs one tool call instead of one per candidate;
   the set of sheets is known in full the moment you have read your deck's entry, so there
   is nothing to learn between one page's read and the next, and the reader prompt lifts
-  its per-message tool-call cap for exactly this batch. This is an OBLIGATION, not a
-  permission: measured on a live run, the one-page-per-message loop cost 7 to 23 round
+  its per-message tool-call cap for exactly this batch (a host per-message cap still
+  applies: send the batch as consecutive messages of that size). This is an OBLIGATION,
+  not a permission.
+<!-- maintainer-only -->
+  Measured on a live run, the one-page-per-message loop cost 7 to 23 round
   trips per deck at roughly 17 s each, the reader agents were about 80% of the run's
   wall-clock and the round is gated by its slowest deck, and the loop persisted while
-  this rule was on the page worded as a permission (D1). Open an individual
+  this rule was on the page worded as a permission (D1).
+<!-- /maintainer-only -->
+  Open an individual
   `candidates[].image` only when a tile is genuinely ambiguous, and then request every
   one you still need in ONE follow-up message, never one at a time. A page with fewer
   than two candidates has no sheet (`null`) - use `candidates[].image` there. LOOK at
@@ -321,18 +393,30 @@ records matching `templates/record_schema.json`:
   `planRef`. The classifier + the G-images gate VERIFY your pick: a `heroRef` that
   points to a non-photo is blocked for sign-off, and a `null`/absent `heroRef` falls
   back to the deterministic hero ladder, so an honest `null` is always safe.
+  A candidate marked `off_page` is placed outside the visible page (a leftover the brochure
+  never shows): never `heroRef` or `planRef`. `masked` means the image is drawn through a
+  transparency mask and the tile shows it without that mask, so a solid shape is a cut-out or
+  overlay graphic, not a photo that failed to load. A page whose render shows photos but whose
+  `candidates` list is empty or holds only off-page / masked tiles, and which carries
+  `images_below_hero_floor`, holds photographs too small to lead a card or enter the carousel
+  (below the 640x400 floor). That is not an extraction failure: there is nothing to pick as
+  `heroRef` there, the page can still belong in `image_pages`, and it needs no line under WHAT I
+  COULD NOT ESTABLISH.
   **When one deck yields MORE THAN ONE record, the records do not share a hero where the
   deck offers a distinct photo per record.** Before you write the output, compare every
   record's (`page_no`, `heroRef`) pair with its siblings'; where two coincide, move one
   record to a real photo on a page already in its own `image_pages` (and set its
   `page_no` to that page: the hero-page rule above is unchanged). The honest fallback
   stands: a deck with ONE usable photo shares it, and `null` is always safe; never invent
-  a distinction to satisfy this rule. Why: on a live run a 5-page deck yielded UNIT 06
+  a distinction to satisfy this rule.
+<!-- maintainer-only -->
+  Why: on a live run a 5-page deck yielded UNIT 06
   and UNIT 07, both at `page_no` 1 / `heroRef` 0, so both cards shipped the same
   masterplan CGI, which was also each card's first gallery slide (one image four times
   across two cards), while the cover page the reader had already assigned to UNIT 07
   carried an aerial photograph of the finished buildings. The images gate blocked on the
   duplicate hash, so it cost a correction round rather than shipping (D6).
+<!-- /maintainer-only -->
 - **Mark decorative candidates for exclusion (`__meta.exclude_refs`).** While you are already
   LOOKING at each page's candidate thumbnails, flag any candidate that is a DECORATIVE or abstract
   graphic - brand art, a gradient or geometric-pattern (e.g. isometric-cube) background, a
@@ -345,7 +429,7 @@ records matching `templates/record_schema.json`:
 - **Pick the site-plan PAGE (`__meta.plan_page`).** Many site plans are VECTOR
   line-art drawn straight into the page (a whole page that IS the site plan), NOT a
   placed photo - `planRef` cannot reach those (pulled as an embedded image they go
-  solid black). LOOK at each page's `render` thumbnail: if a page IS or CONTAINS the
+  solid black). LOOK at the `render_sheets` (or a page's `render`): if a page IS or CONTAINS the
   site plan, set `__meta.plan_page` = that page's 0-based `page_no` on the property
   record it belongs to; else `null`/omit. **This is a VISUAL judgment and it is
   TRUSTED**: merge renders that page and binds it (an independent visual-QA reviewer
@@ -360,6 +444,8 @@ records matching `templates/record_schema.json`:
   backstop it); never invent a plan page. **On a deck with more than one page this key is
   REQUIRED** - write `"plan_page": null` when there is no site plan. See "Required media keys"
   below for why an explicit `null` and an omission are not the same answer.
+<!-- /reader-contract -->
+<!-- reader-contract: text raster -->
 - **Set `__meta.image_pages` (the carousel scope).** List the 0-based pages
   whose photos belong to THIS property, in the SAME numbering as `page_no` (the
   manifest's). Set it for EVERY brochure topology: a single-page single-property
@@ -373,16 +459,15 @@ records matching `templates/record_schema.json`:
   page the hero binds to. When unsure, set `[]` - it means "this property's photos
   are only on its own `page_no`", today's carousel exactly. (Omitting the key does
   the same thing to the carousel but says something different about YOU - see
-  "Required media keys" below.) Python ENFORCES a deck page feeds at most one
-  property's carousel, so an honest over-list of a neighbour's page is dropped,
-  never leaked. **How a contested page is settled, so you can avoid the lossy
-  case:** if one record's `page_no` IS that page, the record that anchors it keeps
-  it and the other claim is silently dropped - harmless. But if TWO records list a
-  page and NEITHER anchors it, it is not a sole claim for either, so it is dropped
-  from **every** carousel and both properties lose the photo. So list a shared page
-  in the `image_pages` of the ONE property it actually shows, not both. This is
-  never an error and never sends the deck back for re-reading - a validation note
-  tells the orchestrator which case occurred. **On a deck with more than one page this key is
+  "Required media keys" below.) Python settles every page that two or more records
+  list, so an honest over-list is never leaked to a property that did not list it.
+  **How a contested page is settled:** if one record's `page_no` IS that page, the
+  record that anchors it keeps it and the other claim is dropped - harmless. If
+  several records list a page and none (or several) anchor it, it is shared by
+  **every** property that lists it in the carousel, but never in the Site Plan slot.
+  So list a page only on the properties it actually shows. This is never an error
+  and never sends the deck back for re-reading - a validation note tells the
+  orchestrator which case occurred. **On a deck with more than one page this key is
   REQUIRED** - write `"image_pages": []` when this property's photos really are only on its own
   `page_no`.
 - **Pick the property description.** Set `description` to the property's own
@@ -401,11 +486,22 @@ records matching `templates/record_schema.json`:
   `"__meta": {"statedTotalArea": 452500, "statedTotalUnit": "sq ft"}` on that record - the number
   **exactly as printed**, never one you add up yourself. It is only ever compared against the
   areas; a total you computed would make the comparison circular and worthless.
-  Purely optional: a deck that prints no total is unaffected, and omitting it costs nothing.
-  Why it is worth the two keys: the dashboard derives `Total GLA = warehouse + office` and
+  **A LONE TOTAL IS SHIPPED AS PRINTED, NEVER NETTED BY YOU.** When the page LABELS a figure as
+  the whole building (Total, Total GIA/GEA/GLA, overall, gross, in any language) and prints NO
+  warehouse-only line, ship that figure as `warehouseArea` exactly as printed AND set
+  `__meta.statedTotalArea` + `statedTotalUnit` to it; ship each component the page prints
+  (office, mezzanine, hub) under its own field or key. Never subtract the office (or anything
+  else) yourself: which basis the card uses is the broker's decision, and Python raises that
+  question from exactly these keys. A single area printed with no breakdown at all is simply
+  `warehouseArea`, with no stated-total keys. Otherwise the two keys are optional: a deck that
+  prints no total is unaffected, and omitting them costs nothing.
+  Why the two keys matter: the dashboard derives `Total GLA = warehouse + office` and
   `rent = GLA × rate`, so a size figure that ALREADY included the office silently inflates both.
-  That shipped once - GLA 11.7% above the source's own total and rent overstated by £702,108/yr.
   With the stated total recorded, `gate_runner arithmetic` catches it before anything is built.
+<!-- maintainer-only -->
+  (Measured: that shipped once - GLA 11.7% above the source's own total and rent overstated by
+  £702,108/yr.)
+<!-- /maintainer-only -->
 - **When the page says MORE than the shipped value can carry, say so in `__meta.source_conflicts`.**
   A plain object mapping a field name to ONE COMPLETE SENTENCE, printed VERBATIM (only the source
   filename is appended) into the ledger's `conflict_note`, `meta.conflicts` and the Gaps Report's
@@ -425,11 +521,14 @@ records matching `templates/record_schema.json`:
     its number.
 
   Because the note is printed verbatim, write a full sentence that reads to a broker who has not
-  seen the deck. Why it exists: every other conflict path compares one record against ANOTHER, so
-  a self-contradicting or over-specified page was invisible - the loser could only be mentioned in
-  `prov` prose, `conflict_note` stayed empty and the Gaps Report told the broker there was nothing
-  to settle. Two independent reviewers raised that as a blocking honesty defect on a live run.
-  Omit the key when the page is consistent (the normal case).
+  seen the deck. Omit the key when the page is consistent (the normal case).
+<!-- maintainer-only -->
+  Why it exists: every other conflict path compares one record against ANOTHER, so
+  a self-contradicting or over-specified page was invisible - the loser could at most be mentioned
+  in `prov` prose, `conflict_note` stayed empty and the Gaps Report told the broker there was
+  nothing to settle. Two independent reviewers raised that as a blocking honesty defect on a live
+  run.
+<!-- /maintainer-only -->
 - **Transcribe, never invent.** A value you cannot read clearly → omit it or set
   `"tbd"`/`null`. Never guess a number, a rent, or coordinates.
 - **COORDINATES AND LOCATION HANDLES: transcribe whatever form the page prints, never
@@ -440,11 +539,15 @@ records matching `templates/record_schema.json`:
   in front of it), a maps URL carrying a pin and a DMS pair, and it follows a shortener
   to the author's own pin. It does NOTHING with any other string, silently, so a handle
   it cannot parse, dropped there, reads to the ledger as "the reader handed over a
-  coordinate" while the card still gets a town-centre geocode. That is why the cases
+  coordinate" while the card still gets a town-centre geocode. So the cases below are
+  decided one by one.
+<!-- maintainer-only -->
+  That is why the cases
   below are decided one by one: isolated readers cannot converge on an unnamed case, and
   on one live run three of five readers put the same three-word handle in
   `map_candidates` and two kept it out, both sides reading this section correctly,
-  because it named only three forms.
+  because it named just three forms.
+<!-- /maintainer-only -->
   - **A DECIMAL pair** (`48.4976, 17.0277`) -> `lat`/`lng` as numbers, in the order the
     page prints. When you are not certain which number is which, or the decimal mark is
     a comma (`48,4976`), ALSO copy the raw printed string into `map_candidates` WITH the
@@ -490,10 +593,12 @@ records matching `templates/record_schema.json`:
   DMS, a maps URL) goes to `map_candidates`; a handle that needs a service or a library
   the pipeline does not have is DATA, shipped under its own name, so nothing is claimed
   that nobody resolved.
-  This is why it matters: a run where two pages printed DMS and a third carried only a
+<!-- maintainer-only -->
+  This is why it matters: a run where two pages printed DMS and a third carried just a
   Google Maps link shipped three town-centre pins, one of them a marker in the middle of a
   village, because the reader honestly refused to convert and nothing else owned it. The
   `coord-provenance` gate now blocks that, but the cheap fix is to hand the string over.
+<!-- /maintainer-only -->
 - **A GENUINE doubt is recorded, never silently resolved (`__meta.doubts`, optional).**
   When a page leaves you genuinely torn about a stated value (two printed figures could
   each be the warehouse area; a page might belong to the neighbouring unit), record
@@ -522,9 +627,23 @@ records matching `templates/record_schema.json`:
      sentence in the field and a null in the companion.
   **Never offer a total you did not read.** If the source prints no combined figure, offer
   the individual PRINTED figures as options and say in `question` that they may need
-  combining. Python owns all arithmetic; a reader summing three lines in its head is
-  inventing a number the source never printed, which is the one thing this skill exists to
-  prevent.
+  combining, and set `"combinable": true` when the options are DISJOINT printed PARTS of ONE
+  quantity (office lines per floor, warehouse compartments, plot phases), each printed
+  separately with no printed combined figure. It lets Python offer their sum as an extra
+  option; you still never write that sum. It requires `field`, two or more options and ONE
+  unit across them, and each part is ALSO a field of its own (next paragraph). Python owns all
+  arithmetic; a reader summing three lines in its head is inventing a number the source never
+  printed, which is the one thing this skill exists to prevent.
+  **EVERY FIGURE YOU OFFER IN A DOUBT IS ALSO DATA.** A doubt records your uncertainty; it
+  never replaces the capture. The figure you judge governing goes in the doubt's `field` (and
+  in `default`); every other printed figure in `options` goes under a descriptive camelCase
+  key naming the part the way the page does, keeping the quantity word (`officeGroundFloor`,
+  `warehouseUnitA`), with its own prov. A figure that exists only inside a doubt is invisible
+  to the card, the ledger and every gate.
+  **`default` is copied VERBATIM from `options`**: it is the option your records as written
+  reflect. On a doubt about the NUMBER of properties (`affects: "count"`) this is REQUIRED,
+  because an answer equal to `default` is how the pipeline knows the broker kept the cards as
+  you shipped them.
   **A doubt lacking either part is still disclosed in the Gaps Report, but the broker's
   answer is recorded and dropped**: the question is asked, the answer cannot be applied, and
   the broker's attention was spent for nothing. On the measured run five of eight answers
@@ -532,31 +651,41 @@ records matching `templates/record_schema.json`:
   `"set": {"officeArea": "all three office lines combined", "officeAreaVal": null}`, an
   entry the run's own validator refuses, and the bare figures then tripped the value-format
   gate into two more blocking questions about a fault the pipeline had made itself (D4).
+<!-- /reader-contract -->
+<!-- reader-contract: text -->
 - **If the text is unusable/garbled** (mojibake, column-shuffled spec tables you
   cannot trust, a text layer that is clearly an OCR mess), do NOT force a record.
   Set `"needs_raster": true` on that deck's output (e.g. one stub record `{"__meta":
   {"source_file": "<file>", "needs_raster": true}}`) and note why - on the re-run
   the deck escalates to the raster path so you read the page images instead.
-- `region`/`country` = the manifest's values for that deck.
+<!-- /reader-contract -->
+<!-- reader-contract: text raster -->
+- `region` / `country`: only what the deck itself states (the `cluster_label` rule above;
+  the registry's `country` format). The manifest's labels are routing, never a value.
 
 ### Required media keys (`image_pages`, `plan_page`)
 
 On a deck of MORE THAN ONE page, both keys must be PRESENT on every record you emit.
 `[]` and `null` are perfectly good answers. **Silence is not an answer.**
 
+<!-- maintainer-only -->
 The reason is a defect this cost a whole run. Both keys were optional, so an omission and a
 considered "this property has no other pages / no site plan" were written identically - and when
-the visual aids never reached the reader (a lost image capability, a poisoned prep cache), every
+the visual aids did not reach the reader (a lost image capability, a poisoned prep cache), every
 record came back with both keys absent, which read downstream as fourteen decks whose properties
 genuinely had one page and no plan. The harvest collapsed to one page per property and every
-artefact of the run looked correct. Making the keys required does not make you guess: it makes
+artefact of the run looked correct.
+<!-- /maintainer-only -->
+Making the keys required does not make you guess: it makes
 your ANSWER distinguishable from your SILENCE, so a run in which nobody could see anything is
 visible as exactly that.
 
 If you have no page render to look at, say so - set the keys to `[]` / `null` and put one line in
 `__meta.notes` saying you had no visual aid for this deck. That is an honest, useful record.
 A validation NOTE (never a block) names any record on a multi-page deck that omits either key.
+<!-- /reader-contract -->
 
+<!-- reader-contract: raster -->
 ### Raster mode (fallback - the historical vision contract)
 Read each page **image** and transcribe - this section IS the raster contract:
 one record per property page, rents annual,
@@ -583,9 +712,13 @@ shared honestly, and nothing is invented to tell them apart.
 One text-mode `__meta` rule does NOT carry over: **`exclude_refs` is unavailable in raster
 mode.** It takes candidate INDICES (`{"<page>": [<index>, ...]}`), and a raster page
 carries a page `image` only - no `candidates`, no `candidates_sheet`, no index space - so
-there is nothing valid to put in it; OMIT the key. This is not hypothetical: a raster
+there is nothing valid to put in it; OMIT the key.
+<!-- maintainer-only -->
+This is not hypothetical: a raster
 reader correctly identified a decorative graphic filling half a page and correctly
-reported it had no way to exclude it, so it could surface in the carousel. The fallback
+reported it had no way to exclude it, so it could surface in the carousel.
+<!-- /maintainer-only -->
+The fallback
 that IS available: put one line per graphic in `__meta.notes` beginning
 `decorative graphic:` naming the 0-based page and what it is (your output file keeps it,
 where the G-images reviewer and a later repair can read it; nothing mechanical acts on it
@@ -593,6 +726,7 @@ yet), and leave a page that holds NOTHING but decoration out of `image_pages`. N
 a page that also carries a real photo, and never move `page_no` to dodge a graphic. The
 complete fix is for the prep stage to attach `candidates` and a `candidates_sheet` to
 raster pages too, which would give raster mode the same index space as text mode.
+<!-- /reader-contract -->
 
 ## Tracker mode (`kind:"tracker"` job - a MAP, never records)
 A tracker is a STRUCTURED source, so unlike a brochure the deterministic dictionary
@@ -602,6 +736,29 @@ returns a **MAP**. It NEVER reads or transcribes a cell value; Python parses eve
 number from the columns the map names, with the same arithmetic the dictionary path
 uses (acres x43,560, ha x10,000, monthly x12, GIA-office, the rent plausibility band),
 so every numeric guarantee is byte-preserved.
+
+The manifest's `jobs` array carries the non-brochure interpretation jobs - presently
+`kind:"tracker"` - beside the `decks` array. Both ride the SAME exit 3, so one dispatch
+covers every file that still needs reading. A `tracker` job carries each tracker SHEET's
+raw `headers` (in column order, the index is the position), up to a few `sample_rows`
+(cell strings, for disambiguating GIA vs warehouse), the dictionary's own
+`unmapped_headers` miss list (focus the model on the long tail), the `input_hash` to copy
+verbatim, and the `output` path to write:
+
+```json
+{ "jobs": [
+    {"kind": "tracker", "source_file": "Building_Data.xlsx", "source_type": "xlsx",
+     "region": "", "country": "", "input_hash": "8657b2cf",
+     "output": "work/extract/Building_Data_7667711a_map.json",
+     "sheets": [
+       {"sheet": "Sheet1",
+        "headers": ["Marketing Name", "Town", "Size", "Size Unit", "Office content",
+                    "Current quoting rent (£ per sq ft)", "..."],
+        "sample_rows": [["EVO 169", "Corby", "172867", "GIA", "13576", "8.5", "..."]],
+        "populated_columns": 19, "unmapped_headers": ["Building ID", "Size Unit", "..."]}
+     ]}
+] }
+```
 
 Given ONLY the job's `sheets` (raw `headers` + a few `sample_rows`) + this contract,
 write the job's `output` file:
@@ -767,12 +924,14 @@ Rules:
   `page N (brochure description, text interpretation)`; the heuristic fallback is
   `page N (brochure description)`.
 
+<!-- reader-contract: text raster -->
 ## After interpretation
 Write the deck's records as a JSON array to **the deck's own `output` path, copied VERBATIM from its
 manifest entry** - exactly as a tracker `job` does. Do NOT derive the filename from the cluster label:
 two decks can legitimately share a label (the documented cluster refinement collapses ambiguous
 filename clusters onto a city), and deriving the name made four concurrent agents write ONE file, so
 three decks were lost with no error and no gap line. Each deck's `output` is unique by construction.
+<!-- /reader-contract -->
 
 (`work/extract/<region>_vision.json` is the LEGACY shape. A manifest that carries no `output` key
 predates this change; derive that name only then.) Then re-run
@@ -791,8 +950,10 @@ interpretation would be caught, so they are not relaxed for interpreted records;
 the `(text interpretation)`/`(vision transcription)` provenance tells the reviewer
 which source to re-read.
 
+<!-- reader-contract: text raster -->
 ## Honesty
 Interpretation is a less-certain source than a structured tracker, so it is
 labelled as such end to end (provenance tag + Gaps Report). Prefer an explicit
 `"tbd"` over a shaky read; a thin-but-honest record is correct, a
 confident-but-wrong one is the failure this skill exists to prevent.
+<!-- /reader-contract -->

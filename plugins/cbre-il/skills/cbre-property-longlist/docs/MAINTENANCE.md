@@ -38,14 +38,51 @@ Moved verbatim from SKILL.md (workstream 1 item 1.1).
     `master_list_no` exemption could not fire either - `prompts/master-list.md` now asks for
     it. The lesson worth carrying: when a gate's exemption keys on a field, check that
     something actually POPULATES that field on every path into it.
+  - **2026-09-26, a 22-deck + 16-email orchestrated run (mid-tier readers, strongest-tier
+    reviewers).** Four recurring classes became mechanical checks. (1) Both reviewers swept
+    the same "absent in all sources" rows and filed the same findings twice, so G-trace and
+    G-honesty now split by claim POLARITY: G-trace owns populated values, G-honesty owns gap
+    rows, sentinels and disclosure (`qa_reviewer_scope_test`). (2) 31 of 32 value-format
+    questions asked about a bare count or an area whose own source stated the unit; both are
+    now exempt (`value_format_single_pass_test`). (3) A value held under a strict alias while
+    its canonical field shipped a gap is now promoted by merge, and a survivor BLOCKS
+    capture-symmetry, the gate's first blocking tier (`alias_promotion_test`,
+    `d15_shadow_key_test`). (4) A figure that lived only in a reader doubt's options is a
+    SIGNAL, and a blank card title blocks (`doubt_option_capture_test`,
+    `card_title_collision_test`). The lesson: the readers' VALUES were right and their misses
+    were PLACEMENT, which a mechanical check sees for free and a reviewer re-reads at full
+    price. Every fix of the round: `docs/CHANGELOG-2026-09-26-fix-round.md`.
 - The dispatch-prompt templates live in `prompts/` (one per sub-agent kind) and are
   integrity-guarded: after editing one, run `make_integrity.py` and the evals
   (`prompt_render_test` pins the load-bearing clauses so a template edit cannot silently drop
-  one).
+  one). The record-shape block in `prompts/reader-repair.md` is byte-identical to the one in
+  `prompts/reader-text.md` (pinned by `prov_hoist_test`): change both together.
+- **Every reader rule must sit INSIDE a `reader-contract` block in `reference/interpretation.md`**
+  (2026-09-26, fix 1.1). Readers never open that file: `prompts_render.reader_contract(mode)`
+  renders only the blocks marked `<!-- reader-contract: text raster -->` (or `: text` /
+  `: raster`) ... `<!-- /reader-contract -->` into `work/prompts/common/<kind>.md`, dropping any
+  `<!-- maintainer-only -->` block inside them. So a rule written outside a block of its mode
+  reaches NO reader; a `maintainer-only` block holds history, never an imperative; markers are
+  whole lines, never nested, never inside a fenced block; and a new heading outside every block
+  fails `evals/reader_contract_render_test.py` until it is added to that eval's
+  `OUTSIDE_ALLOWED` list on purpose. Past 80,000 bytes or 1,800 lines
+  (`READER_COMMON_MAX_BYTES` / `_LINES`) the render falls back to pointing readers at the whole
+  file and prints why, so a growing contract degrades loudly.
+- **Bump `interpret_prep.PREP_SCHEMA`** (4 since 2026-09-26) when a manifest entry's shape or
+  its visual aids change. Only PENDING decks re-prep (the manifest lists only those) and page
+  renders on disk are reused, so an in-flight work dir pays one re-prep per unread deck.
+- **One table per rule, in `helpers/_common.py`; never copy one into a helper.**
+  `ALIAS_PROMOTIONS` (with `ALIAS_PROMOTION_REFUSED` and `promotable_alias`) is the single
+  strict alias table: merge promotes through it and capture-symmetry FAILs on a survivor, so a
+  phrase added there both promotes and blocks, and a refused name never moves (`loadingDoors`,
+  an unsplit door total). `COUNT_FIELDS` is the one set of count fields (the value-format
+  exemption and merge's count gate both read it).
 - Dataset refreshes: a fresh GeoNames cities dump -> `python helpers/build_cities_dataset.py
   <cities.txt>`; updated POI exports in a folder -> `python helpers/build_poi_dataset.py
   <folder>`; a new Oxford Economics export -> `python helpers/build_regions_dataset.py`; then
   `python helpers/make_integrity.py` after any of them.
+- The 2026-09-26 fix round (tokens, speed, integrity; every fix ID with its files and evals)
+  is in `docs/CHANGELOG-2026-09-26-fix-round.md`.
 - The broker-in-the-loop / Sonnet-drivability implementation history (phases, blind reviews,
   regressions) is in `docs/CHANGELOG-broker-in-the-loop.md` and
   `docs/IMPLEMENTATION-PLAN-broker-in-the-loop.md`; the skill's git repo carries per-phase

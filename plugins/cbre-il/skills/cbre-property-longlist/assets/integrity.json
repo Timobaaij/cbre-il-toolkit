@@ -1,7 +1,7 @@
 {
   "helpers/_common.py": {
-    "size": 41550,
-    "sha256": "7752777615c5ffebe09cf535bff53b1e9f06c7d22a3a939a76012f9f7b181367"
+    "size": 50673,
+    "sha256": "189fe277c8797b27ece42d9f3746c49d607871eeefb3fe4f224e6975fac96a11"
   },
   "helpers/_vendor_wheels.py": {
     "size": 4162,
@@ -36,36 +36,36 @@
     "sha256": "2b4ccc4d471b1d40e16cb2fa4b6ef93f152b094026b486a85c6feb8ad93180ef"
   },
   "helpers/clarify.py": {
-    "size": 104575,
-    "sha256": "96d0e4532e76dfa2edcb6cc3a98397d56fdee29bd619e8e02b592593e26e212f"
+    "size": 161416,
+    "sha256": "7cd9a4b17038061ee434e1e309fcb3a4facf9123d9e85d180ebb835b1f8f50d3"
   },
   "helpers/contact_sheet.py": {
-    "size": 15543,
-    "sha256": "c21b3ebbb742d80ced9c5af8336f3a12ac45d3d63ee65652727ef1de8b6faefb"
+    "size": 17553,
+    "sha256": "c482ed37c21fcea91b4c2c33acdf014f3ff22720f574240e7be2d7b3cc90fc43"
   },
   "helpers/coords.py": {
     "size": 10086,
     "sha256": "88f6566919ec6ec4c1c545d8e9462dd6d3f0b958f35b0563140e6b83e951523a"
   },
   "helpers/deliver.py": {
-    "size": 66838,
-    "sha256": "90d610ac905d490c8316321e02a94ff2c89e0de4464e3553bd17c71957371fa6"
+    "size": 76402,
+    "sha256": "d7d4de7a7a3e76438976809871df37ee376840544099ba333080b25fd61ba23d"
   },
   "helpers/enrich.py": {
     "size": 179843,
     "sha256": "d8613a7835f8f406016a01d08c2fb5b8ea08c6d336a3dcfda0bf735a16ed2077"
   },
   "helpers/extract_email.py": {
-    "size": 35241,
-    "sha256": "bc6b63be5a7efadc0aebc56c6757b421fb90cceab3e8649dcf8671b99d0de83f"
+    "size": 40689,
+    "sha256": "e7a05b939eb0d980b0cbde18e8271580224530efb5efd2dc8acf15771bbeb61d"
   },
   "helpers/extract_image.py": {
     "size": 3579,
     "sha256": "d9840092033219acad3d63b5722ecd71af314b0453687dfa3d21c730fc191662"
   },
   "helpers/extract_pdf.py": {
-    "size": 38883,
-    "sha256": "98346827f0c48697cc321e53540ac870e2ff2622f976cb031b460f1b2bae0c69"
+    "size": 39467,
+    "sha256": "a4b685af3236311913504e5a7af04425b0eb18322e1033aa023ec139e72a71f2"
   },
   "helpers/extract_pptx.py": {
     "size": 5957,
@@ -84,24 +84,24 @@
     "sha256": "e2b6e197b7011fa9df68519f2b7a34fa1c34935cbbe043b6eb71f67c9757581b"
   },
   "helpers/gate_runner.py": {
-    "size": 246777,
-    "sha256": "eb231ce0d5eb15f7da9fd4c32b118b4d59e9de8e20a1c5ced6e65daaaa1c4764"
+    "size": 287322,
+    "sha256": "7980a051cfdc5e273cb40ac5a1666cf431c5267e8f577731e5b1b25261ef5b6e"
   },
   "helpers/i18n.py": {
     "size": 28759,
     "sha256": "570317aef7a8dda15a680b3a92736b002c9407ff8e0eff3c15fd5dfea30d6ca9"
   },
   "helpers/images.py": {
-    "size": 129030,
-    "sha256": "dfdd46fd80a3e156188b878ce3fe9f1b2b701c791e771a3e20e5e71674e6eaae"
+    "size": 134474,
+    "sha256": "cd19a3fee0f6ae655a66231e1ce355ec3deab47daf54c1e89a5dff53cc31d8aa"
   },
   "helpers/intake.py": {
-    "size": 63223,
-    "sha256": "818f410816ee1ef9f9dc45d0fa76946a6f89e28cbb31820d3c240e51ec4e43c9"
+    "size": 79482,
+    "sha256": "cc9886bb31df19ef1a141b4c76e1393f07ece8bb1e8f536b0b09d625f60f2613"
   },
   "helpers/interpret_prep.py": {
-    "size": 38083,
-    "sha256": "40b98edde6e43091b702a20bc8ba3d1fe31a954cc856fdcf8cf062f29490a286"
+    "size": 44606,
+    "sha256": "6545fd89150547b2d9beda79ff1bab0878470424528ae900b8e7a039422d2a29"
   },
   "helpers/ledger.py": {
     "size": 4414,
@@ -116,12 +116,12 @@
     "sha256": "65d2e6fd144e2f2f845f0d82096b533420f0ff2853c4e71ceb3ea6f1e5da2b28"
   },
   "helpers/master_list.py": {
-    "size": 75233,
-    "sha256": "3dcb55d3bf131fe120e08805e1b8abd7f4ff72bb1db66f8894b4bca53405f62f"
+    "size": 98972,
+    "sha256": "2b810593213ef40539e6c6e610f31ae0d713b134235a2c9e4800c4fb50f068a9"
   },
   "helpers/master_list_build.py": {
-    "size": 37363,
-    "sha256": "c4fc1dd5c8d19d882f35eb77f9fc9b60254fc6b44aa423c9b45d0411a59b1170"
+    "size": 39861,
+    "sha256": "4a1baeae1effeb5d76d3862894850fb9ac9c5a522a25f9ce04eb8bf78a507488"
   },
   "helpers/master_list_read.py": {
     "size": 13573,
@@ -132,16 +132,16 @@
     "sha256": "80141de11088a3f6f820210ad2c8d423eb8117b64ab7562ef30dd00c5fbfe9aa"
   },
   "helpers/merge.py": {
-    "size": 324954,
-    "sha256": "e467ccdf0fa087cb4defcb61bf52be71b2d93b0c0815b79404493645e14a596f"
+    "size": 355438,
+    "sha256": "dababcc0614f2fb35cdd55eb9ff673b4f453bb6a0149ad4bb1fcd704bd21c0a8"
   },
   "helpers/msg_reader.py": {
     "size": 30052,
     "sha256": "3e3a12f84b0f825021a67b702cb225e13336759b8bd0d8db97ab283086513c54"
   },
   "helpers/normalize.py": {
-    "size": 42136,
-    "sha256": "d89d4a9049d31334aed8ad9bb6e02f65ae7670adb987df2b6b945f5a715212cc"
+    "size": 43041,
+    "sha256": "f22cb67aafa46c80f516233aafc31a459dd540dce28383efbda34a931558515c"
   },
   "helpers/plan_signal.py": {
     "size": 12504,
@@ -152,12 +152,12 @@
     "sha256": "9d8f94109dee4d87af7b7870bdbbc23395a3e4ea4a3d78b779542013d0b3116b"
   },
   "helpers/project_properties.py": {
-    "size": 39251,
-    "sha256": "2965247d3479f1a82f9c0ed25d93be8d315ac21a33300284555134a6bbc09d25"
+    "size": 56870,
+    "sha256": "fb0fbf24f8e68c78ab15a2a900d900bee65967e6c6b098fb1f6a301a5e9159f8"
   },
   "helpers/prompts_render.py": {
-    "size": 18036,
-    "sha256": "02fe527d4ae8f83db81d3560401b39cb819497dc0f12e9334cf34255caad7eec"
+    "size": 35955,
+    "sha256": "8dea8fcef96e4b8b282ae185c04ce7e7c08106ef38d87eaca7e8ed80486a235c"
   },
   "helpers/rapidfuzz_shim.py": {
     "size": 2577,
@@ -168,12 +168,12 @@
     "sha256": "cddfc5665e01070892b3199067b5cce8534f574aa12edce07882a9ca5d41ac32"
   },
   "helpers/repairs.py": {
-    "size": 90256,
-    "sha256": "407a94c6123f3ce8f9f29e2048d2e5301d63f9f5c3a9d3d2c4b677c4c767eb6f"
+    "size": 105433,
+    "sha256": "5f0812b4f1fe76adc71868f72cb5c47e5dd03be7de9041cf2d5d37db9f004ce9"
   },
   "helpers/run.py": {
-    "size": 479816,
-    "sha256": "892e52613bab1250d58d155983255a2ae1f69b41ea1a5914a05fc2a839c78505"
+    "size": 551463,
+    "sha256": "b8da1cfa6a542f59780f8eeab427c047c2d620f8cef91afae54b178f0b7db1e8"
   },
   "helpers/seed_geocode.py": {
     "size": 6292,
@@ -200,8 +200,8 @@
     "sha256": "572249bc6d70983cb577173cdca4e249e8a05f805e209bb8db274672baedc047"
   },
   "helpers/vision_validate.py": {
-    "size": 29696,
-    "sha256": "8dc3a229b1fbe7649c384b8c072d76a6961eada6a4b4c8aaf748bc5d7e899be3"
+    "size": 38103,
+    "sha256": "ecac79b8c9ea03ebdff04ee4d3fd827793a0289f0acee9c5dc17dc7d02141bd9"
   },
   "helpers/web_enrich.py": {
     "size": 52145,
@@ -260,8 +260,8 @@
     "sha256": "eda07a567f5702c6692a72aedb68399ff83b0db6ca40e2bbf33c569b99c52c14"
   },
   "prompts/cluster-labels.md": {
-    "size": 1764,
-    "sha256": "00a161086eecf9969cf140776e1964b0aed953279ae78a5cc2775e045b8ca919"
+    "size": 2046,
+    "sha256": "9275d90e82f6aab67df4abbfb0cc22ea9c8b799d5b9b2b87bcd350b3842317fc"
   },
   "prompts/field-conflicts.md": {
     "size": 2141,
@@ -272,24 +272,24 @@
     "sha256": "94e3fdcfc3b57b53835979830c2639d3f428aae7ce4e41a9e8d77bf109b830ed"
   },
   "prompts/g-honesty.md": {
-    "size": 2736,
-    "sha256": "b82be9bd01cb3e92c16f604ec07a62e331daccc3920d3431dc0aceb1d8169758"
+    "size": 3890,
+    "sha256": "1de3febf0ea77c54aa8229611f130aadc7a7d6e29394e4e578380fb185d89264"
   },
   "prompts/g-images.md": {
     "size": 1574,
     "sha256": "da02f787023fa004326ffe2670e6a760d8e24f065611f190cc67f1060e44b886"
   },
   "prompts/g-trace.md": {
-    "size": 2376,
-    "sha256": "65021ec3d0849c16374c329178415809824db9e04498e242937309f731219076"
+    "size": 3517,
+    "sha256": "dae0c65384e06acec824846386b446c175a7564b2ac8bfdd4e083af51385e119"
   },
   "prompts/g-visual.md": {
     "size": 1565,
     "sha256": "6f33b61d2b1e45fb25368c4a68d8a456903f5b20d270533585514d0dd7498e42"
   },
   "prompts/master-list.md": {
-    "size": 7781,
-    "sha256": "0d48ba32fc3c4de7dd3b01fb070530535357d68399b83167cac6a744e4dfff59"
+    "size": 8676,
+    "sha256": "5dfbe49fc2f2fd32d41fe23ee513cfa70e041a89bdf3a46be8cd4e45f8d9c250"
   },
   "prompts/match-adjudicate.md": {
     "size": 4309,
@@ -300,20 +300,24 @@
     "sha256": "8120513c1c77ffebb5e17d9386357d8489149746ed8ab10ffeeb772905c2d952"
   },
   "prompts/outlook-ingest.md": {
-    "size": 2048,
-    "sha256": "385d1c40b129538d1e8186fdf853a00b6e894f176188b6aa45a0357b4e5d668b"
+    "size": 2198,
+    "sha256": "9cf3bd2137835be49131ac29bba9fdd421f3af595da63a92a3477e60d086e058"
   },
   "prompts/photo-match.md": {
     "size": 1976,
     "sha256": "daf86ecc3cf7d178667241b47e823077a03e862b4064d77ef1595d2e76b5236c"
   },
   "prompts/reader-raster.md": {
-    "size": 8427,
-    "sha256": "54ae098f96a13d9481e8c7cac23ed35499e38808e8391bff9ab02f73e5288900"
+    "size": 11430,
+    "sha256": "397620bc4bf9d7e9053ddfc7442eb334680ac9e2095df6077335415f816618c4"
+  },
+  "prompts/reader-repair.md": {
+    "size": 1905,
+    "sha256": "0d489b655f110d7b2ae1629736d7ca638c0dba86acf0d0f393f57c8b134a0d26"
   },
   "prompts/reader-text.md": {
-    "size": 10941,
-    "sha256": "abf7adc466221e5c0022a242267c7877d63f9fc2e732029114e27ed233532364"
+    "size": 14753,
+    "sha256": "e4e5deb668d48d6f51e3f10bade2dadfd09e0f098201e21cabb610d1f470475e"
   },
   "prompts/region-labels.md": {
     "size": 1944,
@@ -340,12 +344,12 @@
     "sha256": "01ae142eb40ec8060aae8f1f1243576e4cc728daa25c47a66ee2a4093e6dae8c"
   },
   "assets/dashboard_template.html": {
-    "size": 827151,
-    "sha256": "1b50d403ddbf98f72a51586d42821017309c201f3c38fb0a91b5708718543d82"
+    "size": 828615,
+    "sha256": "671ce9482c69e573fd2df1e216e5d8b0b56e7b9f59a87cb515b7ca08d3339142"
   },
   "assets/VERSION": {
     "size": 83,
-    "sha256": "e41b9abe1b91430418fad0a46aeda75c94152060a5ef0d74fabb334ee1224ff4"
+    "sha256": "8121ae027b69abb9173918eedf46439ce6a5b1392a73256cc8c9aaf7be9f1057"
   },
   "assets/poi_library.json": {
     "size": 18474,
@@ -388,11 +392,11 @@
     "sha256": "d22609f38eab3ac2fd46d57f3746ddd0c3f33bb4292b797ef52d4e523e5d6530"
   },
   "templates/canonical.schema.json": {
-    "size": 17220,
-    "sha256": "3325b7e3dc96e517087d188c1d447a16e409b9d6ad5bb30f7becb1b3df8f79a7"
+    "size": 17896,
+    "sha256": "b6c2fe6fb1b67db2c828c9fbf026147de4a443c6a784b0e582b4e8bb5c9c5cf4"
   },
   "templates/record_schema.json": {
-    "size": 9535,
-    "sha256": "9f2aee2af913b328b7ee5bd8a761c0d81a2e026b6bf5c64f60f715d7012d108e"
+    "size": 10383,
+    "sha256": "c07ba8b8aa4d159705a77b715271403a5d9579fe256b648da8a2f68a53abdff4"
   }
 }

@@ -13,8 +13,13 @@ region/city stay brochure-derived, so a wrong label here can never fabricate a s
 4. NEVER invent: a stem you cannot judge is OMITTED (the deterministic regex stands for it).
 
 ## Your job
-- The LOW-CONFIDENCE stems (judge ONLY these): {{STEMS}}
-- Context (read if the stems alone are ambiguous): {{INVENTORY_PATH}}
+- The LOW-CONFIDENCE stems (judge ONLY these), one per line:
+{{STEMS}}
+- Everything known about each stem is on its line above; do NOT open inventory.json - it holds
+  nothing more about them.
+- A label that would put two files the filenames keep apart into ONE cluster is
+  refused by the spine (a label may rename a cluster, never merge two), so a town two decks
+  share is not a useful label - OMIT those.
 - For each stem you CAN judge, give the likely city/region name it encodes
   (e.g. `Options-Oporto` -> `Oporto`; `Naves Cataluna` -> `Cataluna`) and, optionally, the
   ISO-2 country - leave country blank if unsure (--geocode resolves it from coordinates).

@@ -703,7 +703,7 @@ def _desc_cap(txt: str, n: int = 600) -> str:
     return txt
 
 
-def font_grouped_blocks(path) -> list:
+def font_grouped_blocks(path, max_pages=None) -> list:
     """Read-only font-size grouping of a deck's text layer: a flat list of
     {page (1-based), size (rounded pt), text} groups, page order then in-page
     size insertion order. This is the EXACT grouping best_description_in_deck
@@ -712,14 +712,25 @@ def font_grouped_blocks(path) -> list:
     callouts, drive-time tables and the legal footer). Boilerplate is NOT
     pre-filtered here (the LLM judges; the heuristic filters downstream).
     Returns [] wherever the text-layout ('dict') engine is unavailable (e.g.
-    the pdfplumber shim) - so a raster/textless deck honestly emits no blocks."""
+    the pdfplumber shim) - so a raster/textless deck honestly emits no blocks.
+
+    `max_pages` (2026-09-26 test run, fix 2.1): read only the first N pages. The
+    master list's first-page glance parsed EVERY page of 23 decks and kept page 1
+    (11.4 s of a 16 s pass); max_pages=1 returns byte-identical page-1 groups in
+    ~1.3 s. None (the default) keeps today's whole-deck read for every other caller."""
     try:
         doc = fitz.open(path)
     except Exception:
         return []
     out: list = []
     try:
-        for pno in range(doc.page_count):
+        _n = doc.page_count
+        if max_pages:
+            try:
+                _n = min(_n, max(0, int(max_pages)))
+            except (TypeError, ValueError):
+                _n = doc.page_count  # a nonsense limit degrades to today's full read
+        for pno in range(_n):
             try:
                 blocks = doc.load_page(pno).get_text("dict").get("blocks", [])
             except Exception:

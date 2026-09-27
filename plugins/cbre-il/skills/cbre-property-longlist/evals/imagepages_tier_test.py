@@ -64,13 +64,22 @@ def main() -> int:
        "merge: the ANCHORING cluster keeps a contested page")
     ck(not M._page_allowed(1, "deck.pdf", 1, anchor, claims),
        "merge: the over-claimer is denied it (no leak, deterministically)")
-    # nobody anchors it -> both are denied (lossy, but still not a leak)
+    # nobody anchors it -> the PLAN slot denies both (one owner, never a shared drawing)...
     claims2 = {("deck.pdf", 1): {0, 1}}
     ck(not M._page_allowed(0, "deck.pdf", 1, {}, claims2)
        and not M._page_allowed(1, "deck.pdf", 1, {}, claims2),
-       "merge: an UNANCHORED contested page is dropped from every carousel")
+       "merge: the PLAN slot drops an unanchored contested page")
     ck(M._page_allowed(0, "deck.pdf", 2, {}, {("deck.pdf", 2): {0}}),
        "merge: a sole claimant keeps an unanchored page")
+    # ...while the CAROUSEL shares it between the co-claimants (2026-09-26 test run, fix 3.20)
+    ck(M._gallery_page_allowed(0, "deck.pdf", 1, {}, claims2)
+       and M._gallery_page_allowed(1, "deck.pdf", 1, {}, claims2),
+       "merge: the CAROUSEL shares an unanchored contested page between its co-claimants")
+    ck(not M._gallery_page_allowed(2, "deck.pdf", 1, {}, claims2),
+       "merge: ...but never with a property that did not claim it")
+    ck(M._gallery_page_allowed(0, "deck.pdf", 1, anchor, claims)
+       and not M._gallery_page_allowed(1, "deck.pdf", 1, anchor, claims),
+       "merge: a page ANOTHER property anchors is still foreign to the carousel")
 
     # --- ANCHORED over-claim: provably a no-op -> warning, never an error -----
     e, w = _run([_rec("A", 0, [0, 1]), _rec("B", 1, [1])])
@@ -80,13 +89,17 @@ def main() -> int:
     ck(w and ("anchor" in w[0].lower() or "awards" in w[0].lower()),
        "the warning says it resolves deterministically to the anchoring record")
 
-    # --- UNANCHORED over-claim: lossy -> louder warning, still not an error ---
+    # --- UNANCHORED over-claim: a note, still not an error ---
+    # 2026-09-26 test run, fix 3.20: a co-claimed page nobody anchors is now SHARED by the
+    # claimants' carousels (never their Site Plan slot) instead of dropped from every one, so the
+    # note says so and names the one remaining lever (list it only where it is shown).
     e, w = _run([_rec("A", 0, [0, 2]), _rec("B", 1, [1, 2])])
     ck(not e, f"unanchored over-claim raises NO error {ascii(e[:1])}")
     ck(len(w) == 1, f"unanchored over-claim raises exactly one warning ({len(w)})")
-    ck(w and ("dropped" in w[0].lower() or "loses" in w[0].lower()
-              or "every carousel" in w[0].lower()),
-       "the warning says BOTH properties lose the page (completeness, not correctness)")
+    ck(w and ("shares" in w[0].lower() or "shared" in w[0].lower())
+       and "site plan" in w[0].lower(),
+       "the warning says merge SHARES the page between the claimants' carousels, never the "
+       "Site Plan slot")
 
     # --- the genuinely protective branch is UNTOUCHED -------------------------
     e, w = _run([_rec("A", 0, [0, 9])])

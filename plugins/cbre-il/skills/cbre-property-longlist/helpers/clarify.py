@@ -88,6 +88,10 @@ KINDS = {
     "agent_doubt": "broker",      # a reader's recorded doubt (__meta.doubts)
     "excluded_figure": "broker",  # an excluded record's figure conflicts with a shipped card
     "setup_form": "broker",       # the Stage-0 six-question form has not been answered (B63)
+    # 2026-09-26 test run (fixes 3.2c, 3.10b, 3.7b):
+    "combine_policy": "broker",   # ONE question for every card printing a field as several lines
+    "not_available": "broker",    # the source marks a record let / sold / not available
+    "arithmetic_basis": "broker",  # a printed building total was read as the warehouse area
 }
 
 # The kinds whose DEFAULT IS THE DAMAGE, so silence must not resolve them (B49):
@@ -100,8 +104,11 @@ KINDS = {
 #   setup_form       - the scaffold's six guessed answers ARE the damage: they shipped
 #                      English dashboards with no email ingestion to brokers who were never
 #                      offered the choice (B63)
+#   arithmetic_basis - the arithmetic gate BLOCKS the build on it (exit 6), so, exactly as for
+#                      value_format, the only ways out are an answer or a recorded decline;
+#                      a non-blocking question here would wedge the run with no exit (3.7b)
 BLOCKING_KINDS = {"source_authority", "dataset_unit", "area_unit", "rent_unit",
-                  "value_format", "setup_form"}
+                  "value_format", "setup_form", "arithmetic_basis"}
 
 # --------------------------------------------------------------------------- #
 # MATERIALITY - does the ANSWER change what the CLIENT SEES? (B62)
@@ -180,6 +187,10 @@ KIND_MATERIALITY = {
     "agent_doubt": "ledger",         # promoted per doubt when it names a shown field/count
     "setup_form": "display",         # the language relabels the whole dashboard, and the
                                      # email scope changes which options are on it (B63)
+    "combine_policy": "display",     # the figure on every member card (3.2c)
+    "not_available": "count",        # whether the card ships at all (3.10b); non-blocking,
+                                     # because the card itself shows the source's status
+    "arithmetic_basis": "display",   # the warehouse area on the card (3.7b); blocking by kind
 }
 MATERIALITIES = ("count", "display", "ledger")
 
@@ -422,6 +433,11 @@ def is_material(q) -> bool:
 WHY_LEDGER = "ledger"        # the answer cannot change anything the client sees
 WHY_CAP = "over the cap"     # material, but past the per-round question cap
 WHY_HEADLESS = "headless"    # material, but this run was told to decide rather than ask
+# 2026-09-26 test run (fix 3.2c): material, but the pipeline's OWN office sum already shows the
+# combined figure the question would offer, so asking would cost a round-trip to confirm what
+# the card already says. Recorded with the expected value, so a post-merge recheck can re-open
+# the question if the shipped card turns out to show something else.
+WHY_MERGED = "settled by merge"
 
 
 def note_suppressed(work, questions: list, why: str = WHY_LEDGER,
@@ -468,6 +484,20 @@ def note_suppressed(work, questions: list, why: str = WHY_LEDGER,
         _aff = _affected_labels(q)
         if _aff:
             sup[str(i)]["affected"] = _aff
+        # A doubt closed because merge's own sum already shows the combined figure (3.2c)
+        # carries what the card is EXPECTED to show, its anchors and the full per-card question,
+        # so `run.merge_settled_recheck` can re-open it if the shipped card shows otherwise
+        # (another source stating an office total beats derive_office_sum). Additive keys.
+        _me = q.get("merge_expect")
+        if isinstance(_me, dict) and str(why or "") == WHY_MERGED:
+            try:
+                sup[str(i)]["expected"] = {"value": _me.get("value"), "unit": _me.get("unit")}
+                sup[str(i)]["anchors"] = _anchors_of_q(q)
+                _payload = {k: v for k, v in q.items() if k not in ("over_cap",)}
+                json.dumps(_payload)            # must be storable, or it is not stored
+                sup[str(i)]["question_payload"] = _payload
+            except Exception as _e:              # fail safe: disclosure without the payload
+                print(f"(clarify: settled doubt {i} recorded without its re-open payload: {_e})")
         n += 1
     if json.dumps(sup, sort_keys=True) != before:
         save_state(work, st)
@@ -680,6 +710,12 @@ def ingest_answers(work) -> dict:
                 if v is not None:
                     flat[str(row["id"])] = v
     known = set(st["asked"])
+    # 3.2c: a combine_policy MEMBER was put to the broker as a line of its policy question and
+    # carries a landable stamp, but is deliberately not in `asked` (so group_combinable can
+    # still resolve it). A direct per-card answer to it must still be read - it overrides the
+    # policy for that one card - so member ids count as known.
+    known |= {str(k) for k, v in (st.get("landable") or {}).items()
+              if isinstance(v, dict) and v.get("via_policy")}
     for k, v in (flat or {}).items():
         k = str(k).strip()
         if not k or v in (None, ""):
@@ -808,6 +844,11 @@ def emit(work, questions: list) -> Path:
             "named field on the next pass (on every record listed in `anchors`) or only RECORDED "
             "and disclosed in the Gaps Report; where it says recorded only, nothing on a card "
             "will change, so do not promise the broker otherwise.\n"
+            "A `combine_policy` question asks ONCE for every card listed in its `members`: answer "
+            "the policy question's own `id`; a member's `id` may also be answered directly to "
+            "decide that one card differently. A question whose `answer_route` is \"reread\" "
+            "must be answered with one of its `options` (its `as_shipped` option closes it with "
+            "no change).\n"
             "`asked_of` says who can answer: \"agent\" = a reading/perception call, so "
             "dispatch an ISOLATED sub-agent with the named source (never answer it from the "
             "orchestrator's own context); \"broker\" = a decision no reading can settle, so "
@@ -861,6 +902,48 @@ def emit(work, questions: list) -> Path:
         # answer-time report can print it WITH the broker's answer beside it
         if isinstance(q.get("to_apply_by_hand"), dict):
             st["titles"][q["id"]]["to_apply_by_hand"] = q["to_apply_by_hand"]
+        # 2026-09-26 test run (fix 3.18): a count-affecting / no-field doubt carries its CLOSURE
+        # test and its route, so a later pass can tell "kept as shipped" (close, no change) from
+        # "another option" (re-read the deck once with the decision) without the question file,
+        # which only ever holds the last batch. Additive keys, written for new questions only.
+        if q.get("as_shipped"):
+            st["titles"][q["id"]]["as_shipped"] = str(q.get("as_shipped"))[:300]
+        if q.get("answer_route"):
+            st["titles"][q["id"]]["answer_route"] = str(q.get("answer_route"))
+            st["titles"][q["id"]]["source_file"] = str(q.get("source_file") or "")
+            st["titles"][q["id"]]["options"] = [str(o) for o in (q.get("options") or [])][:8]
+        # 2026-09-26 test run (fix 3.2c): ONE policy question stands for several per-card doubts.
+        # Each member gets the normal landable stamp PLUS `via_policy`, so the lander can derive
+        # its answer from the policy answer on demand (`policy_member_answer`) - no `fanout` state
+        # key, so no post-merge state write. Members are deliberately NOT added to `asked`: a
+        # member stays a candidate for `group_combinable`, which then resolves it through the
+        # policy (or asks it per card when the broker said "ask me per card").
+        if str(q.get("kind") or "") == "combine_policy" and isinstance(q.get("members"), list):
+            _mids = []
+            for mem in q["members"]:
+                if not (isinstance(mem, dict) and mem.get("id") and mem.get("field")):
+                    continue
+                _stamp = _doubt_stamp(mem)
+                if _stamp is None:
+                    continue
+                _stamp["via_policy"] = q["id"]
+                st["landable"][mem["id"]] = _stamp
+                _mt = {
+                    "kind": "agent_doubt",
+                    "subject": str(mem.get("subject") or ""),
+                    "question": str(mem.get("question") or "")[:400],
+                    "blocking": False,
+                    "if_unanswered": str(mem.get("if_unanswered") or "")[:300],
+                    "answer_handling": str(mem.get("answer_handling") or ANSWER_APPLIED)[:300],
+                    "via_policy": q["id"],
+                }
+                _maff = _affected_labels(mem)
+                if _maff:
+                    _mt["affected"] = _maff
+                st["titles"][mem["id"]] = _mt
+                _mids.append(str(mem["id"]))
+            st["titles"][q["id"]]["members"] = _mids
+            st["titles"][q["id"]]["policy_field"] = str(q.get("policy_field") or "")
         # WHAT AN ANSWER MAY BE WRITTEN INTO, remembered durably beside the question itself.
         # A field-level answer is applied on a LATER pass, against the MERGED dataset, by
         # `run.agent_doubt_repairs` - and by then questions.json holds only the last batch and
@@ -901,21 +984,49 @@ def emit(work, questions: list) -> Path:
             # nothing). The question is still asked; only the landing promise is withheld.
             if q.get("unlandable_options"):
                 continue
-            stamp = {
-                "kind": str(q.get("kind") or ""),
-                "field": str(q.get("field")),
-                "subject": str(q.get("subject") or ""),
-                "options": [str(o) for o in (q.get("options") or [])][:6],
-                "source_file": str(q.get("source_file") or ""),
-            }
-            if q.get("anchors") or q.get("anchor_park"):
-                _anc = _anchors_of_q(q)
-                stamp["anchor_park"] = _anc[0]["park"] if _anc else ""
-                stamp["anchor_unit"] = _anc[0]["unit"] if _anc else ""
-                stamp["anchors"] = _anc
-            st["landable"][q["id"]] = stamp
+            stamp = _doubt_stamp(q)
+            if stamp is not None:
+                st["landable"][q["id"]] = stamp
     save_state(work, st)
     return out
+
+
+# The Python-synthesised combined option (3.2b) is appended AFTER the reader's own options,
+# which are capped at 6, so the stamp keeps up to 8: slicing at 6 would drop the one option the
+# broker most needs on a doubt with six printed lines.
+_STAMP_OPTIONS_MAX = 8
+
+
+def _doubt_stamp(q: dict):
+    """The `landable` stamp for ONE field-bearing question with options, or None.
+
+    Factored out of `emit` (2026-09-26 test run, fix 3.2c) because a combine_policy question
+    stamps each of its MEMBERS with exactly this shape plus `via_policy`; two copies of the
+    stamp grammar would drift. The keys are the ones `run.agent_doubt_repairs` reads."""
+    if not (isinstance(q, dict) and q.get("field") and q.get("options")):
+        return None
+    if q.get("unlandable_options"):
+        return None
+    stamp = {
+        "kind": str(q.get("kind") or ""),
+        "field": str(q.get("field")),
+        "subject": str(q.get("subject") or ""),
+        "options": [str(o) for o in (q.get("options") or [])][:_STAMP_OPTIONS_MAX],
+        "source_file": str(q.get("source_file") or ""),
+    }
+    if q.get("anchors") or q.get("anchor_park"):
+        _anc = _anchors_of_q(q)
+        stamp["anchor_park"] = _anc[0]["park"] if _anc else ""
+        stamp["anchor_unit"] = _anc[0]["unit"] if _anc else ""
+        stamp["anchors"] = _anc
+    # 3.2b: the combined option's figure travels with the stamp, so the lander writes
+    # `value_text` (Python's sum) rather than the option string with its bracket, and can name
+    # every part in the repair's `why`. Absent on every stamp written before this round.
+    comb = q.get("combinable")
+    if isinstance(comb, dict) and comb.get("option"):
+        stamp["combinable"] = {k: comb.get(k) for k in
+                               ("parts", "sum", "unit", "value_text", "option", "first")}
+    return stamp
 
 
 def landable(work) -> dict:
@@ -1100,6 +1211,92 @@ ANSWER_RECORDED_PROSE_OPTION = (
     "('24,230 sq ft (all three office lines combined)' is valid, 'all three office lines "
     "combined' is refused). No answer to this question is landed; it is disclosed in the Gaps "
     "Report. THE READER SHOULD HAVE LED EVERY OPTION WITH THE PRINTED FIGURE")
+
+# 3.18 (2026-09-26 test run). A doubt about HOW MANY options a deck yields, or one naming no
+# canonical field, has no repair that can carry its answer: a repair edits a card, it cannot
+# create or remove one. The measured run printed a paste-a-repair skeleton with placeholder
+# fields for two such answers, EVERY pass, including one answered exactly as shipped. The two
+# routes below replace it. Neither starts with "recorded only:" where an answer can still act
+# (run._recorded_only_doubt_answers keys on that prefix, and also skips any `answer_route`).
+ANSWER_REREAD = (
+    "recorded, then applied by RE-READING the deck: the doubt {why}, so no work/repairs.json "
+    "entry can carry the answer. An answer that keeps the cards as shipped ('{as_shipped}') "
+    "closes it with no change; any other of `options` makes the next pass re-read '{deck}' once, "
+    "with the answer in that reader prompt's Run context")
+ANSWER_RECORDED_COUNT = (
+    "recorded only: the doubt is about how many options ship, which no repair can change, and "
+    "this source cannot be re-read with the decision (not a brochure deck, or no as-shipped "
+    "option was stated); it is disclosed in the Gaps Report")
+
+# An answer meaning "keep what shipped". Matched on the WHOLE answer, like `is_decline`, so an
+# instruction that merely contains one of these words is never read as one.
+AS_SHIPPED_TOKENS = {
+    "as shipped", "keep as shipped", "as is", "keep as is", "leave as is", "leave it as is",
+    "no change", "unchanged", "keep it as it is",
+}
+
+
+def _words(v) -> list:
+    """Lowercased word tokens, punctuation dropped - for word-subset matching only."""
+    return re.findall(r"\w+", str(v or "").lower())
+
+
+def _as_shipped_option(options, default) -> str:
+    """Which offered option describes the cards AS SHIPPED, from two READER-authored strings
+    (its options and its default), never from the broker's text. The reader contract asks for a
+    default copied verbatim from the options; this is the tolerant fallback for one that is not:
+      * the option equal to `default` (normalised);
+      * else the ONE option whose words include every word of `default` (the measured
+        'one property' default beside 'one property (DIRFT 360 is one building)');
+      * else '' - unknown, so no answer can be classified as-shipped by this test.
+    With no options, the default itself (or '')."""
+    opts = [str(o) for o in (options or []) if str(o).strip()]
+    dflt = str(default or "").strip()
+    if not opts:
+        return dflt
+    if not dflt:
+        return ""
+    nd = _norm_key(dflt)
+    for o in opts:
+        if _norm_key(o) == nd:
+            return o
+    want = set(_words(dflt))
+    if not want:
+        return ""
+    hits = [o for o in opts if want <= set(_words(o))]
+    return hits[0] if len(hits) == 1 else ""
+
+
+def answer_is_as_shipped(title, raw) -> bool:
+    """Does this answer keep the cards exactly as shipped? True for an AS_SHIPPED_TOKENS answer,
+    for the question's recorded `as_shipped` option, or (the compat read for a question asked
+    before `as_shipped` existed) for its `if_unanswered` default with 'proceeds with:' removed."""
+    a = _norm_key(raw)
+    if not a:
+        return False
+    if _norm_answer(raw) in AS_SHIPPED_TOKENS or a in AS_SHIPPED_TOKENS:
+        return True
+    t = title if isinstance(title, dict) else {}
+    shp = _norm_key(t.get("as_shipped"))
+    if shp and a == shp:
+        return True
+    iu = str(t.get("if_unanswered") or "").strip()
+    if iu.lower().startswith("proceeds with:"):
+        dflt_raw = iu[len("proceeds with:"):]
+        dflt = _norm_key(dflt_raw)
+        if dflt and a == dflt:
+            return True
+        # 2026-09-26 regression (3.18 compat): a question asked BEFORE `as_shipped` was recorded
+        # keeps only the reader's short default ('one combined record (as shipped)') while the
+        # broker picked the longer OPTION it abbreviates ('one combined record for the whole
+        # 451,919 sq ft campus (as shipped)'). For such an old title only, an answer that carries
+        # EVERY word of a multi-word default is that option. A new title records `as_shipped`
+        # and never reaches this line.
+        if "as_shipped" not in t:
+            want = set(_words(dflt_raw))
+            if len(want) >= 2 and want <= set(_words(raw)):
+                return True
+    return False
 
 
 def _doubt_qid(src: str, subject: str, question: str, field: str, options: list,
@@ -1294,6 +1491,235 @@ def _figure_led(option) -> bool:
         return True                  # the positional test already passed; be inert without normalize
 
 
+# --------------------------------------------------------------------------- #
+# 3.2b COMBINABLE DOUBTS - Python offers the sum the reader is forbidden to write.
+#
+# 2026-09-26 test run: 10 of 12 broker questions were per-floor office doubts ("3,080 sq ft
+# (GF)" / "6,155 sq ft (FF)" / "1,620 sq ft (SF)") whose natural answer, "add them", was not an
+# option, because the reader correctly refused to compute it and the lander is selection-first.
+# The operator hand-wrote five repairs saying "broker: sum all". The only party allowed to add
+# is Python, so Python now offers the sum as one more option - but ONLY when the reader
+# DECLARED the options to be disjoint parts of one quantity (`combinable: true`) and every part
+# leads with a figure in ONE shared unit. Nothing is converted, and an option the lead-figure
+# parser cannot read with certainty means no synthesis at all (today's options, unchanged).
+# --------------------------------------------------------------------------- #
+
+def _is_combinable(d) -> bool:
+    """Did the reader declare this doubt's options to be PARTS of one figure? `true`, or the
+    strings 'true' / 'yes' (a reading model's near-miss; the validator warns on those)."""
+    if not isinstance(d, dict):
+        return False
+    v = d.get("combinable")
+    if v is True:
+        return True
+    return isinstance(v, str) and v.strip().lower() in ("true", "yes")
+
+
+# The leading figure of an option: an optional currency mark, then EITHER digit groups of three
+# joined by one grouping separator (',', '.', an apostrophe or a space of any width) with an
+# optional decimal tail, OR plain digits with an optional decimal tail. A separator is always a
+# single character between digits, so "3,080, 6,155" reads 3,080 and never 30,806,155.
+_LEAD_FIGURE_RX = re.compile(
+    r"^(?:[£€$]|[A-Z]{3}\s?)?"
+    r"(\d{1,3}(?:[,.'    ]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)")
+# where the unit words end: a bracket, a slash, a comma or semicolon, a spaced dash, or a NEW
+# number (a digit after whitespace). A digit glued to a word ('m2') is part of the unit.
+_UNIT_END_RX = re.compile(r"[(/,;]|\s[-–—]|[-–—]\s|\s\d")
+def _num_shape(tok: str):
+    """(value, decimals, decimal mark or '') for a lead-figure token under a STRICT reading, or
+    None when the token is not a well-formed number. Used to cross-check
+    `normalize.normalize_number`, never instead of it:
+      * both '.' and ',' present - the LAST one is the decimal mark, the other groups;
+      * one mark, repeated - grouping, and every group after the first must be three digits;
+      * one mark, once - three digits after a 1-3 digit head (not '0') is a thousands group,
+        anything else is a decimal.
+    Where the strict reading and normalize disagree (a US '1,234.5', which normalize reads as
+    European; a '0.125' it reads as 125) the part is AMBIGUOUS and is never added."""
+    t = str(tok or "")
+    for sp in ("'", " ", " ", " ", " "):
+        t = t.replace(sp, "")
+    if not t or not re.fullmatch(r"[\d.,]+", t) or not t[0].isdigit() or not t[-1].isdigit():
+        return None
+    has_d, has_c = "." in t, "," in t
+    try:
+        if has_d and has_c:
+            dec = "." if t.rfind(".") > t.rfind(",") else ","
+            grp = "," if dec == "." else "."
+            if t.count(dec) != 1:
+                return None
+            head, tail = t.split(dec)
+            return float(head.replace(grp, "") + "." + tail), len(tail), dec
+        mark = "." if has_d else ("," if has_c else "")
+        if not mark:
+            return float(t), 0, ""
+        groups = t.split(mark)
+        if len(groups) > 2:
+            if not (1 <= len(groups[0]) <= 3) or any(len(g) != 3 for g in groups[1:]):
+                return None
+            return float("".join(groups)), 0, ""
+        head, tail = groups
+        if len(tail) == 3 and 1 <= len(head) <= 3 and head != "0":
+            return float(head + tail), 0, ""
+        return float(head + "." + tail), len(tail), mark
+    except ValueError:
+        return None
+
+
+def _strict_number(tok: str):
+    """The strict reading's value alone (see `_num_shape`), or None."""
+    sh = _num_shape(tok)
+    return sh[0] if sh else None
+
+
+def _lead_figure(option):
+    """(number, unit_key, unit_text) for an option that LEADS WITH a figure and a unit, else None.
+
+    `unit_key` is `normalize.area_unit_of(unit_text)` ('sq ft' / 'sq m' / 'acres' / 'ha') when
+    that recognises it, else the unit words lowercased with whitespace collapsed ('docks'), so
+    two options compare on the unit they actually print. None for: an option that does not lead
+    with a figure (`_figure_led`), a range, a BARE number (no unit words: its unit is unknowable,
+    the 10.76x class), or a figure the two number readers disagree on."""
+    s = str(option or "").strip()
+    if not _figure_led(s):
+        return None
+    try:
+        import normalize as _N
+    except Exception:
+        return None
+    if _N.is_range(s):
+        return None
+    m = _LEAD_FIGURE_RX.match(s)
+    if not m:
+        return None
+    tok = m.group(1)
+    num = _N.normalize_number(tok)
+    chk = _strict_number(tok)
+    if num is None or chk is None or abs(num - chk) > 1e-9 or num <= 0:
+        return None
+    rest = s[m.end():]
+    cut = _UNIT_END_RX.search(rest)
+    unit_text = (rest[:cut.start()] if cut else rest).strip(" \t-–—.:")
+    unit_text = re.sub(r"\s+", " ", unit_text).strip()
+    if not unit_text or not re.search(r"[^\W\d_]", unit_text):
+        return None
+    unit_key = _N.area_unit_of(unit_text) or unit_text.lower()
+    return num, unit_key, unit_text
+
+
+def _lead_shape(option):
+    """`_num_shape` of an option's lead figure, or None."""
+    m = _LEAD_FIGURE_RX.match(str(option or "").strip())
+    return _num_shape(m.group(1)) if m else None
+
+
+def _format_sum(total: float, parts: list, decimals: int) -> str:
+    """The combined figure written so that `normalize.normalize_number` (the reader every
+    downstream step uses: the lander's `_area_answer`, canonicalize) reads back EXACTLY `total`.
+
+    Integral parts give '10,855', the grouping `merge.derive_office_sum` writes. Decimal parts
+    keep the most decimals any part printed, in the parts' own convention: a comma decimal
+    ('1.234,5 m2') is written European ('2.469,0'), a point decimal is written ungrouped
+    ('2469.5'), because normalize reads a grouped '2,469.5' as European and would be 1000x
+    off. Returns '' when no spelling round-trips, and the caller then offers no sum."""
+    try:
+        import normalize as _N
+    except Exception:
+        return ""
+    cands = []
+    if decimals <= 0:
+        if float(total).is_integer():
+            cands.append(f"{int(round(total)):,}")
+    else:
+        comma_dec = any((_lead_shape(p) or (0, 0, ""))[2] == "," for p in parts)
+        grouped = f"{total:,.{decimals}f}"
+        if comma_dec:
+            cands.append(grouped.replace(",", "\x00").replace(".", ",").replace("\x00", "."))
+        cands.append(f"{total:.{decimals}f}")
+    tol = 0.5 * 10 ** (-max(decimals, 0))
+    for c in cands:
+        back = _N.normalize_number(c)
+        if back is not None and abs(back - total) < tol:
+            return c
+    return ""
+
+
+def combined_option(field, options):
+    """The Python-synthesised 'combined' option for a combinable doubt, or None.
+
+    Requires two or more options, every one read by `_lead_figure`, all in the SAME unit. The
+    sum is written by `_format_sum` in a spelling normalize reads back exactly, and the option
+    string names how many printed lines it combines. Returned keys: field, parts (the reader's
+    options verbatim), values, sum, unit ('sq ft'/'sq m' where normalize recognised an area unit,
+    else the first option's own unit words), value_text ('10,855 sq ft'), option ('10,855 sq ft
+    (3 printed lines combined)') and first (the first printed line). Pure: no state, no I/O."""
+    opts = [str(o) for o in (options or []) if str(o).strip()]
+    if len(opts) < 2:
+        return None
+    reads = [_lead_figure(o) for o in opts]
+    if any(r is None for r in reads):
+        return None
+    keys = {r[1] for r in reads}
+    if len(keys) != 1:
+        return None
+    try:
+        import normalize as _N
+        area_u = _N.area_unit_of(reads[0][2])
+    except Exception:
+        area_u = None
+    unit = area_u or reads[0][2]
+    decimals = max((_lead_shape(o) or (0, 0, ""))[1] for o in opts)
+    total = round(sum(r[0] for r in reads), max(decimals, 0))
+    if decimals <= 0 and not all(float(r[0]).is_integer() for r in reads):
+        return None
+    num_text = _format_sum(total, opts, decimals)
+    if not num_text:
+        return None
+    value_text = f"{num_text} {unit}"
+    return {
+        "field": str(field or ""),
+        "parts": opts,
+        "values": [r[0] for r in reads],
+        "sum": total,
+        "unit": unit,
+        "value_text": value_text,
+        "option": f"{value_text} ({len(opts)} printed lines combined)",
+        "first": opts[0],
+    }
+
+
+def _combinable_refusal(options) -> str:
+    """Why `combined_option` offered no sum - diagnostic only, never shown as a promise."""
+    opts = [str(o) for o in (options or []) if str(o).strip()]
+    if len(opts) < 2:
+        return "fewer than two options"
+    reads = [_lead_figure(o) for o in opts]
+    if any(r is None for r in reads):
+        return "an option carries no unit, or its figure cannot be read with certainty"
+    if len({r[1] for r in reads}) != 1:
+        return "options state different units"
+    return "the combined figure cannot be written unambiguously"
+
+
+def _merge_office_expect(rec, field):
+    """What merge's OWN office sum (F11 `derive_office_sum`) would put on this record's card, as
+    {status, value, unit, components}, or None. `officeArea` only; run on a DEEP COPY, so the
+    record is never touched. Any error means None (no merge knowledge), never a guess."""
+    if field != "officeArea" or not isinstance(rec, dict):
+        return None
+    try:
+        import copy as _copy
+        import merge as _merge
+        work_rec = _copy.deepcopy(rec)
+        ent = _merge.derive_office_sum([work_rec], _copy.deepcopy(rec), {})
+    except Exception:
+        return None
+    if not isinstance(ent, dict):
+        return None
+    return {"status": ent.get("status"), "value": ent.get("value"), "unit": ent.get("unit"),
+            "components": [c.get("key") if isinstance(c, dict) else c
+                           for c in (ent.get("components") or [])]}
+
+
 def _arithmetic_reason(field: str, rec: dict) -> str:
     """Why `field` counts as ARITHMETIC (the dashboard does sums with it), or '' when it does
     not. Two routes, both read rather than guessed: the field is the SOURCE of a derived
@@ -1388,7 +1814,31 @@ def handoff_lines(questions: list) -> list:
     repairs.py."""
     out = []
     for q in questions or []:
-        if not isinstance(q, dict) or not isinstance(q.get("to_apply_by_hand"), dict):
+        if not isinstance(q, dict):
+            continue
+        # 3.18: a ROUTED question (count-affecting or no-field) prints its route, never a
+        # repairs.json template: no repair can carry its answer, and the old template with
+        # `<ONE canonical field>` placeholders was reprinted every pass for nothing.
+        _route = str(q.get("answer_route") or "")
+        if _route in ("reread", "disclose"):
+            _rec = "; ".join(_affected_labels(q)) or str(q.get("subject") or "?")
+            if _route == "reread":
+                _why = ("is about how many options this deck yields"
+                        if materiality(q) == "count" else "names no canonical field")
+                out.append(
+                    f"(orchestrator: question {q.get('id')} on '{_rec}' {_why}: if the broker "
+                    f"keeps it as shipped ('{q.get('as_shipped')}') it closes with no change; if "
+                    f"they pick another option the next pass RE-READS "
+                    f"'{Path(str(q.get('source_file') or '')).name}' once with their answer in "
+                    f"that reader prompt's Run context - dispatch that prompt verbatim. The "
+                    f"answer must be one of the options. No work/repairs.json entry applies.)")
+            else:
+                out.append(
+                    f"(orchestrator: question {q.get('id')} on '{_rec}' is about how many options "
+                    f"ship: the answer is RECORDED and disclosed in the Gaps Report; no card "
+                    f"changes and no work/repairs.json entry applies.)")
+            continue
+        if not isinstance(q.get("to_apply_by_hand"), dict):
             continue
         plan = q["to_apply_by_hand"]
         reason = str(plan.get("reason") or _recorded_only_reason(q.get("answer_handling")))
@@ -1467,7 +1917,14 @@ def agent_doubt_questions(records: list) -> list:
       * `anchor_park` / `anchor_unit` / `anchors` - the raising RECORD'S own identity (F18),
         read off the record here while it is still in scope; see the ANCHORS block above for
         why `subject` cannot carry it. `anchors` holds every record a question stands for.
-      * `answer_handling` - one of ANSWER_APPLIED / ANSWER_RECORDED_*: what an answer will do.
+      * `answer_handling` - one of ANSWER_APPLIED / ANSWER_RECORDED_* / ANSWER_REREAD: what an
+        answer will do.
+      * `combinable` / `merge_expect` (3.2b, 2026-09-26) - on a doubt the reader declared
+        `combinable: true`, Python's sum of the printed parts, appended as one more option,
+        and what merge's own office sum would show; `group_combinable` reads both.
+      * `as_shipped` / `answer_route` (3.18, 2026-09-26) - the option the reader's default
+        describes, and "reread" / "disclose" for a count-affecting or no-field doubt that no
+        repair can carry; such a question has no `to_apply_by_hand` skeleton.
 
     COALESCING (F15). Two records from ONE deck on ONE park each asked which region the park
     sits in, with near-identical wording and identical rationale; a deck marketing six units
@@ -1537,10 +1994,60 @@ def agent_doubt_questions(records: list) -> list:
                 # the id decides what coalesces - see _doubt_qid
                 q["id"] = _doubt_qid(src, subject, str(d["question"]), _decl[0],
                                      q.get("options") or [], d.get("default"), a_park, a_unit)
+                # 3.2b (2026-09-26 test run): a COMBINABLE doubt - the reader declared its
+                # options disjoint printed parts of ONE figure - gets Python's sum as one more
+                # option. AFTER the id on purpose: the id stays keyed on the READER's options
+                # (a park-level field hashes the option set), so an in-flight answer keeps
+                # matching. Any parse doubt means no synthesis: today's options, unchanged.
+                if (_is_combinable(d) and q.get("options")
+                        and not q.get("unlandable_options")):
+                    try:
+                        comb = combined_option(_decl[0], q["options"])
+                    except Exception:
+                        comb = None
+                    _have = {_norm_key(o) for o in q["options"]}
+                    if comb is not None and _norm_key(comb["option"]) not in _have:
+                        q["options"].append(comb["option"])
+                        q["combinable"] = comb
+                        _me = _merge_office_expect(r, _decl[0])
+                        if _me is not None:
+                            q["merge_expect"] = _me
+                        q["question"] += (f" Python's sum of the printed lines is offered as "
+                                          f"'{comb['option']}'.")
+                    else:
+                        q["combinable_refused"] = (_combinable_refusal(q["options"])
+                                                   if comb is None else
+                                                   "the reader already offered that figure")
+            # 3.18 (2026-09-26 test run): a doubt that changes HOW MANY options ship, or names
+            # no canonical field, has no repair that can carry its answer. Two routes instead of
+            # the paste-a-repair skeleton nobody could fill: an answer that keeps the cards AS
+            # SHIPPED closes it with no change; any other OPTION re-reads the deck once with the
+            # decision in its reader prompt (a brochure deck only, and only when the reader said
+            # which option is as shipped). Everything else is recorded and disclosed.
+            _as = _as_shipped_option(q.get("options") or [], d.get("default"))
+            if _as:
+                q["as_shipped"] = _as
+            _ah, _mt = str(q["answer_handling"]), str(q.get("materiality") or "")
+            _route_ok = (not _ah.startswith("applied") and _mt != "ledger"
+                         and (_mt == "count" or len(_decl) != 1))
+            if (_route_ok and Path(src).suffix.lower() in (".pdf", ".pptx")
+                    and q.get("options") and _as):
+                q["answer_route"] = "reread"
+                q["source_file"] = src
+                q["answer_handling"] = ANSWER_REREAD.format(
+                    why=("is about how many options this deck yields" if _mt == "count"
+                         else "names no canonical field"),
+                    as_shipped=_as, deck=Path(src).name)
+            elif _route_ok and _mt == "count":
+                q["answer_route"] = "disclose"
+                q["source_file"] = src
+                q["answer_handling"] = ANSWER_RECORDED_COUNT
             # D13: a question whose answer will NOT be landed says, ON THE QUESTION, what to do
             # with the answer: the record, the field and a paste-ready repairs.json entry with
             # `expect` filled in. Built now, while the record is in scope; see `handoff_lines`.
-            if not str(q["answer_handling"]).startswith("applied"):
+            # A routed question (3.18) has no such entry: no repair can carry its answer.
+            if (not str(q["answer_handling"]).startswith("applied")
+                    and not q.get("answer_route")):
                 q["to_apply_by_hand"] = {
                     "reason": _recorded_only_reason(q["answer_handling"]),
                     "entries": [_hand_repair_skeleton(r, q.get("field"), q["anchors"][0])],
@@ -1574,12 +2081,12 @@ def agent_doubt_questions(records: list) -> list:
             s["entry"]["id"] = f"ad-{str(q['id'])[:10]}-{i}"
             s["entry"]["verified_by"] = f"broker (exit-13 answer to {q['id']})"
     mat = [q for q in deduped if is_material(q)]
-    for q in mat[MAX_DOUBT_QUESTIONS:]:
-        q["over_cap"] = True     # material, but disclosed rather than asked this round
     rest = [q for q in deduped if not is_material(q)]
     # everything travels: `pending` asks the first MAX_DOUBT_QUESTIONS and records the rest
-    # for the Gaps Report, so a doubt costs the broker nothing and is lost to nobody
-    out = (mat + rest)[:MAX_DOUBT_CARRIED]
+    # for the Gaps Report, so a doubt costs the broker nothing and is lost to nobody. The cap
+    # itself lives in `apply_doubt_cap` (3.2c) so run.py can re-apply it after
+    # `group_combinable` folds several per-card doubts into ONE policy question.
+    out = apply_doubt_cap(mat + rest)[:MAX_DOUBT_CARRIED]
     if len(mat) + len(rest) > MAX_DOUBT_CARRIED:
         # NO SILENT TRUNCATION. A corpus with this many recorded doubts is pathological, but
         # the count itself is then the finding, and it says so in the Gaps Report.
@@ -1596,6 +2103,583 @@ def agent_doubt_questions(records: list) -> list:
                               "(`__meta.doubts`)"),
         })
     return out
+
+
+def apply_doubt_cap(qs: list, cap: int = MAX_DOUBT_QUESTIONS) -> list:
+    """(Re)apply the per-round cap: the first `cap` MATERIAL agent_doubt / combine_policy
+    questions, in list order, are asked; the rest are stamped `over_cap` (disclosed, not asked).
+
+    Moved out of `agent_doubt_questions` (2026-09-26 test run, fix 3.2c), which still calls it,
+    so run.py can call it AGAIN after `group_combinable`: a policy question standing for five
+    per-card doubts costs ONE slot, and the four slots it frees go to the next doubts in line.
+    It clears the flag before re-setting it, so calling it twice is idempotent. Other kinds and
+    immaterial questions (the overflow line) are never touched. Returns the same list."""
+    n = 0
+    for q in qs or []:
+        if not isinstance(q, dict):
+            continue
+        if str(q.get("kind") or "") not in ("agent_doubt", "combine_policy"):
+            continue
+        if not is_material(q):
+            continue
+        q.pop("over_cap", None)
+        n += 1
+        if n > cap:
+            q["over_cap"] = True     # material, but disclosed rather than asked this round
+    return qs
+
+
+# --------------------------------------------------------------------------- #
+# 3.2c ONE POLICY QUESTION PER FIELD, fanned out (2026-09-26 test run).
+#
+# The measured run asked the SAME thing ten times ("these office lines are parts of one figure
+# - which should the card show?"), once per card, and four of the ten were about a figure the
+# card already showed, because merge's own office sum (F11) had computed it. One card was
+# silently contradicted: merge summed two of three lines while the broker meant all three.
+#
+# So, over NEVER-ASKED combinable doubts only (an in-flight work dir is never regrouped or
+# re-asked): two or more cards with the same combinable field become ONE policy question whose
+# answer is fanned out per card by the lander; a lone card whose sum merge already shows is
+# closed without asking (disclosed as WHY_MERGED); a lone unsettled card keeps its per-card
+# question. The per-member answer is DERIVED on demand from answers[P] + landable[m].via_policy
+# (`policy_member_answer`) - no `fanout` state key, so no post-merge clarify_state write and no
+# merge re-fire. An unrecognised policy answer means "ask me per card", never a guess.
+# --------------------------------------------------------------------------- #
+POLICY_COMBINE = "combine the printed lines on every such card"
+POLICY_FIRST = "use the first printed line on every such card"
+POLICY_UNSTATED = "leave it unstated on every such card"
+POLICY_PER_CARD = "ask me per card"
+POLICY_OPTIONS = (POLICY_COMBINE, POLICY_FIRST, POLICY_UNSTATED, POLICY_PER_CARD)
+POLICY_IF_UNANSWERED = ("each card keeps what shipped (the source's own lines, or the pipeline's "
+                        "own sum where it computed one), and every doubt is listed in the Gaps "
+                        "Report")
+_POLICY_CARD_LINES = 8
+# words that turn a leading verb into its opposite or a partial instruction; any of them sends
+# the answer to "ask me per card", which asks rather than guesses
+_POLICY_HEDGES = frozenset({"not", "never", "don", "dont", "except", "but", "unless", "only",
+                            "some", "no"})
+
+
+def policy_qid(field) -> str:
+    """The policy question's id: keyed on the FIELD only, so it is stable across passes, record
+    order and decks added later (a new deck's card becomes a per-card question, see below)."""
+    return qid("combine_policy", str(field or ""), str(field or ""))
+
+
+def policy_mode(raw) -> str:
+    """'combine' | 'first' | 'unstated' | 'per_card' | 'decline' for a policy answer.
+
+    An exact (normalised) option wins; then an explicit decline or an as-shipped answer
+    ('decline': every card keeps what shipped); then a NOT_STATED withdrawal; then a leading
+    verb ('combine'/'sum'/'add', 'first'/'use the first', 'unstated'/'leave ... blank'). A hedge
+    word anywhere ('not', 'except', 'only'...) or ANYTHING ELSE is 'per_card': asking each card
+    is the safe direction. 'leave as is' is deliberately NOT 'unstated' - clearing every card's
+    figure on a misread would be the destructive guess."""
+    a = _norm_key(raw)
+    if not a:
+        return "per_card"
+    for opt, mode in ((POLICY_COMBINE, "combine"), (POLICY_FIRST, "first"),
+                      (POLICY_UNSTATED, "unstated"), (POLICY_PER_CARD, "per_card")):
+        if a == _norm_key(opt):
+            return mode
+    if is_decline(raw) or _norm_answer(raw) in AS_SHIPPED_TOKENS or a in AS_SHIPPED_TOKENS:
+        return "decline"
+    if is_not_stated(raw):
+        return "unstated"
+    w = _words(a)
+    if not w or any(x in _POLICY_HEDGES for x in w):
+        return "per_card"
+    if w[0] in ("combine", "sum", "add"):
+        return "combine"
+    if w[0] == "first" or w[:2] == ["use", "first"] or w[:3] == ["use", "the", "first"]:
+        return "first"
+    if w[0] == "unstated" or (w[0] == "leave" and any(x in w for x in ("unstated", "blank",
+                                                                         "empty"))):
+        return "unstated"
+    return "per_card"
+
+
+def policy_member_answer(stamp, raw):
+    """The per-card answer a policy answer stands for, on ONE member's landable stamp, or None
+    (per card / decline / nothing to land). combine -> the stamp's Python-synthesised option;
+    first -> the first printed line; unstated -> 'not stated' (a NOT_STATED token, so the lander
+    CLEARS the field rather than writing a sentence into it)."""
+    mode = policy_mode(raw)
+    st = stamp if isinstance(stamp, dict) else {}
+    comb = st.get("combinable") if isinstance(st.get("combinable"), dict) else {}
+    if mode == "combine":
+        return str(comb["option"]) if comb.get("option") else None
+    if mode == "first":
+        opts = st.get("options") or []
+        first = comb.get("first") or (opts[0] if opts else None)
+        return str(first) if first else None
+    if mode == "unstated":
+        return "not stated"
+    return None
+
+
+def _merge_settles(q) -> bool:
+    """Does merge's own office sum already put the combined figure on this card? True only for
+    a computed sum in the SAME unit within 0.5 of Python's sum of the printed lines."""
+    if not isinstance(q, dict):
+        return False
+    me, comb = q.get("merge_expect"), q.get("combinable")
+    if not (isinstance(me, dict) and isinstance(comb, dict)):
+        return False
+    if me.get("status") != "computed" or str(me.get("unit") or "") != str(comb.get("unit") or ""):
+        return False
+    try:
+        return abs(float(me.get("value")) - float(comb.get("sum"))) <= 0.5
+    except (TypeError, ValueError):
+        return False
+
+
+def _fmt_n(x) -> str:
+    """A figure for question TEXT only: '10,855' or '1,234.5'. Never parsed back."""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return str(x)
+    if v.is_integer():
+        return f"{int(v):,}"
+    return f"{v:,.2f}".rstrip("0").rstrip(".")
+
+
+def _policy_question(field: str, members: list) -> dict:
+    """ONE combine_policy question standing for every member doubt (see `group_combinable`).
+    It deliberately has NO `field` key, so `emit` writes no landable stamp for the policy
+    question itself; each MEMBER is stamped instead, with `via_policy`."""
+    label = _split_camel(field) or str(field)
+    lines, mems, anchors = [], [], []
+    for q in members:
+        comb = q.get("combinable") if isinstance(q.get("combinable"), dict) else {}
+        card = "; ".join(_affected_labels(q)) or str(q.get("subject") or "?")
+        parts = [str(p) for p in (comb.get("parts") or [])]
+        line = (f"{card}: {' + '.join(parts)} = {comb.get('value_text')} combined; "
+                f"first line {comb.get('first')}")
+        me = q.get("merge_expect") if isinstance(q.get("merge_expect"), dict) else {}
+        settled = _merge_settles(q)
+        if settled:
+            line += " - already shows the combined figure, computed by the pipeline"
+        elif me.get("status") == "computed":
+            j = len(me.get("components") or [])
+            if 0 < j < len(parts):
+                line += (f" - the pipeline combines only {j} of these lines "
+                         f"({_fmt_n(me.get('value'))} {me.get('unit')}); this answer decides")
+            else:
+                line += (f" - the pipeline computes {_fmt_n(me.get('value'))} {me.get('unit')} "
+                         f"from these lines; this answer decides")
+        lines.append(line)
+        _anc = _anchors_of_q(q)
+        for a in _anc:
+            if a not in anchors:
+                anchors.append(a)
+        mems.append({
+            "id": q.get("id"), "kind": "agent_doubt", "field": q.get("field"),
+            "options": [str(o) for o in (q.get("options") or [])],
+            "combinable": comb, "anchors": _anc,
+            "anchor_park": _anc[0]["park"] if _anc else "",
+            "anchor_unit": _anc[0]["unit"] if _anc else "",
+            "source_file": str(q.get("source_file") or ""),
+            "subject": str(q.get("subject") or ""),
+            "question": str(q.get("question") or ""),
+            "if_unanswered": str(q.get("if_unanswered") or ""),
+            "materiality": str(q.get("materiality") or "display"),
+            "answer_handling": ANSWER_APPLIED,
+            "settled_by_merge": bool(settled),
+        })
+    shown = lines[:_POLICY_CARD_LINES]
+    more = len(lines) - len(shown)
+    text = (f"{len(members)} cards print their {label} as several separate lines with no "
+            f"combined total, and the reading agents marked each set as parts of ONE figure. "
+            f"What should {label} show on these cards?\n- " + "\n- ".join(shown)
+            + (f"\n- (+{more} more)" if more > 0 else "")
+            + "\nOne answer applies to every card listed, each disclosed in the Gaps Report; "
+              "'ask me per card' asks about each separately.")
+    return {
+        "id": policy_qid(field), "kind": "combine_policy", "asked_of": KINDS["combine_policy"],
+        "blocking": False, "materiality": "display",
+        "subject": f"{label} printed as several lines",
+        "policy_field": str(field),
+        "question": text,
+        "options": list(POLICY_OPTIONS),
+        "anchors": anchors,
+        "anchor_park": anchors[0]["park"] if anchors else "",
+        "anchor_unit": anchors[0]["unit"] if anchors else "",
+        "members": mems,
+        "why_it_matters": (f"each card shows one printed line of its {label}, or none, where the "
+                           f"source prints several parts of one figure; one answer settles "
+                           f"every such card, and every card it changes is listed in the Gaps "
+                           f"Report"),
+        "if_unanswered": POLICY_IF_UNANSWERED,
+        "answer_handling": ("applied: the answer is fanned out to every card listed, each as "
+                            "its own attributed repair; 'ask me per card' asks about each "
+                            "card on the next pass instead"),
+    }
+
+
+def group_combinable(work, questions: list):
+    """(questions, settled): fold never-asked COMBINABLE per-card doubts into one policy
+    question per field, and close the ones merge's own sum already settles.
+
+    Reads clarify state once. Only doubts carrying a `combinable` synthesis, material, and
+    NOT already asked, answered or declined are candidates - that clause is what protects an
+    in-flight work dir: its questions were all asked, so nothing is regrouped or re-asked.
+    Per field F, with G its candidates and P = policy_qid(F):
+      * P answered 'ask me per card' -> G stays, one question per card (settled ones too:
+        the broker asked for each);
+      * P answered otherwise, or declined -> every member P LISTED is resolved by the fan-out
+        (a decline means each card keeps what shipped) and leaves the list;
+      * P asked, unanswered -> the members it listed leave the list (asked once, as a policy);
+      * in all three, a candidate P did NOT list (a deck added later) stays per card: the
+        broker never saw it, so no policy answer is applied to it;
+      * P never asked -> all of G settled by merge: closed, returned in `settled`; two or more
+        cards: ONE policy question covering ALL of G, settled members included (so 'use the
+        first line' also reaches a card whose sum merge computed - no silent contradiction);
+        one unsettled card: its per-card question, with the 3.2b option, stays.
+    The policy question takes the list position of its first member. Call `apply_doubt_cap`
+    afterwards. On ANY error the input comes back unchanged with no settled doubts (today's
+    per-card behaviour) and one printed line."""
+    qs = list(questions or [])
+    try:
+        st = load_state(work)
+        asked = set(st.get("asked") or [])
+        answers = st.get("answers") or {}
+        declined = declined_ids(work)
+        titles = st.get("titles") or {}
+        closed = asked | set(answers) | set(declined)
+        cand = [q for q in qs
+                if isinstance(q, dict) and q.get("id") and q.get("field")
+                and str(q.get("kind") or "") == "agent_doubt"
+                and isinstance(q.get("combinable"), dict) and q["combinable"].get("option")
+                and q["id"] not in closed and is_material(q)]
+        if not cand:
+            return qs, []
+        groups: dict = {}
+        for q in cand:
+            groups.setdefault(str(q["field"]), []).append(q)
+        drop, settled, insert = set(), [], {}
+        for fld, grp in groups.items():
+            p = policy_qid(fld)
+            listed = {str(x) for x in ((titles.get(p) or {}).get("members") or [])}
+            if p in answers or p in declined:
+                mode = policy_mode(answers.get(p)) if p in answers else "decline"
+                if mode == "per_card":
+                    continue
+                drop |= {q["id"] for q in grp if q["id"] in listed}
+                continue
+            if p in asked:
+                drop |= {q["id"] for q in grp if q["id"] in listed}
+                continue
+            unsettled = [q for q in grp if not _merge_settles(q)]
+            if not unsettled:
+                drop |= {q["id"] for q in grp}
+                settled.extend(grp)
+            elif len(grp) >= 2:
+                drop |= {q["id"] for q in grp}
+                insert[grp[0]["id"]] = _policy_question(fld, grp)
+        out = []
+        for q in qs:
+            i = q.get("id") if isinstance(q, dict) else None
+            if i in insert:
+                out.append(insert[i])
+            if i in drop:
+                continue
+            out.append(q)
+        return out, settled
+    except Exception as e:
+        print(f"(clarify: combinable doubts not grouped ({e}); each is asked per card)")
+        return list(questions or []), []
+
+
+# --------------------------------------------------------------------------- #
+# 3.18 RE-READ REQUESTS (2026-09-26 test run). An answered count / no-field doubt whose route
+# is "reread" and whose answer is one of its OPTIONS other than the as-shipped one asks for
+# the deck to be read again with the decision. Free text never triggers a re-read: the
+# decision is put into a reader prompt verbatim, so it must be a string the reader itself
+# offered. run.py owns the machinery (reread.json, moving the prior output aside, the CONTEXT
+# slot); this is only the question-side test.
+# --------------------------------------------------------------------------- #
+ROUTE_REREAD = "reread"
+ROUTE_DISCLOSE = "disclose"
+
+
+def reread_requests(work) -> list:
+    """[{qid, source_file, answer, question, key}] for every answered re-read-route question
+    whose answer is an offered option other than the as-shipped one, not declined. `answer` is
+    the OPTION string (the reader's own words); `key` = sha1(qid|normalised answer)[:10], so a
+    changed answer is a changed key. [] on any error (no re-read, answer stays disclosed)."""
+    try:
+        st = load_state(work)
+        titles = st.get("titles") or {}
+        answers = st.get("answers") or {}
+        declined = declined_ids(work)
+    except Exception:
+        return []
+    out = []
+    for q_id, raw in sorted(answers.items()):
+        t = titles.get(q_id) if isinstance(titles.get(q_id), dict) else {}
+        if str(t.get("answer_route") or "") != ROUTE_REREAD:
+            continue
+        if q_id in declined or raw is None or not str(raw).strip() or is_decline(raw):
+            continue
+        if answer_is_as_shipped(t, raw):
+            continue
+        pick = {_norm_key(o): str(o) for o in (t.get("options") or [])}.get(_norm_key(raw))
+        src = str(t.get("source_file") or "")
+        if pick is None or not src:
+            continue
+        key = hashlib.sha1(f"{q_id}|{_norm_key(pick)}".encode("utf-8")).hexdigest()[:10]
+        out.append({"qid": str(q_id), "source_file": src, "answer": pick,
+                    "question": str(t.get("question") or ""), "key": key})
+    return out
+
+
+def reread_unmatched(work) -> list:
+    """[{qid, answer, options}] for answered re-read-route questions whose answer is neither as
+    shipped nor one of the options (free text): no re-read is scheduled, and the caller prints
+    one line asking for an option. [] on any error."""
+    try:
+        st = load_state(work)
+        titles = st.get("titles") or {}
+        answers = st.get("answers") or {}
+        declined = declined_ids(work)
+    except Exception:
+        return []
+    out = []
+    for q_id, raw in sorted(answers.items()):
+        t = titles.get(q_id) if isinstance(titles.get(q_id), dict) else {}
+        if str(t.get("answer_route") or "") != ROUTE_REREAD or q_id in declined:
+            continue
+        if raw is None or not str(raw).strip() or answer_is_as_shipped(t, raw):
+            continue
+        opts = [str(o) for o in (t.get("options") or [])]
+        if _norm_key(raw) in {_norm_key(o) for o in opts}:
+            continue
+        out.append({"qid": str(q_id), "answer": str(raw), "options": opts})
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# 3.10b A SOURCE-MARKED LET / SOLD RECORD (2026-09-26 test run). A unit the source marks let,
+# sold or otherwise not available shipped as an availability card, and nothing could drop it.
+# The reader now flags it (`__meta.not_an_option: true`, status copied verbatim) and the broker
+# decides: keep it (the card shows the source's status) or exclude it (merge.apply_not_available
+# drops it, disclosed in meta.excluded with excluded_by = "not_available"). Non-blocking and
+# "count" material: the default is VISIBLE on the card, not a hidden presumption.
+# --------------------------------------------------------------------------- #
+NA_KEEP = "keep it on the longlist, shown with the source's status"
+NA_EXCLUDE = "exclude it from the longlist"
+_NA_FALSE = frozenset({"", "false", "no", "0", "none", "null", "n"})
+_NA_TRUE = frozenset({"true", "yes", "y", "1"})
+_STATUS_PUNCT_ONLY = frozenset({"-", "?"})   # punctuation placeholders, not sentinel words
+
+
+def _status_blank(status: str) -> bool:
+    """True when `status` states nothing. Delegates the sentinel vocabulary to
+    normalize.looks_unknown (f05: no private sentinel sets); a bare '-' or '?' also counts."""
+    s = str(status or "").strip()
+    if not s or s in _STATUS_PUNCT_ONLY:
+        return True
+    try:
+        import normalize as _N
+        return bool(_N.looks_unknown(s))
+    except Exception:
+        return False
+
+
+def not_available_marker(rec) -> str:
+    """The status text shown to the broker when the source marks this record not available,
+    else ''. The reader's flag is `__meta.not_an_option` and counts ONLY when it `is True`
+    (when that key is present it decides alone). Legacy spellings of `__meta.not_available` are
+    tolerated: True, a marker string, or a {marker|text} dict. The text is the record's own
+    `status` verbatim when it states one, else the legacy marker text, else 'not available'."""
+    if not isinstance(rec, dict):
+        return ""
+    m = rec.get("__meta") if isinstance(rec.get("__meta"), dict) else {}
+    status = str(rec.get("status") or "").strip()
+    if _status_blank(status):
+        status = ""
+    if "not_an_option" in m:
+        return (status or "not available") if m.get("not_an_option") is True else ""
+    na = m.get("not_available")
+    if na is True:
+        return status or "not available"
+    if isinstance(na, str):
+        s = na.strip()
+        if s.lower() in _NA_FALSE:
+            return ""
+        if s.lower() in _NA_TRUE:
+            return status or "not available"
+        return status or s
+    if isinstance(na, dict):
+        s = str(na.get("marker") or na.get("text") or "").strip()
+        return status or s or "not available"
+    return ""
+
+
+def not_available_qid(rec) -> str:
+    """Identity-keyed (source file, park, unit), never a value: a changed status keeps the id
+    and its answer, and two unnamed let buildings of one deck are ONE question."""
+    m = (rec.get("__meta") or {}) if isinstance(rec, dict) else {}
+    src = str(m.get("source_file") or "")
+    park, unit = _anchor_of(rec if isinstance(rec, dict) else {})
+    return qid("not_available", f"{src}|{_norm_key(park)}|{_norm_key(unit)}", "status")
+
+
+def not_available_questions(records: list) -> list:
+    """One non-blocking, count-material broker question per flagged record identity: keep the
+    card (showing the source's status) or exclude it from the longlist. Pure; records without
+    the flag produce nothing, so an unflagged corpus is untouched."""
+    by_id: dict = {}
+    for r in records or []:
+        if not isinstance(r, dict):
+            continue
+        marker = not_available_marker(r)
+        if not marker:
+            continue
+        i = not_available_qid(r)
+        park, unit = _anchor_of(r)
+        a = {"park": park, "unit": unit}
+        if i in by_id:
+            if a not in by_id[i]["anchors"]:
+                by_id[i]["anchors"].append(a)
+            continue
+        src = str((r.get("__meta") or {}).get("source_file") or "")
+        label = _anchor_label(a) or _subject(r)
+        status = str(r.get("status") or "").strip()
+        by_id[i] = {
+            "id": i, "kind": "not_available", "asked_of": KINDS["not_available"],
+            "blocking": False, "materiality": "count",
+            "subject": label, "source_file": src, "marker": marker,
+            "anchor_park": park, "anchor_unit": unit, "anchors": [a],
+            "question": (f"{label}: the source ({src}) marks this building as '{marker}' - it "
+                         f"is not currently available. Keep it on the longlist?"),
+            "options": [NA_KEEP, NA_EXCLUDE],
+            "why_it_matters": ("a building the source marks let or sold is not an option the "
+                               "client can take: keeping it pads the longlist, excluding it "
+                               "removes a card, so the broker decides; an exclusion is named "
+                               "in the Gaps Report"),
+            "if_unanswered": f"the card ships showing the source's own status ('{status or marker}')",
+        }
+    out = list(by_id.values())
+    for q in out:
+        q["question"] += _covers_suffix(q)
+    return out
+
+
+def not_available_decision(answers, declined, rec) -> str:
+    """'exclude' | 'keep' for ONE record. 'exclude' only for a flagged record whose question was
+    answered NA_EXCLUDE (normalised) or with an answer starting 'exclude'; junk, a decline, no
+    answer or an unflagged record all keep the card - dropping a property is never a default."""
+    try:
+        if not not_available_marker(rec):
+            return "keep"
+        i = not_available_qid(rec)
+        if i in set(declined or ()):
+            return "keep"
+        a = _norm_key((answers or {}).get(i))
+        if a and (a == _norm_key(NA_EXCLUDE) or a.startswith("exclude")):
+            return "exclude"
+    except Exception:
+        return "keep"
+    return "keep"
+
+
+# --------------------------------------------------------------------------- #
+# 3.7b ARITHMETIC BASIS (2026-09-26 test run). A deck printing ONE whole-building total and no
+# warehouse-only line had that total read as warehouseArea; with the office stated beside it
+# the dashboard's total area over-counted by the office. The decision was taken in chat and
+# hand-written as two repairs with no question id. The gate (`cmd_arithmetic --emit-json`)
+# classifies that shape as "warehouse_is_total"; this turns each such finding into a BLOCKING
+# broker question with fixed options (the figures live in the text, so a changed figure keeps
+# the id and its answer). run.py's `arithmetic_basis_clarify` lands the answer.
+# --------------------------------------------------------------------------- #
+AB_KEEP = "keep the printed total as warehouse area"
+AB_DERIVE = "warehouse area = printed total minus office"
+AB_IF_UNANSWERED = ("the build stays blocked until this is decided; 'skip' keeps the printed "
+                    "total as warehouse area, disclosed")
+
+
+def arithmetic_basis_qid(finding) -> str:
+    """Identity-keyed (source file, park, unit), never the property id (ids renumber) or a
+    figure."""
+    f = finding if isinstance(finding, dict) else {}
+    return qid("arithmetic_basis",
+               f"{f.get('source_file') or ''}|{_norm_key(f.get('park'))}|"
+               f"{_norm_key(f.get('unit'))}", "warehouseArea")
+
+
+def arithmetic_basis_mode(raw) -> str:
+    """'derive' | 'keep' | 'decline' | '' for an arithmetic-basis answer. '' means unrecognised
+    (re-ask with the rejection appended). A hedge word makes it unrecognised, never a guess."""
+    if raw is None or not str(raw).strip():
+        return ""
+    if is_decline(raw):
+        return "decline"
+    a = _norm_key(raw)
+    if a == _norm_key(AB_DERIVE):
+        return "derive"
+    if a == _norm_key(AB_KEEP) or a in AS_SHIPPED_TOKENS or _norm_answer(raw) in AS_SHIPPED_TOKENS:
+        return "keep"
+    w = _words(a)
+    if any(x in _POLICY_HEDGES for x in w):
+        return ""
+    if "minus" in w or "subtract" in w or "derive" in w:
+        return "derive"
+    return ""
+
+
+def arithmetic_basis_questions(findings: list) -> list:
+    """The arithmetic gate's `warehouse_is_total` findings as BLOCKING broker questions, one per
+    record identity. Only a finding whose printed total exceeds the stated office is asked
+    (otherwise 'total minus office' is not a warehouse area). Every other shape, and a finding
+    missing a figure, produces nothing (the gate's own exit-6 remedy stands). Unknown finding
+    keys are ignored."""
+    by_id: dict = {}
+    for f in findings or []:
+        if not isinstance(f, dict) or str(f.get("shape") or "") != "warehouse_is_total":
+            continue
+        try:
+            wa = float(f.get("warehouseArea"))
+            oa = float(f.get("officeAreaVal"))
+            total = float(f.get("stated_total"))
+        except (TypeError, ValueError):
+            continue
+        if not (oa > 0 and total - oa > 0):
+            continue
+        i = arithmetic_basis_qid(f)
+        park, unit = str(f.get("park") or "").strip(), str(f.get("unit") or "").strip()
+        a = {"park": park, "unit": unit}
+        if i in by_id:
+            if a not in by_id[i]["anchors"]:
+                by_id[i]["anchors"].append(a)
+            continue
+        u = str(f.get("area_unit") or "").strip()
+        src, loc = str(f.get("source_file") or ""), str(f.get("locator") or "")
+        where = " ".join(x for x in (src, loc) if x) or "source not recorded"
+        label = _anchor_label(a) or f"property id {f.get('id')}"
+        by_id[i] = {
+            "id": i, "kind": "arithmetic_basis", "asked_of": KINDS["arithmetic_basis"],
+            "blocking": True, "materiality": "display",
+            "subject": label, "source_file": src, "locator": loc,
+            "property_id": f.get("id"), "anchor_park": park, "anchor_unit": unit,
+            "anchors": [a],
+            "warehouseArea": wa, "officeAreaVal": oa, "stated_total": total, "area_unit": u,
+            "question": (f"{label}: the source prints one total of {_fmt_n(total)} {u} "
+                         f"({where}) and no warehouse-only figure, and that total was read as "
+                         f"the warehouse area. With the stated office area of {_fmt_n(oa)} {u} "
+                         f"the dashboard's total area would read {_fmt_n(wa + oa)} {u}, "
+                         f"{_fmt_n(oa)} more than the source states. What should warehouse "
+                         f"area be?"),
+            "options": [AB_KEEP, AB_DERIVE],
+            "why_it_matters": ("when the printed total already includes the office, showing it "
+                               "as the warehouse area double-counts the office in the total; "
+                               "which basis is right is the broker's call, and Python does the "
+                               "arithmetic either way"),
+            "if_unanswered": AB_IF_UNANSWERED,
+        }
+    return list(by_id.values())
 
 
 DATASET_UNIT_QID = qid("dataset_unit", "dataset area unit")

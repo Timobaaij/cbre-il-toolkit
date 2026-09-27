@@ -25,33 +25,41 @@ author is never the reviewer: blind honesty gates check your work afterwards.
 ## Ground rules (non-negotiable)
 1. Write one short line of visible text before EVERY tool call. In the one batched message
    that rule 2 requires, one line naming the batch (which pages) is that line.
-2. EVERY VISUAL AID IN ONE MESSAGE, AND NO IMAGE OPENED BEFORE IT. Every page's
-   `candidates_sheet` and `render` thumbnail is a fixed set of independent reads you know in
-   full the moment you have printed your deck's manifest entry, so you request ALL of them
-   in ONE message, however many pages the deck has. Opening one sheet and choosing the next
-   read from what you saw IS the failure, not a variant of the rule: measured on a live run,
-   that loop cost 7 to 23 round trips per deck at roughly 17 s each, and it kept setting the
-   slowest deck's wall-clock while this rule was worded as a permission (D1). One follow-up
-   message may carry EVERY individual `candidates[].image` you still need for tiles you could
-   not read off their sheet; a second follow-up is drift.
+2. EVERY VISUAL AID IN ONE MESSAGE, AND NO IMAGE OPENED BEFORE IT. Your deck entry carries
+   `render_sheets` (every page's render tiled at native size, each tile captioned with its
+   page_no) and `candidate_sheets` (every page's candidates tiled, captioned page_no N / index
+   K). They are a fixed set of independent reads you know in full the moment you have printed
+   your deck's manifest entry, so you request ALL of them in ONE message. An entry without
+   those keys is an older or degraded prep: then the set is every page's
+   `candidates_sheet` and `render` thumbnail, requested ALL in ONE message the same way.
+   Opening one sheet and choosing the next read from what you saw IS the failure, not a
+   variant of the rule:
+   measured on a live run, that loop cost 7 to 23 round trips per deck at roughly 17 s each,
+   and it kept setting the slowest deck's wall-clock while this rule was worded as a
+   permission (D1). One follow-up message may carry EVERY individual page `render` or
+   `candidates[].image` you still need for tiles you could not judge off a sheet; a second
+   follow-up is drift. Where a per-message tool-call cap applies (the Run context states one,
+   or a call is DENIED for exceeding one), send the batch as consecutive messages of that
+   size, each carrying the next reads of the SAME fixed list and nothing else: that is still
+   the one batch, and still no read chosen from what you saw.
 3. Maximum three tool calls per message, with ONE exception: the batch of rule 2 and its one
-   follow-up. Nothing else here needs more than two calls in one message (the contract beside
-   your manifest print; the write beside its check), so the cap costs no round trip; it stays
-   as the brake on runaway fan-out and applies again to everything after that batch.
+   follow-up, which still respect a host per-message cap (rule 2). Nothing else here needs
+   more than two calls in one message (your manifest print; the write beside its check), so
+   the cap costs no round trip; it stays as the brake on runaway fan-out and
+   applies again to everything after that batch.
 4. Keep reasoning short; build the records in sections as you go.
 5. Wall-clock is your MESSAGE count (each one is a round trip), never your tool-call count. A
-   well-run deck is FIVE messages: this shared instruction; the contract with your manifest
-   entry; the batch; the follow-up, if any; the write. Tool calls come to about pages + sheets
-   + 5 (each image is one call even inside the batch). On your eighth message with nothing
-   written, stop and request everything you still need at once. Tool-call budget 60 is the
-   hard ceiling: there, deliver an honest partial answer rather than a complete one that never
-   arrives, with anything unverified under WHAT I COULD NOT ESTABLISH in your final message.
+   well-run deck is FIVE messages: this shared instruction (the contract is inside it); your
+   manifest-entry print; the batch; the follow-up, if any; the write. Tool calls come to about
+   sheets + 5 (pages + sheets + 5 on an entry without deck sheets; each image is one call even
+   inside the batch). On your eighth message with nothing written, stop and request everything
+   you still need at once. Tool-call budget 60 is the hard ceiling: there, deliver an honest
+   partial answer rather than a complete one that never arrives, with anything unverified under
+   WHAT I COULD NOT ESTABLISH in your final message.
 6. You may NOT spawn further agents.
 
-## Your contract
-Follow it exactly (TEXT mode). Request it in the SAME message as your manifest-entry print
-(both paths are known now) and act on the entry only once you have read it:
-{{SKILL_DIR}}/reference/interpretation.md
+## Your contract (TEXT mode)
+{{READER_CONTRACT}}
 
 ## The field registry (rendered from the manifest's `fields`; a FLOOR, not a ceiling)
 Each line is `name: type. format`: `type` is the JSON shape the pipeline validates the value
@@ -70,6 +78,12 @@ registry, read at render time from your manifest, and it is NOT a limit on what 
   stated row with no canonical home ships under a descriptive camelCase key, and "there is no
   field for X" is NEVER a reason to omit X. Every value is a SCALAR (join lists into one
   semicolon-separated string).
+- EVERY PAGE IS A DATA PAGE, whatever its topic. No page is marketing to skim: every fact it
+  states about the property, its site or its surroundings is captured, for EVERY record the page
+  applies to (a descriptive camelCase key when there is no canonical home). Examples readers have
+  missed include drive times, rail access, labour figures and sustainability features; they are
+  illustrations, never a limit. Before you write, SWEEP every page's text in your manifest entry
+  once more and add each stated fact that is in no field yet; the sweep costs no tool call.
 - WRITE THE VALUE THE WAY THE SOURCE PRINTS IT - a dimensioned value keeps its unit inside the
   value ("10,000 sq. m", "10 m"); never normalise, round, strip a unit, or ADD one the page
   does not print.
@@ -86,6 +100,23 @@ registry, read at render time from your manifest, and it is NOT a limit on what 
   from the manifest (0-based, and it MUST be the page carrying this property's HERO photo -
   never a plan/divider/cover), `prov` = "<locator> (text interpretation)" per field,
   `source_lang` = the ISO-639-1 code the deck is written in.
+  Record shape (a JSON ARRAY of these; prov is INSIDE __meta, never beside the fields):
+```json
+[{"park": "...", "warehouseArea": "12,500 sq m", "areaUnit": "sq m",
+  "__meta": {"source_type": "pdf", "source_file": "<copied from the manifest>",
+             "locator_base": "page 3", "page_no": 2, "source_lang": "en",
+             "prov": {"park": "page 3 (text interpretation)",
+                      "warehouseArea": "page 3 (text interpretation)"},
+             "heroRef": 0, "planRef": null, "plan_page": null, "image_pages": [2]}}]
+```
+  A top-level "prov" is REFUSED by the validator: never write one.
+- A unit the source marks let, sold, leased, occupied or otherwise NOT AVAILABLE (any language)
+  and that has its own specification is still emitted: `status` VERBATIM with its prov, and
+  `"__meta": {"not_an_option": true}`; the broker decides. Under offer / reserved: `status`
+  verbatim, no flag. A neighbour only LABELLED let/sold on a site plan is context: no record.
+- Doors: level-access / ground-level / drive-in / roller-shutter doors (any language) ->
+  `overheadDoors`; dock-level doors / levellers -> `loadingDocks`; never a descriptive open key
+  for either. An unsplit door total -> VERBATIM under `loadingDoors`, both counts absent.
 - The manifest's `cluster_label` is a FILENAME-derived routing name, NEVER evidence - do not
   copy it into `region` or any field; set `region` only from text you can point at on a page.
 - A value read from an IMAGE rather than the text layer carries `not in text layer` in its prov.
@@ -110,16 +141,29 @@ registry, read at render time from your manifest, and it is NOT a limit on what 
   office lines combined)"` is valid, `"all three office lines combined"` is refused (the chosen
   option is written into the field and its number derived from it).
   NEVER offer a total you did not read: no printed combined figure means you offer the
-  individual printed figures and say in `question` they may need combining; Python owns all
-  arithmetic. Lacking either part, the doubt is still disclosed but the broker's answer is
+  individual printed figures and say in `question` they may need combining; set
+  `"combinable": true` when those options are DISJOINT printed PARTS of ONE quantity (office
+  lines per floor, compartments, phases) in ONE unit, so Python can offer their sum; Python
+  owns all arithmetic. EVERY FIGURE YOU OFFER IN A DOUBT IS ALSO DATA: the governing one is the
+  doubt's `field` (and its `default`), every other printed figure ships under a descriptive
+  camelCase key keeping the quantity word (`officeGroundFloor`, `warehouseUnitA`) with its own
+  prov; a figure only inside a doubt is invisible to the card, the ledger and every gate.
+  `default` is copied VERBATIM from `options` (the option your records reflect); on a doubt
+  about the property count (`affects: "count"`) that is REQUIRED. Lacking either part, the
+  doubt is still disclosed but the broker's answer is
   recorded and DROPPED: five of eight answers on the measured run went that way (D13, D4). A
   doubt about no field says `affects` = `"count"` / `"display"` / `"ledger"`. `"tbd"` stays the
   answer for an unstated value; a doubt never replaces reading.
-- LOOK at each page's `candidates_sheet` (all pages in the ONE batched message of rule 2) to
+- LOOK at the deck's `candidate_sheets` and `render_sheets`, or each page's `candidates_sheet`
+  and `render` (all pages in the ONE batched message of rule 2), to
   set `__meta.heroRef` (a real photo/aerial/render ONLY - a map, plan, icon or logo is never
-  the hero; honest `null` is always safe), `planRef`, `plan_page` (from the page `render`
-  thumbnails), `image_pages` (this property's own pages only) and `exclude_refs` (decorative
-  graphics, by candidate index).
+  the hero; honest `null` is always safe), `planRef`, `plan_page` (from the page renders),
+  `image_pages` (this property's own pages only) and `exclude_refs` (decorative
+  graphics, by candidate index). A candidate marked `off_page` is never `heroRef` or `planRef`
+  (the brochure never shows it); `masked` means a solid shape on its tile is a cut-out or
+  overlay, not a failed photo. A page carrying `images_below_hero_floor` with no usable
+  candidate holds photos below the 640x400 floor: nothing to pick there, not an extraction
+  failure, no line under WHAT I COULD NOT ESTABLISH.
 - TWO OR MORE RECORDS FROM ONE DECK DO NOT SHARE A HERO where the deck offers a distinct photo
   per record. Before you write, compare the records' (`page_no`, `heroRef`) pairs; where two
   coincide, move one record to a real photo on a page already in its own `image_pages`. A deck
@@ -133,10 +177,15 @@ registry, read at render time from your manifest, and it is NOT a limit on what 
 - `description` = the property's own marketing prose copied verbatim, or omit; never the legal
   footer or a spec table. Disclose self-contradictions and ranges in `__meta.source_conflicts`.
 - If the schedule prints its own TOTAL area, record it in `__meta.statedTotalArea` +
-  `statedTotalUnit` exactly as printed - never a total you computed.
+  `statedTotalUnit` exactly as printed - never a total you computed. A LONE TOTAL IS SHIPPED
+  AS PRINTED: a figure labelled as the whole building with NO warehouse-only line printed goes
+  in `warehouseArea` exactly as printed AND in those two keys; never subtract the office
+  yourself - Python raises the basis question.
 - Transcribe, never invent. An unreadable value is `"tbd"`/omitted - a thin-but-honest record
   is correct; a confident-but-wrong one is the failure this skill exists to prevent.
 
 ## Final message
 One short paragraph: how many records, which pages, how many MESSAGES you sent (the wall-clock
 measure of rule 5), then WHAT I COULD NOT ESTABLISH.
+
+{{READER_CONTRACT_BODY}}

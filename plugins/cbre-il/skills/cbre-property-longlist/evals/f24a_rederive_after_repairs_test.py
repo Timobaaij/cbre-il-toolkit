@@ -226,6 +226,19 @@ def main() -> int:
         raw = lp.read_bytes()
         ck(b"\r" not in raw, "written LF, as merge's own ledger write is")
 
+    print("== run.py re-runs the retraction AFTER this pass's repair rows are written (3.15) ==")
+    # 2026-09-26 test run: the retraction inside rederive_after_repairs runs BEFORE
+    # `_ledger_append` writes this pass's repair rows, so what those rows supersede stayed live
+    # until yet another pass. run.py now calls it again right after the append, fail-safe.
+    rsrc = (Path(M.__file__).resolve().parent / "run.py").read_text(encoding="utf-8")
+    a = rsrc.find('_ledger_append(work / "source_ledger.csv", _lrows)')
+    b = rsrc.find('retract_superseded_gap_rows(work / "source_ledger.csv")', a)
+    t = rsrc.rfind("try:", a, b)
+    x = rsrc.find("(ledger retraction skipped:", b)
+    ck(0 < a < t < b < x and x - b < 400,
+       "run.py: after _ledger_append, a try-wrapped retraction on the ledger path that prints "
+       "one line on failure")
+
     print()
     if FAILS:
         print(f"F24A REDERIVE AFTER REPAIRS TEST: FAIL ({len(FAILS)})")

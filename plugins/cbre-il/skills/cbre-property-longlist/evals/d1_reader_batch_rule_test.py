@@ -60,7 +60,10 @@ sys.path.insert(0, str(ROOT / "helpers"))
 import prompts_render as PR  # noqa: E402
 
 _SLOT_RE = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
-_AUTO = {"SKILL_DIR", "CONTEXT", "FIELD_REGISTRY", "COMMON_POINTER"}
+# READER_CONTRACT / READER_CONTRACT_BODY (2026-09-26 test run, fix 1.1) are auto-filled by the
+# renderer with the condensed contract, so the render below is the one a reader really gets
+_AUTO = {"SKILL_DIR", "CONTEXT", "FIELD_REGISTRY", "COMMON_POINTER",
+         "READER_CONTRACT", "READER_CONTRACT_BODY"}
 
 VALID_OPTION = '`"24,230 sq ft (all three office lines combined)"` is valid'
 INVALID_OPTION = '`"all three office lines combined"` is refused'
@@ -111,8 +114,18 @@ def main() -> int:
           "reader-text: the 60 budget stays, named as the ceiling a well-run deck never approaches")
     check("the cap costs no round trip" in ftext,
           "reader-text: says why the three-call cap stays (it throttles nothing independent)")
-    check("SAME message as your manifest-entry print" in ftext,
-          "reader-text: the contract read and the manifest print are one message")
+    # fix 1.1: the contract is now INSIDE the common file, so there is no contract read to batch
+    # with the manifest print; the manifest print is simply the first call. The SAME-message
+    # clause survives verbatim in the fallback pointer a reader gets when the render fails.
+    check("Print your deck's manifest entry in your FIRST tool call" in ftext
+          or "SAME message as your manifest-entry print" in ftext,
+          "reader-text: the contract needs no separate read (manifest print first) or, on the "
+          "fallback, the contract read and the manifest print are one message")
+    check("SAME message as your manifest-entry print" in PR.CONTRACT_POINTER_FALLBACK,
+          "the fallback pointer keeps the SAME-message clause (contract read beside the print)")
+    check("`render_sheets`" in ftext and "`candidate_sheets`" in ftext
+          and "older or degraded prep" in ftext,
+          "reader-text: rule 2 names the deck sheets as the batch, with the per-page fallback")
     check("how many MESSAGES you sent" in ftext,
           "reader-text: the final message reports the message count (the missing measurement)")
 
@@ -126,8 +139,10 @@ def main() -> int:
     check("4 + ceil(pages / 5) messages" in fraster,
           "reader-raster: a calibrated expectation in messages, in raster terms")
     check("pages + 5" in fraster, "reader-raster: the tool-call expectation")
-    check("SAME message as your manifest-entry print" in fraster,
-          "reader-raster: the contract read and the manifest print are one message")
+    check("Print your deck's manifest entry in your FIRST tool call" in fraster
+          or "SAME message as your manifest-entry print" in fraster,
+          "reader-raster: the contract needs no separate read (manifest print first) or, on "
+          "the fallback, the contract read and the manifest print are one message")
     check("how many MESSAGES you sent" in fraster,
           "reader-raster: the final message reports the message count")
 

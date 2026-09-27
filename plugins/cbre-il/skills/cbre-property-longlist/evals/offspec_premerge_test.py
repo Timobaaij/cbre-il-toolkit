@@ -71,4 +71,15 @@ assert all(str(r.get("source_locator") or "").strip() for r in _off), \
 assert L.cmd_validate(types.SimpleNamespace(ledger=str(_d / "l.csv"))) == 0, \
     "ledger validate must pass on a run that quarantined an off-spec key"
 
+# 3.5a (2026-09-26 test run): run.py's pre-merge enumeration ALSO applies merge's strict alias
+# promotion right after the sweep (as merge.main does), getattr-guarded so an older merge.py
+# enumerates as before. Source pin on run.py.
+_rsrc = (pathlib.Path(M.__file__).resolve().parent / "run.py").read_text(encoding="utf-8")
+_i_sw = _rsrc.find("            _merge._normalise_offspec(_r)\n")
+_i_pa = _rsrc.find("_promote_al(_r)", _i_sw)
+_i_gp = _rsrc.find("THE USER'S OWN DUPLICATE GROUPS PRE-ANSWER", _i_sw)
+assert 0 < _i_sw < _i_pa < _i_gp, "run.py: alias promotion follows the sweep, before the pair seeding"
+assert 'getattr(_merge, "_promote_aliases", None)' in _rsrc, \
+    "run.py: the promotion call is getattr-guarded (an older merge.py still enumerates)"
+
 print("OFFSPEC PREMERGE TEST: PASS")

@@ -49,15 +49,19 @@ Four rules make it safe:
    or more doubts than one round carries), and "Noted, not put to you" only for what
    genuinely could not. Those two must never be merged: telling a broker that a doubt about
    a warehouse area has no effect on the dashboard is a false statement in a client-facing
-   document, which is worse than the silence it replaced.
+   document, which is worse than the silence it replaced. A third heading, "Settled without
+   asking", holds only a doubt the pipeline had already settled: the card shows the
+   pipeline's own sum, the very figure the question would have offered. If the card later
+   shows anything else, the question is re-opened (2026-09-26).
 
    The classification is `clarify.materiality()`: `"display"`, `"count"` or `"ledger"`. An
    unrecognised question KIND counts as material, so a producer added later keeps asking
    until someone classifies it deliberately. A free-text reader doubt is the one place the
    default runs the other way - unmatched wording is disclosed rather than asked - so a
    reader that wants certainty DECLARES `field` (a real canonical key) or `affects`. Units,
-   the dataset display unit, source authority, value format and unsure match verdicts are
-   **never** suppressed: for those the default is itself the damage.
+   the dataset display unit, source authority, value format, the arithmetic basis of a
+   printed total and unsure match verdicts are **never** suppressed: for those the default is
+   itself the damage.
 
 An answered unit is a **source statement**, recorded with provenance naming it as confirmed,
 and it fills `areaUnit`/`rentUnit` the way a deck printing the unit would. That is why it is a
@@ -80,8 +84,9 @@ of silent.
 - Enriched figures (workforce) carry an `*AsOf` date and a `sources` citation, or stay `null`.
 
 ## How it is enforced
-- **G-honesty** (isolated reviewer): confirms every `"tbd"`/`"—"`/`null` is genuinely unknown (not hiding a value present in the inputs) and that no number exists without a source. Blocks on any HIGH.
-- **G-trace** (isolated reviewer): samples fields and confirms each appears at its cited locator; an untraceable field is struck to `"tbd"`.
+The two reviewers split by claim polarity (2026-09-26), so no claim is reviewed twice and none is reviewed by nobody:
+- **G-honesty** (isolated reviewer) owns the NEGATIVE claims and the disclosure: confirms every `"tbd"`/`"—"`/`null` and every "absent in all sources" row is genuinely unknown (not hiding a value present in the inputs, under an off-spec key or only inside a reader doubt's options), and that every Gaps Report line is true of the data as shipped. It is the sole owner of the under-capture sweep. Blocks on any HIGH.
+- **G-trace** (isolated reviewer) owns the POSITIVE claims: samples populated fields and confirms each appears at its cited locator; a value no page states is INVENTION (blocking); an untraceable field is struck to `"tbd"`.
 - The Gaps Report makes the unknowns the broker's action list, not a hidden weakness.
 
 Honesty is the product here. A defensible longlist a broker can hand a client is worth more than a falsely complete one.

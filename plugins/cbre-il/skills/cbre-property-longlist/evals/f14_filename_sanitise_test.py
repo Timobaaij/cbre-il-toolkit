@@ -148,6 +148,47 @@ def main() -> int:
        "final_gate still derives the slug from the report filename (the round trip above is live)")
 
     print()
+    print("== the SCAFFOLD: project.yaml from a free-text client name (2026-09-26, fix 3.19) ==")
+    import yaml  # noqa: E402
+    inv = {"clusters": {}, "present_types": [], "emails": []}
+    for raw, want in (("Example Ltd.", "CBRE_Property_Dashboard_Example_Ltd.html"),
+                      ("Acme Retail", "CBRE_Property_Dashboard_Acme_Retail.html")):
+        cfg = yaml.safe_load(I.scaffold_yaml(inv, raw))
+        fn = cfg["output"]["filename"]
+        ck(fn == want, f"scaffold filename for {raw!r} is {want!r} (got {fn!r})")
+        ck(cfg["client"]["name"] == raw, f"...and client.name loads back verbatim ({cfg['client']['name']!r})")
+    nasty = 'A/B: C*?"<>|'
+    cfg = yaml.safe_load(I.scaffold_yaml(inv, nasty))
+    fn = cfg["output"]["filename"]
+    ck(not re.search(r'[<>:"/\\|?*]', fn) and ".." not in fn and " " not in fn,
+       f"a name full of Windows-illegal characters gives a clean filename ({fn!r})")
+    ck(I._OWN_OUTPUT.search(fn) is not None, "...which intake._OWN_OUTPUT still recognises")
+    ck(cfg["client"]["name"] == nasty, "...while client.name keeps the exact text")
+    for raw in ("Acme: Retail #1", "#1 Logistics", "[Group] {Holdings}", "Zo\u00eb & S\u00f8n: \u00c5B"):
+        try:
+            got = yaml.safe_load(I.scaffold_yaml(inv, raw))["client"]["name"]
+        except Exception as e:  # noqa: BLE001
+            got = f"<yaml error {type(e).__name__}>"
+        ck(got == raw, f"client.name {raw!r} is valid YAML and loads back byte-identical (got {got!r})")
+    ck(yaml.safe_load(I.scaffold_yaml(inv, ""))["output"]["filename"]
+       == f"CBRE_Property_Dashboard_{D.SLUG_FALLBACK}.html",
+       "an empty name falls back to the same constant deliver uses")
+    # an EXISTING, hand-edited project.yaml is never rewritten by a re-run of intake (only its
+    # clusters block may be merged, and there is nothing to merge in an empty folder)
+    with tempfile.TemporaryDirectory(prefix="cbre_f14y_") as td:
+        inputs, work = Path(td) / "in", Path(td) / "work"
+        inputs.mkdir()
+        work.mkdir()
+        hand = ('setup:\n  confirmed: true\nclient:\n  name: Example Ltd.\noutput:\n'
+                '  filename: "Hand Picked Name.html"\ninputs:\n  clusters: {}\n')
+        (work / "project.yaml").write_bytes(hand.encode("utf-8"))
+        subprocess.run([sys.executable, str(HELPERS / "intake.py"), str(inputs),
+                        "--out-dir", str(work), "--client", "Example Ltd."],
+                       capture_output=True, text=True, errors="replace")
+        ck((work / "project.yaml").read_bytes() == hand.encode("utf-8"),
+           "a hand-edited existing project.yaml is byte-identical after intake re-runs")
+
+    print()
     if FAILS:
         print(f"F14 FILENAME SANITISE TEST: FAIL ({len(FAILS)})")
         return 1

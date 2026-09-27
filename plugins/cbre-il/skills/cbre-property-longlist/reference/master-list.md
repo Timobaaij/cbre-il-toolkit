@@ -33,15 +33,22 @@ question is then not asked at all.
 Emails have to be read before the sheet, because an email-only option exists only in the prose.
 That read is cheap relative to a deck.
 
-**Every message gets a deterministic row, and the sub-agent refines it.** The spine enumerates one
-row per .msg/.eml on disk (including inside a zip, which intake unpacks), named by its subject,
-using the parse `intake` already performed to harvest that email's attachments. Splitting a body
-that names three buildings into three options is judgement, and `prompts/master-list.md` still
-asks the model for it - but the presence of the message on the scope sheet is not allowed to
-depend on an optional agentic step. Emails are the one input class that can hold an option nobody
-else listed, and an option that never reaches the sheet is not struck off by anyone: it simply is
-not built, and nothing says so. Where the model (or an earlier agent) has already written
-per-option records for a message, those finer rows win and the coarse message row is not added.
+**Every message is indexed deterministically, and its body is handed to the sub-agent in one
+file.** The spine indexes every .msg/.eml on disk (including inside a zip, which intake unpacks)
+onto the workbook's Emails tab - a message is a source, never a row (see "A ROW IS A BUILDING"
+below). Splitting a body that names three buildings into three options is judgement, and
+`prompts/master-list.md` asks the model for it. Emails are the one input class that can hold an
+option nobody else listed, so the model is not left to find the messages itself: the same parse
+that builds the index writes **`work/email_bodies.md`** (2026-09-26, fix 1.6), which the prompt's
+`{{EMAIL_BODIES}}` slot names and tells the agent to read INSTEAD of the .msg/.eml files. One
+section per message, earliest first, headed `## E<k> - <file name>` with sender, organisation,
+date, cleaned subject, the inputs-relative path, the value to put in a row's `source_files`, and
+the attachments saved. A message no reader could open is listed with the reason, never dropped.
+**Pointer rule:** a paragraph (blank-line split) whose normalised text - quote markers off,
+whitespace collapsed, case folded, at least 40 characters - already appeared earlier becomes
+`[= E<k> ¶<n>]`, and the paragraph it points at is prefixed `¶<n> `. Nothing else is shortened;
+a thread's repeated disclaimers and quoted requirement are printed once (-23 % on the live
+corpus) and the full text is always one marker away. A run with no emails writes no file.
 
 An attachment that arrived stapled to an email needs nothing special here. `intake` saves it
 beside its message before classification, so it is discovered, clustered and enumerated as a
@@ -51,12 +58,16 @@ cell is a flat `Yes` and not red.
 ## The four steps
 
 1. **The spine enumerates** (`helpers/master_list.py`). It writes
-   `work/master_candidates_auto.json`: one row per tracker record, one per email record, one per
-   email MESSAGE on disk that no record row already covers, one per
-   brochure CLUSTER (the unit a reader agent is dispatched on), with name, postcode and size for
-   a deck row taken from the cluster label plus the deck's FIRST PAGE only - enough for a human
-   to recognise a scheme, and explicitly not data. It then runs a blunt duplicate sweep on postal
-   code alone. Then it STOPS with **exit 17**.
+   `work/master_candidates_auto.json`: one row per tracker record, one per email record, and one
+   per brochure FILE (`deck_row_id`; one per CLUSTER until 2026-09-26, fix 3.1 - a cluster is a
+   grouping the run derives from a label, and a label that fused two decks deleted two answered
+   rows and re-opened the sheet), with name, postcode and size for a deck row taken from the
+   deck's FIRST PAGE only - enough for a human to recognise a scheme, and explicitly not data.
+   A PDF and a PPTX sharing a stem are two rows, each noting the other ("answer both the same
+   way"). It then runs a blunt duplicate sweep on postal code alone. Then it STOPS with
+   **exit 17**. The enumeration is cached: `candidates_key` (the corpus content hash, the deck
+   grouping, the records and the helper code) lets a later pass with the same inputs reuse the
+   file without reading a page (fix 2.1).
 2. **The model judges** (`prompts/master-list.md`, rendered into `work/prompts/`). It adds the
    rows that exist only in email prose, names them after the property, and adjudicates the
    SAME-BUILDING groups, into
@@ -136,7 +147,7 @@ cell is a flat `Yes` and not red.
 
 | Consumer | Effect |
 |---|---|
-| Deck reader dispatch (`run.py`, extract) | A cluster whose rows are ALL No is never prepped, rendered or dispatched. This is the economic argument for the whole stage |
+| Deck reader dispatch (`run.py`, extract) | A deck FILE under a row answered No (and under no row answered Yes) is never prepped, rendered or dispatched (`excluded_deck_files`, keyed on the file, so a relabel cannot make a No stop applying). This is the economic argument for the whole stage |
 | Source authority (`run.py`, merge path) | A USER-answered sheet means the authority is the master list: the included options are kept, and the exit-13 source-authority question is not asked |
 | Match adjudication (`run.py`, before `grey_pairs`) | Each user duplicate group becomes `same` verdicts in `work/match_decisions.json`, keyed with `match.pair_id`, so exit 10 asks only about pairs the user did not group |
 | Gaps Report (`deliver.py`) | Every excluded option is named under "Options excluded by the master list", with its source and any note the user wrote |
@@ -152,6 +163,15 @@ the row values. An answered `master_list.json` records the hash it answered.
 - Same hash: the sheet is honoured on every later pass, silently.
 - Different hash (a new deck, a new email, a removed file): exit 17 re-opens, the builder carries
   every still-matching answer forward by Row ID, and the user answers only what is new.
+- **A sheet answered with per-CLUSTER deck rows** (before fix 3.1, or while a label had fused two
+  decks) is re-keyed ONCE, silently, by `migrate_per_file` - but only when it provably answered
+  the current inputs (the records are unchanged, its deck ids are the ones it answered, and its
+  deck files are exactly the files on disk now) and every file's covering rows agree. Each deck
+  row becomes one row per file carrying its Include?, Run notes and duplicate group, with
+  `split_from` naming the old id; the old file is kept as `work/master_list.pre_split.json`.
+  Anything less certain re-opens the sheet instead, with the answers pre-filled:
+  `carry_forward` also looks a one-file deck row up in `work/master_list.json` by its file
+  name when its id misses (never from a headless file - that is nobody's answer).
 
 The hash deliberately ignores values. Re-reading the same tracker can produce a cosmetically
 different size string, and re-asking a broker forty questions because a number gained a decimal

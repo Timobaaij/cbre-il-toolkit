@@ -10,9 +10,14 @@ inputs.emails.mailbox for a shared/delegated mailbox - plus a client/subject/dat
 `query` scope, reads the matching offers via read_resource, and writes a
 records.json in the SAME record schema the other extractors emit (see
 templates/record_schema.json). Each
-record's __meta is:
+record's __meta is (Outlook MCP path - there is no file, so the subject names the message):
     {"source_file": "<email subject>", "source_type": "email",
-     "locator_base": "email <yyyy-mm-dd>", "date": "<iso date>", "prov": {...}}
+     "locator_base": "email <yyyy-mm-dd> from <sender>", "date": "<iso date>", "prov": {...}}
+and on the .msg/.eml FALLBACK path below (2026-09-26, fix 3.11 - a subject is not unique in a
+thread, the file is):
+    {"source_file": "<file name>.msg", "source_type": "email",
+     "locator_base": "email <yyyy-mm-dd> from <sender> (<file name>)", "date": "<iso date>",
+     "subject": "<subject>", "email_file": "<file name>", "sender": "<sender>", ...}
 Commercials from the NEWEST email win in merge.py (the 'date' field drives this).
 Attachments the search surfaces are saved and re-routed through the PPTX/PDF/
 image extractors.
@@ -154,6 +159,23 @@ def _unique_path(directory: Path, filename: str) -> Path:
     return directory / cand
 
 
+def _same_bytes_in(folder: Path, data: bytes):
+    """A file already in `folder` with exactly these bytes, or None (size first, then content).
+    Only ever used on a folder this email OWNS (fix 2.7), so it can never claim another
+    email's file; a read error is treated as 'not the same'."""
+    try:
+        for q in sorted(folder.iterdir(), key=lambda x: x.name):
+            if q.is_file() and not q.name.startswith(".") and q.stat().st_size == len(data):
+                try:
+                    if q.read_bytes() == data:
+                        return q
+                except OSError:
+                    continue
+    except OSError:
+        return None
+    return None
+
+
 def _sidecar_owner(folder: Path) -> str:
     """The email basename a folder's `.from_email.json` names; "" when there is none."""
     try:
@@ -176,7 +198,23 @@ def _attachments_folder(email_path: Path, iso_date: str, stem: str,
     sidecar naming ANOTHER email gets `<date>_<subject>_<sha1(path rel. root)[:6]>`.
     A folder this email already owns is reused first, plain or hashed, so a re-run never
     moves a file or rewrites someone else's sidecar, whichever order the walk takes.
+
+    STEP 0 - OWNERSHIP BEATS THE NAME (2026-09-26 test run, fix 2.7). Reuse used to key on the
+    CURRENT naming scheme, so folders an earlier version named differently (from the .msg stem,
+    or with an underscore where the scheme now writes a space) were invisible: a live corpus got
+    a second `..._<hash>_attachments` folder per email and seven brochures written twice. Now ANY
+    sibling `*_attachments` folder whose `.from_email.json` names this email is reused, whatever
+    its name - the first by name, which is the copy intake's sorted-first dedupe already keeps.
+    A folder owned by another email is never reused, and nothing is ever deleted or moved.
     """
+    try:
+        legacy = sorted((p for p in email_path.parent.iterdir()
+                         if p.is_dir() and p.name.casefold().endswith(ATTACH_DIR_SUFFIX)
+                         and _sidecar_owner(p) == email_path.name), key=lambda p: p.name)
+    except OSError:
+        legacy = []
+    if legacy:
+        return legacy[0], True
     head = f"{iso_date or 'undated'}_{stem}"
     plain = f"{head}{ATTACH_DIR_SUFFIX}"
     try:
@@ -329,6 +367,13 @@ def save_attachments(email_path: Path, subject: str, iso_date: str,
                 rec["saved"].append({"file": f"{folder.name}/{existing.name}",
                                      "bytes": len(data), "attachment_name": name})
                 continue
+            # fix 2.7: a REUSED folder may hold this attachment under a name an earlier
+            # version chose. Same bytes already there -> reuse that file, write nothing.
+            twin = _same_bytes_in(folder, data) if owned else None
+            if twin is not None:
+                rec["saved"].append({"file": f"{folder.name}/{twin.name}",
+                                     "bytes": len(data), "attachment_name": name})
+                continue
             dest = _unique_path(folder, fn)
             dest.write_bytes(data)
         except OSError as e:
@@ -356,7 +401,31 @@ def save_attachments(email_path: Path, subject: str, iso_date: str,
             # inside the inputs folder on every harvest, and run.py's resume predicate takes
             # the folder's newest descendant as its currency stamp, so a file rewritten with
             # identical bytes is enough to make a stage look stale and recompute for nothing.
-            if not (side.exists() and side.read_text(encoding="utf-8-sig") == text):
+            prev = None
+            if side.exists():
+                try:
+                    prev = json.loads(side.read_text(encoding="utf-8-sig"))
+                except ValueError:
+                    prev = None
+            if isinstance(prev, dict) and str(prev.get("file") or "") == email_path.name:
+                # fix 2.7: a sidecar that already names this email is MERGED, never replaced -
+                # a broker-approved key on it (a `manual_fix`) must survive every re-harvest.
+                # Its attachment order is kept and new names are appended; subject/date/
+                # skipped_inline are updated only when they differ; compared as dicts, so a
+                # sidecar formatted by hand is not rewritten for whitespace.
+                merged = dict(prev)
+                names = [str(n) for n in (prev.get("attachments") or [])]
+                for n in payload["attachments"]:
+                    if n not in names:
+                        names.append(n)
+                merged["attachments"] = names
+                for k in ("subject", "date", "skipped_inline"):
+                    if merged.get(k) != payload[k]:
+                        merged[k] = payload[k]
+                if merged != prev:
+                    side.write_text(json.dumps(merged, ensure_ascii=False, indent=2),
+                                    encoding="utf-8")
+            elif not (side.exists() and side.read_text(encoding="utf-8-sig") == text):
                 side.write_text(text, encoding="utf-8")
         except OSError as e:
             rec["error"] = f"{FROM_EMAIL_SIDECAR}: {e}"
@@ -536,6 +605,19 @@ def _iso_date(raw: str) -> str:
         return m.group(0) if m else ""
 
 
+def _sender_label(raw) -> str:
+    """The From header as a person reads it: the display name, else the address; '' if none.
+    Quotes and surrounding whitespace are stripped; nothing is guessed (fix 3.11)."""
+    try:
+        from email.utils import parseaddr
+        name, addr = parseaddr(str(raw or ""))
+    except Exception:
+        name, addr = "", ""
+    name = re.sub(r"\s+", " ", str(name or "")).strip().strip("\"'").strip()
+    addr = str(addr or "").strip()
+    return name or addr
+
+
 def extract(folder: Path, save_attachment_bytes: bool = True) -> list[dict]:
     """Parse every .msg/.eml in `folder` and, unless told not to, save their attachments.
 
@@ -563,7 +645,7 @@ def extract(folder: Path, save_attachment_bytes: bool = True) -> list[dict]:
         except Exception as e:
             out.append({"unreadable": True, "error": str(e),
                         "__meta": {"source_file": p.name, "source_type": "email",
-                                   "locator_base": p.name}})
+                                   "locator_base": p.name, "email_file": p.name}})
             continue
         if not (str(d.get("subject") or "").strip() or str(d.get("date") or "").strip()
                 or str(d.get("from") or "").strip()):
@@ -572,9 +654,10 @@ def extract(folder: Path, save_attachment_bytes: bool = True) -> list[dict]:
             # always has Subject/Date/From - headerless = an explicit unreadable stub
             out.append({"unreadable": True, "error": "no parseable headers or body",
                         "__meta": {"source_file": p.name, "source_type": "email",
-                                   "locator_base": p.name}})
+                                   "locator_base": p.name, "email_file": p.name}})
             continue
         iso = _iso_date(d.get("date", ""))
+        subject = str(d.get("subject") or "")
         parts = d.pop("_att_parts", [])
         att_rec = (save_attachments(p, str(d.get("subject") or ""), iso, parts, root=folder)
                    if save_attachment_bytes else
@@ -584,11 +667,23 @@ def extract(folder: Path, save_attachment_bytes: bool = True) -> list[dict]:
                                       "(inputs.emails.source: none)"})
         d["attachments_saved"] = att_rec.get("saved") or []
         d["attachments_skipped_inline"] = att_rec.get("skipped_inline") or []
-        # __meta.date + the documented "email <yyyy-mm-dd>" locator (the docstring's
-        # contract): merge precedence and the ledger both key on these
-        d["__meta"] = {"source_file": d.get("subject") or p.name, "source_type": "email",
-                       "locator_base": f"email {iso}" if iso else (d.get("subject") or p.name),
-                       "date": iso, "attachments_dir": att_rec.get("dir") or ""}
+        # __meta.date + the documented locator (the docstring's contract): merge precedence and
+        # the ledger both key on these.
+        # 2026-09-26 test run, fix 3.11: the MESSAGE is the identity, not its subject. A thread
+        # yields "RE: X" three times on one morning, so `source_file = subject` and a locator of
+        # "email <date>" named three messages at once - and input-accounting credits a ledger
+        # row by the source_file BASENAME, so a subject never credited its .msg. source_file is
+        # now the file name, the locator names date, sender and file ("email 2026-09-07 from
+        # Alex Morgan (offer.msg)"; a missing part is omitted), and the subject rides in
+        # __meta.subject. Records already on disk keep their old spelling; master_list's
+        # email index lists both spellings, so an exclusion matches either.
+        sender = _sender_label(d.get("from"))
+        loc = "email" + (f" {iso}" if iso else "") + (f" from {sender}" if sender else "") \
+            + f" ({p.name})"
+        d["__meta"] = {"source_file": p.name, "source_type": "email",
+                       "locator_base": loc, "date": iso, "subject": subject,
+                       "email_file": p.name, "sender": sender,
+                       "attachments_dir": att_rec.get("dir") or ""}
         if att_rec.get("error"):
             d["__meta"]["attachments_error"] = att_rec["error"]
         out.append(d)

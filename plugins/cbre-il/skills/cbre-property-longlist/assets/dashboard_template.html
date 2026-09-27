@@ -2680,6 +2680,10 @@ function bindImageToggle(p){
   function show(){
     // toggle, never add: the same element carries both modes as the reader switches back
     if(hero) hero.classList.toggle('plan-mode', mode === 'plan');
+    // v47: in Site Plan mode stepping is disabled (step() returns early), so the prev/next
+    // arrows and the "1 / N" counter are hidden rather than left labelling the plan as photo
+    // 1 of N (G-visual, 2026-09-26). visibility keeps the layout stable across the toggle.
+    ['#modal-prev', '#modal-next', '#modal-count'].forEach(sel => { const el = $(sel); if(el) el.style.visibility = (mode === 'plan') ? 'hidden' : ''; });
     if(mode === 'plan'){ img.src = p.plan; }
     else { img.src = g[i]; img.dataset.i = i; if(cnt) cnt.textContent = (i + 1) + ' / ' + g.length; }
   }
@@ -2891,6 +2895,24 @@ document.addEventListener("keydown", e => {
     var d = (p.preBaked && p.preBaked.distances) || {};
     var picks = {};
     function cat(name) {
+      // v47: the POI's own stored `type` wins over the name regex. On the 2026-09-26 QA round
+      // six rail terminals with no "rail"/"terminal" in their name (Port Salford, SLPEMG,
+      // Freightliner Cannock Depot...) fell through to "city" and displaced the true nearest
+      // city on three Flyover slides (G-enrich). The regex stays as the fallback for a
+      // distance key that names no POI in the injected array (a legacy canonical).
+      try {
+        if (typeof POIS !== "undefined" && POIS && POIS.length) {
+          var clean = cleanPoi(name);
+          for (var pi = 0; pi < POIS.length; pi++) {
+            var q = POIS[pi];
+            if (!q || !q.name || (q.name !== name && q.name !== clean)) continue;
+            var t = String(q.type || "");
+            if (t === "city_major") return "city";
+            if (t === "air" || t === "rail" || t === "port" || t === "border" || t === "city") return t;
+            break;
+          }
+        }
+      } catch (e) { /* fall through to the name regex */ }
       if (/airport/i.test(name)) return "air";
       if (/\(port\)/i.test(name)) return "port";
       if (/\(border\)/i.test(name)) return "border";

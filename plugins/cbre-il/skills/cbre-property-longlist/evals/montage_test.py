@@ -67,6 +67,10 @@ def main() -> int:
     sheet = Image.open(outs[0])
     ck(sheet.width <= CS.MONTAGE_MAX_EDGE and sheet.height <= CS.MONTAGE_MAX_EDGE,
        f"the canvas stays under the vision resize threshold ({sheet.size})")
+    # fix 1.2: the edge cap alone let a 3x3 sheet of 384 px tiles reach 1.49 MP, over the
+    # ~1,600-token vision budget, so the API downscaled every tile; the area is capped too
+    ck(sheet.width * sheet.height <= CS.MONTAGE_MAX_PIXELS,
+       f"the canvas stays under the vision PIXEL budget ({sheet.width * sheet.height} px)")
 
     # NATIVE paste: the exact source pixels must be present, unscaled. A 320x200 block of a
     # known colour must appear at its native dimensions somewhere on the sheet.
@@ -91,6 +95,8 @@ def main() -> int:
         im = Image.open(o)
         ck(im.width <= CS.MONTAGE_MAX_EDGE and im.height <= CS.MONTAGE_MAX_EDGE,
            f"every sheet respects the cap ({im.size})")
+        ck(im.width * im.height <= CS.MONTAGE_MAX_PIXELS,
+           f"every sheet respects the pixel budget ({im.width * im.height} px)")
         seen |= set(im.convert("RGB").getdata())
     # the assertion that matters: Python may never DROP a candidate. Each tile is a
     # unique flat colour, so every one of the 16 must be present across the sheets.
@@ -141,6 +147,11 @@ def main() -> int:
     # B22: the contract pointer is absolute and read ONCE, not per deck
     ck("contract" in RUN_SRC and "ONCE" in RUN_SRC,
        "the manifest states the contract is read ONCE per round")
+    # 2026-09-26 (fix 1.11): ...by the READERS. The orchestrator dispatches rendered prompt
+    # files verbatim, so the instruction must not tell it to load the contract first.
+    ck("not the dispatching orchestrator" in RUN_SRC
+       and "before dispatching - not once per deck" not in RUN_SRC,
+       "contract_reads is addressed to the reader sub-agents, not the dispatching orchestrator")
     ck('"record_schema"' in RUN_SRC or "'record_schema'" in RUN_SRC,
        "the record_schema key is kept (its exact literal is part of the manifest contract)")
 

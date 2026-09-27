@@ -98,16 +98,18 @@ def _work():
 
 
 # ============================================================ 1. the enumeration is complete
-print("\n1. Every route produces a row (trackers, emails, brochure clusters)")
+print("\n1. Every route produces a row (trackers, emails, brochure files)")
 WORK = _work()
 auto = ML.build_auto(WORK, RECORDS, CLUSTERS, WORK, _fpt)
 rows = auto["rows"]
 ids = [r["row_id"] for r in rows]
-ck(len(rows) == 6, f"6 candidate rows: 2 tracker + 2 email + 2 brochure clusters (got {len(rows)})")
+ck(len(rows) == 6, f"6 candidate rows: 2 tracker + 2 email + 2 brochure files (got {len(rows)})")
 ck(len(set(ids)) == 6, "every row id is unique")
 ck(sum(1 for r in rows if r["source_type"] == "Tracker") == 2, "the tracker contributes 2 rows")
 ck(sum(1 for r in rows if r["source_type"] == "Email") == 2, "the two emails contribute a row each")
-ck(sum(1 for r in rows if r["source_type"] == "Brochure") == 2, "each brochure CLUSTER is one row")
+# fix 3.1 (2026-09-26): one row per deck FILE (was per cluster; these clusters are singletons,
+# so the count and the ids are unchanged - master_list_per_file_test pins the multi-file case)
+ck(sum(1 for r in rows if r["source_type"] == "Brochure") == 2, "each brochure FILE is one row")
 ck((WORK / ML.AUTO_CANDIDATES).exists(), f"the spine wrote work/{ML.AUTO_CANDIDATES}")
 _deck = [r for r in rows if r["source_type"] == "Brochure"]
 ck(all(r["brochure"] == "Yes" for r in _deck), "a brochure row holds a document (Brochure? = Yes)")

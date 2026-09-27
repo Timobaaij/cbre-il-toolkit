@@ -67,19 +67,55 @@ MONTAGE_MAX_EDGE = 1400   # stay under the vision resize threshold (~1568px long
 # above it the API downscales the whole canvas, which WOULD shrink the tiles and cost the
 # agent detail. Below it, a tile is byte-for-byte the thumbnail it would have opened alone.
 MONTAGE_CAPTION_H = 26
+# PIXEL budget per sheet (2026-09-26 test run, fix 1.2). The edge cap alone did not keep the
+# "native size" promise: a 3x3 sheet of 384 px tiles is 1184x1262 = 1.49 MP, above the ~1,600-token
+# (~1.15 MP) vision budget, so the API downscaled the whole canvas and every tile with it. Every
+# sheet now also satisfies W*H <= this, paginating instead - tiles are never resized.
+MONTAGE_MAX_PIXELS = 1_150_000
 
 
-def tile_native(cells: list, out_path, cols: int = 3, tile_px: int = 384) -> list:
+def _sheet_layout(n: int, step_w: int, step_h: int, pref_cols: int, max_pixels: int) -> tuple:
+    """(cols, per_sheet) for n tiles of step_w x step_h: fewest sheets first, then fewest total
+    pixels (a half-empty wide sheet costs tokens for nothing), then the caller's column count.
+    Every full sheet satisfies both edge caps and the pixel budget; one tile per sheet is the
+    floor, so an oversized single tile still gets a sheet of its own (as before)."""
+    best = None
+    for cols in range(1, max(1, n) + 1):
+        W = PAD + cols * step_w
+        if cols > 1 and W > MONTAGE_MAX_EDGE:
+            break
+        rows = max(1, (MONTAGE_MAX_EDGE - PAD) // step_h)
+        while rows > 1 and W * (PAD + rows * step_h) > max_pixels:
+            rows -= 1
+        if cols > 1 and W * (PAD + rows * step_h) > max_pixels:
+            break
+        per = max(1, cols * rows)
+        sheets = -(-n // per)
+        px = 0
+        for s in range(sheets):
+            k = min(per, n - s * per)
+            px += (PAD + min(cols, k) * step_w) * (PAD + (-(-k // cols)) * step_h)
+        key = (sheets, px, abs(cols - pref_cols))
+        if best is None or key < best[0]:
+            best = (key, cols, per)
+    return (best[1], best[2]) if best else (1, 1)
+
+
+def tile_native(cells: list, out_path, cols: int = 3, tile_px: int = 384,
+                max_pixels: int = MONTAGE_MAX_PIXELS) -> list:
     """Tile already-written thumbnails into as few sheets as fit, at NATIVE size. (B19)
 
     One tool call instead of one per image. This is a pure co-location: each tile is pasted
     unscaled (PIL's thumbnail never upscales, so a `tile_px`-capped thumbnail arrives at its
-    own size) and the canvas is capped at MONTAGE_MAX_EDGE, so the agent sees exactly the
-    pixels it would have seen opening each file - merely side by side. Anything that shrank
-    a tile would be a perception regression dressed as a speed-up.
+    own size) and every canvas is capped at MONTAGE_MAX_EDGE per edge AND `max_pixels` in area
+    (fix 1.2: the ~1,600-token vision budget, above which the API downscales the whole canvas),
+    so the agent sees exactly the pixels it would have seen opening each file - merely side by
+    side. Anything that shrank a tile would be a perception regression dressed as a speed-up.
+    `cols` is a preference: the column count is chosen to need the fewest sheets.
 
-    Every cell is tiled, in the order given, captioned with its `index`. Python must never
-    drop or reorder one: which candidate is the hero is the LLM's judgement, and a silently
+    Every cell is tiled, in the order given, captioned with its `caption` when it carries one
+    (the deck sheets caption `page_no N` / `page_no N / index K`), else `index K`. Python must
+    never drop or reorder one: which candidate is the hero is the LLM's judgement, and a silently
     missing tile would make it Python's. A cell whose image will not decode is the one
     exception - it is skipped rather than aborting the page, exactly as the per-candidate
     thumbnail writer already does - and it remains openable on its own.
@@ -95,18 +131,18 @@ def tile_native(cells: list, out_path, cols: int = 3, tile_px: int = 384) -> lis
             im.load()
         except Exception:
             continue  # undecodable - skip it, never abort the page
-        loaded.append((c.get("index"), im))
+        cap = c.get("caption") or f"index {c.get('index')}"
+        loaded.append((str(cap), im))
     if not loaded:
         return []
     cell_w = min(tile_px, max(im.width for _, im in loaded))
     cell_h = min(tile_px, max(im.height for _, im in loaded))
-    cols = max(1, min(cols, len(loaded)))
     step_w, step_h = cell_w + PAD, cell_h + MONTAGE_CAPTION_H + PAD
-    # how many rows fit under the cap; at least one, or a single tall tile would loop
-    max_rows = max(1, (MONTAGE_MAX_EDGE - PAD) // step_h)
-    while cols > 1 and PAD + cols * step_w > MONTAGE_MAX_EDGE:
-        cols -= 1
-    per_sheet = max(1, cols * max_rows)
+    try:
+        mp = int(max_pixels) if max_pixels else MONTAGE_MAX_PIXELS
+    except (TypeError, ValueError):
+        mp = MONTAGE_MAX_PIXELS
+    cols, per_sheet = _sheet_layout(len(loaded), step_w, step_h, max(1, int(cols or 1)), mp)
     out_path = Path(out_path)
     written = []
     for s in range(0, len(loaded), per_sheet):
@@ -117,7 +153,7 @@ def tile_native(cells: list, out_path, cols: int = 3, tile_px: int = 384) -> lis
         sheet = Image.new("RGB", (W, H), BG)
         draw = ImageDraw.Draw(sheet)
         font = _font(15)
-        for k, (idx, im) in enumerate(chunk):
+        for k, (cap, im) in enumerate(chunk):
             r, c = divmod(k, cols)
             x, y = PAD + c * step_w, PAD + r * step_h
             draw.rectangle([x, y, x + cell_w, y + cell_h + MONTAGE_CAPTION_H],
@@ -126,7 +162,7 @@ def tile_native(cells: list, out_path, cols: int = 3, tile_px: int = 384) -> lis
             ox = x + max(0, (cell_w - im.width) // 2)
             oy = y + max(0, (cell_h - im.height) // 2)
             sheet.paste(im, (ox, oy))
-            draw.text((x + 6, y + cell_h + 4), f"index {idx}", font=font, fill=CBRE_GREEN)
+            draw.text((x + 6, y + cell_h + 4), cap, font=font, fill=CBRE_GREEN)
         p = (out_path if len(loaded) <= per_sheet
              else out_path.with_name(f"{out_path.stem}_{s // per_sheet + 1}{out_path.suffix}"))
         try:

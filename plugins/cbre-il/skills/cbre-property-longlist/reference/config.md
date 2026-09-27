@@ -12,7 +12,7 @@ One `project.yaml` per client project, kept in the **work dir** (`2. Work Files/
 setup:
   confirmed: false             # intake writes false; the orchestrator sets true after the Stage-0 form
 client:
-  name: Normal                 # display + deliverable filenames
+  name: "Normal"               # display + deliverable filenames; the scaffold writes it as a quoted string (a name like "Acme: Retail" is valid YAML that way)
   confidential: true           # informational; nothing in the pipeline reads it
 market:
   title_html: ""               # hero <h1> (HTML allowed). BLANK renders the localised default, which names the client: "<client> - Industrial & Logistics opportunities". Keep ONE <em>..</em> pair for the accent colour
@@ -20,7 +20,7 @@ market:
   region_label: "CEE"          # topbar meta prefix
   countries: ["HU", "CZ", "SK"]  # seeded ONCE by the scaffold from the KNOWN cluster countries; informational (the dashboard derives its country filter from the records)
 output:
-  filename: "CBRE_Property_Dashboard_Normal.html"
+  filename: "CBRE_Property_Dashboard_Normal.html"   # the scaffold sanitises the client name here (deliver.safe_slug: "Example Ltd." -> Example_Ltd); a value you type ships verbatim
   compiled_date: "2026-04-23"  # ISO; defaults to today if blank
   language: "English"          # Stage 0 Q3: dashboard CHROME language (see "Dashboard language" below)
 inputs:
@@ -31,6 +31,9 @@ inputs:
     Budapest: HU
     Bratislava: SK
     Westford: ''                   # the city index did not know this one: BLANK, never a placeholder token
+  cluster_labels: ""               # OPTIONAL, absent by default. `agent` = dispatch the cluster-label
+                                   #   sub-agent (prompts/cluster-labels.md) for low-confidence
+                                   #   filename stems. Anything else = the filename label stands.
   emails:                          # Stage 0 Q2 (see SKILL.md "broker setup prompt")
     source: none                   # none | outlook | folder  (folder = .msg/.eml fallback for no-MCP;
                                    #   a folder of them, or a ZIP of them, dropped straight into
@@ -67,7 +70,7 @@ clarify:
 ### Which keys are read, and by what
 Not every key in the scaffold feeds a stage. Knowing which do stops a broker correcting a value that nothing will ever read:
 
-| read by the helpers | `setup.confirmed`, `client.name`, `market.title_html` / `eyebrow` / `region_label`, `output.filename` / `compiled_date` / `language`, `inputs.emails.source`, `enrichment.geocode` / `pois` / `osrm` / `regions` / `ors_api_key`, `qa.fill_threshold`, `clarify.mode` / `assume_defaults` |
+| read by the helpers | `setup.confirmed`, `client.name`, `market.title_html` / `eyebrow` / `region_label`, `output.filename` / `compiled_date` / `language`, `inputs.emails.source`, `inputs.cluster_labels` (`agent` = dispatch the optional cluster-label job; anything else or absent = never), `enrichment.geocode` / `pois` / `osrm` / `regions` / `ors_api_key`, `qa.fill_threshold`, `clarify.mode` / `assume_defaults` |
 |---|---|
 | read by the ORCHESTRATOR | `inputs.emails.outlook_folder` / `mailbox` / `query` / `folder`: they fill the slots of `prompts/outlook-ingest.md` |
 | informational only | `client.confidential`, `market.countries`, `inputs.folder`, `inputs.present_types`, `enrichment.osrm_endpoint`, and `inputs.clusters` (next line) |
@@ -110,7 +113,9 @@ For low-confidence clusters the orchestrator judges the likely city/region from 
 - **Placeholders fold together.** `''`, a bare `Region:` (null) and the legacy `'??'` an older scaffold wrote are all "unknown"; a file whose only difference is that spelling is not rewritten at all.
 - **It refuses rather than guesses.** If the `clusters:` block cannot be located unambiguously (no or two top-level `inputs:` keys, two `clusters:` keys, an inline flow mapping `clusters: {A: XX}`, a body line that is not one `Region: country` entry), the file is left byte-identical and intake prints a `WARNING` naming the reason; the summary line then says `project.yaml exists; kept`. There is deliberately no whole-document rewrite behind that refusal, because a whole-document dump drops every comment. Fix: restore the block to the scaffold's shape, or copy `inventory.json`'s clusters in by hand.
 
-**Absence of the cache IS the regex opt-out** - no `.SKIP` sentinel is needed (unlike the tracker map, there is no exit/dispatch to decline). A no-LLM / non-interactive / offline run simply never writes `work/intake_clusters.json`, so the deterministic regex stands and the offline evals are byte-identical. The LLM sets ONLY the inventory's cluster (its routing label, and the country the readers are handed for that deck), mirrored into `project.yaml inputs.clusters` for the record; it does not touch `market.countries`, which the scaffold seeds once from the index. The card's displayed region/city are read from the brochure body at extraction, so a wrong cluster label can never fabricate a displayed field - the existing coverage gate (a hallucinated region maps zero brochures -> an empty cluster -> blocked) and the broker confirmation are the backstops.
+**A label may RENAME a cluster (or split one); it may never MERGE two decks the filenames keep apart** (2026-09-26, fix 3.1). Intake computes every brochure's filename label first; any cached label that would put two files with different filename labels into one cluster is refused, the deck keeps its filename label, and the refusal is recorded in `inventory.json` `cluster_label_rejected` (`{stem, region, why}`) and printed as one `NOTE: ... cluster label(s) refused` line. Master-list rows are per deck FILE, so a label never changes a row's identity either. `inventory.json` also records `cluster_cache_sha` (the cache file's byte stamp, `""` when there is none), so **deleting the cache, or creating `work/intake_clusters.SKIP` (which declines it), re-derives** the filename labels on the next pass and `inputs.clusters` is rebuilt from them. The label job itself is dispatched ONLY when `inputs.cluster_labels: agent` is set (fix 1.3; see the inputs table) - it changes no card field, and it cost 74k tokens for 7 stems on a live run.
+
+**Absence of the cache IS the regex opt-out** - no `.SKIP` sentinel is needed (unlike the tracker map, there is no exit/dispatch to decline); `intake_clusters.SKIP` exists to decline a cache that is already on disk. A no-LLM / non-interactive / offline run simply never writes `work/intake_clusters.json`, so the deterministic regex stands and the offline evals are byte-identical. The LLM sets ONLY the inventory's cluster (its routing label, and the country the readers are handed for that deck), mirrored into `project.yaml inputs.clusters` for the record; it does not touch `market.countries`, which the scaffold seeds once from the index. The card's displayed region/city are read from the brochure body at extraction, so a wrong cluster label can never fabricate a displayed field - the existing coverage gate (a hallucinated region maps zero brochures -> an empty cluster -> blocked) and the broker confirmation are the backstops.
 
 ## Stage-0 setup prompt (ONE consolidated widget form)
 At intake the orchestrator presents ONE consolidated `visualize` widget form with ALL FIVE setup questions at once (client name, enrichment extras, the optional openrouteservice key as an inline field, the email scope - **a named Outlook mail folder** via the `outlook_email_search` sub-agent with `folderName`, **across all of Outlook**, or **none** - and the dashboard language). The verbatim form and its submission parsing are in `reference/setup-form.md`; the mandate (single widget, all five together, one submit, plain-text fallback only when the widget tool is genuinely unavailable) is SKILL.md "The broker setup prompt". (A Windows `.msg`/`.eml` folder is a no-MCP fallback only.) The answers are written to `client:`, `enrichment:`, `inputs.emails:` and `output.language` so subsequent re-runs are non-interactive. **`clarify.mode` is NOT one of the questions** (it was the sixth until 2026-09-19): the run always asks when unsure.

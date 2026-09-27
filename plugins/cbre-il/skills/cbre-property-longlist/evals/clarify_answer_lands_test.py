@@ -434,17 +434,21 @@ def area_answers() -> None:
 
 
 def one_helper() -> None:
-    print("\n7. ONE attributed-repair helper, shared by all three answer bridges")
+    print("\n7. ONE attributed-repair helper, shared by all four answer bridges")
     ck(hasattr(RUN, "AnswerRepairs"), "run.AnswerRepairs exists")
-    for fn in ("excluded_figure_questions", "value_format_clarify", "agent_doubt_repairs"):
+    # 2026-09-26 test run, fix 3.7b: the arithmetic-basis bridge is the FOURTH channel on the
+    # same class (derive -> an `ab-` repair), so it must go through AnswerRepairs as well
+    for fn in ("excluded_figure_questions", "value_format_clarify", "agent_doubt_repairs",
+               "arithmetic_basis_clarify"):
         i = RSRC.find(f"def {fn}(")
         j = RSRC.find("\ndef ", i + 1)
         body = RSRC[i:j if j != -1 else len(RSRC)]
         ck("AnswerRepairs(" in body, f"{fn} synthesises its repair through AnswerRepairs")
         ck("rep_list.append" not in body and "atomic_write_text(rp_path" not in body,
            f"...and no longer hand-rolls the entry or the write ({fn})")
-    ck(RSRC.count("AnswerRepairs(work") == 3,
-       f"exactly three channels open it ({RSRC.count('AnswerRepairs(work')})")
+    ck(RSRC.count("AnswerRepairs(work") == 4,
+       f"exactly four channels open it - excluded-figure, value-format, reader-doubt, "
+       f"arithmetic-basis ({RSRC.count('AnswerRepairs(work')})")
     # the bridge is WIRED into the spine, at the point where the repairs stage still runs this
     # pass - a helper nothing calls is the defect this change exists to remove, one level up
     ck("agent_doubt_repairs(work, cfg, canonical)" in RSRC,

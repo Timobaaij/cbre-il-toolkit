@@ -7,12 +7,13 @@ requirements. Copied rather than imported: a skill is a self-contained unit that
 copy to another machine, and a cross-skill import is a dependency nobody declares and everybody
 breaks. The two copies are allowed to diverge, and they already have - this one has no Kato
 index to read, its rows come from the spine's own candidates file, and its brochure column
-states a fact about a cluster of decks rather than about a listing's document links.
+states a fact about a deck file on disk rather than about a listing's document links.
 
 WHAT THIS SCRIPT DECIDES, AND WHAT IT REFUSES TO DECIDE
 -------------------------------------------------------
 It MOVES BYTES. It reads work/master_candidates_auto.json (written by the spine: one row per
-tracker record, per email record and per brochure cluster, with the blunt postcode sweep
+tracker record, per email record and per brochure FILE (per cluster before 2026-09-26, fix
+3.1), with the blunt postcode sweep
 already applied), merges work/master_candidates.json over it if the orchestrator wrote one (its
 judged duplicate groups, its email-only rows, its rank), and writes the workbook.
 
@@ -278,7 +279,56 @@ def apply_rank(rows: list, model: dict) -> None:
         r["duplicate_of"] = (ML.duplicate_partner_text(r, by_group.get(g) or []) if g else "")
 
 
-def carry_forward(path, rows) -> tuple:
+def _answers_by_deck_file(work) -> dict:
+    """{lower deck basename: (include, run_notes)} from work/master_list.json, for the deck
+    files whose covering `deck:` rows all AGREE (fix 3.1, 2026-09-26). The headless bypass is
+    never read: its Yes-to-everything is not an answer anybody gave, and pre-filling it would
+    be exactly the pre-answered sheet the builder blanks Include? to prevent."""
+    if work is None:
+        return {}
+    try:
+        ml = ML.load_answers(Path(work))
+    except Exception:
+        return {}
+    if not ml or ml.get("skipped"):
+        return {}
+    got: dict = {}
+    for r in (ml.get("rows") or []):
+        if not isinstance(r, dict) or not str(r.get("row_id") or "").startswith("deck:"):
+            continue
+        inc = str(r.get("include") or "")
+        if inc not in (ML.YES, ML.NO):
+            continue
+        for f in (r.get("source_files") or []):
+            if f:
+                got.setdefault(Path(str(f)).name.lower(), set()).add(
+                    (inc, str(r.get("run_notes") or "")))
+    return {k: next(iter(v)) for k, v in got.items() if len(v) == 1}
+
+
+def _file_answer(row: dict, by_file: dict):
+    """The master_list.json answer for a ONE-file deck row, or None."""
+    if not by_file or not str(row.get("row_id") or "").startswith("deck:"):
+        return None
+    files = [f for f in (row.get("source_files") or []) if f]
+    if len(files) != 1:
+        return None
+    return by_file.get(Path(str(files[0])).name.lower())
+
+
+def _carry_by_file(rows, by_file) -> int:
+    """Apply only the file-name key (no readable workbook to key on). Returns the count."""
+    kept = 0
+    for row in rows:
+        got = _file_answer(row, by_file)
+        if got:
+            row["include"] = got[0] or ""
+            row["run_notes"] = got[1] or ""
+            kept += 1
+    return kept
+
+
+def carry_forward(path, rows, work=None) -> tuple:
     """Preserve the user's existing answers across a rebuild, keyed on Row ID.
 
     A rebuild happens for a real reason - a second email export landed, the user dropped in
@@ -287,18 +337,24 @@ def carry_forward(path, rows) -> tuple:
     A row the user TYPED IN has no Row ID, so those fall back to property name plus postcode;
     the fallback is only ever consulted for a prior row that carried no Row ID, so it can never
     override an identity match.
+
+    `work` (fix 3.1, 2026-09-26): a THIRD key for a one-file `deck:` row whose id and digest both
+    miss - the deck rows went from one per cluster to one per file, so a row answered as part of
+    a two-file cluster has no id to match. Its answer is looked up in work/master_list.json by
+    the file's name, and carried only when every row that covered that file agrees.
     """
     path = Path(path)
+    by_file = _answers_by_deck_file(work)
     if not path.exists():
-        return 0, {}
+        return _carry_by_file(rows, by_file), {}
     try:
         wb = load_workbook(path, data_only=True)
     except Exception as e:
         print("  WARNING: could not read the existing workbook to carry answers forward (%s)" % e,
               file=sys.stderr)
-        return 0, {}
+        return _carry_by_file(rows, by_file), {}
     if SHEET not in wb.sheetnames:
-        return 0, {}
+        return _carry_by_file(rows, by_file), {}
     ws = wb[SHEET]
     hdr = {}
     for c in range(1, ws.max_column + 1):
@@ -306,7 +362,7 @@ def carry_forward(path, rows) -> tuple:
         if v:
             hdr[str(v).strip()] = c
     if not all(h in hdr for h in ("Row ID", "Include?", "Your Run notes for the AI")):
-        return 0, {}
+        return _carry_by_file(rows, by_file), {}
 
     def nk(name, pc):
         import re as _re
@@ -347,6 +403,8 @@ def carry_forward(path, rows) -> tuple:
             d = ML.row_id_digest(row["row_id"])
             if d:
                 got = by_digest.get(d)
+        if got is None:
+            got = _file_answer(row, by_file)
         if got is None:
             key = nk(row.get("property"), row.get("postcode"))
             got = by_name.get(key)
@@ -615,7 +673,7 @@ def build(work: Path, out: Path | None = None, fresh: bool = False) -> dict:
     model = ML._read_json(model_path, {}) or {}
     if not model_path.exists():
         print("NOTE: no %s, so this inventory is the spine's mechanical one: every row it could\n"
-              "  derive from a record or a brochure cluster, grouped on postal code alone. An\n"
+              "  derive from a record or a brochure file, grouped on postal code alone. An\n"
               "  option named only in the PROSE of an email, and any duplicate the postcode sweep\n"
               "  cannot see, is missing from it. Write the candidates file and re-run if you have\n"
               "  read the emails." % ML.MODEL_CANDIDATES, file=sys.stderr)
@@ -635,7 +693,7 @@ def build(work: Path, out: Path | None = None, fresh: bool = False) -> dict:
     for r in rows:
         r["include"] = ""
         r["run_notes"] = ""
-    kept, manual = (0, {}) if fresh else carry_forward(out, rows)
+    kept, manual = (0, {}) if fresh else carry_forward(out, rows, work)
 
     mail = auto.get("emails") or []
     n_deck = sum(1 for r in rows if r.get("source_type") == "Brochure")

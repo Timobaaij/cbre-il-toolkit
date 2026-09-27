@@ -22,10 +22,16 @@ WHAT THIS PINS, against `gate_runner.shadow_findings` / `shadow_pairs` and the C
   3. a non-registry key whose canonical sibling is POPULATED produces no finding;
   4. a gap row written with a stated reason (an honest withholding, not "absent in all
      sources") is not paired, so the check reads the ledger's claim literally;
-  5. the CLASSIFICATION the implementation actually chose: every shadow finding is a SIGNAL,
-     never a FAIL; the gate stays advisory (exit 0, STATUS: ALL-PASS), prints the finding
-     FIRST and uncapped even under --max-notes 0, and files it in work/capture_symmetry.json
-     under `shadow_findings`;
+  5. the CLASSIFICATION the implementation actually chose: a shadow finding on a NAME-SIMILARITY
+     pairing is a SIGNAL, never a FAIL; the gate stays advisory for it (exit 0, STATUS:
+     ALL-PASS), prints the finding FIRST and uncapped even under --max-notes 0, and files it in
+     work/capture_symmetry.json under `shadow_findings`. 2026-09-26 test run (fix 3.5): the ONE
+     exception is a STRICT alias (the curated `_common.ALIAS_PROMOTIONS` table merge promotes
+     on) beside a literal ledger gap row - the measured `levelAccessDoors`/`overheadDoors` shape.
+     That is a [FAIL] and exit 1, cleared by a repair or a `strict_alias_ok=<pid>:<key>` ack
+     (then a [note], exit 0). A strict NAME whose value merge declines ('yes'), a fuzzy-only
+     pairing, and a loose alias (`assetManagers` -> landlord, the run's real survivor) all stay
+     SIGNALs, and with the table gone nothing can block;
   6. the record-scoped fallback for an extract-only work dir (no canonical.json) still fires.
 
 HOW A REGRESSION TRIPS IT. The old gate had no shadow-key question at all: `shadow_findings`
@@ -164,6 +170,9 @@ def main() -> int:
     ck(f1.get("source_file") == DECK and "page 2" in f1.get("locator", ""),
        "...and it cites where the shadow value came from, so one repair can close it")
     ck(f1.get("signal") is True, "...and it is classified SIGNAL")
+    ck(f1.get("strict") is True,
+       "...and flagged STRICT: `levelAccessDoors` is in the curated promotion table, and the "
+       "ledger's gap row was read literally (fix 3.5; the CLI blocks on it, section 5)")
     line = G._shadow_line(f1) if f1 else ""
     ck(line.startswith("  [SIGNAL]") and OPEN_KEY in line and HOME in line
        and "property 1" in line,
@@ -235,26 +244,39 @@ def main() -> int:
 
     print()
     print("== 5. the real classification: SIGNAL, advisory, first, uncapped, filed ==")
-    # the CLI end to end on the measured shape, with an extract dir so the gate has records,
-    # and --max-notes 0 so a capped tail cannot be what saved the finding
-    rec = dict(p1, __meta={"source_file": DECK, "page_no": 1, "source_type": "pdf"})
-    w6 = _work([p1, p2, p3], ledger, extract={"07_vision.json": [rec]})
-    r = subprocess.run([sys.executable, str(GATE), "capture-symmetry", "--work", str(w6),
-                        "--max-notes", "0"], capture_output=True, text=True,
-                       encoding="utf-8", errors="replace")
-    out = (r.stdout or "") + (r.stderr or "")
-    ck(r.returncode == 0 and "STATUS: ALL-PASS" in out,
-       f"the gate stays ADVISORY: exit {r.returncode}, "
+
+    def _gate(work, *extra):
+        rr = subprocess.run([sys.executable, str(GATE), "capture-symmetry", "--work", str(work),
+                             *extra], capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
+        return rr.returncode, (rr.stdout or "") + (rr.stderr or "")
+
+    # 5a. a NAME-SIMILARITY pairing: the run's real surviving shadow, `assetManagers` beside a
+    # landlord gap row. `asset manager` is a loose COLUMN_MAP alias of landlord and is REFUSED
+    # by the strict table (a different party), so this must stay the advisory SIGNAL it was.
+    # The CLI end to end, with an extract dir so the gate has records, and --max-notes 0 so a
+    # capped tail cannot be what saved the finding.
+    LOOSE, LHOME = "assetManagers", "landlord"
+    p1l = _prop(1, **{LOOSE: "Northgate Asset Management"})
+    ledger_l = ([_row(1, LOOSE, "Northgate Asset Management", "page 2"), _gap(1, LHOME)]
+                + _gaps_for_all_siblings(2, p2, siblings)
+                + [_row(3, OPEN_KEY, "4"), _row(3, HOME, 4)]
+                + [_row(2, k, v) for k, v in ORDINARY.items()])
+    rec = dict(p1l, __meta={"source_file": DECK, "page_no": 1, "source_type": "pdf"})
+    w6 = _work([p1l, p2, p3], ledger_l, extract={"07_vision.json": [rec]})
+    rc, out = _gate(w6, "--max-notes", "0")
+    ck(rc == 0 and "STATUS: ALL-PASS" in out,
+       f"a loose-alias shadow keeps the gate ADVISORY: exit {rc}, "
        f"{'ALL-PASS' if 'STATUS: ALL-PASS' in out else 'not ALL-PASS'}")
-    sig = [ln for ln in out.splitlines() if "[SIGNAL]" in ln and OPEN_KEY in ln and HOME in ln]
-    ck(len(sig) == 1, f"exactly one [SIGNAL] line names `{OPEN_KEY}` and `{HOME}` ({len(sig)})")
-    ck(not any("[FAIL]" in ln and (OPEN_KEY in ln or HOME in ln) for ln in out.splitlines()),
-       "...and it is never printed as a [FAIL]: the implementation chose SIGNAL, deliberately")
+    sig = [ln for ln in out.splitlines() if "[SIGNAL]" in ln and LOOSE in ln and LHOME in ln]
+    ck(len(sig) == 1, f"exactly one [SIGNAL] line names `{LOOSE}` and `{LHOME}` ({len(sig)})")
+    ck(not any("[FAIL]" in ln and (LOOSE in ln or LHOME in ln) for ln in out.splitlines()),
+       "...and it is never printed as a [FAIL]: a name-similarity pairing is a SIGNAL, deliberately")
     ck(not any(k in ln for ln in out.splitlines() if "[SIGNAL]" in ln for k in ORDINARY),
        "no ordinary open key appears in any SIGNAL line")
     ranked = [ln for ln in out.splitlines()
               if "[SIGNAL]" in ln or "[note]" in ln or "[PASS]" in ln]
-    ck(bool(ranked) and OPEN_KEY in ranked[0],
+    ck(bool(ranked) and LOOSE in ranked[0],
        "the shadow finding prints FIRST, above everything else the gate says")
     ck("shadow-key SIGNAL" in out, "the summary line counts it as a shadow-key SIGNAL")
     side = w6 / "capture_symmetry.json"
@@ -262,12 +284,66 @@ def main() -> int:
     if side.exists():
         sj = json.loads(side.read_text(encoding="utf-8"))
         sf = sj.get("shadow_findings")
-        ck(isinstance(sf, list) and len(sf) == 1 and sf[0].get("open_key") == OPEN_KEY
-           and sf[0].get("field") == HOME and sf[0].get("property_id") == "1",
+        ck(isinstance(sf, list) and len(sf) == 1 and sf[0].get("open_key") == LOOSE
+           and sf[0].get("field") == LHOME and sf[0].get("property_id") == "1"
+           and sf[0].get("strict") is False,
            "...with the finding under its own `shadow_findings` key, naming both keys and "
-           "the property")
+           "the property, strict=False")
         ck("findings" in sj and "form_disagreements" in sj,
            "...beside the keys the sidecar carried before (old readers see what they saw)")
+
+    # 5b. the measured STRICT shape: `levelAccessDoors` = "4" beside an overheadDoors gap row.
+    # Merge now promotes that key, so its survival is a merge regression: [FAIL], exit 1.
+    rec_s = dict(p1, __meta={"source_file": DECK, "page_no": 1, "source_type": "pdf"})
+    w6s = _work([p1, p2, p3], ledger, extract={"07_vision.json": [rec_s]})
+    rc, out = _gate(w6s, "--max-notes", "0")
+    fl = [ln for ln in out.splitlines() if ln.lstrip().startswith("[FAIL]")
+          and OPEN_KEY in ln and HOME in ln and "property 1" in ln]
+    ck(rc == 1 and "STATUS: BLOCKED" in out,
+       f"a STRICT-alias false absence BLOCKS (fix 3.5): exit {rc}")
+    ck(len(fl) == 1 and "STRICT alias" in fl[0] and "repairs.json" in fl[0]
+       and "strict_alias_ok=1:" + OPEN_KEY in fl[0],
+       "...on ONE [FAIL] line naming both keys and the property, with the repair and the ack")
+    ck(not any("[SIGNAL]" in ln and OPEN_KEY in ln for ln in out.splitlines()),
+       "...and it is not ALSO printed as a SIGNAL")
+    sjs = (json.loads((w6s / "capture_symmetry.json").read_text(encoding="utf-8"))
+           if (w6s / "capture_symmetry.json").exists() else {})
+    ck(any(f.get("open_key") == OPEN_KEY and f.get("strict") is True
+           for f in sjs.get("shadow_findings") or []),
+       "...and filed in the sidecar with strict=True")
+    # 5c. the sign-off route: a recorded ack turns it into a [note] and the gate passes
+    ra = subprocess.run([sys.executable, str(GATE), "ack", "--work", str(w6s), "--add",
+                         f"strict_alias_ok=1:{OPEN_KEY}"], capture_output=True, text=True,
+                        encoding="utf-8", errors="replace")
+    rc, out = _gate(w6s, "--max-notes", "0")
+    ck(ra.returncode == 0 and rc == 0 and "STATUS: ALL-PASS" in out
+       and any("[note]" in ln and OPEN_KEY in ln and "signed off" in ln for ln in out.splitlines()),
+       f"`ack --add strict_alias_ok=1:{OPEN_KEY}` clears it: exit {rc}, printed as a [note]")
+    # 5d. a strict NAME whose value merge would rightly DECLINE (a count with no digit) is not a
+    # merge regression -> still a SIGNAL
+    p1y = _prop(1, **{OPEN_KEY: "yes"})
+    w6y = _work([p1y], [_row(1, OPEN_KEY, "yes"), _gap(1, HOME)],
+                extract={"07_vision.json": [dict(p1y, __meta={"source_file": DECK})]})
+    rc, out = _gate(w6y)
+    ck(rc == 0 and any("[SIGNAL]" in ln and OPEN_KEY in ln for ln in out.splitlines()),
+       f"`{OPEN_KEY}` = 'yes' (no count to promote) stays a SIGNAL, exit {rc}")
+    # 5e. a FUZZY-only pairing of the same field stays a SIGNAL
+    TYPO = "levelAccesDoors"
+    p1t = _prop(1, **{TYPO: "4"})
+    w6t = _work([p1t], [_row(1, TYPO, "4"), _gap(1, HOME)],
+                extract={"07_vision.json": [dict(p1t, __meta={"source_file": DECK})]})
+    rc, out = _gate(w6t)
+    ck(rc == 0 and any("[SIGNAL]" in ln and TYPO in ln for ln in out.splitlines()),
+       f"a fuzzy-only pairing (`{TYPO}`) stays a SIGNAL, exit {rc}")
+    # 5f. fail-safe: with the strict table gone, nothing can be strict (today's behaviour)
+    saved = C.ALIAS_PROMOTIONS
+    try:
+        C.ALIAS_PROMOTIONS = {}
+        ff = G.shadow_findings(w6s, [])
+    finally:
+        C.ALIAS_PROMOTIONS = saved
+    ck(ff and not any(f.get("strict") for f in ff),
+       "with `_common.ALIAS_PROMOTIONS` empty no finding is strict, so nothing can block")
 
     print()
     print("== 6. the record-scoped fallback on an extract-only work dir ==")

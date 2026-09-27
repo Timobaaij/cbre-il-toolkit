@@ -49,6 +49,23 @@ capped/killed run converges - the printed `photo cache: X/Y images ready` line t
 The pre-warm only POPULATES the same cache merge reads, so the built dashboard is
 byte-identical whether it ran or not.
 
+## Host limits the run adapts to
+
+- **A cap on tool calls per message.** Some hosts deny any message with more than N parallel
+  tool calls (a user hook, a Cowork build). The deck readers are told to open their visual
+  aids in as few messages as possible, so a denied call costs a whole turn. Set
+  `CBRE_LONGLIST_MAX_TOOLS_PER_MESSAGE=<n>` (the skill's own knob; `CLAUDE_MAX_PARALLEL_TOOLS`
+  is honoured when that is unset) and every rendered prompt's default Run context states the
+  cap, so readers batch to it. Unset, or not a positive integer, adds nothing (2026-09-26,
+  fix 2.4).
+- **Long Windows paths.** Without Windows long-path support a file whose full path exceeds 259
+  characters cannot be opened by the extractors, and later the per-property view cannot create
+  its `media` folders. Intake detects such inputs, prints ONE warning per pass naming the count
+  and the first few paths, and lists them in `inventory.json` -> `unreadable_long_paths`
+  (input-accounting shows them as a non-blocking SIGNAL). They are reported, never silently
+  skipped and never ingested half-way. Remedy: move the project folder to a shorter path, e.g.
+  near the drive root (2026-09-26, fix 3.24). Linux and short paths are unaffected.
+
 ## No network / no pip needed
 
 Every third-party dependency degrades to a bundled shim automatically: `PyMuPDF`->`fitz_shim`

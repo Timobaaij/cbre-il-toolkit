@@ -26,7 +26,8 @@ Read this file FIRST (the email ingestion contract):
 - Read the landlord/agent offers and structure candidate records in the schema of
   {{SKILL_DIR}}/templates/record_schema.json - rents ANNUAL, units as the email states them,
   unknowns `"tbd"`, never invented, `prov` per field citing the email (sender + date +
-  subject).
+  subject, + the file name when it is a .msg/.eml): a thread repeats one subject on one day,
+  so the subject alone does not say which message a value came from.
 - Map links / bare lat,lng pairs: copy the RAW string VERBATIM into `__meta.map_candidates`
   (a list). Do NOT set `lat`/`lng`/`mapLink` yourself - the deterministic resolver parses them.
 - Save attachments (brochures/trackers/images) into the inputs folder {{INPUTS_DIR}} so the

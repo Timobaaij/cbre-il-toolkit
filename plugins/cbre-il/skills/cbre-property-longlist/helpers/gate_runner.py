@@ -936,15 +936,58 @@ def _email_attachment_faults(work: Path) -> list:
     return faults
 
 
+def _excluded_reasons(canonical: Path) -> dict:
+    """{source file name, lower-cased: the `excluded_by` of the meta.excluded entry naming it}.
+    (fix 3.10b, 2026-09-26)
+
+    A file lands in the `excluded` bucket for more than one reason now: the broker's
+    source-authority answer (the original B47 route, whose entries carry no `excluded_by`) and
+    a source that marks the building let/sold, which the broker chose to exclude
+    (`excluded_by: "not_available"`). The note must name the decision actually taken - telling
+    the broker their source-authority answer dropped a let building is a false attribution.
+    Kept OUT of `_accounting_buckets`' dict on purpose: `cmd_input_accounting` sums every bucket
+    into its input total, and a reasons map would be counted as inputs. {} on any error, which
+    reads every exclusion as source authority (the old wording)."""
+    out: dict = {}
+    try:
+        for e in (C.load_canonical(Path(canonical)).get("meta", {}) or {}).get("excluded") or []:
+            if not isinstance(e, dict):
+                continue
+            why = str(e.get("excluded_by") or "source_authority")
+            for sf in e.get("source_files") or []:
+                if sf:
+                    out.setdefault(Path(str(sf)).name.lower(), why)
+    except Exception:
+        return {}
+    return out
+
+
+def _excluded_note(rel: str, reason: str) -> str:
+    if reason == "not_available":
+        return (f"  [note] {rel}: its only records were excluded because the source marks the "
+                f"building as no longer available (let / sold / under offer) and you chose to "
+                f"exclude it - named in the Gaps Report's 'Options excluded because the source "
+                f"marks them as no longer available' section, so the exclusion is a disclosed "
+                f"decision, not a silent loss.")
+    if reason in ("source_authority", ""):
+        return (f"  [note] {rel}: its only records were excluded by your source-authority "
+                f"answer - named in the Gaps Report's 'Options excluded' section, so the "
+                f"exclusion is a disclosed decision, not a silent loss.")
+    return (f"  [note] {rel}: its only records were excluded (recorded reason: {reason}) - named "
+            f"in the Gaps Report's 'Options excluded' section, so the exclusion is a disclosed "
+            f"decision, not a silent loss.")
+
+
 def cmd_input_accounting(args) -> int:
     """Reconcile every discovered INPUT against what actually shipped. (B08)"""
     work = Path(args.work)
     b = _accounting_buckets(work, Path(args.canonical))
     total = sum(len(v) for v in b.values())
+    _reasons = _excluded_reasons(Path(args.canonical))
     _ok(f"{total} input(s): {len(b['records'])} contributed fields, "
         f"{len(b['photo'])} contributed a photo only, {len(b['unreadable'])} unreadable/skipped, "
-        f"{len(b.get('excluded') or [])} excluded by the broker's source-authority answer "
-        f"(disclosed in the Gaps Report), "
+        f"{len(b.get('excluded') or [])} excluded by a broker answer (source authority or "
+        f"a source-marked let/sold building; disclosed in the Gaps Report), "
         f"{len(b.get('master_list_no') or [])} struck off on the master list, "
         f"{len(b.get('attachment_carrier') or [])} contributed only through attachments "
         f"that were read, "
@@ -964,9 +1007,25 @@ def cmd_input_accounting(args) -> int:
               f"it was never read - named in the Gaps Report's 'Options excluded by the master "
               f"list' section, so the exclusion is the user's own disclosed decision.")
     for rel in b.get("excluded") or []:
-        print(f"  [note] {rel}: its only records were excluded by your source-authority "
-              f"answer - named in the Gaps Report's 'Options excluded' section, so the "
-              f"exclusion is a disclosed decision, not a silent loss.")
+        # fix 3.10b: name the decision actually taken, per file
+        print(_excluded_note(rel, _reasons.get(Path(str(rel)).name.lower(), "source_authority")))
+    # 2026-09-26 test run (fix 3.24): inputs intake SAW but could not open because their absolute
+    # path exceeds the Windows limit (intake records them as inventory["unreadable_long_paths"]).
+    # They never reach a bucket above, so without this line they vanish without a word. ADVISORY:
+    # the remedy is outside the run (a shorter project path), and blocking would stop a run that
+    # can still ship everything it could read. Any shape error -> silent, i.e. today's output.
+    try:
+        _inv = json.loads((work / "inventory.json").read_text(encoding="utf-8-sig")) or {}
+        _long = _inv.get("unreadable_long_paths") if isinstance(_inv, dict) else None
+        if isinstance(_long, list) and _long:
+            _names = [str((x.get("path") or x.get("rel") or x.get("file") or x)
+                          if isinstance(x, dict) else x) for x in _long]
+            print(f"  [SIGNAL] {len(_names)} input(s) were found at intake but could not be "
+                  f"opened because their full path is longer than Windows allows (first: "
+                  f"{'; '.join(_names[:3])}) - they are NOT in the dashboard. Move the project "
+                  f"folder to a shorter path and re-run.")
+    except Exception:
+        pass
     for rel in b["no_consumer"]:
         print(f"  [note] {rel}: loose image - no spine consumer reads it (extract_image.py "
               f"is not wired in). Not a defect in this run; it is simply not in the dashboard.")
@@ -1039,6 +1098,100 @@ def _ledger_sources(ledger_path, canonical: Path) -> dict:
     except Exception:
         return {}
     return out
+
+
+# 2026-09-26 test run (fix 3.3 / 2.3): the value-format gate's three exemptions and its
+# no-cascade rule. See the dated paragraph in `cmd_value_format`'s docstring for why each one
+# keeps the 10.76x protection.
+#
+# The source types whose areaUnit row means "the SOURCE printed this unit". A POSITIVE allowlist,
+# so an unknown future type means "ask" (fail-safe). xlsx is deliberately OUT: a tracker's
+# areaUnit can be the extractor's own acres -> sq ft conversion rather than a printed unit, and
+# trackers store officeArea raw (the same rule merge's officeArea formatting uses, fix 3.3c).
+_SOURCE_STATED_TYPES = frozenset({"pdf", "pptx", "email", "image"})
+# fields whose conversion is routine and says nothing about the record's BUILDING-area unit
+# (a plot quoted in acres and converted to sq ft is normal; the building figures are not).
+_VF_CONVERSION_EXEMPT = frozenset({"plotArea", "expansionPark", "expansionParkVal"})
+# a field the chrome never prints bare: `officeAreaStr` (assets/dashboard_template.html) renders
+# `areaStr(NUMOK(p.officeAreaVal) && !/[a-z]/i.test(s) ? p.officeAreaVal : p.officeArea)`, i.e. a
+# bare officeArea is DISPLAYED as fmt(officeAreaVal) + the dataset unit. Asking the broker what
+# unit it is in asks about a string no reader ever sees.
+_CHROME_FORMATTED_TWIN = {"officeArea": "officeAreaVal"}
+
+
+def _ledger_index(ledger_path, canonical: Path) -> dict:
+    """{(property_id, field): [non-gap ledger rows, in file order]} from the same ledger
+    `_ledger_sources` reads (default: source_ledger.csv beside the canonical), or {} on ANY
+    error - and {} switches every exemption that needs a ledger off, which is the old
+    behaviour. `_ledger_sources` is left exactly as it was (F21 depends on its first-row rule)."""
+    p = Path(ledger_path) if ledger_path else Path(canonical).resolve().parent / "source_ledger.csv"
+    out: dict = {}
+    try:
+        with open(p, newline="", encoding="utf-8-sig") as fh:
+            for r in csv.DictReader(fh):
+                if (r.get("source_type") or "").strip().lower() == "gap":
+                    continue
+                key = (str(r.get("property_id") or "").strip(), str(r.get("field") or "").strip())
+                out.setdefault(key, []).append(r)
+    except Exception:
+        return {}
+    return out
+
+
+def _vf_assumed_ids(meta: dict) -> set:
+    """Ids whose area unit merge ASSUMED (`meta.unitAssumptions` entries with field
+    'areaUnit'): a record whose own source stated no unit, so its unit is a default."""
+    try:
+        return {str(u.get("id")) for u in (meta.get("unitAssumptions") or [])
+                if isinstance(u, dict) and u.get("field") == "areaUnit"}
+    except Exception:
+        return set()
+
+
+def _own_area_unit(p: dict, assumed: set, rows: dict):
+    """(unit, basis) when this record's OWN source printed its area unit, else None.
+
+    ALL must hold: the record's areaUnit reads as a unit; its id is not in
+    `meta.unitAssumptions` (field areaUnit); the FIRST areaUnit ledger row for the id comes from
+    a source type that prints units (`_SOURCE_STATED_TYPES`) and names that same unit; and no
+    building-area row of the id carries a "converted at" locator (a converted record's own
+    figures are in the SOURCE's unit, which is exactly the 10.76x case). With no ledger this is
+    always None, so the old behaviour holds wherever the evidence is missing."""
+    try:
+        u = N.area_unit_of(p.get("areaUnit"))
+        if not u or not rows:
+            return None
+        pid = str(p.get("id"))
+        if pid in assumed:
+            return None
+        au = rows.get((pid, "areaUnit")) or []
+        if not au:
+            return None
+        row = au[0]
+        if (row.get("source_type") or "").strip().lower() not in _SOURCE_STATED_TYPES:
+            return None
+        if N.area_unit_of(row.get("value")) != u:
+            return None
+        for (rid, fld), rs in rows.items():
+            if rid != pid or fld in _VF_CONVERSION_EXEMPT:
+                continue
+            if any("converted at" in str(r.get("source_locator") or "") for r in rs):
+                return None
+        basis = (f"areaUnit '{row.get('value')}' stated in {row.get('source_file') or '?'}, "
+                 f"{str(row.get('source_locator') or '')[:60]}")
+        return u, basis
+    except Exception:
+        return None
+
+
+def _vf_printed_unit(measured, top) -> str:
+    """The unit as the dominant siblings PRINT it ('sq m', 'parking spaces'), else `top`."""
+    for _, s, u, _v in measured:
+        if u == top:
+            m = _MEASURED.match(s)
+            if m:
+                return " ".join(m.group(1).split())
+    return top
 
 
 def cmd_coord_provenance(args) -> int:
@@ -1135,6 +1288,31 @@ def cmd_value_format(args) -> int:
     to prevent - a count or a power rating would be silently relabelled. The fix is attributed
     instead: read the source and record it in work/overrides.json, or, when the source does not
     settle it, ASK THE BROKER (see SKILL.md exit 6).
+
+    2026-09-26 test run (fixes 3.3 + 2.3). The gate asked 32 broker questions, and 31 of them
+    were about values that were never ambiguous. Three exemptions and one no-cascade rule, each
+    of which KEEPS the 10.76x protection - a bare figure on a record with no stated, unconverted
+    unit of its own is still asked:
+      * COUNT FIELDS (`_common.COUNT_FIELDS`): '130' beside '72 parking spaces' is a count
+        beside a count with its noun; there is no unit to lose. Still asked when the siblings
+        write an AREA unit (truck parking quoted in acres), because then the bare figure really
+        could be either.
+      * CHROME TWIN (`_CHROME_FORMATTED_TWIN`): a bare officeArea is never displayed - the
+        chrome renders fmt(officeAreaVal) + the dataset unit - so it is not a second format on
+        the grid. Only when the twin is a real positive number and the record's unit was stated
+        (not in `meta.unitAssumptions`).
+      * OWN STATED UNIT (`_own_area_unit`): a bare area whose OWN record's source printed the
+        same unit its siblings write (the first areaUnit ledger row is from a unit-printing
+        source type, the id is not in unitAssumptions, and no building-area row was CONVERTED).
+        A converted record's figures are in the source's unit - exactly the 10.76x case - so it
+        is asked. With no ledger this exemption is off.
+      * NO CASCADE: a value the broker bridge composed (a `vf-*` repair row with that exact
+        value) stays on the grid but casts no vote. It is an answer about one record, and
+        counting it credited the ORIGINAL source (which printed the figure bare) with writing
+        the unit (F21) and tipped under-threshold fields over the line, so each answered round
+        opened the next.
+    Each exemption prints one [note] per field (or per value, for the own-unit rule), so a
+    value that is not asked is still named.
     """
     data = C.load_canonical(Path(args.canonical))
     props = data.get("properties", [])
@@ -1168,6 +1346,11 @@ def cmd_value_format(args) -> int:
                     waived[(str(w.get("field")), str(w.get("id")))] = w.get("expect_value")
         except Exception:
             pass
+    # 2026-09-26 test run (fix 3.3 / 2.3): the ledger rows and meta the exemptions read, once.
+    # Any failure gives {} / set(), which switches the exemptions that need them off.
+    rows = _ledger_index(getattr(args, "ledger", ""), Path(args.canonical))
+    meta = data.get("meta") or {}
+    assumed = _vf_assumed_ids(meta) if isinstance(meta, dict) else set()
     by_field: dict[str, dict] = {}
     for p in props:
         for k, v in p.items():
@@ -1175,11 +1358,23 @@ def cmd_value_format(args) -> int:
                 continue
             if isinstance(v, (dict, list)):
                 continue
-            slot = by_field.setdefault(k, {"bare": [], "measured": []})
+            slot = by_field.setdefault(k, {"bare": [], "measured": [], "twin_ok": 0})
             if isinstance(v, bool):
                 continue
             s = str(v).strip()
             if isinstance(v, (int, float)) or _BARE_NUMBER.match(s):
+                # CHROME-TWIN RULE: the card never prints this bare string (see
+                # _CHROME_FORMATTED_TWIN), so it is not a second format on the grid - provided
+                # the twin is a real positive number and the record's unit was STATED, not
+                # assumed (an assumed unit renders as a guess, which the broker must see).
+                _twin = _CHROME_FORMATTED_TWIN.get(k)
+                if _twin:
+                    tv = p.get(_twin)
+                    if (isinstance(tv, (int, float)) and not isinstance(tv, bool)
+                            and math.isfinite(tv) and tv > 0
+                            and str(p.get("id")) not in assumed):
+                        slot["twin_ok"] += 1
+                        continue
                 _wk = (k, str(p.get("id")))
                 if _wk in waived and (waived[_wk] is None or str(waived[_wk]) == s):
                     print(f"  [note] `{k}` id={p.get('id')} ships as a bare '{s}' BY BROKER "
@@ -1194,17 +1389,38 @@ def cmd_value_format(args) -> int:
             unit = _unit_of(s)
             if unit:
                 vote = src_of.get((str(p.get("id")), k)) or f"record:{p.get('id')}"
+                # NO CASCADE (fix 2.3): a value this gate's own broker bridge COMPOSED ("5000"
+                # + the answered unit, a `vf-*` repair row carrying exactly this value) is an
+                # answer about ONE record, not evidence of how other sources write the field.
+                # Counted as a vote it credited the ORIGINAL source (which printed it bare) with
+                # writing the unit (F21), and pushed an under-threshold field over the line, so
+                # every answered round opened the next one. It stays a measured sibling (it is on
+                # the grid) with no vote.
+                if any((r.get("source_type") or "").strip().lower() == "repair"
+                       and str(r.get("source_locator") or "").strip().startswith("vf-")
+                       and str(r.get("value") or "").strip() == s
+                       for r in rows.get((str(p.get("id")), k), ())):
+                    vote = None
                 slot["measured"].append((p.get("id"), s, unit, vote))
     if not src_of and any(slot["measured"] for slot in by_field.values()):
         print("  [note] no source ledger to join (none beside the canonical, none via --ledger): "
               "measured siblings are counted per RECORD, so a multi-unit deck quoting one "
               "site-wide value casts one vote per unit (F21)")
     findings = []
+    own_units: dict = {}             # (field, id) -> the record's own stated unit, or None
+    by_id = {str(p.get("id")): p for p in props if isinstance(p, dict)}
     for field, slot in sorted(by_field.items()):
+        if slot.get("twin_ok") and slot["measured"]:
+            _tw = _CHROME_FORMATTED_TWIN.get(field)
+            print(f"  [note] `{field}`: {slot['twin_ok']} bare value(s) not asked - the chrome "
+                  f"renders each from its numeric twin `{_tw}` in the dataset unit, and the "
+                  f"record's unit was stated, not assumed")
         if not slot["bare"]:
             continue                 # consistent field
         votes: dict = {}             # source file -> the unit that source writes
         for _, _, u, vote in slot["measured"]:
+            if vote is None:         # a vf-composed value: on the grid, but not evidence
+                continue
             votes.setdefault(vote, u)
         if len(votes) < args.min_siblings:
             continue                 # too little INDEPENDENT evidence to call it
@@ -1215,7 +1431,30 @@ def cmd_value_format(args) -> int:
         top = max(set(units), key=units.count)
         if units.count(top) * 2 < len(units):
             continue
-        findings.append((field, slot["bare"], slot["measured"], top, len(votes)))
+        printed = _vf_printed_unit(slot["measured"], top)
+        # COUNT FIELDS (fix 3.3): the noun after a count ('72 parking spaces') is a label, not
+        # a unit the bare '130' lost. Guard: when the siblings write an AREA unit ('1.2 acres'
+        # of truck parking), the bare figure really is ambiguous and is still asked.
+        if field in C.COUNT_FIELDS and N.area_unit_of(printed) is None:
+            print(f"  [note] `{field}`: {len(slot['bare'])} bare value(s) not asked - a COUNT "
+                  f"field whose siblings write the same count with its noun ('{printed}'), not "
+                  f"a unit")
+            continue
+        # OWN-UNIT RULE (fix 3.3): a bare area on a record whose OWN source printed the very
+        # unit its siblings write is not ambiguous - it is that unit, unwritten.
+        remaining = []
+        for i, s in slot["bare"]:
+            ou = _own_area_unit(by_id.get(str(i)) or {}, assumed, rows)
+            if ou and N.area_unit_of(printed) == ou[0]:
+                print(f"  [note] `{field}` id={i} '{s}' not asked - its record's own source "
+                      f"states the area unit ({ou[1]}), the unit its siblings write; it renders "
+                      f"without the unit")
+                continue
+            own_units[(field, str(i))] = ou[0] if ou else None
+            remaining.append((i, s))
+        if not remaining:
+            continue
+        findings.append((field, remaining, slot["measured"], top, len(votes)))
     # An OPEN tracker column (not a canonical card field) is ADVISORY, never a block.
     #
     # F5: the rationale WAS that the repair loader rejected any non-canonical `set` key, so a
@@ -1249,20 +1488,23 @@ def cmd_value_format(args) -> int:
     # machine-readable findings for run.py's clarify bridge (the broker question).
     # Written even when empty so the bridge never reads a stale file.
     if getattr(args, "emit_json", ""):
-        def _printed_unit(measured, top):
-            for _, s, u, _v in measured:
-                if u == top:
-                    m = _MEASURED.match(s)
-                    if m:
-                        return " ".join(m.group(1).split())
-            return top
+        # `own_unit` (fix 3.3) is ADDITIVE on a bare entry, and present ONLY when the record's
+        # own source states a unit (necessarily not the siblings' one, or it was exempted): an
+        # entry without it is byte-identical to the old shape. clarify.value_format_questions
+        # ignores keys it does not know.
+        def _bare_entry(field, i, v):
+            e = {"id": i, "value": v}
+            ou = own_units.get((field, str(i)))
+            if ou:
+                e["own_unit"] = ou
+            return e
         payload = [{"field": field,
                     "dominant_unit": top,
-                    "dominant_printed": _printed_unit(measured, top),
+                    "dominant_printed": _vf_printed_unit(measured, top),
                     "measured_count": len(measured),
                     "measured_sources": n_src,
                     "examples": [s for _, s, _, _v in measured[:3]],
-                    "bare": [{"id": i, "value": v} for i, v in bare]}
+                    "bare": [_bare_entry(field, i, v) for i, v in bare]}
                    for field, bare, measured, top, n_src in findings]
         try:
             C.atomic_write_text(Path(args.emit_json),
@@ -1515,7 +1757,18 @@ def _form_line(f: dict) -> str:
 # finding is a SIGNAL unconditionally (never demoted by SIGNAL_MIN_RECORDS, never capped by
 # --max-notes), it prints ABOVE the asymmetry findings, it names both keys and the property so
 # one repair closes it, and it lands in the sidecar under its own key.
-SHADOW_FUZZ_MIN = 90                      # the fuzzy tier extract_xlsx._header_candidates uses
+#
+# THE ONE EXCEPTION (2026-09-26 test run, fix 3.5). The reasoning above is about NAME-SIMILARITY
+# judgements, and it still holds for every one of them. It does not hold for the curated strict
+# table `_common.ALIAS_PROMOTIONS`: those names are exact synonyms a human already confirmed
+# ONCE, for every run, and merge now PROMOTES them into their blank canonical home. So a strict
+# alias that still sits beside a literal "absent in all sources" gap row (read from the ledger,
+# property scope only) is not a judgement call - merge's promotion did not run on it, or the
+# value arrived after merge - and capture-symmetry BLOCKS on it with a one-repair remedy, or a
+# recorded `strict_alias_ok=<pid>:<openKey>` sign-off when the two really are different data.
+# A strict name whose VALUE merge rightly declines ('yes' for a door count, a 'let agreed' date
+# for earlyAccess) stays a SIGNAL. With the table absent or unreadable nothing can block.
+SHADOW_FUZZ_MIN = 90                     # the fuzzy tier extract_xlsx._header_candidates uses
 GAP_ROW_CLAIM = "absent in all sources"   # merge's gap-row locator; the claim this checks
 # fields whose gap-row aliases live under ANOTHER key in COLUMN_MAP (the tracker maps a rent
 # column to the numeric twin; the chrome-read field that ships the gap row is the display one)
@@ -1589,11 +1842,49 @@ def _shadow_registry() -> dict:
     reg: dict = {}
     for f in sorted(siblings):
         src = _SHADOW_ALIAS_SOURCE.get(f, f)
-        names = {_humanise_key(f)} | {str(a) for a in (col_map.get(src) or [])}
+        # 2026-09-26 test run (fix 3.5a): UNION the strict promotion table in, so the gate's table
+        # is a strict superset of merge's and the two stay ONE table (a strict alias always pairs).
+        # Never widen extract_xlsx.COLUMN_MAP for this - see the totalFloorArea block above.
+        names = ({_humanise_key(f)} | {str(a) for a in (col_map.get(src) or [])}
+                 | {str(a) for a in (getattr(C, "ALIAS_PROMOTIONS", {}) or {}).get(f, ())})
         aliases = sorted({_shadow_norm(a) for a in names if _shadow_norm(a)})
         reg[f] = {"aliases": aliases, "veto": negative.get(src), "numeric": f in numeric}
     _SHADOW_CACHE.update(reg)
     return _SHADOW_CACHE
+
+
+def _strict_alias_table() -> dict:
+    """{canonical field: frozenset of `alias_norm` phrases} from `_common.ALIAS_PROMOTIONS`, the
+    curated EXACT-synonym table merge promotes on (fix 3.5, 2026-09-26). {} on any failure, and
+    {} means every shadow finding stays a SIGNAL - exactly the behaviour before this table
+    existed. Deliberately NOT extract_xlsx.COLUMN_MAP: that table is loose on purpose (tracker
+    headers), and a loose name must never block a build."""
+    try:
+        tab = getattr(C, "ALIAS_PROMOTIONS", None) or {}
+        norm = getattr(C, "alias_norm", None) or (lambda a: _shadow_norm(_humanise_key(a)))
+        return {str(f): frozenset(n for n in (norm(a) for a in names) if n)
+                for f, names in tab.items()}
+    except Exception:
+        return {}
+
+
+def _is_strict_shadow(open_key: str, value, field: str, table: dict) -> bool:
+    """True when `open_key` is a STRICT alias of `field` AND merge's own promotion rule would
+    have moved `value` into it (`_common.promotable_alias`: a count needs a digit, an
+    earlyAccess is never a 'let agreed' date, a sentinel never moves). Both halves matter: a
+    strict name whose value merge rightly DECLINED ('levelAccessDoors': 'yes') is not a merge
+    regression, so it must stay a SIGNAL. Never raises (-> False, i.e. SIGNAL)."""
+    try:
+        names = table.get(field)
+        if not names:
+            return False
+        norm = getattr(C, "alias_norm", None) or (lambda a: _shadow_norm(_humanise_key(a)))
+        if norm(open_key) not in names:
+            return False
+        promo = getattr(C, "promotable_alias", None)
+        return promo is None or promo(open_key, value) == field
+    except Exception:
+        return False
 
 
 def shadow_pairs(open_key: str, value, absent_fields) -> list[dict]:
@@ -1688,6 +1979,14 @@ def shadow_findings(work: Path, all_recs: list) -> list[dict]:
         except Exception:
             props = []
         gaps, prow = _ledger_gap_index(work)
+        # 2026-09-26 test run (fix 3.5): the curated strict tier. Merge now PROMOTES an exact
+        # synonym into its blank canonical home, so a strict alias that still sits beside a
+        # literal 'absent in all sources' gap row is a merge regression (or a value that arrived
+        # after merge), not a naming judgement - `strict` marks it, and capture-symmetry blocks
+        # on it. Property scope ONLY, and only against a gap row READ from the ledger: before
+        # merge (record scope) the promotion has not had its chance, and without a ledger the
+        # absence is inferred, not claimed.
+        strict_tab = _strict_alias_table() if gaps is not None else {}
         for p in props:
             if not isinstance(p, dict):
                 continue
@@ -1708,7 +2007,9 @@ def shadow_findings(work: Path, all_recs: list) -> list[dict]:
                                 "source_file": str(row.get("source_file") or ""),
                                 "locator": str(row.get("source_locator") or "")[:120],
                                 "ledger": ("gap row" if gaps is not None else "not read"),
-                                "core": pair["field"] in CAPTURE_CORE_FIELDS, "signal": True})
+                                "core": pair["field"] in CAPTURE_CORE_FIELDS, "signal": True,
+                                "strict": bool(gaps is not None and _is_strict_shadow(
+                                    k, p.get(k), pair["field"], strict_tab))})
         return out
     for rec in all_recs:
         if not isinstance(rec, dict):
@@ -1753,6 +2054,157 @@ def _shadow_line(f: dict) -> str:
             f"Report and Source Ledger ({f['how']}). {fix}")
 
 
+STRICT_ALIAS_ACK_KEY = "strict_alias_ok"   # placeholder_audit_ack.json key, values "<pid>:<openKey>"
+
+
+def _strict_alias_acks(work: Path) -> set:
+    """The `strict_alias_ok` sign-offs ("<pid>:<openKey>") from work/placeholder_audit_ack.json,
+    written by `gate_runner.py ack --add strict_alias_ok=<pid>:<openKey>`. An unreadable file
+    reads as no sign-offs (the block stands, and says how to clear it)."""
+    try:
+        path = Path(work) / "placeholder_audit_ack.json"
+        if not path.exists():
+            return set()
+        cur = json.loads(path.read_text(encoding="utf-8-sig")) or {}
+        vals = cur.get(STRICT_ALIAS_ACK_KEY) if isinstance(cur, dict) else None
+        if isinstance(vals, str):
+            vals = [vals]
+        return {str(v).strip() for v in (vals or []) if str(v).strip()}
+    except Exception:
+        return set()
+
+
+def _strict_line(f: dict, acked: bool = False) -> str:
+    """The printed line for a STRICT-alias false absence (fix 3.5, 2026-09-26): a [FAIL], or a
+    [note] once a reviewer signed off that the two keys are genuinely different data."""
+    pid, k, fld = f.get("property_id") or "<id>", f["open_key"], f["field"]
+    where = f.get("source_file") or "?"
+    if f.get("locator"):
+        where += f", {f['locator']}"
+    if acked:
+        return (f"  [note] property {pid}: `{k}` = {f['open_value']!r} ({where}) is a STRICT alias "
+                f"of `{fld}`, which ships an '{GAP_ROW_CLAIM}' gap row - signed off as genuinely "
+                f"different data ({STRICT_ALIAS_ACK_KEY}={pid}:{k} in placeholder_audit_ack.json)")
+    return (f"  [FAIL] property {pid}: `{k}` = {f['open_value']!r} ({where}) is a STRICT alias of "
+            f"`{fld}`, yet `{fld}` ships an '{GAP_ROW_CLAIM}' gap row - merge's promotion did not "
+            f"run on it (or the value arrived after merge). Repair: work/repairs.json `set` {fld} "
+            f"to that value citing the page, and `unset` {k}; if the two are genuinely different "
+            f"data, `gate_runner.py ack --work <W> --add {STRICT_ALIAS_ACK_KEY}={pid}:{k}`.")
+
+
+# 2026-09-26 test run (fix 3.6a): a figure that lives ONLY inside a reader doubt's options. The
+# measured case: a deck itemised four warehouse compartments and printed no warehouse-only total;
+# the reader raised a doubt on `warehouseArea` whose options were the four compartment lines, and
+# captured none of them as a field. An option is a CHOICE, not a capture: once the doubt is
+# answered, the chosen figure has no Source Ledger row, and Python cannot combine figures from a
+# cited field that does not exist. So the signal names every option figure no field of the same
+# record holds. ADVISORY (a SIGNAL for the G-honesty reviewer and a re-dispatch hint), never a
+# block: a doubt whose options restate captured fields is the normal, correct shape.
+# each thousands group is EXACTLY three digits (`(?!\d)`), so "Q4 2026" is never read as 4,202
+_DOUBT_FIG_RE = re.compile(
+    r"\d{1,3}(?:[,.   ]\d{3}(?!\d))+(?:[.,]\d+)?|\d+(?:[.,]\d+)?")
+# the same without the plain space as a thousands separator, so "Unit 2 62,324" also yields
+# 62324 rather than only the fused 262324; BOTH readings are taken on both sides, which can only
+# make a figure look captured (fewer signals), never invent an uncaptured one
+_DOUBT_FIG_NOSPACE_RE = re.compile(
+    r"\d{1,3}(?:[,.  ]\d{3}(?!\d))+(?:[.,]\d+)?|\d+(?:[.,]\d+)?")
+DOUBT_FIG_MIN = 100          # below this a figure is a unit number, a count or a floor, not an area
+_DOUBT_FIG_TOL = 0.5
+
+
+def _doubt_figures(s) -> list:
+    """The figures in `s` (floats >= DOUBT_FIG_MIN), each token parsed with
+    `normalize.normalize_number` on its own - never that function's greedy regex over the whole
+    string, which fuses 'Unit 2 62,324' into 262324. A bare 4-digit 1900-2100 token (a year) is
+    dropped. Never raises."""
+    out: list = []
+    try:
+        text = str(s or "")
+        for rx in (_DOUBT_FIG_RE, _DOUBT_FIG_NOSPACE_RE):
+            for m in rx.finditer(text):
+                tok = m.group(0)
+                if re.fullmatch(r"\d{4}", tok) and 1900 <= int(tok) <= 2100:
+                    continue
+                if "," in tok and "." in tok:
+                    # both separators: the LATER one is the decimal ('62,324.50' / '62.324,50'),
+                    # the usual reading in every locale that writes both
+                    dec = "," if tok.rfind(",") > tok.rfind(".") else "."
+                    grp = "." if dec == "," else ","
+                    try:
+                        v = float(re.sub(r"[\s  ]", "",
+                                         tok.replace(grp, "")).replace(dec, "."))
+                    except ValueError:
+                        v = None
+                else:
+                    v = N.normalize_number(tok)
+                if v is not None and v >= DOUBT_FIG_MIN and v not in out:
+                    out.append(float(v))
+    except Exception:
+        return out
+    return out
+
+
+def doubt_uncaptured(all_recs: list) -> list[dict]:
+    """One entry per reader doubt (`__meta.doubts[*]` with a list of `options`) that offers a
+    figure no field of the SAME record holds. `held` = every figure in the record's non-__meta
+    SCALAR values (numbers as they are, strings through `_doubt_figures`) plus
+    `__meta.statedTotalArea`. An option counts as captured when ANY of its figures is within 0.5
+    of a held one (so a dual-unit '4,675 sq ft / 434 sq m' is captured by either figure). Options
+    with no figure ('Unit 2', 'Q4 2026') are ignored, and so is a Python-synthesised
+    'combined: ...' option (its figure is derived, never captured). Pure."""
+    out: list = []
+    for rec in all_recs or []:
+        if not isinstance(rec, dict):
+            continue
+        meta = rec.get("__meta") or {}
+        doubts = meta.get("doubts") if isinstance(meta, dict) else None
+        if not isinstance(doubts, list) or not doubts:
+            continue
+        held: list = []
+        for k, v in rec.items():
+            if k == "__meta":
+                continue
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, (int, float)):
+                held.append(float(v))
+            elif isinstance(v, str):
+                held.extend(_doubt_figures(v))
+        st = meta.get("statedTotalArea")
+        if isinstance(st, (int, float)) and not isinstance(st, bool):
+            held.append(float(st))
+        elif isinstance(st, str):
+            held.extend(_doubt_figures(st))
+        for d in doubts:
+            if not isinstance(d, dict) or not isinstance(d.get("options"), list):
+                continue
+            missing = []
+            for opt in d["options"]:
+                if not isinstance(opt, str) or opt.strip().lower().startswith("combined:"):
+                    continue
+                figs = _doubt_figures(opt)
+                if not figs:
+                    continue
+                if not any(abs(f - h) <= _DOUBT_FIG_TOL for f in figs for h in held):
+                    missing.append(opt.strip())
+            if missing:
+                out.append({"kind": "doubt_uncaptured",
+                            "source_file": str(meta.get("source_file") or ""),
+                            "record": _record_label(rec), "field": str(d.get("field") or "?"),
+                            "subject": str(d.get("subject") or "")[:80],
+                            "options": missing, "signal": True})
+    return out
+
+
+def _doubt_line(f: dict) -> str:
+    return (f"  [SIGNAL] {f.get('source_file') or '?'} record '{f.get('record', 'record')}': a "
+            f"reader doubt on `{f.get('field')}` offers figure(s) no field of the record holds - "
+            f"{'; '.join(f.get('options') or [])}. An option is a choice, not a capture: once "
+            f"answered, the figure has no Source Ledger row and Python cannot combine it. "
+            f"Re-dispatch that deck's reader with this line in Run context so each printed line "
+            f"is captured under its own descriptive key with its page in __meta.prov.")
+
+
 def cmd_capture_symmetry(args) -> int:
     """Cross-source field asymmetry - the cheap signal for UNDER-CAPTURE. (B58)
 
@@ -1787,6 +2239,14 @@ def cmd_capture_symmetry(args) -> int:
     pairing rules, what is deliberately not matched, and why every such finding is a SIGNAL
     but never a FAIL). Shadow findings print FIRST, uncapped, name both keys and the property,
     and run even on a single-source corpus, because one deck can shadow itself.
+
+    2026-09-26 test run. (fix 3.5) The ONE blocking path: a STRICT-alias shadow (see the block
+    above `SHADOW_FUZZ_MIN`) prints as a [FAIL] and the gate returns 1 - run.py appends this rc
+    to the pre-build scorecard, so it blocks at exit 6 with no run.py change - unless signed off
+    under `strict_alias_ok` in placeholder_audit_ack.json. Every other finding stays advisory.
+    (fix 3.6a) DOUBT-OPTION FIGURES: a reader doubt whose options carry a figure no field of the
+    record holds is a SIGNAL (`doubt_uncaptured`, also filed in the sidecar), because once the
+    doubt is answered that figure has no ledger row and Python cannot combine it.
     """
     work = Path(args.work)
     by_source: dict[str, dict] = {}
@@ -1814,24 +2274,58 @@ def cmd_capture_symmetry(args) -> int:
     # D15: SHADOW KEYS print first of all. A false absence is the most serious thing this gate
     # can find, it needs no second source to exist, and a capped tail must never hide it.
     shadow_sigs = shadow_findings(work, all_recs)
+    # 2026-09-26 test run (fix 3.5): a STRICT-alias shadow (the curated exact-synonym table merge
+    # promotes on) BLOCKS unless signed off; every other shadow stays the SIGNAL it always was.
+    strict_ok = _strict_alias_acks(work)
+    strict_fail: list = []
     for f in shadow_sigs:
-        print(_shadow_line(f))
-    _extra = ((f"; {len(shadow_sigs)} shadow-key SIGNAL(s) above (a non-registry key holding a "
-               f"datum whose canonical home ships a gap row)") if shadow_sigs else "")
+        if f.get("strict"):
+            acked = f"{f.get('property_id')}:{f.get('open_key')}" in strict_ok
+            f["strict_acked"] = acked
+            if not acked:
+                strict_fail.append(f)
+            print(_strict_line(f, acked=acked))
+        else:
+            print(_shadow_line(f))
+    _loose = [f for f in shadow_sigs if not f.get("strict")]
+    _extra = ((f"; {len(_loose)} shadow-key SIGNAL(s) above (a non-registry key holding a "
+               f"datum whose canonical home ships a gap row)") if _loose else "")
+    if strict_fail:
+        _extra += (f"; {len(strict_fail)} STRICT-alias false absence(s) above BLOCK (repair, or "
+                   f"ack {STRICT_ALIAS_ACK_KEY})")
     # F17: printed FIRST and uncapped, like every SIGNAL here. Two records of ONE source can
     # disagree on form too (a deck read in two halves), so this runs before the source-count
     # gate below and is not subject to it.
     form_sigs = form_disagreements(all_recs)
     for f in form_sigs:
         print(_form_line(f))
+    # 2026-09-26 test run (fix 3.6a): doubt-option figures no field holds. Uncapped, advisory,
+    # and like the form signal it needs no second source (one deck can do it to itself).
+    try:
+        doubt_sigs = doubt_uncaptured(all_recs)
+    except Exception as e:           # fail safe: today's output, plus one line saying so
+        doubt_sigs = []
+        print(f"  [note] doubt-option capture check skipped ({type(e).__name__}: {e})")
+    for f in doubt_sigs:
+        print(_doubt_line(f))
+    if doubt_sigs:
+        _extra += (f"; {len(doubt_sigs)} doubt-option SIGNAL(s) above (a figure only a doubt's "
+                   f"options hold)")
+
+    def _status() -> int:
+        if strict_fail:
+            print(f"STATUS: BLOCKED ({len(strict_fail)} strict-alias false absence(s))")
+            return 1
+        print("STATUS: ALL-PASS")
+        return 0
+
     sources = {s: d for s, d in by_source.items() if d["n"]}
     if len(sources) < 2:
         _ok(f"capture symmetry not applicable ({len(sources)} source(s) with records)"
             + (f"; {len(form_sigs)} form disagreement(s) above" if form_sigs else "") + _extra)
-        if shadow_sigs:
-            _write_capture_sidecar(work, sources, [], [], shadow_sigs)
-        print("STATUS: ALL-PASS")
-        return 0
+        if shadow_sigs or doubt_sigs:
+            _write_capture_sidecar(work, sources, [], [], shadow_sigs, doubt_sigs)
+        return _status()
     everywhere = sorted(set().union(*(d["fields"] for d in sources.values())))
     findings = []
     for field in everywhere:
@@ -1851,10 +2345,9 @@ def cmd_capture_symmetry(args) -> int:
     if not findings:
         _ok(f"every field is captured symmetrically across {len(sources)} source(s)"
             + (f"; {len(form_sigs)} form disagreement(s) above" if form_sigs else "") + _extra)
-        if shadow_sigs:
-            _write_capture_sidecar(work, sources, form_sigs, [], shadow_sigs)
-        print("STATUS: ALL-PASS")
-        return 0
+        if shadow_sigs or doubt_sigs:
+            _write_capture_sidecar(work, sources, form_sigs, [], shadow_sigs, doubt_sigs)
+        return _status()
     for f in findings:
         f["signal"] = bool(f["core"] or (f["affected_records"] >= SIGNAL_MIN_RECORDS
                                          and f["present_records"] >= SIGNAL_MIN_PRESENT))
@@ -1865,7 +2358,7 @@ def cmd_capture_symmetry(args) -> int:
     findings.sort(key=lambda f: (not f["signal"], not f["core"], -f["weight"],
                                  -f["affected_records"], -f["present_records"], f["field"]))
     # the FULL list always lands on disk, so the capped tail is never simply lost
-    _write_capture_sidecar(work, sources, form_sigs, findings, shadow_sigs)
+    _write_capture_sidecar(work, sources, form_sigs, findings, shadow_sigs, doubt_sigs)
 
     def _line(f, tag):
         return (f"  [{tag}] `{f['field']}` captured from {', '.join(f['have'])} but from NONE "
@@ -1887,17 +2380,23 @@ def cmd_capture_symmetry(args) -> int:
         f"{len(signals)} of them SIGNAL (a core field, or >= {SIGNAL_MIN_RECORDS} records "
         f"affected with >= {SIGNAL_MIN_PRESENT} carrying it elsewhere)"
         + (f", plus {len(form_sigs)} form disagreement SIGNAL(s)" if form_sigs else "")
-        + (f", plus {len(shadow_sigs)} shadow-key SIGNAL(s)" if shadow_sigs else "")
-        + " - ADVISORY, for the G-honesty/G-trace reviewers to re-derive")
-    print("STATUS: ALL-PASS")
-    return 0
+        + (f", plus {len(_loose)} shadow-key SIGNAL(s)" if _loose else "")
+        + (f", plus {len(doubt_sigs)} doubt-option SIGNAL(s)" if doubt_sigs else "")
+        + (f", plus {len(strict_fail)} STRICT-alias false absence(s) that BLOCK"
+           if strict_fail else "")
+        # 2026-09-26 test run (fix 1.4): G-honesty is the under-capture sweep's sole owner.
+        + " - ADVISORY (strict-alias false absences excepted), for the G-honesty reviewer (the "
+          "under-capture owner) to re-derive")
+    return _status()
 
 
 def _write_capture_sidecar(work: Path, sources: dict, form_sigs: list, findings: list,
-                           shadow_sigs: list) -> None:
+                           shadow_sigs: list, doubt_sigs=None) -> None:
     """work/capture_symmetry.json - the FULL finding lists, so a capped console tail is never
     simply lost. `shadow_findings` (D15) is a new key beside the existing ones; a reader of the
-    old shape sees exactly the fields it saw before. Best-effort, never raises."""
+    old shape sees exactly the fields it saw before. `doubt_uncaptured` (fix 3.6a, 2026-09-26)
+    is another additive key: doubt options offering a figure no field holds. Best-effort,
+    never raises."""
     try:
         (work / "capture_symmetry.json").write_text(
             json.dumps({"sources": {s: d["n"] for s, d in sorted(sources.items())},
@@ -1905,7 +2404,9 @@ def _write_capture_sidecar(work: Path, sources: dict, form_sigs: list, findings:
                         "signal_min_present": SIGNAL_MIN_PRESENT,
                         "form_disagreements": form_sigs,
                         "findings": findings,
-                        "shadow_findings": shadow_sigs}, ensure_ascii=False, indent=2),
+                        "shadow_findings": shadow_sigs,
+                        "doubt_uncaptured": list(doubt_sigs or [])},
+                       ensure_ascii=False, indent=2),
             encoding="utf-8")
     except Exception:
         pass
@@ -2257,6 +2758,12 @@ def _card_title(p: dict) -> str:
         SHA.
 
     THE RULE, MIRRORED EXACTLY:
+      * v45 precedence: a stated `displayName` (the client's own name for the option) IS the
+        title, trimmed, and nothing below applies; a sentinel displayName is absence and falls
+        through to park + unit (`const shown = isAbsent(p.displayName) ? "" : ...; if(shown)
+        return shown;`). This copy lacked that line until 2026-09-26 (fix 3.6b), so a
+        displayName-only record read as blank and two cards sharing one park but carrying
+        different displayNames falsely collided;
       * a sentinel park or unit is ABSENCE, so it contributes nothing and adds no separator;
       * no unit -> the park name; no park -> the unit;
       * the designator is dropped when the park's alphanumeric WORDS already contain the
@@ -2275,6 +2782,9 @@ def _card_title(p: dict) -> str:
 
     CORRECT BEFORE AND AFTER `unit` LANDS. A record with no `unit` key at all is titled by its
     park alone, which is what a record whose source names no unit does for ever."""
+    shown = "" if _absent(p.get("displayName"), "displayName") else str(p.get("displayName")).strip()
+    if shown:
+        return shown
     name = "" if _absent(p.get("park"), "park") else str(p.get("park")).strip()
     unit = "" if _absent(p.get("unit"), "unit") else str(p.get("unit")).strip()
     if not unit:
@@ -2506,18 +3016,31 @@ def cmd_coverage(args) -> int:
     # INERT WHEN ONLY ONE PROPERTY SHIPS, by construction: a collision needs a second title to
     # collide with, so a single-property run cannot reach the report at all. It is equally
     # inert on every corpus whose titles differ, which is every correct run.
+    # 2026-09-26 test run (fix 3.6b): A BLANK TITLE BLOCKS ON ITS OWN. `titleStr` returns falsy
+    # when a record states no displayName, no park and no unit, and the card's `<h3>`, the
+    # compare chip, the map popup and the comparison table's column header all interpolate it
+    # with NO fallback. Until this change only TWO blank records blocked (as a "collision" of
+    # two empty headings); ONE blank card shipped with no heading at all, which the reader
+    # cannot tell apart from a rendering fault. Per record, so every blank id is named.
+    for p in props:
+        if not _card_title(p):
+            issues.append(
+                f"blank card title: property id={p.get('id')} states no displayName, no park and "
+                f"no unit, so its card heading, compare chip, map popup and comparison-table "
+                f"header all render EMPTY. Set the name its source prints - a work/repairs.json "
+                f"`set` on `park` (or `displayName` when the client's tracker names it), citing "
+                f"source_file + source_locator; if the source prints no scheme name, use the "
+                f"estate or street name it does state, and if it states none, ask the broker. "
+                f"Never compose a name the source does not print.")
     by_title: dict = {}
     for p in props:
         title = _card_title(p)
-        # AN EMPTY TITLE IS NOT SKIPPED, and that is a correction of the obvious first
-        # instinct. `titleStr` returns falsy when a record states neither a park nor a unit,
-        # and the card's own `<h3>` and the comparison table's column header interpolate it
-        # with NO fallback - so two such records ship two BLANK headings, which is the
-        # indistinguishable pair in its purest form rather than an absence of one. It is
-        # keyed like any other title (the empty string cannot collide with a real one, since
-        # a stated park always normalises to something) and the message says plainly that the
-        # heading is blank, so the reader is not sent looking for a title to compare.
         key = _norm_title(title)
+        # A blank title is reported per record just above (strictly stronger than pairing two
+        # blanks as a collision), so it is not keyed here. A stated title always normalises to
+        # something, so this skips nothing else.
+        if not key:
+            continue
         # MEMBERSHIP, not a truthiness test on the stored id: a property whose `id` is None
         # or 0 must still anchor the next collision, and `by_title.get(key)` would read as
         # "not seen yet" for both of them and quietly re-key instead of reporting.
@@ -2525,8 +3048,7 @@ def cmd_coverage(args) -> int:
             by_title[key] = p.get("id")
             continue
         first = by_title[key]
-        shown = (f"'{title}'" if title else
-                 "EMPTY - neither record states a park name or a unit designator")
+        shown = f"'{title}'"
         issues.append(
             f"identical card title: properties id={first} and id={p.get('id')} both render "
             f"the same card heading ({shown}), so two different options are indistinguishable "
@@ -3272,6 +3794,20 @@ def cmd_arithmetic(args) -> int:
     no stated total recorded; a non-numeric or absent contributor; a sentinel; or a stated total
     whose unit merge could not align (see `merge.stated_total_for`, which refuses an un-converted
     record outright). An ack clears a property that is genuinely fine.
+
+    2026-09-26 test run (fix 3.7b): THE ONE SHAPE THAT IS A BASIS DECISION, NOT A DATA ERROR.
+    When the source prints ONE whole-building total and no warehouse-only line, a reader ships
+    that total as warehouseArea (the reader contract says so) and the office is then added on
+    top: warehouseArea == the stated total (within tolerance) and an office area is present.
+    Nothing is misread - the question is which basis the client sees, and on the measured run
+    it was decided in chat and hand-written as two repairs with no question id. Each
+    over-derivation now carries a `shape` ("warehouse_is_total" for exactly that, "other" for
+    everything else), `--emit-json` hands the findings to run.py's arithmetic-basis bridge
+    (an exit-13 broker question), and a broker decision to KEEP the printed total is honoured
+    from `--waivers` (default arithmetic_waivers.json beside the canonical, so a hand run
+    honours it too) ONLY while the figures it was given still match - a waiver never outlives
+    the numbers it was about. "other" shapes block exactly as before; `arithmetic_ok` stays the
+    hand ack for either.
     """
     data = C.load_canonical(Path(args.canonical))
     meta = data.get("meta", {}) or {}
@@ -3284,6 +3820,41 @@ def cmd_arithmetic(args) -> int:
         except Exception:
             pass
     acked = {str(x) for x in (ack.get("arithmetic_ok") or [])}
+    # fix 3.7b: broker basis decisions. Unreadable -> none applied, said once (the block stands).
+    _wv_arg = getattr(args, "waivers", "") or ""
+    wv_path = (Path(_wv_arg) if _wv_arg
+               else Path(args.canonical).resolve().parent / "arithmetic_waivers.json")
+    waivers: dict = {}
+    if wv_path.exists():
+        try:
+            for w in json.loads(wv_path.read_text(encoding="utf-8-sig")) or []:
+                if isinstance(w, dict) and w.get("id") is not None:
+                    waivers.setdefault(str(w.get("id")), []).append(w)
+        except Exception as e:
+            print(f"[note] {wv_path.name} could not be read ({type(e).__name__}) - no broker "
+                  f"basis decision applied")
+            waivers = {}
+    emit_path = getattr(args, "emit_json", "") or ""
+    emitted: list = []
+
+    def _close(a, b) -> bool:
+        try:
+            return abs(float(a) - float(b)) <= 0.5
+        except (TypeError, ValueError):
+            return False
+
+    def _waiver_for(pid, wa, oa, total):
+        """(matching waiver or None, True when a waiver exists for pid but its figures moved)."""
+        stale = False
+        for w in waivers.get(pid, []):
+            ex = w.get("expect") if isinstance(w.get("expect"), dict) else {}
+            ok = (_close(ex.get("warehouseArea"), wa)
+                  and _close(ex.get("officeAreaVal") or 0, oa or 0)
+                  and _close(ex.get("statedTotal"), total))
+            if ok:
+                return w, False
+            stale = True
+        return None, stale
 
     def _num(v):
         """The chrome's own test: a finite number, and for office also > 0."""
@@ -3316,6 +3887,23 @@ def cmd_arithmetic(args) -> int:
                 notes.append(f"{label} - OVER by {gla - total:,.0f}, ACKED in "
                              f"placeholder_audit_ack.json (arithmetic_ok)")
                 continue
+            # fix 3.7b: which over-derivation is this? The printed total read as the warehouse
+            # area (the office then counted twice) is a basis question for the broker.
+            shape = "warehouse_is_total" if (abs(wa - total) <= tol and oa > tol) else "other"
+            wv, wv_stale = _waiver_for(pid, wa, oa, total)
+            if wv is not None:
+                notes.append(f"{label} - OVER by {gla - total:,.0f}, KEPT BY BROKER DECISION "
+                             f"(exit-13 answer to {wv.get('question_id') or '?'}; disclosed in "
+                             f"the Gaps Report)")
+                continue
+            if wv_stale:
+                notes.append(f"{label} - a broker basis decision exists for property {pid} but "
+                             f"waiver NOT applied (figures changed; the question will re-fire)")
+            emitted.append({"id": p.get("id"), "park": p.get("park"), "unit": p.get("unit"),
+                            "warehouseArea": wa, "officeAreaVal": oa, "stated_total": total,
+                            "area_unit": u, "source_file": st.get("source_file") or "",
+                            "locator": st.get("locator") or "",
+                            "over_by": round(gla - total, 2), "shape": shape})
             over_pct = (gla - total) / total * 100.0
             issues.append(
                 f"{label} - OVER by {gla - total:,.0f} ({over_pct:.1f}%, tolerance "
@@ -3324,10 +3912,20 @@ def cmd_arithmetic(args) -> int:
                 f"column was a GROSS total that already INCLUDED the office: fix the datum "
                 f"(warehouseArea should be the NET warehouse area), or - if the figures are "
                 f"genuinely right - add \"{pid}\" to \"arithmetic_ok\" in "
-                f"placeholder_audit_ack.json.")
+                f"placeholder_audit_ack.json."
+                + (" This is the printed total read as the warehouse area; the run asks the "
+                   "broker which basis to use (exit 13)." if shape == "warehouse_is_total"
+                   else ""))
         elif total - gla > tol:
             notes.append(f"{label} - under by {total - gla:,.0f} (mezzanine / ancillary / plant "
                          f"space is not required to sum; not blocking)")
+    # fix 3.7b: written EVEN WHEN EMPTY when asked, so the bridge never reads a stale file
+    if emit_path:
+        try:
+            C.atomic_write_text(Path(emit_path),
+                                json.dumps(emitted, ensure_ascii=False, indent=1))
+        except Exception as e:
+            print(f"[note] could not write arithmetic findings json: {e}")
     for n in notes:
         print(f"[note] {n}")
     if not stated:
@@ -3897,6 +4495,94 @@ def _coalesce_rounds(st: dict) -> list:
 
 
 
+QA_BECAUSE_MIN = 20     # a resolve is a claim about the artefact; this is its minimum statement
+
+
+def _qa_find(st: dict, cur: dict, fid: str):
+    """The finding `fid` names in this QA window: the current recorded round's advisories and
+    blockers, plus every round's blockers (a finding is resolvable in the round it was RAISED
+    in). None when no finding carries that id."""
+    pool = list(cur.get("advisory") or []) + list(cur.get("blocking") or [])
+    for r in st.get("rounds") or []:
+        pool += list(r.get("blocking") or [])
+    return next((e for e in pool if finding_id(e) == fid), None)
+
+
+def _qa_check_because(s) -> str | None:
+    """The reason's fault, or None when it is an acceptable resolve reason."""
+    because = " ".join(str(s or "").split())
+    if len(because) < QA_BECAUSE_MIN:
+        return (f"--because must state WHY the finding is now false (>= {QA_BECAUSE_MIN} "
+                f"chars). A resolve is a claim about the artefact, not a dismissal.")
+    return None
+
+
+def _qa_list_ids(st: dict, cur: dict) -> None:
+    for e in cur.get("advisory") or []:
+        print(f"  ADVISORY {finding_id(e)}  {str(e)[:110]}")
+    for e in dict.fromkeys(x for r in st["rounds"] for x in (r.get("blocking") or [])):
+        print(f"  BLOCKING {finding_id(e)}  {str(e)[:110]}")
+
+
+def _qa_resolve_batch(work: Path, st: dict, cur: dict, batch: str) -> int:
+    """`qa-round resolve --batch <file.json>` (fix 2.8, 2026-09-26): several resolves in ONE call.
+
+    The real run's QA window resolved its findings one `--id/--because` call at a time. Same
+    guards, applied to EVERY entry BEFORE anything is written: each id must name a finding in
+    this window, each reason must be >= 20 chars, no id may appear twice. ALL-OR-NOTHING - one
+    bad entry writes nothing and says which entries were wrong, so a half-applied batch cannot
+    exist. One fingerprint and one save for the lot."""
+    try:
+        entries = json.loads(Path(batch).read_text(encoding="utf-8-sig"))
+    except Exception as e:
+        print(f"[FAIL] --batch {ascii(str(batch))}: not a readable JSON file ({type(e).__name__})")
+        print("STATUS: BLOCKED")
+        return 1
+    if not isinstance(entries, list) or not entries or not all(isinstance(x, dict) for x in entries):
+        print('[FAIL] --batch must be a non-empty JSON list of {"id": "<id>", "because": '
+              '"<what you changed>"} objects - nothing was resolved')
+        print("STATUS: BLOCKED")
+        return 1
+    faults, ok, seen = [], [], set()
+    for n_, e in enumerate(entries, 1):
+        fid = str(e.get("id") or "").strip().lower()
+        if not fid:
+            faults.append(f"entry {n_} (no id): every entry needs an `id`")
+            continue
+        if fid in seen:
+            faults.append(f"entry {n_} ({fid}): this id appears more than once in the batch")
+            continue
+        seen.add(fid)
+        target = _qa_find(st, cur, fid)
+        if target is None:
+            faults.append(f"entry {n_} ({fid}): no finding with this id in this QA window")
+            continue
+        bad = _qa_check_because(e.get("because"))
+        if bad:
+            faults.append(f"entry {n_} ({fid}): {bad}")
+            continue
+        ok.append((fid, target, " ".join(str(e.get("because")).split())))
+    if faults:
+        for f in faults:
+            print(f"[FAIL] {f}")
+        print("  nothing was resolved (a batch is all-or-nothing); the ids in this window:")
+        _qa_list_ids(st, cur)
+        print("STATUS: BLOCKED")
+        return 1
+    now = _artefact_fingerprint(work)
+    res = cur.setdefault("resolved", {})
+    for fid, target, because in ok:
+        res[fid] = {"finding": target, "because": because, "fingerprint": now}
+    _qa_save(work, st)
+    for fid, target, because in ok:
+        print(f"OK resolved {fid}: {str(target)[:110]}")
+        print(f"  because: {because[:200]}")
+    print(f"CARRIED: {len(qa_carried(work))}")
+    print("NEXT: they are struck from the Gaps Report's 'Known limitations'. Re-run "
+          "deliver.py so the delivered report matches the recorded round.")
+    return 0
+
+
 def cmd_qa_round(args) -> int:
     work = Path(args.work)
     st = _qa_load(work)
@@ -3948,7 +4634,8 @@ def cmd_qa_round(args) -> int:
             print(f"  ADVISORY {finding_id(entry)}  {str(entry)}")
         if open_b:
             print(f"NEXT: fix each BLOCKING finding above, then `qa-round resolve --work <work> "
-                  f"--id <id> --because \"<what you changed>\"` for each, then re-run.")
+                  f"--id <id> --because \"<what you changed>\"` for each, then re-run. "
+                  f"(several at once: --batch <file.json> of [{{\"id\", \"because\"}}])")
         return 0
 
     if args.mode == "resolve":
@@ -3974,27 +4661,31 @@ def cmd_qa_round(args) -> int:
             return 1
         cur = recorded[-1]
         fid = (getattr(args, "id", "") or "").strip().lower()
+        # fix 2.8: `--batch` resolves several findings in one all-or-nothing call. getattr, so a
+        # caller building its own args object without the attribute keeps working.
+        batch = (getattr(args, "batch", "") or "").strip()
+        if batch and fid:
+            print("[FAIL] pass --id OR --batch, not both")
+            print("STATUS: BLOCKED")
+            return 1
+        if batch:
+            return _qa_resolve_batch(work, st, cur, batch)
         # BLOCKING findings are resolvable too (B44). Before, only an advisory could be resolved -
         # but the mandatory repair AFTER adjudication is by definition against a BLOCKING finding
         # that came back `not fixed`, and it has to be recordable without a third review. That is
         # what makes "fix it, then ship without check" a decision rather than a hole: the fingerprint
         # guard means it cannot be cleared without actually changing an artefact.
-        _pool = list(cur.get("advisory") or []) + list(cur.get("blocking") or [])
-        for _r in st["rounds"]:                    # ...including the round the finding was RAISED in
-            _pool += list(_r.get("blocking") or [])
-        target = next((e for e in _pool if finding_id(e) == fid), None)
+        # (...including the round the finding was RAISED in - see _qa_find.)
+        target = _qa_find(st, cur, fid)
         if target is None:
             print(f"[FAIL] no finding with id {ascii(fid)} in this QA window")
-            for e in cur.get("advisory") or []:
-                print(f"  ADVISORY {finding_id(e)}  {str(e)[:110]}")
-            for e in dict.fromkeys(x for r in st["rounds"] for x in (r.get("blocking") or [])):
-                print(f"  BLOCKING {finding_id(e)}  {str(e)[:110]}")
+            _qa_list_ids(st, cur)
             print("STATUS: BLOCKED")
             return 1
         because = " ".join((getattr(args, "because", "") or "").split())
-        if len(because) < 20:
-            print("[FAIL] --because must state WHY the finding is now false (>= 20 chars). "
-                  "A resolve is a claim about the artefact, not a dismissal.")
+        _bad_because = _qa_check_because(because)
+        if _bad_because:
+            print(f"[FAIL] {_bad_because}")
             print("STATUS: BLOCKED")
             return 1
         # NO ARTEFACT-FRESHNESS GUARD (B9). It used to refuse unless the artefact had moved since
@@ -4259,7 +4950,17 @@ def main() -> None:
     # P1-1: its OWN subcommand rather than folded into validate-data, so the scorecard line names
     # the arithmetic and the remedy is independent of every schema check.
     p = sub.add_parser("arithmetic", help="derived GLA vs the source's own stated total area")
-    p.add_argument("canonical"); p.set_defaults(fn=cmd_arithmetic)
+    p.add_argument("canonical")
+    # 2026-09-26 test run (fix 3.7b): the broker-question bridge, modelled on value-format's.
+    p.add_argument("--emit-json", dest="emit_json", default="",
+                   help="write machine-readable over-derivation findings here, each with its "
+                        "`shape` (run.py's arithmetic-basis clarify bridge); always written, "
+                        "empty when nothing is over")
+    p.add_argument("--waivers", default="",
+                   help="JSON list of broker basis decisions {id, expect:{warehouseArea, "
+                        "officeAreaVal, statedTotal}, question_id, why} (default: "
+                        "arithmetic_waivers.json beside the canonical, when it exists)")
+    p.set_defaults(fn=cmd_arithmetic)
     p = sub.add_parser("enrichment"); p.add_argument("canonical")
     p.add_argument("--requested", default="", help="comma-separated layers the broker "
                    "REQUESTED (geocode,pois,osrm,regions) - a requested layer that left "
@@ -4279,6 +4980,10 @@ def main() -> None:
     p.add_argument("--because", default="", help="`resolve`: why the finding is now FALSE of "
                    "the artefact - for a blocking finding, what you changed (>= 20 chars, "
                    "recorded in qa_state.json)")
+    # fix 2.8 (2026-09-26): a FLAG, not a mode - qa_round_test pins the three mode choices.
+    p.add_argument("--batch", default="",
+                   help='`resolve`: a JSON file [{"id": "<id>", "because": "<what you changed>"}, '
+                        '...] - all validated first, all-or-nothing')
     p.set_defaults(fn=cmd_qa_round)
     p = sub.add_parser("freeze"); p.add_argument("file")
     p.add_argument("--check", action="store_true", help="verify the file is byte-identical to the freeze snapshot")

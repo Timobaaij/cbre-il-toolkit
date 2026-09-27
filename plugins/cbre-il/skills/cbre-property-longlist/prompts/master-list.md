@@ -2,7 +2,7 @@
 
 You are the ISOLATED master-list candidates sub-agent for the cbre-property-longlist skill.
 Fresh context. The spine has already inventoried every option it can see MECHANICALLY - one row
-per tracker record, one per email record, one per brochure cluster - and swept them for
+per tracker record, one per email record, one per brochure FILE - and swept them for
 duplicates on postal code alone. That sweep is crude on purpose. Your job is the half a
 deterministic pass cannot do: read the email prose for options that produced no record at all,
 and adjudicate which rows are the SAME BUILDING.
@@ -36,15 +36,23 @@ answer then decides what the run builds.
    and the run then builds whatever the prefill happened to say. The builder now blanks the
    column on every build, so a prefill is not merely wrong, it is a thing you will have to
    undo twice.
-7. NAME EVERY ROW AFTER THE PROPERTY. Never after a file, never after an email subject. "Unit 3,
-   Sabre Park, Colwick" is a name. "RE: FW: your requirement" and "Brochure Final v6" are not,
-   and a reader cannot strike off a building they cannot identify.
+7. NAME EVERY ROW AFTER THE PROPERTY, AS THE EMAIL NAMES IT. `property` is only the name the
+   email itself states for that option ("Plot D2"), with a park or town only when the email
+   states it for that option. Anything you infer - a park you think it belongs to, a town worked
+   out from a postcode or another email - goes in `notes`, starting "Inferred:", never in
+   `property`, `address`, `postcode` or `city`. Never name a row after a file or an email subject
+   ("RE: FW: your requirement", "Brochure Final v6" are not names): a reader cannot strike off a
+   building they cannot identify, and a guessed park in the name is a fact they will repeat.
 
 ## Your job
 - READ the spine's candidate rows first: {{AUTO_PATH}}
   Every row there carries a `row_id`. Those ids are the spine's, and you reference them; you
   never mint a different id for the same thing.
-- READ the email bodies in this run ({{EMAIL_NOTE}}) and find options that are NOT already a row.
+- READ the email bodies: {{EMAIL_BODIES}} ({{EMAIL_NOTE}}). Every message's body is there with
+  its file name, sender and date - read THAT file, never the .msg/.eml files. A paragraph that
+  already appeared in an earlier message is replaced by [= E<k> ¶<n>]; follow it when you need the
+  text. Put the header's "source_files value" in each row's `source_files`.
+  Find the options that are NOT already a row.
   A broker who writes "we also have Packington Hill, 140k sq ft, Q2 2027" has named an option
   that exists nowhere else in the corpus, and if you do not add it, nobody ever sees it.
 - WRITE: {{OUTPUT_PATH}} as PLAIN UTF-8 JSON (no BOM), exactly this shape:
@@ -68,8 +76,10 @@ answer then decides what the run builds.
   prose. Choose your own ids, prefixed `email:` or `file:`.
 - `source` is read by a human and must read like one wrote it:
   `"Email: Alex Morgan (Cushman & Wakefield), 7 Sep 2026"`. Never a path, never a filename,
-  never a subject line. The senders and dates are on the Emails tab of the last workbook and in
-  the `emails` list of {{AUTO_PATH}}.
+  never a subject line. The senders and dates are on the Emails tab of the last workbook, in
+  the `emails` list of {{AUTO_PATH}} and in {{EMAIL_BODIES}}.
+- `notes` may start with "Inferred: ..." for anything you worked out rather than read (a park,
+  a town from a postcode). Optional - and the only place an inference may go.
 - `source_files` is the .msg/.eml FILENAME the option was read out of (a list, because one
   option can be named in two messages). The pre-build input-accounting gate uses it to credit
   that email when the user strikes the option off, so a row left with `source_files: []` makes
@@ -115,8 +125,9 @@ onto adjacent lines by itself, so rank by whatever order helps the reader (best 
 The orchestrator runs `master_list_build.py`, which merges your file over the spine's, paints
 the Brochure? column red on every row with no document, names each duplicate's PARTNER on both
 rows ("same building as #35 Wolverhampton 144 (brochure)"), lists every message on the Emails
-tab, blanks Include? and writes `Master List.xlsx`. The user answers Yes or No on every row. `master_list_read.py` then makes those answers binding: a
-brochure cluster marked No is never read by a reader agent, your duplicate groups become `same`
+tab, blanks Include? and writes `Master List.xlsx`. The user answers Yes or No on every row.
+`master_list_read.py` then makes those answers binding: a deck marked No is never read by a
+reader agent, your duplicate groups become `same`
 verdicts so the match round does not re-ask about them, and every excluded option is named in
 the Gaps Report.
 

@@ -581,6 +581,149 @@ REQUIRED_TEXT_SENTINELS = {"developer": _N.BLANK, "city": _N.BLANK, "park": _N.B
 # clean string so it satisfies the schema instead of hard-failing validate-data.
 _COERCE_STR = set(STRING_FIELDS) | set(REQUIRED_TEXT_SENTINELS) | {"landPrice", "mapLink", "reit"}
 
+
+# 2026-09-26 test run (fix 3.3): the COUNT fields - a number of things (docks, doors, spaces),
+# not a measurement. The schema cannot say so: all four are typed plain {"type": "string"} with
+# no description, so the set is named here, once. It exists because the value-format gate judged
+# them as measurements: a bare "130" beside "72 parking spaces" was asked about as if "parking
+# spaces" were a unit the bare figure had lost, and 20 of the run's 32 value-format questions
+# were exactly that. The noun a source prints after a count is a label, not a unit.
+# It is the same set as merge._COUNT_GATE_FIELDS (the count plausibility gate); the merge owner
+# may alias that to this. The strict-alias promotion below uses it too (a count alias must carry
+# a digit to move into its canonical home). ONE constant: do not grow a private copy elsewhere.
+COUNT_FIELDS = frozenset({"loadingDocks", "overheadDoors", "truckParking", "carParking"})
+
+
+# 2026-09-26 test run (fix 3.5a): EXACT synonyms only - the strict tier of the capture-symmetry
+# alias table (gate_runner._shadow_registry unions this in, so every entry here is also a gate
+# pairing). merge promotes a value held under one of these open keys into its blank canonical
+# home (the real run shipped `levelAccessDoors` beside an "absent in all sources" overheadDoors,
+# and `availableFrom` beside an absent earlyAccess, and seven hand repairs moved them). Readers
+# emit camelCase ENGLISH keys whatever the deck's language, so the table needs no translation.
+# Entries are in `alias_norm` form: lower-case words, last word singular.
+# NEVER add a near-synonym here: a wrong promotion silently moves a different datum into a card
+# field. The loose, judgement-call names live in extract_xlsx.COLUMN_MAP (tracker headers) and
+# stay SIGNAL-only in the gate; the ones measured as dangerous are pinned in
+# ALIAS_PROMOTION_REFUSED below.
+ALIAS_PROMOTIONS = {
+    "overheadDoors": ("level access door", "level access loading door", "drive in door",
+                      "ground level door", "grade level door"),
+    "loadingDocks": ("dock level door", "dock door", "loading dock door", "dock"),
+    "earlyAccess": ("available from", "availability date", "available date",
+                    "date available", "early access date"),
+    "postcode": ("postal code", "post code", "zip code", "zipcode"),
+    "epc": ("epc rating", "epc band", "energy performance certificate"),
+    "breeam": ("breeam rating",),
+    "floorLoad": ("floor loading", "floor load capacity", "floor loading capacity"),
+    "clearHeight": ("clear internal height", "internal clear height"),
+    "carParking": ("car parking space", "car space", "car park space"),
+    "truckParking": ("hgv parking", "hgv parking space", "lorry parking",
+                     "lorry parking space", "truck parking space"),
+    "electricity": ("power supply", "electricity supply"),
+}
+
+# Pinned by evals/alias_promotion_common_test.py: these names must NEVER promote, however close
+# they look. Each is a DIFFERENT datum or a judgement the pipeline owns elsewhere:
+ALIAS_PROMOTION_REFUSED = {
+    "landlord": ("asset manager", "owner", "freeholder"),        # a different party
+    "earlyAccess": ("practical completion", "completion date", "delivery",
+                    "pc of construction"),                        # build date, not access date
+    "warehouseArea": ("total area", "floor area", "total floor area", "gla", "gia",
+                      "size"),        # a printed TOTAL has its own home (__meta.statedTotalArea)
+    "officeArea": ("office", "office content"),                   # F11 office-line summing owns it
+    "landPrice": ("sale price", "asking price", "guide price"),  # land vs building price
+    "clearHeight": ("eaves height", "eave", "haunch height", "height"),  # schema x-reader-format
+    "developer": ("promoter",),
+    "city": ("town", "location"),
+    # SPEC 2026-09-26: an UNSPLIT door total ("loadingDoors": "6") is dock doors plus level-access
+    # doors together - neither overheadDoors nor loadingDocks. It stays an open key.
+    "overheadDoors": ("loading door", "door"),
+}
+
+
+def alias_norm(key) -> str:
+    """One spelling for a record key or an alias phrase, the SAME fold as
+    `gate_runner._shadow_norm(gate_runner._humanise_key(k))`: camelCase split into words, digits
+    split off their letters, diacritics stripped (NFKD), lower-cased, non-alphanumerics to
+    spaces, and the LAST word singularised when it is longer than 3 letters and ends in 's'
+    ('levelAccessDoors' -> 'level access door'). It must stay identical to the gate's fold, or
+    merge would promote a key the gate does not recognise as strict (or the reverse); the eval
+    pins the two equal over a sample. Never raises: a non-string key folds to ''."""
+    try:
+        import unicodedata as _ud
+        s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(key or ""))
+        s = re.sub(r"(?<=[A-Za-z])(?=[0-9])|(?<=[0-9])(?=[A-Za-z])", " ", s)
+        s = "".join(c for c in _ud.normalize("NFKD", s.lower()) if not _ud.combining(c))
+        words = re.sub(r"[^a-z0-9]+", " ", s).split()
+        if words and len(words[-1]) > 3 and words[-1].endswith("s"):
+            words[-1] = words[-1][:-1]
+        return " ".join(words)
+    except Exception:
+        return ""
+
+
+_ALIAS_INDEX = None
+
+
+def _alias_index() -> tuple:
+    """({normalised alias: canonical field}, {normalised refused name}), built once. A phrase
+    that is ALSO refused (for any field) is dropped from the promote side, so a future edit that
+    puts one name in both tables fails closed (no promotion) rather than open."""
+    global _ALIAS_INDEX
+    if _ALIAS_INDEX is None:
+        refused = {alias_norm(a) for names in ALIAS_PROMOTION_REFUSED.values() for a in names}
+        promote = {}
+        for field, names in ALIAS_PROMOTIONS.items():
+            for a in names:
+                n = alias_norm(a)
+                if n and n not in refused:
+                    promote.setdefault(n, field)
+        _ALIAS_INDEX = (promote, frozenset(refused))
+    return _ALIAS_INDEX
+
+
+def promotable_alias(key, value):
+    """The canonical field that the open record key `key` is an EXACT synonym of (per
+    ALIAS_PROMOTIONS), when `value` is fit to move into it - else None.
+
+    None for: a key that is not a str, is empty or starts with '_' (pipeline-private); a name in
+    ALIAS_PROMOTION_REFUSED; a value that is not a scalar str/int/float (a bool, dict, list or
+    None never moves); a `data:` URI; a provenance-locator string (`looks_like_locator`); an
+    unknown (`normalize.looks_unknown` - a sentinel is not a value to promote, and a stated
+    "None" is data but carries no digit, so a COUNT field refuses it below); a COUNT field value
+    with no digit in it ('yes', 'several' - a count home needs a count); an earlyAccess value
+    matching `normalize.AVAIL_TAKEN_RX` ('Let agreed May 2026' is when the unit was TAKEN, not
+    when it can be occupied). Pure, never raises (any error -> None, i.e. no promotion, which is
+    today's behaviour: the value keeps shipping under its own key)."""
+    try:
+        if not isinstance(key, str) or not key or key.startswith("_"):
+            return None
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            return None
+        if isinstance(value, str):
+            sv = value.strip()
+            if not sv or sv.startswith("data:") or looks_like_locator(sv):
+                return None
+        else:
+            sv = _as_text(value)
+        if _N.looks_unknown(sv):
+            return None
+        promote, refused = _alias_index()
+        k = alias_norm(key)
+        if not k or k in refused:
+            return None
+        field = promote.get(k)
+        if not field:
+            return None
+        if field in COUNT_FIELDS and not re.search(r"\d", str(sv)):
+            return None
+        if field == "earlyAccess" and _N.AVAIL_TAKEN_RX.search(str(sv)):
+            return None
+        return field
+    except Exception:
+        return None
+
+
 # --- render-boundary helpers (Phase 1) --------------------------------------
 _CANON_PROPERTY_FIELDS = None
 
@@ -776,4 +919,22 @@ def fill_render_sentinels(p: dict) -> dict:
         v = p.get(f)
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             p[f] = _as_text(v)
+    # 2026-09-26 test run (fix 3.17 part 4): the pipeline's PRE-v45 sentinel spelling, on ANY
+    # field. merge's plausibility strike wrote a literal "tbd" and `epc` is not in STRING_FIELDS,
+    # so a card shipped `epc: 'tbd'` beside every other unknown reading "TBC". The strike now
+    # writes the one BLANK itself; this loop is the render guard for a canonical built before
+    # that (resume keeps an old one) and for any extra key a reader or repair spelled the old
+    # way. Deliberately ONLY the exact old spelling, not the whole unknown family: "n/a" or
+    # "POA" on an open key is the source's own wording and stays verbatim. `looks_unknown`
+    # already reads both spellings, so no consumer of unknown-ness changes. Per key, so one odd
+    # value can never stop the rest; on error the value is left as it was.
+    for k in list(p):
+        if k in ("id", "__meta"):
+            continue
+        try:
+            v = p.get(k)
+            if isinstance(v, str) and v.strip().lower() == "tbd":
+                p[k] = _N.BLANK
+        except Exception:
+            pass
     return p

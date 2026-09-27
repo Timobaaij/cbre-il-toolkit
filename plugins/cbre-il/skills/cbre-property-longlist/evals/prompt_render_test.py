@@ -26,7 +26,8 @@ sys.path.insert(0, str(ROOT / "helpers"))
 import prompts_render as PR  # noqa: E402
 
 _SLOT_RE = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
-_AUTO = {"SKILL_DIR", "CONTEXT"}
+# the reader contract slots are auto-filled with the rendered contract (2026-09-26, fix 1.1)
+_AUTO = {"SKILL_DIR", "CONTEXT", "READER_CONTRACT", "READER_CONTRACT_BODY"}
 
 # the rules whose omission from hand-written prompts caused real shipped defects; a template
 # edit that drops one of these must fail here, not in a client run
@@ -175,6 +176,22 @@ def main() -> int:
     cl = (PR.TEMPLATE_DIR / "cluster-labels.md").read_text(encoding="utf-8")
     for needle in ("VERBATIM", "OMITTED", "fabricate", "routing"):
         check(needle in cl, f"cluster-labels.md pins '{needle}'")
+    # 2026-09-26 test run, fix 1.3: the stems block carries everything; the agent never opens the
+    # 36 KB inventory, and a label that would merge two decks is refused by the spine (fix 3.1)
+    for needle in ("do NOT open inventory.json", "refused by the spine"):
+        check(needle in cl, f"cluster-labels.md pins '{needle}'")
+    check("INVENTORY_PATH" not in cl, "cluster-labels.md no longer sends the agent to inventory.json")
+
+    # master-list (fixes 1.6 and 3.23): the bodies file replaces opening the .msg/.eml files, and
+    # a row is named as the email names it, inferences in notes
+    ml_tpl = (PR.TEMPLATE_DIR / "master-list.md").read_text(encoding="utf-8")
+    check("{{EMAIL_BODIES}}" in ml_tpl, "master-list.md carries the {{EMAIL_BODIES}} slot")
+    ml = PR.render("master-list", {s: f"<{s}>" for s in set(_SLOT_RE.findall(ml_tpl))
+                                   if s not in _AUTO})
+    check("<EMAIL_BODIES>" in ml and "{{" not in ml, "...and it renders")
+    for needle in ("never the .msg/.eml", "AS THE EMAIL NAMES IT", "Inferred:",
+                   "one per brochure FILE", "a deck marked No"):
+        check(needle in ml, f"master-list.md pins '{needle}'")
 
     print(f"\n{'PASS' if not fails else 'FAIL'} prompt_render_test "
           f"({len(fails)} failure(s))")

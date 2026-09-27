@@ -79,8 +79,14 @@ is exactly where a missed site plan hides. The `media-harvest` gate raises a `[S
 same pages. The fix is always a RECORD-level one (give the page to the property it shows via
 `__meta.image_pages` / `__meta.plan_page` on a re-read), never an edit here.
 
-Rebuilt from `canonical.json` on every run. **Nothing reads it back.** Editing a file here
+Derived from `canonical.json` on every run. **Nothing reads it back.** Editing a file here
 changes nothing and the next run overwrites it - there is an eval that asserts exactly that.
+The cheap half (`property.json`, `sources.csv`, `notes.md`, `index.json`) is rebuilt every run;
+the media half is carried while its inputs are unchanged (per-property `.media_stamp.json`,
+verified against the files on disk) and rebuilt otherwise; `--rebuild-media` forces it. A hand
+edit of a media file makes its half not current, so it is overwritten too. On a `never` pass a
+carried half says `"carried": true` in `property.json["__media"]`, and `index.json` lists
+`media_carried` / `media_rebuilt`.
 
 That asymmetry is the design. Two writable representations of one dataset drift, and the drift
 is silent; the sibling Kato skill maintains three patch helpers because of it. So the view is a
@@ -161,7 +167,10 @@ A JSON list, append-only, re-applied on every run.
   already landed on an earlier run, and a misspelling - so it never appears among the applied
   corrections and never mints a `repair` row for a field that exists nowhere. The message tells
   you which of the two it is when the Source Ledger can say (it still credits the property with
-  a field that really was there), and tells you to check the spelling when it cannot. A `set` in
+  a field that really was there), and tells you to check the spelling when it cannot. A third
+  reading: merge's strict alias step already moved that key into its canonical field
+  (`canonical.meta.aliasPromotions`), which the message names as a correct entry doing nothing;
+  an entry that `set` the canonical field and `unset` that same alias still applies. A `set` in
   the same entry still applies and still re-writes its own ledger row, so one satisfied clear
   never strands another field's provenance.
 - **`strike_from_source`** is ONE source filename: *this property carries nothing from that
@@ -268,7 +277,9 @@ it clears was found IN the ledger and therefore has a property row of its own. A
 `repair` row for a key that is on no schema and on no property is a fabrication, not an audit
 trail.
 
-Outcomes print on every run, `--quiet` included, and land in `work/repairs_report.json`.
+Outcomes print on every run. In the default quiet mode a re-applied value that did not move, and
+a clear that landed on an earlier pass, are summarised in one line each; every entry stays in
+`work/repairs_report.json`, and `--verbose` prints them all.
 
 ## Disclosure, not laundering
 

@@ -204,6 +204,15 @@ def _close_note(field: str, struck: dict | None = None) -> str:
         # out the two things the reader needs on this line - that a source does state it, and
         # what to do about it.
         src = str(struck.get("source_file") or "").strip()
+        # 2026-09-26 test run (3.17): a struck text with NO digit ("Available upon request")
+        # is a phrase with no figure, not "a parsed figure that fell outside the band" - saying
+        # the source "DOES state a value" there sent the broker looking for a number that the
+        # page never prints. `\d` is Unicode-aware, so the test is language-safe.
+        _val = str(struck.get("value") or "")
+        if not re.search(r"\d", _val):
+            return (f"{src or 'the source'} prints '{_val}' for this field - a phrase with no "
+                    f"figure in it - so the card ships the honest unknown; ask the agent for "
+                    f"the figure (see Source conflicts below)")
         return ((f"{src} DOES state a value" if src else "a source DOES state a value")
                 + " for this field and the parsed figure fell outside the plausibility band, "
                   "so the card ships the honest unknown - see Source conflicts below for the "
@@ -211,6 +220,129 @@ def _close_note(field: str, struck: dict | None = None) -> str:
                   "source genuinely prints it or confirm the real figure with the agent")
     return CLOSE.get(field, "not stated in any source supplied for this property - ask the "
                             "sender if it is decision-relevant")
+
+
+# == clarify.WHY_MERGED (evals/combine_policy_deliver_test.py pins the two equal). A literal here
+# so deliver keeps importing clarify lazily, inside its own try, as before.
+_WHY_MERGED = "settled by merge"
+
+
+def _reread_status(work_dir) -> dict:
+    """{question id: "done" | "queued"} for re-read-route answers (2026-09-26 test run, 3.18).
+    "queued": clarify says the answer asks for a re-read; "done": work/vision/reread.json (the
+    spine's durable re-read file) records that re-read, for the SAME answer key, as done. {} on
+    any error or when nothing was re-read, so an older work dir prints exactly as before."""
+    out: dict = {}
+    if not work_dir:
+        return {}
+    try:
+        import clarify as _CQ
+        for r in _CQ.reread_requests(work_dir) or []:
+            out[str(r.get("qid"))] = ["queued", str(r.get("key") or "")]
+    except Exception:  # noqa: BLE001
+        return {}
+    try:
+        p = Path(work_dir) / "vision" / "reread.json"
+        if out and p.exists():
+            d = json.loads(p.read_text(encoding="utf-8-sig"))
+            for e in ((d or {}).get("decks") or {}).values():
+                if not isinstance(e, dict):
+                    continue
+                cur = out.get(str(e.get("qid") or ""))
+                if cur and e.get("done") is True and str(e.get("key") or "") == cur[1]:
+                    cur[0] = "done"
+    except Exception:  # noqa: BLE001 - "queued" is the honest reading when the file is unreadable
+        pass
+    return {k: v[0] for k, v in out.items()}
+
+
+def _answer_route_suffix(qid, title, raw, rr: dict) -> str:
+    """The 3.18 tail on a Clarifications answer line, for a count / no-field reader doubt only
+    (a title with `answer_route`, or whose answer handling is "recorded ..."): an answer that
+    keeps the cards as shipped says so; a re-read-route answer says whether the deck was re-read
+    or is queued for it. '' otherwise and on any error (today's line)."""
+    try:
+        t = title if isinstance(title, dict) else {}
+        route = str(t.get("answer_route") or "")
+        if not route and not str(t.get("answer_handling") or "").startswith("recorded"):
+            return ""
+        import clarify as _CQ
+        if _CQ.answer_is_as_shipped(t, raw):
+            return " - this is how it already shipped; nothing changed"
+        if route == "reread":
+            st = (rr or {}).get(str(qid))
+            if st == "done":
+                return " - the deck was re-read with this decision"
+            if st == "queued":
+                return " - queued for a re-read with this decision"
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
+
+
+def _policy_fanout_lines(st: dict) -> list:
+    """One Clarifications line per card a 3.2c POLICY answer covered ("combine / use the first
+    line / leave unstated on every such card"). The per-card answer is DERIVED - no state key
+    holds it - from the policy answer, each member's landable stamp (`via_policy`) and
+    clarify.policy_mode, exactly as run.py's lander derives it. A member answered directly, a
+    declined or unanswered policy, and "ask me per card" print nothing here. [] on any error."""
+    try:
+        import clarify as _CQ
+        answers = st.get("answers") or {}
+        titles = st.get("titles") or {}
+        declined = set(st.get("declined") or [])
+        out = []
+        for mid, stamp in sorted((st.get("landable") or {}).items()):
+            if not isinstance(stamp, dict) or not stamp.get("via_policy"):
+                continue
+            pid = str(stamp["via_policy"])
+            if mid in answers or pid in declined or pid not in answers:
+                continue
+            praw = answers.get(pid)
+            mode = _CQ.policy_mode(praw)
+            if mode not in ("combine", "first", "unstated"):
+                continue
+            c = stamp.get("combinable") if isinstance(stamp.get("combinable"), dict) else {}
+            field = str(stamp.get("field") or "")
+            mt = titles.get(mid) if isinstance(titles.get(mid), dict) else {}
+            label = str(mt.get("subject") or "").strip()
+            _a = (stamp.get("anchors") or [{}])[0] if stamp.get("anchors") else {}
+            card = " ".join(str(x) for x in ((_a or {}).get("park"), (_a or {}).get("unit")) if x) \
+                or label or mid
+            psubj = str((titles.get(pid) or {}).get("subject") or pid)
+            if mode == "combine":
+                what = (f"{c.get('value_text')} = {' + '.join(str(x) for x in c.get('parts') or [])}"
+                        if c.get("value_text") else "the combined figure")
+            elif mode == "first":
+                what = f"the first printed line, {c.get('first') or (stamp.get('options') or ['?'])[0]}"
+            else:
+                what = "left unstated"
+            out.append(f"- **{card}** ({field}): by your answer to '{psubj}' (**{praw}**): {what}")
+        return out
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _settled_by_merge_line(qid, e: dict) -> str:
+    """One "Settled without asking" line (3.2c): the card, how many lines the source printed,
+    and the pipeline's sum the card shows. Built from the suppressed entry's own payload."""
+    try:
+        q = e.get("question_payload") if isinstance(e.get("question_payload"), dict) else {}
+        c = q.get("combinable") if isinstance(q.get("combinable"), dict) else {}
+        a = (e.get("anchors") or q.get("anchors") or [{}])[0] or {}
+        card = " ".join(str(x) for x in (a.get("park"), a.get("unit")) if x) \
+            or str(e.get("subject") or qid)
+        label = str(q.get("field") or e.get("subject") or "the figure")
+        k = len(c.get("parts") or []) or "several"
+        exp = e.get("expected") if isinstance(e.get("expected"), dict) else {}
+        vt = c.get("value_text") or (f"{exp.get('value')} {exp.get('unit') or ''}".strip()
+                                     if exp.get("value") is not None else "the combined figure")
+        src = str(e.get("source_file") or q.get("source_file") or "").strip()
+        return (f"- **{card}**: {label} printed as {k} lines; the card shows their sum, {vt}, "
+                f"computed by the pipeline. To show one line instead, correct it in "
+                f"work/repairs.json." + (f" (from {src})" if src else ""))
+    except Exception:  # noqa: BLE001
+        return f"- **{e.get('subject') or qid}**: settled by the pipeline's own sum."
 
 
 def _email_attachments_skipped(work_dir: Path | None) -> list:
@@ -572,11 +704,16 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
         lines.append("## Clarifications (what the run asked, and what was decided)")
         lines.append("The run stops and asks rather than presuming. Each line is a decision "
                      "that shaped the dataset.")
+        _rr = _reread_status(work_dir)
         for _i, _v in sorted(_answers.items()):
             _t = _titles.get(_i) or {}
             _subj = _t.get("subject") or _t.get("kind") or _i
-            lines.append(f"- **{_subj}**: answered **{_v}**."
+            lines.append(f"- **{_subj}**: answered **{_v}**"
+                         + _answer_route_suffix(_i, _t, _v, _rr) + "."
                          + (f" ({_t.get('question', '')})" if _t.get("question") else ""))
+        # 3.2c: ONE policy answer fanned out to every card it covered - one line per card, so
+        # the report names each card the answer changed (or left as printed).
+        lines += _policy_fanout_lines(_st)
         for _i in sorted(_declined):
             _t = _titles.get(_i) or {}
             _subj = _t.get("subject") or _t.get("kind") or _i
@@ -626,6 +763,18 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
                 out += f" (from {_src})"
             return out
 
+        # 3.2c: a doubt closed because the pipeline's OWN sum already is the combined figure was
+        # not "noticed but not asked because too many came up" - it was settled. Its own heading.
+        _merged_rows = [r for r in _rows
+                        if str(r[1].get("why_not_asked") or "") == _WHY_MERGED]
+        _rows = [r for r in _rows if str(r[1].get("why_not_asked") or "") != _WHY_MERGED]
+        if _merged_rows:
+            lines.append("## Settled without asking (the pipeline's own sum is the combined figure)")
+            lines.append("The reading agents marked each of these as several printed lines that "
+                         "make up ONE figure, and the pipeline's own sum of those lines is what "
+                         "the card shows, so there was nothing to ask.")
+            lines += [_settled_by_merge_line(_i, _e) for _i, _e in _merged_rows]
+            lines.append("")
         _mat = [r for r in _rows if str(r[1].get("materiality") or "") != "ledger"]
         _led = [r for r in _rows if str(r[1].get("materiality") or "") == "ledger"]
         if _mat:
@@ -655,6 +804,23 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
             lines.append("")
 
     excluded = meta.get("excluded") or []
+    # 3.10b: a building the SOURCE marks let / sold, excluded by the broker's own answer, is a
+    # different reason from the source-authority answer - its own heading and wording. Entries
+    # without `excluded_by` (every older canonical) read as source authority, exactly as before.
+    _na_excl = [e for e in excluded
+                if isinstance(e, dict) and e.get("excluded_by") == "not_available"]
+    excluded = [e for e in excluded
+                if not (isinstance(e, dict) and e.get("excluded_by") == "not_available")]
+    if _na_excl:
+        lines.append("## Options excluded because the source marks them as no longer available")
+        lines.append("The source itself marks each of these as let, sold or otherwise not "
+                     "available, and you chose to leave it off the longlist when asked.")
+        for e in _na_excl:
+            srcs = ", ".join(e.get("source_files") or []) or "?"
+            lines.append(f"- **{e.get('name', '(unnamed option)')}** - {e.get('why', '')} "
+                         f"(found in: {srcs}). To bring it back, answer that question "
+                         f"'keep ...' and re-run.")
+        lines.append("")
     if excluded:
         lines.append("## Options excluded (not evidenced by your guiding source)")
         lines.append("You told the run which source decides what belongs on this longlist, so "

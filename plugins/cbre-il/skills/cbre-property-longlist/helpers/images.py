@@ -186,11 +186,15 @@ def candidates_for_page(path: Path, page_index: int) -> list[dict]:
     embedded rasters; a .pptx slide reads its slide pictures; any other kind (or an open
     failure) yields [] so the caller falls back to the deterministic ladder gracefully.
 
-    Returns [{index, img, w, h}] - `img` is a live PIL image (callers that only need the
-    metadata, e.g. a manifest, ignore it). Never raises."""
+    Returns [{index, img, w, h, xref?}] - `img` is a live PIL image (callers that only need the
+    metadata, e.g. a manifest, ignore it). `xref` (PDF only, additive, 2026-09-26 test run fix
+    3.21) names the PDF image object, so page_image_facts() can say whether THIS candidate is
+    masked or placed off the visible page; order and membership are unchanged by it, so every
+    heroRef / planRef index binds exactly as before. Never raises."""
     try:
         path = Path(path)
-        if path.suffix.lower() == ".pptx":
+        pptx = path.suffix.lower() == ".pptx"
+        if pptx:
             raw = slide_pictures(path, page_index)
         else:
             raw = page_embedded_images(_get_doc(path), page_index)
@@ -199,8 +203,75 @@ def candidates_for_page(path: Path, page_index: int) -> list[dict]:
     out: list[dict] = []
     for im in raw:
         if im.get("w", 0) >= MIN_HERO_W and im.get("h", 0) >= MIN_HERO_H:
-            out.append({"index": len(out), "img": im["img"], "w": im["w"], "h": im["h"]})
+            ent = {"index": len(out), "img": im["img"], "w": im["w"], "h": im["h"]}
+            if not pptx and isinstance(im.get("xref"), int):
+                ent["xref"] = im["xref"]
+            out.append(ent)
     return out
+
+
+def page_image_facts(path: Path, page_index: int) -> dict:
+    """Placement facts for a PDF page's embedded images (2026-09-26 test run, fixes 3.21 / 3.22).
+
+    `{"by_xref": {xref: {"masked": bool, "visible": float | None}}, "below_floor": int}`:
+      * masked  - the image is drawn through a soft mask (SMask). Its raw pixels, which are what a
+                  candidate thumbnail shows and what merge binds, can be a solid silhouette of an
+                  overlay the page renders as a cut-out; the reader is told so, never shown a
+                  re-composited tile (that would differ from the bytes a heroRef binds).
+      * visible - the largest share of any one placement's box that falls inside the VISIBLE
+                  page (PyMuPDF places boxes relative to the CropBox): 0.0 = placed wholly off the
+                  page, a leftover the brochure never shows. None when it cannot be judged (a
+                  rotated page, an engine without get_image_info, an image with no placement box).
+      * below_floor - decodable rasters on the page that clear the plan floor (MIN_PLAN_W x
+                  MIN_PLAN_H) but not the hero floor and are not off the page: photos too small
+                  to lead a card or enter the carousel, so a page "full of photos with no
+                  candidates" is explained rather than read as an extraction failure.
+    ANNOTATION ONLY: nothing is filtered, the candidate index space is untouched. PDF + native
+    PyMuPDF only; {} for a PPTX, any other kind, or any failure. Never raises."""
+    try:
+        path = Path(path)
+        if path.suffix.lower() == ".pptx":
+            return {}
+        doc = _get_doc(path)
+        page = doc[page_index]
+        by_xref: dict = {}
+        for info in (page.get_images(full=True) or []):
+            try:
+                xref = int(info[0])
+                by_xref.setdefault(xref, {"masked": False, "visible": None})
+                if len(info) > 1 and int(info[1] or 0) != 0:
+                    by_xref[xref]["masked"] = True
+            except Exception:
+                continue
+        judge = (int(getattr(page, "rotation", 0) or 0) == 0
+                 and hasattr(page, "get_image_info"))
+        if judge:
+            W, H = float(page.rect.width), float(page.rect.height)
+            best: dict = {}
+            for xref, (x0, top, x1, bot) in _fitz_placed_boxes(page):
+                if not xref:
+                    continue          # an inline image (xref 0) is not a listed candidate
+                area = (x1 - x0) * (bot - top)
+                if area <= 0:
+                    continue
+                cw = max(0.0, min(x1, W) - max(x0, 0.0))
+                ch = max(0.0, min(bot, H) - max(top, 0.0))
+                best[xref] = max(best.get(xref, 0.0), (cw * ch) / area)
+            for xref, frac in best.items():
+                by_xref.setdefault(xref, {"masked": False, "visible": None})["visible"] = frac
+        below = 0
+        for im in page_embedded_images(doc, page_index):
+            w, h = im.get("w", 0), im.get("h", 0)
+            if w >= MIN_HERO_W and h >= MIN_HERO_H:
+                continue
+            if w < MIN_PLAN_W or h < MIN_PLAN_H:
+                continue
+            if (by_xref.get(im.get("xref")) or {}).get("visible") == 0.0:
+                continue
+            below += 1
+        return {"by_xref": by_xref, "below_floor": below}
+    except Exception:
+        return {}
 
 
 def embedded_by_index(path: Path, page_index: int, index: int,
@@ -2087,7 +2158,7 @@ def page_render_plan(path: Path, page_index: int, budget_kb: int = DEFAULT_BUDGE
 
 def best_plan_page_render(path: Path, page_nos, budget_kb: int = DEFAULT_BUDGET_KB,
                           cache_dir: Path | str | None = None, near_miss: list | None = None,
-                          own_figures: set | None = None) -> tuple:
+                          own_figures: set | None = None, reader_declined: bool = False) -> tuple:
     """DETERMINISTIC fallback (no LLM hint): over the given (per-property) pages, render+ink-crop+
     classify and pick the most plan-like page via the shared `_plan_page_eligible` predicate - so a
     designed plan carrying a small logo/legend (previously disqualified by the blunt image-light
@@ -2098,7 +2169,16 @@ def best_plan_page_render(path: Path, page_nos, budget_kb: int = DEFAULT_BUDGET_
     page set is SORTED so the result is a pure function of (source, pages); each bound page's URI is
     cached per (source, page, budget) under kind='planpage'. Degrades to (None, None) without Pillow.
     `near_miss` (optional list) collects pages that LOOKED plan-ish but a guard rejected (a positive
-    plan signal that did not bind), so a genuinely missed plan surfaces to the Gaps Report."""
+    plan signal that did not bind), so a genuinely missed plan surfaces to the Gaps Report.
+
+    `reader_declined` (2026-09-26 test run, fix 3.9; default False = today's verdicts AND cache
+    keys, byte for byte): the caller says the deck's reader SAW the page renders and named NO
+    plan page (`plan_page` present and null, with non-empty image_pages). Then a page that is
+    eligible by PIXELS ALONE - the VISUAL route, with no plan title, no to-scale drawing marker
+    and no site-plan drawing labels - is not bound; it becomes a near-miss instead. Measured: a
+    legal/terms page classified 'plan' at white 0.46 bound into the Site Plan slot on exactly
+    that route, and only a reviewer caught it. The title-rescue and vector routes are untouched,
+    so a page carrying "SITE PLAN" + "Scale 1:500", or a labelled vector layout, still binds."""
     if Image is None:
         return (None, None)
     import plan_signal as _PS
@@ -2122,7 +2202,10 @@ def best_plan_page_render(path: Path, page_nos, budget_kb: int = DEFAULT_BUDGET_
     # own_figures is part of the verdict-cache key: it changes WHICH eligible page wins, so a
     # verdict computed without it (or with another property's figures) must not be served.
     _ofk = ",".join(str(x) for x in sorted(own_figures or ()))
-    _vk = _hl.sha1((",".join(map(str, pages)) + f"|d{_PLAN_DETECTOR_SIG}|f{_ofk}").encode()).hexdigest()[:12]
+    # 3.9: "|rd1" joins the key ONLY when the reader declined, so every default caller keeps its
+    # byte-identical key (and its warm verdict).
+    _vk = _hl.sha1((",".join(map(str, pages)) + f"|d{_PLAN_DETECTOR_SIG}|f{_ofk}"
+                    + ("|rd1" if reader_declined else "")).encode()).hexdigest()[:12]
     _vf = _cache_file(path, 0, budget_kb, f"planverdict{_vk}", cache_dir, ext=".json")
     _v = _cache_read_json(_vf)
     if isinstance(_v, dict) and "page" in _v:
@@ -2155,6 +2238,14 @@ def best_plan_page_render(path: Path, page_nos, budget_kb: int = DEFAULT_BUDGET_
         balance = 4.0 * white * (1.0 - white)
         vec_body = _vector_body(vector)
         furnished = furniture >= PLAN_FURNITURE_MIN
+        if reader_declined and ok and not titled and not has_marker and not furnished \
+                and not (vec_body and furnished):
+            # 3.9: pixels alone, on a deck whose reader looked and named no plan - not bound
+            _nm.append({"page": pno,
+                        "why": ("classified as a plan by pixels alone (no plan title, scale marker "
+                                "or drawing labels) on a deck whose reader saw the page renders "
+                                "and named no plan page - not bound")})
+            continue
         if not ok:
             # NEAR-MISS: a page carrying a positive plan signal (classify 'plan', or a plan title)
             # that a precision guard rejected -> surface it so a real missed plan is visible.

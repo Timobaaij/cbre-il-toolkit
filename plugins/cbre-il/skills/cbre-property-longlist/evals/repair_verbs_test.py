@@ -780,6 +780,9 @@ def main() -> int:
     notes = json.loads((w / "canonical.json").read_text(encoding="utf-8"))["meta"]["conflicts"]
     ck(len(rep["applied"]) == 1 and all("[RESOLVED" not in n for n in notes),
        "a withdrawal makes 'the card ships tbd' TRUE again, so it is left standing")
+    # 2026-09-26 (fix 3.12): the catch-all annotation is a SET-only tail too
+    ck(all("[SUPERSEDED by repair" not in n for n in notes),
+       "...and the fix-3.12 catch-all adds no [SUPERSEDED by repair tail for a clear either")
 
     print()
     print("== A18a: a repair may cite the evidence it was read from ==")

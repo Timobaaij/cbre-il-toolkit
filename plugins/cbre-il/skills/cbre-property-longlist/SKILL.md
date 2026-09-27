@@ -81,42 +81,49 @@ the work directory; the exit-3 manifest's `work/` prefix is a convention resolve
 |---|---|---|
 | 0 | **DONE-DONE** | nothing. The spine itself recorded the QA round, folded the advisories into the Gaps Report, re-delivered, and `final_gate` went GREEN - tell the broker where the deliverables are |
 | 2 | no usable inputs | check the folder / `project.yaml`, fix, re-run |
-| 3 | **interpretation** needed | dispatch each rendered `work/prompts/*.md` file VERBATIM as an isolated sub-agent - deck readers (text/raster per the manifest `mode`; write each deck's own `output` path copied verbatim - never derive a filename from the cluster label), tracker map PLUS its SEPARATE blind `tracker_verify` agent (or decline a map with `<output>.SKIP`), optional cluster labels. When the hand-off LEADS with `SETUP FIRST`, present the Stage-0 form in the SAME message as these dispatches and write `setup.confirmed: true` with the answers. (`reference/interpretation.md`) |
+| 3 | **interpretation** needed | dispatch each rendered `work/prompts/*.md` file VERBATIM (pointer or paste, step 3) as an isolated sub-agent - deck readers (text/raster per the manifest `mode`; write each deck's own `output` path copied verbatim - never derive a filename from the cluster label), tracker map PLUS its SEPARATE blind `tracker_verify` agent (or decline a map with `<output>.SKIP`), and cluster labels only when `project.yaml` sets `inputs.cluster_labels: agent` (`work/intake_clusters.SKIP` declines or rolls them back). A `reader-repair--<name>.md` prompt fixes ONE refused output: RESUME the reader that wrote it with it, never re-dispatch the full deck (a stray top-level `prov` the spine hoists itself). A deck re-read for an exit-13 answer carries that decision in its Run context; dispatch it like any reader. When the hand-off LEADS with `SETUP FIRST`, present the Stage-0 form in the SAME message as these dispatches and write `setup.confirmed: true` with the answers. (`reference/interpretation.md` - the readers' contract; you need not read it to dispatch) |
 | 4 | skill files truncated | restart the session, then re-run |
 | 5 | `validate-data` blocked | read `gate1_scorecard.md`; record the correction in **`work/overrides.json`** (below), NEVER by editing `work/extract/` (derived - your edit is discarded) |
-| 6 | another pre-build gate blocked | read `gate1_scorecard.md`, fix the named gate, re-run. A DATUM fix goes in `work/overrides.json`. **`value-format`** (a bare `5000` beside `10,000 sq. m`) asks the BROKER ITSELF via blocking exit-13 questions - answers become attributed repairs, "leave as is" ships the bare value disclosed; **Never append the sibling's unit yourself** (the 10.76x class). A sign-off-key gate (`images`, `arithmetic`, `media-harvest`) is acked with `gate_runner.py ack --work <work> --add <key>=<v1,v2>`, NEVER by writing `placeholder_audit_ack.json` yourself (ack merges; hand-writing drops a concurrent agent's key) |
+| 6 | another pre-build gate blocked | read `gate1_scorecard.md`, fix the named gate, re-run. A DATUM fix goes in `work/overrides.json`. **`value-format`** (a bare `5000` beside `10,000 sq. m`) asks the BROKER ITSELF via blocking exit-13 questions - answers become attributed repairs, "leave as is" ships the bare value disclosed; a bare count, or a bare area whose own source states its unit, is not asked; **Never append the sibling's unit yourself** (the 10.76x class). `capture-symmetry` blocks only on a STRICT-alias false absence (e.g. `levelAccessDoors` held while `overheadDoors` ships a gap): repair it, or ack `strict_alias_ok=<pid>:<key>` when they are genuinely different data. `coverage` blocks a card with a BLANK title: set `park` (or `displayName`) to the name its source prints, never one you composed. A sign-off-key gate (`images`, `arithmetic`, `media-harvest`) is acked with `gate_runner.py ack --work <work> --add <key>=<v1,v2>`, NEVER by writing `placeholder_audit_ack.json` yourself (ack merges; hand-writing drops a concurrent agent's key) |
 | 7 | a post-build / ship gate blocked | read the gate output (`work/final_gate_report.md` for final_gate), fix, re-run |
 | 8 | **web enrichment** needed | the printed handoff carries the four-tier ladder: (1) `mcp__shell` re-run, (2) Playwright data:-URL fetcher, (3) Claude Preview MCP, (4) deliver `web_enrich.html` in the chat - the UNIVERSAL fallback; never an error, never straight-line estimates, never WebFetch to the API hosts (`reference/agentic-steps.md`) |
-| 9 | **photo-match** needed | dispatch the rendered photo-match prompt -> `work/photo_map.json` (confident / uncertain / unrelated - never drop a property), re-run |
-| 10 | **match adjudication** needed | dispatch the rendered match prompt -> `work/match_decisions.json` + `work/field_decisions.json`, PLUS the SEPARATE blind verifier -> `work/match_verify.json` (`reference/matching.md`) |
+| 9 | **photo-match** needed | dispatch the rendered photo-match prompt VERBATIM (pointer or paste, step 3) -> `work/photo_map.json` (confident / uncertain / unrelated - never drop a property), re-run |
+| 10 | **match adjudication** needed | dispatch the rendered match prompt VERBATIM (pointer or paste, step 3) -> `work/match_decisions.json` + `work/field_decisions.json`, PLUS the SEPARATE blind verifier -> `work/match_verify.json` (`reference/matching.md`) |
 | 11 | dashboard-language translation | dispatch the rendered translate-chrome prompt -> `work/i18n/<code>.json` (or `<code>.SKIP` for English). 13 languages are bundled and render instantly (`reference/localisation.md`) |
 | 12 | free-text DATA translation | dispatch the rendered translate-data prompt -> merge the map into `work/i18n/data_translations.<code>.json` (or drop `work/i18n/data_translate.SKIP` to decline) |
-| 13 | **clarification** needed | read `work/questions.json`. A `setup_form` question means the Stage-0 form has not been answered: present it (`reference/setup-form.md`) and write the answers plus `setup.confirmed: true` into `project.yaml` - an `answers.json` entry does NOT clear that one. `asked_of:"agent"` = dispatch an isolated sub-agent with the named source; `asked_of:"broker"` = put ALL of them to the user in ONE plain message. Write `work/answers.json` `{"<id>": "<answer>"}` (ids verbatim; where `options` is given, one of those exact strings). `blocking:false` is asked ONCE, then ships the honest gap; `blocking:true` comes back every pass until ANSWERED or DECLINED (`"skip"` = the default ships as a disclosed decision; headless: `work/clarify.SKIP_ALL`). **Never answer a blocking broker question from your own context**. Every question here already PASSED the materiality test - it changes a value/photo shown on the dashboard or the number of options - so put it to the user rather than second-guessing whether it matters; what did not pass is in the Gaps Report's "Noted, not put to you" |
-| 14 | **independent QA review** needed | dispatch ONE isolated sub-agent per rendered `work/prompts/g-*.md` file (CONCURRENTLY; each file is that agent's VERBATIM prompt and names its own output file), plus any outstanding email ingestion the handoff names -> re-run |
-| 15 | **blocking QA finding(s)** unresolved | IMPLEMENT each fix, record it with `gate_runner.py qa-round resolve --work <work> --id <id> --because "<what you changed>"` (ids: `qa-round status`), re-run. This is a fix loop INSIDE the one review round - **never re-dispatch a reviewer**. Advisory findings ship disclosed in the Gaps Report's Known limitations; fix one only when it is one edit AND changes what a reader concludes, and `resolve` it if you do |
+| 13 | **clarification** needed | read `work/questions.json`. A `setup_form` question means the Stage-0 form has not been answered: present it (`reference/setup-form.md`) and write the answers plus `setup.confirmed: true` into `project.yaml` - an `answers.json` entry does NOT clear that one. `asked_of:"agent"` = dispatch an isolated sub-agent with the named source; `asked_of:"broker"` = put ALL of them to the user in ONE plain message. Write `work/answers.json` `{"<id>": "<answer>"}` (ids verbatim; where `options` is given, one of those exact strings). `blocking:false` is asked ONCE, then ships the honest gap; `blocking:true` comes back every pass until ANSWERED or DECLINED (`"skip"` = the default ships as a disclosed decision; headless: `work/clarify.SKIP_ALL`). Kinds: `combine_policy` is ONE question per field for every card whose figure is printed as several lines (the answer applies to each card; "ask me per card" splits it); `not_available` asks whether a building the source marks let/sold stays (an exclusion is disclosed); `arithmetic_basis` (blocking) keeps a printed building total as warehouse area or has Python derive total minus office. A count-affecting reader doubt answered as shipped closes with no change; any other of its `options` re-reads that ONE deck next pass (exit 3). **Never answer a blocking broker question from your own context**. Every question here already PASSED the materiality test - it changes a value/photo shown on the dashboard or the number of options - so put it to the user rather than second-guessing whether it matters; what did not pass is in the Gaps Report's "Noted, not put to you" |
+| 14 | **independent QA review** needed | dispatch ONE isolated sub-agent per rendered `work/prompts/g-*.md` file (CONCURRENTLY; each file is that agent's VERBATIM prompt - pointer or paste, step 3 - and names its own output file), plus any outstanding email ingestion the handoff names -> re-run |
+| 15 | **blocking QA finding(s)** unresolved | IMPLEMENT each fix, record it with `gate_runner.py qa-round resolve --work <work> --id <id> --because "<what you changed>"` (several at once: `--batch <file.json>` holding `[{"id": "<id>", "because": "<what you changed>"}]`; ids: `qa-round status`), re-run. This is a fix loop INSIDE the one review round - **never re-dispatch a reviewer**. Advisory findings ship disclosed in the Gaps Report's Known limitations; fix one only when it is one edit AND changes what a reader concludes, and `resolve` it if you do |
 | 16 | **invalid correction entr(y/ies)** - the run refused to START | read the printed fault list (EVERY fault in `work/overrides.json` and `work/repairs.json`, all in one pass) and **FIX the NAMED entries IN PLACE** in the file each fault names - or **DELETE** one that is stale - then re-run the SAME command. **Do NOT append a new entry**: the file being rejected IS the file to edit, so appending re-runs into the same refusal with one more entry each round. **Do NOT read `gate1_scorecard.md`** - this fires at startup, the gates have not run, and on a first pass it does not exist. Nothing has been changed, so there is nothing to undo. To ship past a known-stale entry knowingly, re-run with `--allow-invalid-corrections`: the same faults print, the faulty entries are IGNORED, and whatever they were meant to correct ships UNCORRECTED - tell the broker if you use it |
-
-| 17 | **master list** - the user has not said what to build | the run has inventoried every candidate option and stops BEFORE reading a single brochure. Do all four, in order: (1) dispatch the rendered `work/prompts/master-list.md` VERBATIM -> `work/master_candidates.json` (the email-only rows, named after the property, and the judged SAME-BUILDING groups; a message is never a row and never a group member - every email is on the workbook's Emails tab); (2) `python helpers/master_list_build.py --work "<work>"`; (3) give the user `<work>/Master List.xlsx` and **WAIT** - they set **Include?** to **Yes or No** on every row and write anything the run must know in **Your Run notes for the AI**. **Never fill that column in for them, never infer it from the duplicate groups, never copy the Brochure? column across, never proceed on a partly answered sheet** - the column ships blank and the builder blanks it on every build, because a pre-answered sheet passes the read-back with nobody having decided anything. This is the only point in the run where the user decides scope; (4) `python helpers/master_list_read.py --work "<work>"` (it REFUSES, exit 2, on any row that is not Yes or No, and names them) and re-run the same command (`reference/master-list.md`) |
+| 17 | **master list** - the user has not said what to build | the run has inventoried every candidate option (one row per brochure deck FILE, tracker record and email option; an answered per-cluster sheet is re-keyed, never re-asked) and stops BEFORE reading a single brochure. Do all four, in order: (1) dispatch the rendered `work/prompts/master-list.md` VERBATIM (pointer or paste, step 3) -> `work/master_candidates.json` (the email-only rows, named as the email names the property, and the judged SAME-BUILDING groups; it reads the bodies from `work/email_bodies.md`; a message is never a row and never a group member - every email is on the workbook's Emails tab); (2) `python helpers/master_list_build.py --work "<work>"`; (3) give the user `<work>/Master List.xlsx` and **WAIT** - they set **Include?** to **Yes or No** on every row and write anything the run must know in **Your Run notes for the AI**. **Never fill that column in for them, never infer it from the duplicate groups, never copy the Brochure? column across, never proceed on a partly answered sheet** - the column ships blank and the builder blanks it on every build, because a pre-answered sheet passes the read-back with nobody having decided anything. This is the only point in the run where the user decides scope; (4) `python helpers/master_list_read.py --work "<work>"` (it REFUSES, exit 2, on any row that is not Yes or No, and names them) and re-run the same command (`reference/master-list.md`) |
 
 3. **Rendered dispatch prompts (`work/prompts/`).** Every agentic handoff renders the
-   canonical prompt per pending job. **Dispatch each file's contents VERBATIM** - a
-   hand-written paraphrase is the documented top error surface. You may append run-specific
-   FACTS under the file's 'Run context' heading only. A job kind with no rendered prompt is
-   the ONE case you author by hand from the reference contract (`prompts/outlook-ingest.md`
-   is the one deliberate hand-filled template). The rendered files carry ABSOLUTE output
-   paths - never let a sub-agent create a literal `work/` folder at the project root.
+   canonical prompt per pending job, and **that file IS the sub-agent's prompt, VERBATIM** - a
+   hand-written paraphrase is the documented top error surface. Two sanctioned forms,
+   identical in effect: **(a) POINTER (preferred - a fraction of the output tokens):** the
+   Agent prompt is exactly `Your complete instructions are the verbatim contents of <absolute path of the rendered file>. Read that file in full first and follow it exactly; nothing in this message adds to or overrides it. If you cannot open it, stop and say so.`
+   **(b) PASTE** the file's contents unchanged. Run-specific FACTS go ONLY under the file's
+   'Run context' heading (edit the file before dispatch), never in the dispatch message. A
+   job kind with no rendered prompt is the ONE case you author by hand from the reference
+   contract (`prompts/outlook-ingest.md` is the one deliberate hand-filled template). The
+   rendered files carry ABSOLUTE output paths - never let a sub-agent create a literal
+   `work/` folder at the project root. A host cap on tool calls per message reaches every
+   Run context when set (`reference/environment.md`). Model tier per sub-agent kind
+   (optional): `reference/gates.md` "Sub-agent model tiers".
 4. **Slow / killed / "it timed out"?** That is the ~45s sandbox shell cap, BY DESIGN - just
    re-run the SAME command. **Resume is the DEFAULT**: every pass continues from the work-dir
    cache and makes progress (the `photo cache: X/Y` line tracks the parallel image pre-warm on
    media-heavy runs; several passes are normal). The gates and the freeze are never skipped. A
-   changed input invalidates its stage automatically.
+   changed input invalidates its stage automatically, and the first pass after a skill update
+   may re-prepare each not-yet-read deck once.
 5. **Narrowing a re-run: `--from` and `--only`** (both optional; neither is needed on the
    normal loop, because resume already skips what is current). They answer a different question
    from `--resume`: not "is this output still current?" but "can the correction I just made even
    REACH this stage?". Stage vocabulary, in pipeline order - `folder scan`, `extract`,
    `master list`, `merge`,
    `enrichment`, `repairs`, `projection`, `gates:pre`, `build`, `gates:post`, `deliver`, `qa`
-   (a typo stops the run and lists the valid spellings; note the space and the colon).
+   (a typo stops the run and lists the valid spellings; note the space and the colon;
+   `vision prep` in `timings.json` is a timing-only entry, not a stage).
    - `--from <stage>` puts every stage BEFORE it OUT OF SCOPE, **even under `--no-resume`**:
      each of those reuses its existing output instead of re-deriving it. **What it guarantees
      is REACH, not speed** - a stage put out of scope cannot be CHANGED by that pass. The cut
@@ -145,23 +152,16 @@ the work directory; the exit-3 manifest's `work/` prefix is a convention resolve
    lines naming the guard's EXACT unmet predicates (persisted to `work/pending_diagnosis.json`)
    - satisfy those lines; never guess at what the guard reads.
 
-**Forbidden moves (each was actually tried in a real run and is WRONG):**
-- Do NOT hand-write or edit `canonical.json` / `built.html` - pipeline outputs; the gates
-  reject a hand-built one anyway.
-- Do NOT monkey-patch, bypass or "simplify" a helper, and do NOT skip image harvesting.
-- Do NOT read the source PDFs/sheets and type the data in yourself (the anti-pattern above).
-- Do NOT invent or estimate any value - an unknown is `tbd`, never a guess.
-- Do NOT answer a blocking exit-13 question yourself, and do NOT try to clear one by
-  re-running. Ask the human; a stated "no preference" is recorded as `"skip"`.
-- Do NOT paste an abbreviated field list into a sub-agent prompt - a list in the prompt reads
-  as the SPECIFICATION and silently overrides the contract (the single highest-cost
-  orchestrator mistake on record). The rendered prompt already carries the contract.
-- Do NOT accept a reader's "there is no canonical field for X, so I dropped it" - that
-  sentence is a **BLOCKING signal, not an accepted limitation**: the schema is OPEN and
-  **CAPTURE EVERY FIELD THE SOURCE STATES** is the Stage-1 rule (a stated value with no
-  canonical home is emitted under a descriptive camelCase key). On the run that produced this
-  rule, ~100 false "absent in all sources" claims shipped.
-- Do NOT hand-edit `work/extract/*.json` - DERIVED; corrections go in `work/overrides.json`.
+| Forbidden move (each was actually tried in a real run and is WRONG) | Why / do this instead |
+|---|---|
+| Do NOT hand-write or edit `canonical.json` / `built.html` | pipeline outputs; the gates reject a hand-built one anyway |
+| Do NOT monkey-patch, bypass or "simplify" a helper, and do NOT skip image harvesting | - |
+| Do NOT read the source PDFs/sheets and type the data in yourself | the anti-pattern above |
+| Do NOT invent or estimate any value | an unknown is `tbd`, never a guess |
+| Do NOT answer a blocking exit-13 question yourself, and do NOT try to clear one by re-running | Ask the human; a stated "no preference" is recorded as `"skip"` |
+| Do NOT paste an abbreviated field list into a sub-agent prompt | a list in the prompt reads as the SPECIFICATION and silently overrides the contract (the single highest-cost orchestrator mistake on record). The rendered prompt already carries the contract |
+| Do NOT accept a reader's "there is no canonical field for X, so I dropped it" | that sentence is a **BLOCKING signal, not an accepted limitation**: the schema is OPEN and **CAPTURE EVERY FIELD THE SOURCE STATES** is the Stage-1 rule (a stated value with no canonical home is emitted under a descriptive camelCase key). On the run that produced this rule, ~100 false "absent in all sources" claims shipped |
+| Do NOT hand-edit `work/extract/*.json` | DERIVED; corrections go in `work/overrides.json` |
 
 When you feel the urge to improvise: re-run the same command, or read `gate1_scorecard.md`.
 
@@ -182,7 +182,9 @@ When you feel the urge to improvise: re-run the same command, or read `gate1_sco
   per-property view (`work/properties/<id>-<slug>/` - property.json, media + the
   `media/considered/` discard pile, sources.csv, notes.md with the repair key;
   `_unassigned/` holds deck pages no property claimed) answers "what did this card have to
-  choose from". Full contract: `reference/per-property.md`.
+  choose from"; its media half is reused while its inputs are unchanged
+  (`python helpers/project_properties.py --work "<work>" --rebuild-media` forces a rebuild).
+  Exits 6 and 15 print the entry shape. Full contract: `reference/per-property.md`.
 - **EXPECT this one: two UNNAMED units at ONE location need a hand-authored correction before
   they can ship.** Two records for different buildings on the same site, neither stating a
   unit designator, are kept APART by the matcher (an absent party name on both sides, and a
@@ -203,7 +205,10 @@ ONE short plain-English step marker per stage; (3) anything that genuinely needs
 **a batched exit-13 question round is sanctioned output, never a silence violation** (that IS
 the interactive standard mode working); (4) the final hand-off. Suppress everything else - no
 tool logs, no scorecards, no tracebacks (surface a failure as ONE plain sentence). Quiet is the DEFAULT (`--verbose` opts out, for
-debugging the skill); every `(orchestrator: ...)` handoff prints on stdout in both modes.
+debugging the skill); every `(orchestrator: ...)` handoff prints on stdout in both modes. A
+long block that repeats unchanged prints in full once, then as one short line
+(`work/print_digests.json`); the recorded-only answer list is always in full in
+`work/recorded_only_repairs.md`.
 This governs the on-screen chat ONLY - the gates, freeze and reviewers all still run and
 write their artefacts.
 
@@ -299,8 +304,9 @@ LOOP-DRIVEN - you never order these steps yourself:
    dispatch of the run.**
 2. **Exit 15** - the spine ran `qa-round record` itself (Python never classifies a finding)
    and blocking findings are unresolved: **YOU implement each fix** and record it with
-   `qa-round resolve --work <work> --id <id> --because "<what you changed>"`. Re-run. This is
-   a fix loop INSIDE that one round; it never re-dispatches a reviewer.
+   `qa-round resolve --work <work> --id <id> --because "<what you changed>"` (several at once:
+   `--batch <file.json>`, the same `[{"id", "because"}]` list). Re-run. This is a fix loop
+   INSIDE that one round; it never re-dispatches a reviewer.
 3. **Exit 0** - the spine re-delivered (advisories folded into "Known limitations") and
    `final_gate` went green. Done-done; a red final gate is exit 7 with reasons in
    `work/final_gate_report.md`.

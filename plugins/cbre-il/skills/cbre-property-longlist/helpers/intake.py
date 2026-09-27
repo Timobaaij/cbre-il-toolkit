@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -197,6 +198,255 @@ def _verified_cluster_overrides(cache, input_hash: str, stems: set) -> dict:
         note = note.strip()[:_NOTE_MAX_CHARS] if isinstance(note, str) else ""
         overrides[stem] = (region, (lab.get("country") or "").strip(), note)
     return overrides
+
+
+def _nofuse_rejections(kept_brochures, det: dict, overrides: dict) -> dict:
+    """{stem: (proposed region, why)} for every cached label that would MERGE decks.
+
+    2026-09-26 test run, fix 3.1. A cluster is keyed on its region string, so two decks whose
+    labels named the same town landed in ONE cluster: one master-list row for two brochures, two
+    row ids deleted and one minted, the answered sheet no longer matched and exit 17 re-fired on
+    a sheet the broker had finished. A label is a ROUTING NAME; it may rename a cluster (or split
+    one), it may never put two files the filenames keep apart into one. So the final grouping is
+    compared with the deterministic one: any final key whose members carry more than one
+    deterministic region is a fusion, and every override pointing into it (other than one that
+    merely repeats its own deck's filename label, which cannot fuse anything) is refused. Iterated
+    until stable, because a refused label falls back to its filename region, which can itself be
+    the target of another label. Exact string keys, mirroring the `setdefault` that builds the
+    clusters. Bounded: every round refuses at least one override or stops."""
+    rejected: dict = {}
+    for _round in range(len(overrides) + 1):
+        groups: dict = {}
+        for rel, _ext, stem in kept_brochures:
+            key = (overrides[stem][0] if stem in overrides and stem not in rejected
+                   else det[rel][0])
+            groups.setdefault(key, []).append((rel, stem))
+        fresh = False
+        for key, members in groups.items():
+            if len({det[rel][0] for rel, _s in members}) < 2:
+                continue
+            stems_in = sorted({s for _r, s in members})
+            why = (f"would put {len(members)} deck files the filenames keep apart into one "
+                   f"cluster ('{key}'): {', '.join(stems_in)}")
+            for rel, stem in members:
+                if (stem in overrides and stem not in rejected
+                        and overrides[stem][0] == key and det[rel][0] != key):
+                    rejected[stem] = (key, why)
+                    fresh = True
+        if not fresh:
+            break
+    return rejected
+
+
+# 2026-09-26 test run, fix 3.1 / 1.3: the Stage-0 cluster-label cache and its decline sentinel.
+# Both .SKIP spellings count, the same tolerance the tracker map's decline already has (an
+# "empty file at the output path with a .SKIP suffix" is read both ways by people).
+CLUSTER_CACHE = "intake_clusters.json"
+CLUSTER_SKIP = ("intake_clusters.SKIP", "intake_clusters.json.SKIP")
+
+
+def cluster_labels_declined(work) -> bool:
+    """True when the broker/orchestrator declined LLM cluster labels (a .SKIP sentinel)."""
+    try:
+        return any((Path(work) / n).exists() for n in CLUSTER_SKIP)
+    except Exception:
+        return False
+
+
+def cluster_cache_stamp(work) -> str:
+    """sha1(bytes of work/intake_clusters.json)[:12]; "" when absent, unreadable or declined.
+
+    Written into inventory.json as `cluster_cache_sha` by intake main, and compared by run.py's
+    folder-scan resume check. The resume predicate SKIPS a missing input, so deleting the cache
+    never made inventory.json stale and a fused label outlived the file that made it (fix 3.1).
+    One function computes the stamp on both sides so they cannot disagree about the recipe."""
+    try:
+        if cluster_labels_declined(work):
+            return ""
+        f = Path(work) / CLUSTER_CACHE
+        if not f.is_file():
+            return ""
+        return hashlib.sha1(f.read_bytes()).hexdigest()[:12]
+    except Exception:
+        return ""
+
+
+def cluster_labels_opted_in(cfg) -> bool:
+    """`inputs.cluster_labels: agent` in project.yaml - the ONLY way the label job is dispatched.
+
+    2026-09-26 test run, fix 1.3: the auto-dispatched job cost 74k tokens for 7 stems and changes
+    no card field (labels are routing names; the readers read the country off the deck, and
+    geocoding keys on each record's own address). Anything unreadable = not opted in, which is
+    the deterministic filename label - the no-LLM path every offline run already takes."""
+    try:
+        v = ((cfg or {}).get("inputs") or {}).get("cluster_labels")
+        return str(v or "").strip().lower() == "agent"
+    except Exception:
+        return False
+
+
+def _human_date(v) -> str:
+    try:
+        import master_list as _ML
+        return _ML.human_date(v) or str(v or "")
+    except Exception:
+        return str(v or "")
+
+
+def cluster_label_stems_block(inv: dict, work=None, stems=None, cap: int = 40) -> str:
+    """The rendered STEMS slot of prompts/cluster-labels.md: one line per stem, EVERYTHING the
+    run knows about it, so the agent never has to open the 36 KB inventory.json (fix 1.3).
+
+      - "<stem>" | file: <inputs-relative path(s)> | arrived with: "<subject>" (<email file>,
+        <7 Sep 2026>[, <sender>]) | filename label now: "<region>"
+
+    `stems` defaults to the low-confidence stems. Capped at `cap` lines; the remainder is NAMED
+    on one line, never silently cut. The sender comes from master_candidates_auto.json's email
+    index when that file exists (it is written later in a pass, so the first pass may lack it)."""
+    clusters = {k: c for k, c in ((inv or {}).get("clusters") or {}).items() if isinstance(c, dict)}
+    if stems is None:
+        stems = sorted({str(s) for c in clusters.values() if c.get("confidence") == "low"
+                        for s in (c.get("stems") or [])})
+    stems = [str(s) for s in stems]
+    files_of: dict = {}
+    region_of: dict = {}
+    for region, c in sorted(clusters.items()):
+        for f in [*(c.get("pdfs") or []), *(c.get("pptxs") or [])]:
+            st = Path(str(f)).stem
+            files_of.setdefault(st, []).append(str(f))
+            region_of.setdefault(st, str(region))
+    carrier: dict = {}  # attachment path (lower) -> email_attachments entry
+    for e in ((inv or {}).get("email_attachments") or []):
+        if not isinstance(e, dict):
+            continue
+        for s in (e.get("saved") or []):
+            f = s.get("file") if isinstance(s, dict) else s
+            if f:
+                carrier[str(f).replace("\\", "/").lower()] = e
+    senders: dict = {}
+    if work is not None:
+        try:
+            auto = json.loads((Path(work) / "master_candidates_auto.json")
+                              .read_text(encoding="utf-8-sig"))
+            for m in (auto.get("emails") or []):
+                if isinstance(m, dict) and m.get("sender"):
+                    senders[str(m.get("email_file") or "").lower()] = str(m["sender"])
+        except Exception:
+            senders = {}
+    lines = []
+    for st in stems[:cap]:
+        fs = files_of.get(st) or []
+        parts = [f'- "{st}"', "file: " + (", ".join(fs) if fs else "(not on disk)")]
+        em = next((carrier[f.lower()] for f in fs if f.lower() in carrier), None)
+        if em:
+            who = senders.get(str(em.get("email") or "").lower(), "")
+            bits = [str(em.get("email") or "")]
+            d = _human_date(em.get("date"))
+            if d:
+                bits.append(d)
+            if who:
+                bits.append(who)
+            parts.append(f'arrived with: "{em.get("subject") or ""}" ({", ".join(b for b in bits if b)})')
+        parts.append(f'filename label now: "{region_of.get(st, "")}"')
+        lines.append(" | ".join(parts))
+    if len(stems) > cap:
+        rest = stems[cap:]
+        lines.append(f"- (+{len(rest)} more low-confidence stem(s), not labelled this round: "
+                     + ", ".join(f'"{s}"' for s in rest) + ")")
+    return "\n".join(lines)
+
+
+def cluster_label_job(inv: dict, cfg, work):
+    """The cluster-labels job's slots, or None when the job must not be dispatched.
+
+    None unless ALL hold: project.yaml opts in (`inputs.cluster_labels: agent`), no .SKIP
+    sentinel, no cache written yet, at least one low-confidence stem, and a brochure-set hash to
+    key the cache on. Fail-safe: any error -> None (the deterministic label stands)."""
+    try:
+        if not cluster_labels_opted_in(cfg) or cluster_labels_declined(work):
+            return None
+        if (Path(work) / CLUSTER_CACHE).exists():
+            return None
+        low = sorted({str(s) for c in ((inv or {}).get("clusters") or {}).values()
+                      if isinstance(c, dict) and c.get("confidence") == "low"
+                      for s in (c.get("stems") or [])})
+        cih = str((inv or {}).get("cluster_input_hash") or "")
+        if not low or not cih:
+            return None
+        return {"STEMS": cluster_label_stems_block(inv, work, low),
+                "OUTPUT_PATH": str(Path(work) / CLUSTER_CACHE),
+                "CLUSTER_INPUT_HASH": cih}
+    except Exception:
+        return None
+
+
+# 2026-09-26 test run, fix 3.24: Windows MAX_PATH. Without the LongPathsEnabled policy a path of
+# 260+ characters (a deep OneDrive project plus a subject-named attachment folder reaches it)
+# cannot be listed, stat'ed or opened: rglob silently skipped the directory and 7 of 23 PDFs and
+# 13 of 16 emails vanished from a scratch copy with no line printed. The extended-length prefix
+# (\\?\) lifts the limit, so it is used to SEE those files. They are then reported, not ingested:
+# every later stage (the extractors, the renderers, the resume check) opens `folder / rel` with
+# no prefix and would fail on them one by one, further from the cause. No effect off Windows.
+_LONG_PATH_REMEDY = ("move the project folder to a shorter path (for example directly under "
+                     "C:\\ or a short OneDrive folder) and run again")
+
+
+def _extended(p: str) -> str:
+    """The Windows extended-length spelling of a path (\\\\?\\C:\\... or \\\\?\\UNC\\srv\\share\\...)."""
+    s = os.path.abspath(p)
+    if s.startswith("\\\\?\\"):
+        return s
+    if s.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + s[2:]
+    return "\\\\?\\" + s
+
+
+def _unreadable_long_paths(folder: Path, seen: set, exclude_dir=None) -> list:
+    """[{file, chars}] for every file the extended-length walk finds that the normal walk could
+    not: listed only through the \\\\?\\ prefix, so no stage of the run can open it. Same skips as
+    discover's walk (dot/underscore parts, Office ~$ locks, the work dir, a prior run's output).
+    Windows only; [] elsewhere, and [] on any error (the caller prints that it was skipped)."""
+    if os.name != "nt":
+        return []
+    root = _extended(str(folder))
+    excl = os.path.normcase(_extended(str(exclude_dir))) if exclude_dir else ""
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        keep = []
+        for d in dirnames:
+            if d.startswith((".", "_")):
+                continue
+            if excl and os.path.normcase(os.path.join(dirpath, d)) == excl:
+                continue
+            keep.append(d)
+        dirnames[:] = keep
+        rel_dir = dirpath[len(root):].strip("\\/").replace("\\", "/")
+        for fn in filenames:
+            if fn.startswith(("~$", ".", "_")):
+                continue
+            rel = f"{rel_dir}/{fn}" if rel_dir else fn
+            if rel in seen or _is_own_output(rel):
+                continue
+            normal = os.path.join(os.path.abspath(str(folder)), *rel.split("/"))
+            try:
+                os.stat(normal)
+                continue  # reachable the normal way after all (created mid-walk): not a loss
+            except OSError:
+                pass
+            out.append({"file": rel, "chars": len(normal)})
+    return sorted(out, key=lambda d: d["file"])
+
+
+def long_path_warning(inv: dict) -> str:
+    """The ONE loud line for inventory["unreadable_long_paths"], or "" when there are none.
+    intake prints it; run.py may print it on every pass from the inventory (fix 3.24)."""
+    lp = [d for d in ((inv or {}).get("unreadable_long_paths") or []) if isinstance(d, dict)]
+    if not lp:
+        return ""
+    names = ", ".join(str(d.get("file")) for d in lp[:3]) + (" ..." if len(lp) > 3 else "")
+    return (f"WARNING: {len(lp)} input file(s) sit on a path longer than Windows allows "
+            f"(260 characters), so NO stage of this run can open them and they are NOT in it: "
+            f"{names}. Remedy: {_LONG_PATH_REMEDY}.")
 
 
 # a prior RUN's deliverables left in the inputs folder must never be re-ingested as
@@ -491,8 +741,12 @@ def discover(folder: Path, cluster_cache=None, exclude_dir=None,
 
     _n_excluded = 0
     _cands = []
+    _seen_rel: set = set()  # fix 3.24: every file the NORMAL walk could stat
     for p in folder.rglob("*"):
-        if not p.is_file() or p.name.startswith("~$") \
+        if not p.is_file():
+            continue
+        _seen_rel.add(p.relative_to(folder).as_posix())
+        if p.name.startswith("~$") \
                 or any(part.startswith((".", "_")) for part in p.relative_to(folder).parts):
             continue
         if _under_workdir(p):
@@ -500,6 +754,13 @@ def discover(folder: Path, cluster_cache=None, exclude_dir=None,
             continue
         _cands.append(p)
     files = sorted(_cands, key=lambda p: p.relative_to(folder).as_posix())
+    # fix 3.24: always present (empty off Windows and on short paths), so a reader never has to
+    # guess whether the key exists. input-accounting may list it; intake main prints the line.
+    try:
+        inv["unreadable_long_paths"] = _unreadable_long_paths(folder, _seen_rel, _excl)
+    except Exception as _e:
+        inv["unreadable_long_paths"] = []
+        print(f"  (long-path check skipped: {type(_e).__name__}: {_e})")
     if _n_excluded:
         inv["excluded_workdir"] = {"dir": str(_excl), "files": _n_excluded}
         print(f"  (work dir sits inside the inputs folder - excluded its {_n_excluded} "
@@ -608,8 +869,23 @@ def discover(folder: Path, cluster_cache=None, exclude_dir=None,
     # writer can lift it straight into "Noted, not put to you". Always present, so a
     # reader never has to guess whether the key exists; empty on a regex-only run.
     inv["cluster_label_notes"] = []
+    # fix 3.1: the deterministic label of EVERY kept brochure first, then the no-fuse rule over
+    # the overrides. `cluster_label_rejected` is always present (empty without a cache).
+    det = {rel: infer_cluster(Path(rel).name, cc) for rel, _ext, _stem in kept_brochures}
+    inv["cluster_label_rejected"] = []
+    try:
+        _refused = _nofuse_rejections(kept_brochures, det, overrides) if overrides else {}
+    except Exception as _e:
+        # Fail SAFE: a filename label can never merge two decks, so dropping every override is
+        # the one fallback that cannot reintroduce the defect this rule exists for.
+        print(f"  (cluster labels NOT applied - the no-merge check failed: "
+              f"{type(_e).__name__}: {_e}; every deck keeps its filename label)")
+        _refused, overrides = {}, {}
+    for _st, (_reg, _why) in sorted(_refused.items()):
+        inv["cluster_label_rejected"].append({"stem": _st, "region": _reg, "why": _why})
+    overrides = {k: v for k, v in overrides.items() if k not in _refused}
     for rel, ext, stem in kept_brochures:
-        region, country, confidence = infer_cluster(Path(rel).name, cc)
+        region, country, confidence = det[rel]
         if stem in overrides:  # the broker-confirmed, input-hashed LLM label wins
             region, ov_country, note = overrides[stem]
             country = ov_country or cc.get(region.lower(), "")
@@ -642,6 +918,16 @@ def discover(folder: Path, cluster_cache=None, exclude_dir=None,
     return inv
 
 
+def _slug(raw) -> str:
+    """deliver.safe_slug, imported lazily; an identical local copy if the import fails (fix 3.19)."""
+    try:
+        import deliver as _D
+        return _D.safe_slug(raw)
+    except Exception:
+        s = re.sub(r"[^A-Za-z0-9]+", "_", str(raw or "")).strip("_")
+        return s or "Longlist"
+
+
 def scaffold_yaml(inv: dict, client: str, inputs_folder: str = ".") -> str:
     import yaml
     countries = sorted({c.get("country") for c in inv["clusters"].values() if c.get("country")})
@@ -659,6 +945,14 @@ def scaffold_yaml(inv: dict, client: str, inputs_folder: str = ".") -> str:
     _cl = yaml.safe_dump(_clusters, default_flow_style=False, allow_unicode=True,
                          sort_keys=False).rstrip("\n") if _clusters else "{}"
     clusters_block = "\n".join("    " + ln for ln in _cl.splitlines())
+    # 2026-09-26 test run, fix 3.19: the client name is free text from the Stage-0 form. Raw in
+    # the filename it produced `CBRE_Property_Dashboard_Example Ltd..html` (run.py honours
+    # output.filename verbatim); raw as the YAML scalar, "Acme: Retail" or "#1 Logistics" is not
+    # valid YAML. The filename takes deliver.safe_slug (the same slug run.py's blank-filename
+    # fallback and the ledger/Gaps names use); the name is written as a JSON string, which is a
+    # valid YAML double-quoted scalar and loads back byte-identical. New scaffolds only.
+    client_yaml = json.dumps(str(client), ensure_ascii=False)
+    client_slug = _slug(client)
     return f"""# project.yaml - one per client project. Confirm before running.
 #
 # EVERY VALUE BELOW IS A DEFAULT THIS SCAFFOLD GUESSED, not an answer the broker gave.
@@ -670,7 +964,7 @@ def scaffold_yaml(inv: dict, client: str, inputs_folder: str = ".") -> str:
 setup:
   confirmed: false               # set true ONLY after the broker has answered the Stage-0 form
 client:
-  name: {client}
+  name: {client_yaml}
   confidential: true
 market:
   title_html: ""                 # headline; blank renders the localised default, which names the client. Keep ONE <em>..</em> pair for the accent colour
@@ -678,7 +972,7 @@ market:
   region_label: ""
   countries: {json.dumps(countries)}
 output:
-  filename: "CBRE_Property_Dashboard_{client}.html"
+  filename: "CBRE_Property_Dashboard_{client_slug}.html"
   compiled_date: ""              # ISO date; defaults to today
   language: "English"            # Stage-0 Q3: dashboard language (orchestrator fills from the broker's answer)
 inputs:
@@ -715,8 +1009,13 @@ clarify:
 def _load_cluster_cache(outdir: Path):
     """Best-effort read of the optional work/intake_clusters.json (the orchestrator's
     LLM-refined filename->region labels). A missing / malformed file returns None so
-    discover falls back to infer_cluster verbatim - never a traceback."""
-    f = outdir / "intake_clusters.json"
+    discover falls back to infer_cluster verbatim - never a traceback.
+
+    2026-09-26 (fix 3.1): a .SKIP sentinel (intake_clusters.SKIP) declines the labels, so the
+    cache is not applied even when it exists - the filename labels are re-derived."""
+    if cluster_labels_declined(outdir):
+        return None
+    f = outdir / CLUSTER_CACHE
     if not f.exists():
         return None
     try:
@@ -1025,6 +1324,9 @@ def main() -> None:
     # pass on a plain folder, where harvesting is exactly what is wanted.
     inv = discover(folder, cluster_cache=_load_cluster_cache(outdir), exclude_dir=outdir,
                    email_attachments=_emails_source(outdir) != "none")
+    # fix 3.1: the cache's byte stamp ("" = no cache / declined), so run.py's resume check can
+    # see a deleted or declined cache - the resume predicate skips a missing input by design.
+    inv["cluster_cache_sha"] = cluster_cache_stamp(outdir)
     C.atomic_write_text(outdir / "inventory.json", json.dumps(inv, ensure_ascii=False, indent=2))
     yml = outdir / "project.yaml"
     if not yml.exists():
@@ -1040,6 +1342,20 @@ def main() -> None:
     print(f"OK inventory: {len(inv['clusters'])} clusters / {n_brochures} brochures "
           f"({', '.join(inv['clusters'])}), {len(inv['xlsx'])} xlsx, "
           f"{len(inv['images'])} images, {len(inv['emails'])} emails{scaffolded}")
+    _lpw = long_path_warning(inv)
+    if _lpw:  # fix 3.24: one loud line, never a silent loss
+        print(_lpw)
+    _rej = [r for r in (inv.get("cluster_label_rejected") or []) if isinstance(r, dict)]
+    if _rej:  # fix 3.1: a refused label is named, with the decks it would have merged
+        _by_region: dict = {}
+        for r in _rej:
+            _by_region.setdefault(str(r.get("region") or ""), []).append(str(r.get("stem") or ""))
+        print(f"NOTE: {len(_rej)} cluster label(s) refused - a label may rename a cluster, never "
+              f"merge two decks the filenames keep apart: "
+              + "; ".join(f"{reg} ({', '.join(sts)})" for reg, sts in sorted(_by_region.items())))
+    if cluster_labels_declined(outdir) and (outdir / CLUSTER_CACHE).exists():
+        print(f"NOTE: {CLUSTER_SKIP[0]} is present, so work/{CLUSTER_CACHE} is NOT applied - "
+              f"every deck keeps its filename label.")
     for a in inv.get("archives") or []:
         if a.get("status") == "refused":
             print(f"WARNING: {a['archive']} was NOT unpacked: {a.get('reason')}. Nothing inside "

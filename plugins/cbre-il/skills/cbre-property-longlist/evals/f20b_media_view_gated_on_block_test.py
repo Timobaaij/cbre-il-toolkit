@@ -8,8 +8,10 @@ work dir: 52.1s / 354 files / 86.2 MB with media, 0.49s / 28 files / 0.17 MB wit
 
 WHAT IS PINNED, at the source level (the spine cannot be run offline end to end):
   1. the ordinary projection call passes `media_view="never"`;
-  2. `_full_view_for_humans` (media_view="always") is called exactly once, inside the pre-build
-     gate BLOCKED branch, before the exit-5/exit-6/exit-13 paths;
+  2. `_full_view_for_humans` (media_view="always") is called at exactly TWO sites: inside the
+     pre-build gate BLOCKED branch, before the exit-5/exit-6/exit-13 paths, and (fix 2.2,
+     2026-09-26) before the exit-14 QA dispatch, because the reviewers verify image claims
+     against that media; a half whose inputs are unchanged is carried, so a second call is cheap;
   3. the skipped-media line and the review line both use B5's `rebuild_command`, never a
      hand-composed invocation;
 and functionally: `_full_view_for_humans` writes the view for a fixture and prints the exact
@@ -55,6 +57,9 @@ def main() -> int:
        "...and the skipped-media line is composed by project_properties.rebuild_command")
     ck("_full_view_for_humans(" not in proj,
        "...and the full view is NOT written in the projection stage")
+    ck('_pr.get("carried")' in proj and "carried unchanged from an earlier" in proj,
+       "...and its line names carried media halves, read with .get (fix 2.2; a stub or an "
+       "older project_properties returns no such key)")
     print("\n2. the full view is written exactly where a human is about to look")
     k = RSRC.find("    if any(rc != 0 for rc in g1):")
     m = RSRC.find("_full_view_for_humans(work, folder)", k)
@@ -67,7 +72,18 @@ def main() -> int:
     ck('media_view="always"' in body and "rebuild_command(" in body,
        'the helper builds with media_view="always" and prints rebuild_command')
     calls = [x.start() for x in re.finditer(r"_full_view_for_humans\(work, folder\)", RSRC)]
-    ck(len(calls) == 1, f"exactly one call site ({len(calls)})")
+    ck(len(calls) == 2, f"exactly two call sites ({len(calls)})")
+    # fix 2.2 (2026-09-26): the second is the exit-14 QA dispatch - the reviewers verify image
+    # claims against the per-property media, so it is written before they are sent
+    a14 = RSRC.find("_missing = [")
+    h14 = RSRC.find("independent QA review needed (exit 14)", a14)
+    ck(a14 != -1 and h14 != -1 and sum(1 for c in calls if a14 < c < h14) == 1,
+       "the other call sits after `_missing = [` and before the exit-14 handoff")
+    ck(sum(1 for c in calls if k < c < e5) == 1,
+       "...and the pre-build BLOCKED call is still there (one of the two)")
+    ck("{_pr.get('carried', 0)} unchanged and reused" in body
+       and "{_pr.get('rebuilt', 0)} rebuilt" in body,
+       "the review line says how many media halves were reused and rebuilt (.get - fail safe)")
     print("\n3. functionally: it writes the view, prints the command, never raises")
     w = Path(tempfile.mkdtemp(prefix="cbre_f20b_"))
     (w / "canonical.json").write_text(json.dumps({

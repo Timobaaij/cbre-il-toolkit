@@ -235,6 +235,18 @@ def sentinel(s, field=None):
     return BLANK
 
 
+# 2026-09-26 test run (fix 3.5a): the "this unit is TAKEN" words. A date beside one of these is
+# when the unit was let or sold, never when it can be occupied, so it must not become an
+# earlyAccess. It lives HERE rather than in merge because `_common.promotable_alias` needs it and
+# `_common` must never import merge (merge imports `_common`). This is a byte-for-byte copy of
+# merge._AVAIL_TAKEN_RX as it stood on 2026-09-26; the merge owner aliases it
+# (`_AVAIL_TAKEN_RX = N.AVAIL_TAKEN_RX`) so the two can never drift. The words are English by
+# origin (readers write camelCase English KEYS, but values stay in the deck's language): a
+# foreign "taken" phrase is not caught here, so it moves to earlyAccess exactly as the reader
+# wrote it - the same text the card showed under the alias key, never a new claim.
+AVAIL_TAKEN_RX = re.compile(r"\b(?:under\s+offer|let\s+agreed|sold|leased)\b", re.I)
+
+
 # --- rent normalisation (shared by extract_pdf and merge) ---------------------- #
 # Monthly markers as a REGEX tolerating the typeset-with-spaces forms brochures
 # actually use ("€4.20 / sq m / month", "€4,20 / m2 / mes"); a missed marker ships

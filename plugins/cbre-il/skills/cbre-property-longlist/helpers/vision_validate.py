@@ -32,6 +32,11 @@ folded into the merge:
       may have COLLAPSED several properties into one record; each property on a
       page must be its own record (same page_no repeated is correct)
     * far fewer records than rasterised pages (same collapse smell, deck-level)
+    * (2026-09-26) a malformed `__meta.doubts[].combinable` or `__meta.not_an_option` flag, and
+      a heroRef / planRef on a candidate the prep marked `off_page`
+
+hoist_toplevel_prov(records) is the one PURE repair here: run.py applies it at record load so a
+plain top-level `prov` is moved under __meta without a re-read; validate() never rewrites a file.
 
 Standalone:  python helpers/vision_validate.py --work <work dir> [--folder <inputs>]
 run.py runs it automatically before folding vision records (errors stop the run
@@ -133,6 +138,92 @@ def _load_page_texts(src: Path) -> list[str]:
         return []
 
 
+def _hoistable(r) -> bool:
+    """A record whose top-level `prov` is a plain {field: locator-string} object and whose
+    `__meta` is an object or absent: moving it under __meta is lossless and purely structural,
+    so the spine does it itself instead of sending the deck back (2026-09-26 test run, fix 1.5).
+    Anything else (a list, a nested value, a non-object __meta) is NOT guessed at."""
+    if not isinstance(r, dict):
+        return False
+    pv = r.get("prov")
+    if not isinstance(pv, dict) or not pv:
+        return False
+    if not all(isinstance(k, str) and isinstance(v, str) for k, v in pv.items()):
+        return False
+    meta = r.get("__meta")
+    if meta is not None and not isinstance(meta, dict):
+        return False
+    mp = (meta or {}).get("prov")
+    return mp is None or isinstance(mp, dict)
+
+
+def hoist_toplevel_prov(records) -> list[dict]:
+    """Move a top-level `prov` under `__meta.prov`, in place (2026-09-26 test run, fix 1.5a).
+
+    3 of 22 readers on one run wrote `prov` beside the fields; the validator refused each and the
+    only remedy was a full re-read (120-145 k tokens) for a purely structural slip. Per record that
+    `_hoistable` accepts: a key `__meta.prov` lacks is moved; a key with the SAME locator there
+    counts as moved (the duplicate is dropped); a key whose locator DIFFERS stays at top level
+    (merge quarantines it, as before - never an overwrite). The top-level `prov` is popped when
+    nothing is kept. Values and locators are never rewritten. Returns one note per changed record
+    `{record (1-based), park, moved, kept_top_level}`; a second call returns []. Pure (no I/O)
+    and never raises: this is the function run.py calls at record load, while validate() itself
+    stays a strict checker that rewrites nothing."""
+    notes: list[dict] = []
+    try:
+        for k, r in enumerate(records or [], start=1):
+            try:
+                if not _hoistable(r):
+                    continue
+                if not isinstance(r.get("__meta"), dict):
+                    r["__meta"] = {}
+                meta = r["__meta"]
+                if not isinstance(meta.get("prov"), dict):
+                    meta["prov"] = {}
+                mp = meta["prov"]
+                moved, kept = [], {}
+                for fld, loc in r["prov"].items():
+                    if fld not in mp:
+                        mp[fld] = loc
+                        moved.append(fld)
+                    elif mp[fld] == loc:
+                        moved.append(fld)          # identical duplicate: nothing is lost
+                    else:
+                        kept[fld] = loc            # a DIFFERENT locator is never overwritten
+                if not moved:
+                    continue
+                if kept:
+                    r["prov"] = kept
+                else:
+                    r.pop("prov", None)
+                notes.append({"record": k, "park": str(r.get("park", ""))[:40],
+                              "moved": moved, "kept_top_level": sorted(kept)})
+            except Exception:
+                continue
+    except Exception:
+        return notes
+    return notes
+
+
+def _deck_index(d: dict) -> dict:
+    """What validate() keeps per manifest deck: its source, its page set and (fix 3.21) the
+    candidate annotations interpret_prep wrote per page, {page_no: {index: {off_page, masked}}}."""
+    cands: dict = {}
+    for p in d.get("pages", []) or []:
+        if not isinstance(p, dict):
+            continue
+        per = {}
+        for c in p.get("candidates") or []:
+            if isinstance(c, dict) and isinstance(c.get("index"), int):
+                per[c["index"]] = {"off_page": c.get("off_page") is True,
+                                   "masked": c.get("masked") is True}
+        if per:
+            cands[p.get("page_no")] = per
+    return {"source": d.get("source_file", ""),
+            "pages": {p.get("page_no") for p in d.get("pages", [])},
+            "cands": cands}
+
+
 def validate(work: Path, source_dir: Path | None = None) -> tuple[list[str], list[str]]:
     """(errors, warnings) across every vision file in <work>/extract, checked
     against <work>/vision/manifest.json. No manifest = nothing to validate.
@@ -142,16 +233,25 @@ def validate(work: Path, source_dir: Path | None = None) -> tuple[list[str], lis
     warnings: list[str] = []
     manifest_file = work / "vision" / "manifest.json"
     decks: dict[str, dict] = {}
+    # 2026-09-26 test run, fix 3.1 item 9: each deck ALSO by the file name of its explicit
+    # `output` (B2). A shared label gets a hash-suffixed output (`<label>__<sha8>_vision.json`)
+    # and a relabel keeps the durable old path (B64), and neither matches the label, so every
+    # page-binding check for that file was silently skipped. The output name is looked up first,
+    # the label second (a legacy manifest without `output` is unchanged).
+    decks_by_output: dict[str, dict] = {}
     if manifest_file.exists():
         try:
             for d in json.loads(manifest_file.read_text(encoding="utf-8-sig")).get("decks", []):
                 # `cluster_label` first, `region` as the LEGACY fallback (B51) - a warm work dir
                 # may hold a manifest written before the rename, and losing the deck index here
                 # silently disarms every page-range check.
-                decks[_vkey(str(d.get("cluster_label") or d.get("region") or ""))] = {
-                    "source": d.get("source_file", ""),
-                    "pages": {p.get("page_no") for p in d.get("pages", [])},
-                }
+                ent = _deck_index(d)
+                decks[_vkey(str(d.get("cluster_label") or d.get("region") or ""))] = ent
+                try:
+                    if d.get("output"):
+                        decks_by_output[Path(str(d["output"])).name.lower()] = ent
+                except Exception:
+                    pass
         except Exception as e:
             warnings.append(f"vision manifest unreadable ({e}) - page-binding checks skipped")
 
@@ -170,7 +270,7 @@ def validate(work: Path, source_dir: Path | None = None) -> tuple[list[str], lis
             f"run. The transcriptions were not validated against their decks.")
     for vf in _vfs:
         region = vf.name[:-len("_vision.json")]
-        deck = decks.get(_vkey(region))
+        deck = decks_by_output.get(vf.name.lower()) or decks.get(_vkey(region))
         # the twin text layer's numbers, per page (empty when the source is not
         # resolvable or carries no usable layer - reconciliation then disengages)
         page_nums: dict[int, set[float]] = {}
@@ -228,10 +328,53 @@ def validate(work: Path, source_dir: Path | None = None) -> tuple[list[str], lis
             # A reader that writes `prov` beside the fields instead of under __meta: merge
             # quarantines the unknown top-level key, so every ledger row of the record ships
             # with no locator. Caught here, before merge, where "fix and re-run" is the contract.
+            # 2026-09-26 test run, fix 1.5: the verdict is unchanged, the message now says which
+            # of the two cases this is (run.py hoists the plain one at record load).
             if "prov" in r and not meta.get("prov"):
                 errors.append(f"{tag}: top-level `prov` must be inside `__meta.prov` - merge "
                               f"drops a top-level prov and the ledger rows lose their "
-                              f"locators; move the object under __meta")
+                              f"locators; move the object under __meta "
+                              + ("- the spine moves a {field: locator-string} `prov` under "
+                                 "__meta automatically on its next pass" if _hoistable(r) else
+                                 "- this one cannot be moved automatically (it is not a "
+                                 "{field: locator string} object): rewrite it as one under "
+                                 "__meta.prov"))
+            # 2026-09-26 test run, fixes 3.2a / 3.10a: two optional reader flags. WARNINGS only -
+            # a malformed flag is read as absent by its consumers (`is True`), so it can cost a
+            # broker question but never a wrong card, and it is no reason to re-read a deck.
+            for _d_i, _dbt in enumerate(meta.get("doubts") or [], start=1):
+                if not isinstance(_dbt, dict) or "combinable" not in _dbt:
+                    continue
+                _cb = _dbt.get("combinable")
+                if not isinstance(_cb, bool):
+                    warnings.append(f"{tag}: __meta.doubts[{_d_i}].combinable is {_cb!r}, not "
+                                    f"true/false - it is ignored (no combined option is offered)")
+                elif _cb and (not _dbt.get("field") or not isinstance(_dbt.get("options"), list)
+                              or len(_dbt.get("options") or []) < 2):
+                    warnings.append(f"{tag}: __meta.doubts[{_d_i}].combinable is true but the "
+                                    f"doubt lacks a `field` or two or more `options` - nothing "
+                                    f"can be combined, so it is ignored")
+            if "not_an_option" in meta:
+                _na = meta.get("not_an_option")
+                if not isinstance(_na, bool):
+                    warnings.append(f"{tag}: __meta.not_an_option is {_na!r}, not true/false - "
+                                    f"it is ignored, so no broker question is raised for it")
+                elif _na and not str(r.get("status") or "").strip():
+                    warnings.append(f"{tag}: __meta.not_an_option is true but the record has no "
+                                    f"`status` - copy the source's own let/sold wording into "
+                                    f"`status` (with its prov) so the card and the broker see it")
+            # 2026-09-26 test run, fix 3.21: a hero / plan bound to a candidate the page never
+            # SHOWS (placed wholly outside the visible page) is a leftover graphic, not a pick.
+            if deck and isinstance(pno, int):
+                _pc = (deck.get("cands") or {}).get(pno) or {}
+                for _rk in ("heroRef", "planRef"):
+                    _ri = meta.get(_rk)
+                    if (isinstance(_ri, int) and not isinstance(_ri, bool)
+                            and (_pc.get(_ri) or {}).get("off_page")):
+                        warnings.append(f"{tag}: __meta.{_rk} {_ri} on page {pno} is a candidate "
+                                        f"marked off_page (placed outside the visible page, so "
+                                        f"the brochure never shows it) - pick a visible image or "
+                                        f"null")
             # __meta.image_pages (the carousel scope): each entry must be an int >= 0
             # AND within this deck's rasterised pages (mirrors the page_no out-of-range
             # ERROR - an off-range page harvests a neighbour's photo); and no page may
@@ -411,17 +554,18 @@ def validate(work: Path, source_dir: Path | None = None) -> tuple[list[str], lis
         #
         # This used to be a blocking ERROR, which cost an exit-3 re-dispatch on a shape the
         # contract SANCTIONS: reference/interpretation.md promises the interpreter that "an
-        # honest over-list of a neighbour's page is dropped, never leaked", and merge's
-        # unique-claimant guard (build_foreign_pages / _page_allowed) enforces exactly that.
+        # honest over-list is never leaked to a property that did not list it", and merge's
+        # claimant guards (build_foreign_pages / _page_allowed) enforce exactly that.
         # It also fired on the blessed "two properties on ONE page" topology, where a fresh
         # sub-agent reading the same contract returns the same answer - a non-convergent
         # streak, not a fix. Two outcomes, and they differ in consequence, so they are worded
         # differently rather than merged:
         #   anchored   - one record's page_no IS this page: merge awards it to that record and
         #                drops the other's claim. Provably a no-op; noted for visibility only.
-        #   unanchored - nobody anchors it, so it is not a sole claim for anyone and merge
-        #                drops it from EVERY carousel. Lossy for both properties - completeness,
-        #                never correctness.
+        #   unanchored - nobody (or more than one record) anchors it, so merge SHARES it between
+        #                the claiming properties' carousels and keeps it out of every Site Plan
+        #                slot (2026-09-26 test run, fix 3.20). Worth a note, never an error: the
+        #                reader may want it on only the property it shows.
         # The genuinely protective branch is a DIFFERENT one (a page outside this deck's
         # rasterised range, above) and stays an ERROR. Note that with B14 open - the region
         # emitter overwriting the manifest with `decks: []` - `deck` is None, that range check
@@ -435,10 +579,10 @@ def validate(work: Path, source_dir: Path | None = None) -> tuple[list[str], lis
                                 f"nothing to fix")
             else:
                 warnings.append(f"{tag}: __meta.image_pages page {p} is also claimed by "
-                                f"{prev} and NO record anchors it, so merge drops it from "
-                                f"EVERY carousel - both properties lose the photo. Give the "
-                                f"page to whichever property it actually shows (or set that "
-                                f"record's page_no to it) if you want it kept")
+                                f"{prev} and NO record anchors it, so merge SHARES it between "
+                                f"the claiming properties' carousels (never their Site Plan "
+                                f"slot). If the page shows only one of them, list it on that "
+                                f"one")
         if deck and deck["pages"]:
             missing = sorted(deck["pages"] - seen_pages)
             if missing:

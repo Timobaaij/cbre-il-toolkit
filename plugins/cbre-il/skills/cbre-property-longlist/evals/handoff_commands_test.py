@@ -50,6 +50,17 @@ def main() -> int:
        "exit-15 hand-off gives the full qa-round resolve command (with --id/--because)")
     ck("_exit_round_trip(work, 15" in src,
        "exit 15 goes through the round-trip guard")
+    # 2026-09-26 (fix 1.9): the advisory sentence contradicted SKILL.md ("never fixed") while
+    # `qa-round resolve` accepts advisory ids. Pinned on both sides so they cannot drift again.
+    ck("never fixed" not in src,
+       "run.py no longer says an advisory finding is 'never fixed' (handoff or docstring)")
+    ck("ONE edit" in b15 and "qa-round resolve" in b15,
+       "exit-15 hand-off: fix an advisory only when it is ONE edit, then qa-round resolve it")
+    ck("--batch" in b15, "exit-15 hand-off names the --batch form for several findings (fix 2.8)")
+    _skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+    _row15 = next((ln for ln in _skill.splitlines() if ln.startswith("| 15 |")), "")
+    ck("fix one only when it is one edit" in _row15,
+       "SKILL.md's exit-15 row says the same thing (parity pin)")
 
     # the spine RUNS the tail itself - deliver re-folds advisories, final_gate is the
     # backstop, and its reasons survive quiet mode via the report file

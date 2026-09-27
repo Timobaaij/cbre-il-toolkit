@@ -7,6 +7,75 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.20.0] — 2026-09-27
+
+Marketplace 1.20.0: **CBRE I&L Toolkit 1.15.0** — the property longlist's **2026-09-26 fix
+round**, and dashboard template v46 → **v47**. UK I&L Toolkit unchanged at 1.7.0.
+
+One full orchestrated run (22 brochure decks, 16 emails) produced a list of token, speed and
+integrity fixes, and this round implements all of them — about forty, each tied to the evals
+that pin it. The complete itemised list, with fix IDs, is in the skill's own
+`docs/CHANGELOG-2026-09-26-fix-round.md`; the headlines are below. The round kept to three
+rules throughout: fixes stay generic to any client, country, currency or unit system; new keys
+are additive only; and every new path falls back safely to the old behaviour, with one
+printed line saying so.
+
+### Fewer tokens
+- **Each reader gets a condensed contract for its own mode** instead of reading the full 69 KB
+  interpretation reference plus the schema — about 8k tokens and one tool call saved per text
+  deck.
+- Per-deck contact sheets under a pixel budget; email bodies extracted once and de-duplicated,
+  so the master-list agent never opens a `.msg`; the cluster-label job runs only when asked
+  for; and far less repeated output on each pass.
+
+### Faster
+- **The master-list candidate build is cached** against the corpus, and the per-property media
+  half is reused while its inputs are unchanged.
+- value-format asks everything in one pass, and several QA findings can be resolved at once
+  with `qa-round resolve --batch`, all or nothing.
+
+### Integrity
+- **A cluster label can no longer fuse two files into one option**; master-list rows are now
+  per deck file, and an already-answered sheet is migrated once rather than re-asked.
+- **A figure printed across several lines** is marked combinable by the reader, Python offers
+  the sum as an option, and **one** question per field fans out to every card.
+- **A lone printed total ships exactly as printed.** The "total read as warehouse area" shape
+  becomes a blocking question rather than a silent assumption.
+- **A let or sold building is flagged and excluded**, with its own heading in the Gaps Report.
+- **A ledger value that a repair replaced is marked superseded**, and restored if the repair is
+  later removed; a struck value ships the `TBC` blank with its own wording.
+- A page the reader declined as a site plan can never be bound as one on pixels alone.
+- Windows input paths too long to open are warned about once per pass and listed, rather than
+  silently skipped.
+
+### Template v47
+- **Drive-time highlights use each place's stored type.** They used to guess from the name
+  alone, so six real rail terminals whose names contain neither "rail" nor "terminal" (Port
+  Salford and Port of Goole among them) were shown as cities, took the city icon and pushed the
+  true nearest city off three slides.
+- **Site Plan mode hides the photo carousel's arrows and counter**, which had been labelling a
+  plan as "photo 1 of 6".
+
+### If you have a run in progress
+Nothing already asked is asked again, and an answered master list is migrated rather than
+reset. But the **merge-side** fixes only reach an existing canonical after a re-merge — re-run
+with `--no-resume` to pick them up. The first per-property media build after updating is a
+full rebuild; later passes reuse it.
+
+### Verification
+248 evals, including all 51 new ones: 247 pass. The one failure, `plan_reject_test`, is the
+known Linux-only path case — it passes in full under Windows filename rules, which is where the
+skill runs, and that includes this round's new site-plan check. The `city_major` schema fix
+from 1.18.0 survived the round.
+
+### Security
+- Re-applied the example-name fix (a real-looking broker name → the invented `Hale, Robin`)
+  and preserved `vendor/README.md` again; both were missing from the upload.
+- **Took that same name out of this changelog.** Four earlier entries here quoted it while
+  describing its removal from the code, which put it straight back into the public
+  repository. They now describe the fix without naming anyone. As with 1.12.1, the name
+  remains in this repository's git history; only the current tree is clean.
+
 ## [1.19.0] — 2026-09-25
 
 Marketplace 1.19.0: **CBRE I&L Toolkit 1.14.0** gains an eighth skill. UK I&L Toolkit unchanged
@@ -126,8 +195,8 @@ Toolkit unchanged at 1.7.0.
   problem that forced a regeneration on every earlier release is fixed at source.
 
 ### Security
-- Re-applied the example-name fix (`Pearson, Sam` → `Hale, Robin`) and preserved
-  `vendor/README.md` again; both were missing from the upload.
+- Re-applied the example-name fix (a real-looking broker name → the invented `Hale, Robin`)
+  and preserved `vendor/README.md` again; both were missing from the upload.
 
 ## [1.17.0] — 2026-09-24
 
@@ -185,8 +254,9 @@ Marketplace 1.16.3: **CBRE I&L Toolkit 1.12.3**. UK I&L Toolkit unchanged at 1.6
   has to be mirrored in `expected_hash`.
 
 ### Security
-- Re-applied the example-name fix for the third release running (`Pearson, Sam` → `Hale,
-  Robin`), and preserved `vendor/README.md`, the PyMuPDF provenance note, for the fourth.
+- Re-applied the example-name fix for the third release running (a real-looking broker name
+  → the invented `Hale, Robin`), and preserved `vendor/README.md`, the PyMuPDF provenance
+  note, for the fourth.
 
 ## [1.16.2] — 2026-09-21
 
@@ -231,8 +301,8 @@ Marketplace 1.16.1: **CBRE I&L Toolkit 1.12.1**. UK I&L Toolkit unchanged at 1.6
   people. The eval's fixture sender address became `fixture@savills.com` rather than a
   real-looking personal address.
 - One example was renamed only on one side of the sentence, which left a real-looking name in
-  the quoted text and made the comment contradict itself (it showed `Pearson, Sam` and then
-  said it should read `Robin Hale`). Both halves now read `Hale, Robin` / `Robin Hale`, so the
+  the quoted text and made the comment contradict itself (it showed one person's name and
+  then said it should read `Robin Hale`). Both halves now read `Hale, Robin` / `Robin Hale`, so the
   comment demonstrates the surname flip it is actually describing.
 
 No behaviour change in this release — the code paths, the workbook and the gates are identical
@@ -1502,6 +1572,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.20.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.20.0
 [1.19.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.19.0
 [1.18.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.18.1
 [1.18.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.18.0
