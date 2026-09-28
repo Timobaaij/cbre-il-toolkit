@@ -7,6 +7,19 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.22.0] — 2026-09-28
+
+Marketplace 1.22.0: **CBRE I&L Toolkit 1.16.0**. UK I&L Toolkit unchanged at 1.8.0.
+
+### Removed
+- **`cbre-engagement-letter` is no longer in the marketplace.** It was added in 1.19.0. The
+  skill and its five registration lines are gone — the entry in both plugin descriptions, the
+  marketplace summary, and the README's intro and table. No other skill handed off to it, so
+  nothing is left pointing at a missing skill.
+
+  **If you installed it, it stays on disk until you update**; updating the plugin removes it.
+  Its history remains in this repository if it needs to come back.
+
 ## [1.21.0] — 2026-09-28
 
 Marketplace 1.21.0: **UK I&L Toolkit 1.8.0**. CBRE I&L Toolkit unchanged at 1.15.0.
@@ -1631,6 +1644,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.22.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.22.0
 [1.21.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.21.0
 [1.20.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.20.0
 [1.19.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.19.0
