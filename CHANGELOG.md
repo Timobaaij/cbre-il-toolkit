@@ -7,6 +7,65 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.21.0] — 2026-09-28
+
+Marketplace 1.21.0: **UK I&L Toolkit 1.8.0**. CBRE I&L Toolkit unchanged at 1.15.0.
+
+### Changed — expense claim
+- **The skill now attaches the two files itself.** Stage 2 always ends by uploading
+  `Consolidated Expenses.pdf` and `Expenses.xlsx` to the report and firing Save for Later, and
+  the proof it worked is the header link reading `Attachments (2)`, a count the server keeps.
+  Attaching used to be left to the user; it no longer can be, because while Playwright drives
+  the browser it captures every file chooser, so the user sees nothing when they try to attach
+  by hand, and unanswered choosers stack up and block the session. **Summary and Submit is
+  still never automated** — it sends the report for approval and cannot be undone, and it
+  stays the user's step in all four places the skill states it.
+
+  The PeopleSoft attachment dialog enforces its own rules, now written down: filenames may
+  hold only letters, numbers and underscores (so the PDF is uploaded as a renamed copy), all
+  attachments together must stay under 10 MB (which is what the PDF's 9.5 MB budget was for),
+  and Playwright will only upload from roots that change per session, which the playbook shows
+  how to read off the first error.
+- **Filing for a colleague.** The employee ID has to be picked from the lookup, never typed
+  (typing leaves the field in an error state and Add refuses). The lookup lists only people
+  who have authorised this login to file for them, so an absent colleague is a missing
+  authorisation rather than something to retry — except that a dying session also shrinks the
+  list to one row, so a "1 of 1" result just before a session drop is not proof of anything.
+- **Batched filing with a working job template**, measured at about 10 seconds a plain line
+  and 20 seconds an attendee line, plus the rule that a `browser_evaluate` must never block on
+  a whole batch.
+- The README no longer says the skill never attaches receipts.
+
+### Fixed — expense claim
+- **The skill would have disappeared again.** The upload's description was no longer quoted
+  and contains a colon followed by a space, the exact YAML fault that made this skill silently
+  vanish before. It is quoted again, and parses.
+
+### Security — expense claim
+- **This upload was built from a copy that predated every personal-data fix made to this
+  skill in 1.5.0 and 1.12.1, so all of them had reverted** — the employee ID, a Windows
+  username in a file path, real expense report IDs and their totals, a real third party's name
+  as the attendee example, the account holder's name, a real client, and real trips and
+  merchants. All are removed again.
+- **It also added new personal data, the most sensitive yet:** the last four digits of four
+  real payment cards, and the account holder's full legal name printed beside a card number,
+  alongside two further real report IDs and local folder names. Card digits beside a full name
+  are exactly what social engineering works from. They are replaced with obviously fake digits
+  (`****1111` and so on) that keep the lesson the passage teaches — Apple Pay's device token
+  never matches the card app — and the name and card number are gone.
+- The skill again refers to whoever installed it as "the user": this upload had gone back to
+  describing its owner in the third person, 33 times.
+
+The author's real changes were confined to `SKILL.md` and `reference/peoplesoft.md`; the four
+other files were byte-identical to the original, so they ship as the already-cleaned copies.
+Checked against the tree actually committed, not a staging copy: no personal data, no real
+card digits, and no third-person references remain. Re-tested on a rebuilt container: the
+build, the page-stamped PDF, compression and the blank-type refusal all behave, and the
+spreadsheet shows users the placeholder attendee example.
+
+**If you author this skill from a local copy, apply these changes there**, or the next upload
+will bring all of it back a third time.
+
 ## [1.20.0] — 2026-09-27
 
 Marketplace 1.20.0: **CBRE I&L Toolkit 1.15.0** — the property longlist's **2026-09-26 fix
@@ -1572,6 +1631,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.21.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.21.0
 [1.20.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.20.0
 [1.19.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.19.0
 [1.18.1]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.18.1

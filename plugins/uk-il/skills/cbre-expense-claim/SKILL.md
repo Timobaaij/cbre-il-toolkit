@@ -12,11 +12,15 @@ judgement calls that matter to the user happen in the gap between them.
 1. Read receipts -> Excel + consolidated PDF  ==> STOP, they fill Expense Type
                                                     and Attendees in the Excel
 2. Read those two columns back, file every    ==> STOP, hand back
-   line in PeopleSoft, verify the total
+   line in PeopleSoft, verify the total,
+   attach both files, Save for Later
 ```
 
-The user then attaches the receipts and submits the report themselves. Do not
-attach, and never fire Summary and Submit.
+**Stage 2 always ends by attaching the two files and saving.** Upload
+`Consolidated Expenses.pdf` and `Expenses.xlsx` to the report, then fire Save
+for Later. Do not leave the report unattached for the user to finish.
+
+The user submits the report themselves. **Never fire Summary and Submit.**
 
 ---
 
@@ -44,8 +48,34 @@ Classify each page:
 | `STATEMENT` | Any other banking app screen (Revolut, Monzo, a bank statement crop) |
 | duplicate | The same receipt scanned twice. Drop it |
 
+**Read fast.** Render every PDF page to a PNG in the scratchpad first (pymupdf,
+longest side 1600 px), then read the PNGs three at a time. Long iOS thermal
+scans come out narrow but stay legible at that size.
+
 **Deduplicate** on merchant plus amount plus timestamp, keeping the earlier scan.
-Receipts routinely get rescanned in a later batch.
+Receipts routinely get rescanned in a later batch. Duplicates seen on one
+multi-country batch, all dropped:
+
+| Duplicate | Keep |
+|---|---|
+| Same slip or rental agreement scanned twice in one PDF | the first page |
+| A strip scan (card slip plus receipt) and a second scan of the receipt alone | the strip |
+| A hotel invoice with its card slip laid on top, and the same invoice bare | the one with the slip |
+| A ride-hailing PDF invoice and the same ride's email screenshots | the invoice |
+| A card-app screen marked `RESERVED`, and the same charge screenshotted later once posted | the earlier one, same amount |
+
+**Not claim evidence, leave out and say so:**
+
+- A card **pre-authorisation** slip (`Předautorizace`, "pre-auth", deposit
+  hold). It is a hold, released later, not a charge. The payment slip
+  (`Platba`, "Sale") is the charge.
+- Stray screenshots that are not receipts, for example a PeopleSoft screen
+  (`ps-after-save.png`) left over from filing a previous batch.
+
+**Never match on the card number.** Apple Pay uses a device token, so the last
+four on a terminal slip (`****1111`, `****2222`) differ from the card app
+(`****3333`, `Visa ··4444`). Match on amount and date only. Revolut shows UK
+time, so a slip printed at 21:46 in a CET city is the Revolut line at 20:46.
 
 **Group into claim lines.** One line per transaction. Match card evidence to a
 receipt on **amount and date**, never on the card descriptor:
@@ -63,6 +93,18 @@ line, with the receipt fields left null.
   fee is claimed. Confirmed by the user.
 - **No card evidence** → the claim stays in the receipt currency. Never invent an
   FX rate. PeopleSoft converts.
+- **Card evidence in a non-GBP card currency** → the user may also carry a EUR card
+  (screens with a light-blue header, the cardholder's name and card number, "Currency
+  - HUF 6,900.00" under a big `- €19.59`). Claim the EUR figure off that screen:
+  set `card_gbp` to it and `card_ccy` to `EUR`. The line is then filed in EUR
+  and PeopleSoft converts. Same "read it verbatim, never compute" rule as GBP.
+- **Tip on the card slip, not the bill** (Teya slips: `AMOUNT / TIP / TOTAL`,
+  Slovak `Suma / Prepitné / Súčet`, Czech `ČÁSTKA / SPROPITNÉ / CELKEM`) → the
+  slip total is what was paid; set `receipt_amount` to it. The bill page's own
+  evidence entry keeps the bill amount.
+- **Car hire** → the payment slip and the card charge are the claim; the rental
+  agreement is the receipt. A one-way drop fee sits in "Other" on the
+  agreement and is part of the charge.
 - **Split or part-paid bill** → claim the amount in the payment block at the foot
   of the receipt, not the headline total. `Total £103.21 ... Amount £51.61` is a
   £51.61 claim. Note it in the description so the approver does not query it.
@@ -201,8 +243,8 @@ them as something to keep out of the transcript.
 
 > ### STOP 1
 > Report the totals, line count, page count and the PDF size. Show the user the
-> two files and **wait**. They approve the numbers and fill columns K and L. Do
-> not open a browser.
+> two files and **wait**. They approve the numbers and fill columns K and L. Do not
+> open a browser.
 
 ---
 
@@ -214,25 +256,44 @@ before starting. The shape of it:
 1. Open the entry point and click `Add` with the prefilled Empl ID.
    If SSO has expired the page shows a two-digit number under "Approve sign in
    request". **Give the user that number and wait.** Never attempt MFA yourself.
-2. Set Business Purpose `CLBUS`, Report Description, Default Location
-   `United Kingdom`.
-3. Fill line 0, including Billing Type `NRP`. It carries forward to every later
-   line, so set it once only.
+2. Set Business Purpose `CLBUS` and Report Description (**30 characters max**).
+   Default Location `United Kingdom` needs real keystrokes (`browser_type`,
+   `slowly`) and a click on the `GBR01` autocomplete row; a scripted `.value`
+   does not stick. Line locations then fill themselves.
+3. Fill line 0, including Billing Type `NRP` and the currency. Billing Type
+   carries forward, so set it once only.
 4. **Save for Later**, clear the attendee modal it raises, then read the Report
-   ID off the page.
-5. One line per save for the rest: Insert Line, poll for `TRANS_DATE$<n>`, fill,
-   Save, clear the attendee modal, verify the amount reads back.
-6. Read every row back. Check the line count and the total against the
-   spreadsheet.
+   ID off the page (bare 10-digit number).
+5. Run the rest as one background job: copy the **working job template** in
+   `reference/peoplesoft.md`, fill `LINES`, start it, poll every 45-60 s.
+   It inserts, fills (date, type, description, amount, **currency**, merchant),
+   saves, clears attendee modals and verifies amount plus currency per line.
+6. Read every row back. Check the line count against the spreadsheet, and
+   every amount and currency. With non-GBP lines the report total is in GBP
+   after PeopleSoft's conversion and will not equal any spreadsheet figure.
+7. **Attach both files and Save for Later.** See "Attachments" in
+   `reference/peoplesoft.md`. This is the last step of every run, not the user's job.
+   `Attachments (2)` on the header link after the save is the proof.
 
 **One line per save is not negotiable.** Insert Line silently no-ops against an
 uncommitted row, so filling nine rows and saving once loses eight of them.
 `Totals (N Lines)` is the server-side committed count and the only honest
-progress signal. About 14 seconds a line; three lines per browser call is safe.
+progress signal. About 10 seconds a plain line, 20 with attendees.
 
-**Every `CLENT` and `STFENT` line blocks the save until it has an attendee.** The
-modal is a separate iframe. Row `$0` is prefilled with the user; add row `$1` and
-put the guest in as `Surname,Firstname` plus company.
+**Never hold one `browser_evaluate` open for a whole batch.** A call that runs
+past the MCP request timeout is killed and the teardown blanks the page to
+`about:blank`, losing the session. Filing is done as a **background job**: one
+short call starts an un-awaited async loop that writes progress to a global,
+then sub-second calls poll it. The browser finishes the work even when a call
+dies, so **always re-read the committed rows before assuming anything failed**.
+Pattern and rationale in `reference/peoplesoft.md`.
+
+**Every `CLENT`, `STFENT` and `WRKLNCH` line blocks the save until it has an
+attendee.** The modal is a separate iframe. Row `$0` is prefilled with the
+employee the report belongs to; add row `$1` onward as `Surname,Firstname` plus
+company. Add **every** row first, then fill them: a second "add row" postback
+wipes the value of a row you filled but have not yet posted, and the line then
+fails to commit with no visible error.
 
 **The postback skip trick** keeps this as fast as it can be. Text fields only
 call `addchg_win0()`, a local dirty flag with no server round trip. Only the two
@@ -243,9 +304,10 @@ save.
 **Dates are MM/DD/YYYY.** Typing UK order throws a validation dialog.
 
 > ### STOP 2
-> Report the Report ID, the line count, the total and the per-line table. Hand
-> back. The user attaches the receipts and submits.
-> **Never fire Summary and Submit.**
+> Attach `Consolidated Expenses.pdf` and `Expenses.xlsx`, fire Save for Later,
+> and confirm both survive the save. Then report the Report ID, the line count,
+> the total, the per-line table and the two attachments, and hand back.
+> The user submits. **Never fire Summary and Submit.**
 
 ---
 
