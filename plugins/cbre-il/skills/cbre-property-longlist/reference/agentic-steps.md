@@ -232,9 +232,10 @@ rendered prompt.
 - **Judgement gates (exit 14 - parallel, isolated, blind):** G-honesty + G-trace (Opus),
   G-images (Sonnet, judging the `contact_sheet.py` montage), and G-enrich (Sonnet, only when
   regions were enriched) run as ONE concurrent batch against the **frozen** `canonical.json`;
-  G-visual (Sonnet) runs on the built HTML. **Model routing: reserve Opus for G-honesty and
-  G-trace (the fabrication-risk reviewers); run the orchestration itself and the gate
-  re-checks on Sonnet** (`reference/gates.md` "Independence + model/effort"). Each is a
+  G-visual (Sonnet) runs on the built HTML. **Model routing: Opus, high effort, for G-honesty,
+  G-trace and the two blind verifiers (tracker-verify, match-verify); Sonnet for every other
+  agent, the orchestrator included** (`reference/gates.md` "Sub-agent model tiers", which
+  also says how to label a host that cannot route per agent). Each is a
   separate fresh-context agent given only the artefact path + its rubric (never the
   orchestrator's view or another reviewer's verdict) and writes `reviews/round<N>/<gate>.md`.
   **For the DECISION-CORRECTNESS checks, also hand G-trace/G-honesty the read-only decision

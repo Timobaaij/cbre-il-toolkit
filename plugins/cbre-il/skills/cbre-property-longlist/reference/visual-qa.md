@@ -1,6 +1,6 @@
 # G-visual - the visual-render gate
 
-The mechanical half is `helpers/render_qa.py`; the judgement half is an isolated **Sonnet** reviewer (layout/look is an easier, faster judgement than the fabrication gates). Mirrors the account-briefing G7 (render -> reviewer -> fix -> re-render with a fresh reviewer).
+The mechanical half is `helpers/render_qa.py`; the judgement half is an isolated **Sonnet** reviewer (layout/look is an easier, faster judgement than the fabrication gates). One review pass: render -> reviewer -> the orchestrator fixes and records each repair -> deliver (see "Fixing" below).
 
 ## Procedure (orchestrator drives the Claude Preview MCP)
 1. `render_qa.py <built.html>` - if Playwright is present it loads the page headless, asserts `.card` count == `PROPS.length`, captures console errors (any = fail), and saves `render/grid.png|modal.png|map.png`. Otherwise it runs a browser-free **static structural floor** (all three data blocks present, no unreplaced `{{config}}` tokens, a non-empty `PROPS` whose every photo is an embedded `data:` URI, the map + CBRE chrome intact), writes `.claude/launch.json`, prints the MCP steps, and emits `STATUS: BLOCKED` if the floor failed (the file is broken) or `STATUS: NEEDS-PREVIEW-MCP` if it passed.

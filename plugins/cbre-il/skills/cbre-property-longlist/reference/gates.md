@@ -99,15 +99,40 @@ G-i18n confirms the rendered chrome reads as a fluent, correct, complete dashboa
 **Output:** `pass` / `pass-with-notes` / `fail` + a term list (each questioned term: the rendered string, the issue, the suggested local-market term). In the `final_gate` verdict form: `green` (fluent + complete + house terms right), `amber` (pass-with-notes: defensible house-preference differences, minor stylistic notes -> the Gaps Report), `red` (English chrome leaked beyond the invariants / a DATA value translated / a grammar error a native reader would call wrong / a dropped placeholder). A leaked-English or translated-DATA finding is HIGH -> red.
 
 ## Independence + model/effort
-Model matched to risk: **G-honesty and G-trace = Opus/High** (a wrong answer ships fabricated data - the worst failure); **G-images, G-visual and G-enrich = Sonnet** (image-match, layout, and - now the workforce snapshot is dataset-sourced rather than researched - the lighter enrichment check are easier, much faster judgements). **Reserve Opus for those two fabrication-risk reviewers only; run the orchestration itself and the gate re-checks on Sonnet** (the run's biggest token sink is the orchestration, and most of it - intake adjudication, photo-match, finding triage - does not need Opus). Mechanical scripts gate first so judgement agents never spend tokens on data that fails the free checks. **Scale reviewer EFFORT to risk (this is about depth, never about independence).** When the artefact is clean on its face - a token-clean build, a workforce block that is 100% bundled-dataset-sourced with current dates and a plausible derived share - the reviewer confirms quickly and returns few or no findings (or `FINDINGS: none`); it does not re-derive from scratch. The instant it sees an anomaly (a figure that smells copied, a placeholder with discarded candidates, a value absent from the source), it switches to full scrutiny. A fast confirm on genuinely clean data is correct, not a shortcut; a thorough hunt the moment something is off is mandatory. (G-enrich especially: post-v11 the snapshot is dataset-sourced, so the common case is a fast confirm, the exception is a researcher-overridden figure that gets the full source/recency check.) Reviewers never edit the artefact - they PROPOSE findings; the orchestrator applies the fix and records it. There is no re-review. A defect fixed in the template (not the data) means bumping the template version (`reference/template-contract.md`).
+Model matched to risk: **G-honesty and G-trace = Opus, high effort** (a wrong answer ships fabricated data - the worst failure); **G-images, G-visual and G-enrich = Sonnet** (image-match, layout, and - now the workforce snapshot is dataset-sourced rather than researched - the lighter enrichment check are easier, much faster judgements). **Opus is reserved for those two fabrication-risk reviewers and the two blind verifiers (tracker-verify, match-verify); everything else, the orchestrator included, runs on Sonnet** (the run's biggest token sink is the orchestration, and most of it - intake adjudication, photo-match, finding triage - does not need Opus). The full per-agent table is "Sub-agent model tiers" below. Mechanical scripts gate first so judgement agents never spend tokens on data that fails the free checks. **Scale reviewer EFFORT to risk (this is about depth, never about independence).** When the artefact is clean on its face - a token-clean build, a workforce block that is 100% bundled-dataset-sourced with current dates and a plausible derived share - the reviewer confirms quickly and returns few or no findings (or `FINDINGS: none`); it does not re-derive from scratch. The instant it sees an anomaly (a figure that smells copied, a placeholder with discarded candidates, a value absent from the source), it switches to full scrutiny. A fast confirm on genuinely clean data is correct, not a shortcut; a thorough hunt the moment something is off is mandatory. (G-enrich especially: post-v11 the snapshot is dataset-sourced, so the common case is a fast confirm, the exception is a researcher-overridden figure that gets the full source/recency check.) Reviewers never edit the artefact - they PROPOSE findings; the orchestrator applies the fix and records it. There is no re-review. A defect fixed in the template (not the data) means bumping the template version (`reference/template-contract.md`).
 
-**Sub-agent model tiers (advisory; ONLY where the host lets you pick a sub-agent model - where it cannot, as in some Cowork builds, dispatch as-is: every prompt is written to be correct on the default model and the mechanical gates backstop it).**
+**Sub-agent model tiers (MANDATORY on every run, ONLY where the host lets you pick a sub-agent model; where it cannot, see "Degraded tier routing" below).** Pass the model (and effort, where the host exposes it) on each `Agent` dispatch exactly as this table says. Two tiers only: **Sonnet** and **Opus, high effort**.
 
-| Tier | Kinds | Why |
+| Stage (exit) | Agent | Model |
 |---|---|---|
-| mid-tier fine | deck readers (text + raster), master-list, cluster/region labels, tracker map, photo-match, translate-chrome/data, G-images, G-visual, G-enrich | 2026-09-26: 22 mid-tier readers produced correct VALUES; their misses were placement (off-spec keys, doubt-only figures, an unnamed park), which capture-symmetry, the doubt-figure SIGNAL and the blank-title gate now catch |
-| strongest available | blind verifiers (tracker-verify, match-verify), G-honesty, G-trace | their whole value is catching the first pass's error; a same-or-weaker model shares its blind spots |
-| orchestrator | as today (the paragraph above) | - |
+| All | Orchestrator (runs `run.py`, dispatches, fixes, resolves) | Sonnet |
+| Setup (3/13) | Stage-0 form | Orchestrator (Sonnet) |
+| Intake (3) | Cluster labels (only if opted in) | Sonnet |
+| Master list (17) | Master-list agent | Sonnet |
+| Extract (3) | Deck readers, text and raster (one per deck) | Sonnet |
+| Extract (3) | Reader-repair (resumes the same reader) | Sonnet |
+| Extract (3) | Tracker map | Sonnet |
+| Extract (3) | Tracker-verify (blind) | Opus, high effort |
+| Extract (3) | Region labels | Sonnet |
+| Emails (setup/14) | Outlook ingest | Sonnet |
+| Photos (9) | Photo-match | Sonnet |
+| Matching (10) | Match adjudication and field conflicts | Sonnet |
+| Matching (10) | Match-verify (blind) | Opus, high effort |
+| Clarify (13) | Agent-asked questions | Sonnet |
+| Language (11/12) | Translate chrome and data | Sonnet |
+| QA (14) | G-honesty | Opus, high effort |
+| QA (14) | G-trace | Opus, high effort |
+| QA (14) | G-images | Sonnet |
+| QA (14) | G-enrich (only if regions ran) | Sonnet |
+| QA (14) | G-visual (on the built HTML) | Sonnet |
+| QA (15) | Fix loop | Orchestrator (Sonnet), no re-review |
+
+Rules that travel with the table:
+
+- **Every author and verifier pair is split Sonnet then Opus.** Tracker map (Sonnet) is verified by tracker-verify (Opus); match adjudication and field conflicts (Sonnet) are verified by match-verify (Opus). A same-tier verifier shares the author's blind spots, and with only two tiers the author must sit BELOW the Opus verifier. So **match adjudication runs on Sonnet, never Opus**, even though it is a judgement call: putting it on Opus would leave match-verify no stronger than the author it checks.
+- **Reader-repair resumes the reader that wrote the refused output** (same agent, so same model: Sonnet). It is never a fresh dispatch on another tier.
+- **The QA fix loop (exit 15) is the orchestrator, on Sonnet, with no re-review.** No reviewer is dispatched again at any tier (rule 4 below).
+- **Degraded tier routing.** Where the host cannot pick a model per sub-agent (the `Agent` tool has no `model` parameter, as in some Cowork builds), every agent runs on the session model: dispatch as-is, because every prompt is written to be correct on the default model and the mechanical gates backstop it. **Label the run**: before the first dispatch, write `<work>/tier_routing.json` as `{"per_agent_model": false, "session_model": "<the session model's name>"}` (or `{"per_agent_model": true}` on a host that routes per the table). `deliver.py` then writes a "Degraded tier routing" section into the Gaps Report naming the session model and the Opus-tier agents that ran below their tier, so the broker sees that the author/verifier split did not hold. A missing file is treated as routed per the table.
 
 ## Reviewer dispatch contract (context independence) - MANDATORY
 Each judgement reviewer must be **fresh-context and blind to the orchestrator's view**. This is non-negotiable: a reviewer that inherits the orchestrator's reasoning is not independent, and the gate is then theatre.

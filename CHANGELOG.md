@@ -7,6 +7,30 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.23.0] — 2026-09-29
+
+Marketplace 1.23.0: **CBRE I&L Toolkit 1.17.0**. UK I&L Toolkit unchanged at 1.8.0.
+
+### Changed — property longlist
+- **Sub-agent model tiers are now mandatory, not advisory.** The orchestrator and every
+  authoring agent run on Sonnet; the four agents whose job is to catch the first pass's
+  errors — tracker-verify, match-verify, G-honesty and G-trace — run on **Opus, high effort**,
+  so every author sits below a stronger verifier. `reference/gates.md` now carries the full
+  per-stage table.
+- **A host that cannot pick a model per sub-agent is disclosed, not hidden.** The orchestrator
+  records `work/tier_routing.json` before the first dispatch, and the Gaps Report gains a
+  "Degraded tier routing" section naming the verifiers that ran on the session model instead,
+  so a reader knows the author/verifier split did not hold on that run.
+
+### Verification
+248 evals: 247 pass. `plan_reject_test` is the known Linux-only path case and passes in full
+under Windows filename rules. Integrity manifest regenerated (this upload's line endings were
+Windows-style again); preflight clean.
+
+### Security
+- Re-applied the example-name fix and preserved `vendor/README.md`; both were missing from the
+  upload again.
+
 ## [1.22.0] — 2026-09-28
 
 Marketplace 1.22.0: **CBRE I&L Toolkit 1.16.0**. UK I&L Toolkit unchanged at 1.8.0.
@@ -1644,6 +1668,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.23.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.23.0
 [1.22.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.22.0
 [1.21.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.21.0
 [1.20.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.20.0

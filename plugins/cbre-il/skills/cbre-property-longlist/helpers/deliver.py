@@ -471,6 +471,39 @@ def master_list_lines(work_dir) -> list:
     return out
 
 
+# The agents that sit on the Opus tier in reference/gates.md "Sub-agent model tiers". On a
+# host that cannot pick a model per sub-agent they ran on the session model instead, so the
+# author/verifier split (Sonnet author, Opus verifier) did not hold and the reader is told.
+OPUS_TIER_AGENTS = ("tracker-verify", "match-verify", "G-honesty", "G-trace")
+
+
+def _tier_routing_section(work_dir) -> list:
+    """The Gaps Report's "Degraded tier routing" section, from `<work>/tier_routing.json`.
+
+    The orchestrator writes `{"per_agent_model": false, "session_model": "<name>"}` when the
+    host's Agent tool cannot pick a model per sub-agent. A missing or unreadable file, or
+    `per_agent_model` true, means the run was routed per the table and nothing is written."""
+    if not work_dir:
+        return []
+    f = Path(work_dir) / "tier_routing.json"
+    if not f.exists():
+        return []
+    try:
+        d = json.loads(f.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return []
+    if not isinstance(d, dict) or d.get("per_agent_model") is not False:
+        return []
+    model = str(d.get("session_model") or "").strip() or "the session model (name not recorded)"
+    return ["## Degraded tier routing",
+            f"This host could not pick a model per sub-agent, so every agent on this run ran on "
+            f"{model}. The agents meant to run on Opus with high effort ({', '.join(OPUS_TIER_AGENTS)}) "
+            f"ran on that model instead, so each blind verifier was not stronger than the author "
+            f"it checked. The mechanical gates still ran in full. Re-run on a host that routes "
+            f"per agent for the intended independent review.",
+            ""]
+
+
 def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str:
     props = canonical["properties"]
     meta = canonical.get("meta", {})
@@ -946,6 +979,8 @@ def gaps_report(canonical: dict, slug: str, work_dir: Path | None = None) -> str
                 continue
             lines.append(f"- **{e.get('id', '?')}** ({k}): {e.get('reason', '')}")
         lines.append("")
+
+    lines += _tier_routing_section(work_dir)
 
     # KNOWN LIMITATIONS: advisory QA findings that were reviewed, judged non-blocking by the
     # reviewer, and NOT fixed within the bounded QA window (one review round + one improvement

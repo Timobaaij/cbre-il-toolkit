@@ -82,6 +82,22 @@ def main() -> int:
        "step 3 points at gates.md 'Sub-agent model tiers'")
     ck("**Sub-agent model tiers" in gates and "ONLY where the host lets you pick" in gates,
        "...and gates.md carries that note, advisory-only")
+    ck("Opus, high effort" in step3 and "tier_routing.json" in step3,
+       "step 3 carries the Opus-verifier rule and the degraded tier-routing label")
+    import deliver as DL
+    import json as _json
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        ck(DL._tier_routing_section(td) == [], "no tier_routing.json: no degraded section")
+        (Path(td) / "tier_routing.json").write_text(_json.dumps({"per_agent_model": True}))
+        ck(DL._tier_routing_section(td) == [], "per_agent_model true: no degraded section")
+        (Path(td) / "tier_routing.json").write_text(
+            _json.dumps({"per_agent_model": False, "session_model": "Sonnet 5.5"}))
+        sec = "\n".join(DL._tier_routing_section(td))
+        ck("## Degraded tier routing" in sec and "Sonnet 5.5" in sec and "match-verify" in sec,
+           "per_agent_model false: Gaps Report section names the session model and Opus agents")
+    ck("re-render with a fresh reviewer" not in (ROOT / "reference" / "visual-qa.md")
+       .read_text(encoding="utf-8"), "visual-qa.md no longer promises a fresh-reviewer re-render")
     ck("reference/environment.md" in step3, "step 3 points at environment.md for the host tool cap")
     try:
         import prompts_render as PR

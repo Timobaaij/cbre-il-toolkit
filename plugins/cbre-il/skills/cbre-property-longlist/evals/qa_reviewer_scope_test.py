@@ -91,8 +91,12 @@ def main() -> int:
     ck("--batch <file.json>" in gates and "--id <id> --because" in gates,
        "rule 4 names the batch form beside the single form")
     ck("The pointer form (SKILL.md step 3) satisfies this" in gates, "rule 2 sanctions the pointer form")
-    ck("ONLY where the host lets you pick" in gates and "| strongest available |" in gates,
-       "the sub-agent model-tier note and table")
+    ck("ONLY where the host lets you pick" in gates
+       and "| Matching (10) | Match adjudication and field conflicts | Sonnet |" in gates
+       and "| Matching (10) | Match-verify (blind) | Opus, high effort |" in gates
+       and "| Extract (3) | Tracker-verify (blind) | Opus, high effort |" in gates
+       and "tier_routing.json" in gates,
+       "the sub-agent model-tier table: Sonnet authors, Opus verifiers, degraded label")
 
     print()
     if FAILS:

@@ -48,8 +48,8 @@
     "sha256": "88f6566919ec6ec4c1c545d8e9462dd6d3f0b958f35b0563140e6b83e951523a"
   },
   "helpers/deliver.py": {
-    "size": 76402,
-    "sha256": "d7d4de7a7a3e76438976809871df37ee376840544099ba333080b25fd61ba23d"
+    "size": 78158,
+    "sha256": "b5b636106bbe46331e3d4cf4cd40453a7e9a10a241478157034b3e96dfdf19e2"
   },
   "helpers/enrich.py": {
     "size": 179843,

@@ -108,8 +108,14 @@ the work directory; the exit-3 manifest's `work/` prefix is a convention resolve
    contract (`prompts/outlook-ingest.md` is the one deliberate hand-filled template). The
    rendered files carry ABSOLUTE output paths - never let a sub-agent create a literal
    `work/` folder at the project root. A host cap on tool calls per message reaches every
-   Run context when set (`reference/environment.md`). Model tier per sub-agent kind
-   (optional): `reference/gates.md` "Sub-agent model tiers".
+   Run context when set (`reference/environment.md`). **Model tier per sub-agent (every
+   run):** the orchestrator runs on Sonnet; tracker-verify, match-verify, G-honesty and
+   G-trace run on **Opus, high effort**; every other agent runs on **Sonnet** (match
+   adjudication included - each author sits below its Opus verifier). Full table:
+   `reference/gates.md` "Sub-agent model tiers". If the host cannot pick a model per
+   sub-agent, dispatch everything on the session model and write
+   `work/tier_routing.json` `{"per_agent_model": false, "session_model": "<name>"}` before
+   the first dispatch, so the Gaps Report labels the run as degraded tier routing.
 4. **Slow / killed / "it timed out"?** That is the ~45s sandbox shell cap, BY DESIGN - just
    re-run the SAME command. **Resume is the DEFAULT**: every pass continues from the work-dir
    cache and makes progress (the `photo cache: X/Y` line tracks the parallel image pre-warm on
