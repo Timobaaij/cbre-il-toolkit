@@ -17,19 +17,22 @@ This skill is **inspired by**, not a clone of, the reference deck. The goal is f
 | `mint` | `#80B8A8` | Cooler mint — numerals, card stripes, header bands, vertical bars |
 | `mint_dark` | `#538F86` | Body / accents on light bg |
 | `mint_pale` | `#C0D0C8` | Pale mint surfaces |
-| `gold` | `#D8D898` | **Pale wheat / cream** — primary accent. NOT orange-gold |
+| `gold` | `#D8D898` | **Pale wheat / cream** — primary accent **on dark**. NOT orange-gold |
+| `bright_green` | `#17E88F` | **Accent Green** (official) — primary accent **on white** |
 | `blue` | `#3878A0` | Steel-blue accent for card stripe cycling |
 | `white` | `#FFFFFF` | Headlines + body on dark |
 | `ink` | `#0C1C1E` | Body on light |
 | `page_light` | `#FFFFFF` | Pure white for light slides + split-tone bottoms |
 
-**The "gold" of the reference deck is a pale wheat**, not the brand-guide warm gold. Use `gold` for: eyebrows on dark, eyebrow underlines, hero stat numerals, key-term row labels in matrices, callout titles, "When:" labels, attribution lines.
+**The "gold" of the reference deck is a pale wheat**, not the brand-guide warm gold. On dark slides, use `gold` for: eyebrows, eyebrow underlines, hero stat numerals, key-term row labels in matrices, callout titles, "When:" labels, attribution lines.
+
+**The primary accent is tone-conditional.** Wheat gold on dark, Accent Green `#17E88F` on white, because neither reads on the other ground. This is the corporate-template rule; `compose._accent(tone)` and `build.eyebrow(...)` apply it automatically. Use Accent Green on white for the same jobs gold does on dark: eyebrows, eyebrow underlines and the one or two marks per slide that carry emphasis. It is an accent, not a fill: never for body text or large areas.
 
 ## Typography rhythm
 
 - **Headlines: Financier Display** serif. 28–110pt range. White on dark, deep-green on light.
 - **Body / labels: Calibre Light** sans. 9–14pt. Letter spacing default.
-- **Eyebrows: Calibre Semibold uppercase**, 10pt, letter-spacing 1.5–2.0, cream/gold on dark, ink on light.
+- **Eyebrows: Calibre Semibold uppercase**, 10pt, letter-spacing 1.5–2.0, cream/gold on dark, Accent Green on light.
 - **Stat numerals: Financier Display** serif (regular weight — there is no "Light" variant on standard CBRE Windows; `FONTS["serif_l"]` is an alias to regular), gold on dark / deep-green on light. Hero stats 180pt+, inline stats 32–44pt.
 - **Mono (Space Mono)** only for date stamps, never for body.
 - Roman & decimal section numerals (`I` / `II` / `01` / `02`) are **serif**, matching the card's accent color.
@@ -38,7 +41,7 @@ This skill is **inspired by**, not a clone of, the reference deck. The goal is f
 
 ### Eyebrow pattern
 - Uppercase tag at top-left
-- **Thin underline rule directly below the text** (cream on dark, ink on light)
+- **Thin underline rule directly below the text**, same colour as the eyebrow (cream on dark, Accent Green on light)
 - ~1.65" wide rule, sits 0.36" below the text top
 - Optional secondary eyebrow on the same slide can use mint as a contrast accent (e.g., right-side "MOST COMMON FUNDING STRATEGIES AT A GLANCE")
 
@@ -67,16 +70,17 @@ Each layout in `build.py` is a *starting point*. The function selects sensible d
 
 The visual ingredients (palette, typography, eyebrow style, mint vertical bars, gold serif stats, mint card stripes, filled mint table headers, vertical-bar callouts) stay constant. The arrangement is free.
 
-## Density discipline (still ≤ 30% whitespace)
+## Density discipline: substance, not filler
 
-- Empty real estate is the enemy. Every slide that has a serif headline must also carry: a stat strip, intro paragraph, card grid, table, callout, or pillars row.
-- Title alone is never the slide. Cover slides take a `themes` band. Section dividers take a `lead` + `items` list. Statement slides take `support` + `pillars`.
-- The bottom 30% of the canvas must do work — a coverage band, pillars, KPIs, or a callout.
+- A headline alone is rarely a slide. Most content slides carry a second element that does work: a picture, a stat, a table, a short read.
+- Space is a choice, not a gap. Deliberate white space around one strong point reads as confidence. Filling it with a band added only to fill reads as nervousness.
+- When a slide feels empty, ask whether it has a real second beat. If it does, add it. If not, leave the space and make the one point land harder.
 
 ## Dark / light rhythm
 
-- Dark teal-green is primary. ~9/15 slides dark in a typical deck.
-- Light slides break the rhythm — usually worksheet tables, comparison tables, stat strips. ~5–6/15.
+- Roughly half dark, half light (`audit_tones` checks a 40-60% dark band).
+- Dark carries the cover, section dividers, statement moments and the close.
+- Light carries the content slides that do the work: comparisons, tables, diagrams, stat strips.
 - **Split-tone is a first-class option**: dark top half (eyebrow + title + stats) flipping to light bottom half (cards / detail grid). See `value_prop_intro`.
 
 ## The "no" list
@@ -85,6 +89,6 @@ The visual ingredients (palette, typography, eyebrow style, mint vertical bars, 
 - No drop shadows or gradients anywhere.
 - No icons or logos other than the CBRE wordmark (bottom-right).
 - No emojis.
-- No bright lime (`#17E88F`) — the reference deck barely uses it. Cream/wheat gold is the bright accent.
+- No Accent Green (`#17E88F`) on dark slides — wheat gold is the accent there. On white it is the primary accent, used sparingly: eyebrows, their underlines, one or two emphasis marks. Never as body text or a large fill.
 - No orange-gold (`#CBA258`) — the reference deck uses pale wheat (`#D8D898`).
 - `#012A2C` is the **default** background (= official Dark Green). Official CBRE Green `#003F2D` is now available as `COLORS["cbre_green"]` for a corporate-primary look — use it deliberately, not as the default dark bg.

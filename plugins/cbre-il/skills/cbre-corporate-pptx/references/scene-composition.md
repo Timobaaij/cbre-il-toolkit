@@ -12,7 +12,8 @@ It is the same engine the `cbre-il-account-briefing` skill uses, generalised for
 - **Density from substance, never from tricks.** Fill a slide with *more real, relevant content* when it helps, never with spacing, ballooned fonts or padding. Leftover space is a signal to write more or to add a genuine second beat, not to stretch what is there. Equally, deliberate emptiness around a confident hero stat is a feature, not a hole to fill.
 - **No lazy repetition.** A given scene layout should appear at most twice, ideally once. If three slides in a row are "prose then a row of cards", two of them are wrong. Recompose them as a stat strip, a quote, a table, a from-to of chips, a panel-plus-prose split.
 - **Compose first; presets are the exception.** The named skeletons are not a menu. At most one scene in three may use one, each needs a written `shape_why`, and `audit_scene_shapes` enforces both. Inventing a composition the cell set has not produced before is the expected outcome, not a risk: nesting `split` cells gives you any asymmetry you need, and the geometry audit means a bad guess fails loudly at build time instead of silently in the deck.
-- **Parallel is not repetition.** Two slides walking comparable routes should look alike. Declare `parallel_to: <slide no>` and the audit treats the shared skeleton as intentional. Pairs only.
+- **Picture before cells.** For each slide, name what the reader must see before choosing any cell. If no cell draws it, draw it with a `draw` cell.
+- **Parallel is not repetition.** Slides walking comparable routes should look alike. Declare `parallel_to: <slide no>` for a pair, or the same `parallel_group: "<name>"` on every member of a series of up to five, and the audit treats the shared skeleton as intentional.
 - **Readable, not a billboard.** Text sizes up to a readable cap to fill its cell; it never goes tiny and never becomes a giant to fill space.
 - **Be creative.** The cells are a palette, not a checklist. Compose the slide the argument wants. The grid only stops overlaps and off-canvas; it is not a template.
 - **House rules.** UK English; no em or en dashes anywhere (the composer sweeps them); lead with the point; the box grows to fit the text, the font never shrinks; 9pt floor.
@@ -92,6 +93,7 @@ These carry the visual distinctiveness. Each is bounded to its cell rect and dec
 | `directions` | Strengthened / refocused / deprioritised. | `rows` of {`direction` ("up"/"right"/"down"), `label`, `items`, `subtag`, `accent`} | 1.00in |
 | `bars` | Categorisation by weight. | `tiers` of {`label`, `sub`, `frac`, `fill`} | 0.80in per bar |
 | `sightline` | The signature CBRE rule device. Max one per slide. | `orientation`, `length` | 0.10in |
+| `draw` | A bespoke diagram the other cells cannot draw (a map, a network, a cost curve). Checked against its rect after drawing; raises `DiagramOutOfBounds` if anything escapes. | `fn(s, x, y, w, h, tone)`, `name` (used in the shape signature), optional `min_h` | `min_h`, default 0.50in |
 
 `stat` also takes `"scale": "hero"`, which lifts the size cap so a lone number can dominate a `poster` slide.
 
@@ -99,11 +101,12 @@ These carry the visual distinctiveness. Each is bounded to its cell rect and dec
 
 ## How to compose a deck (the method)
 
-1. **Lock the story first.** From the brief, work out the through-line: the few points the deck must prove and the order to prove them. Write the deck as a list of slides, each with its one-line *point* (the real thing it lands) and its *job* (context, the shift, the evidence, the so-what, the ask). The job decides the shape.
-2. **Compose each slide's scene from its point.** Choose the rows and cells that say it best. A shift is a `from_to` of prose or chips; a state of play is a stat strip; an argument is prose plus a panel; evidence is a table or a card grid; a single number is one big `stat` with deliberate space around it; a voice is a `quote`. Vary the shape slide to slide.
-3. **Set the tone rhythm.** Alternate dark and light across the deck (roughly 50-70% dark; never three of the same in a row). `cover`/`section`/`closing` default dark; set each scene's `tone`.
-4. **Fill with substance, not tricks.** If a slide looks thin, add the real next beat (another stat, a panel, a second prose block) or leave the space balanced. Never pad, shrink, or repeat a layout to fill.
-5. **Render.** `compose.render(plan, "Deck.pptx")`. On Windows it runs the resolve pass, inherits the org sensitivity label, and bakes fit-to-text so the deck opens correct with no manual step.
+1. **Lock the story first.** From the brief, work out the through-line: the few points the deck must prove and the order to prove them. Write the headline sequence (one full-sentence headline per slide) and check it tells the story on its own. Give each slide its *job* (context, the shift, the evidence, the so-what, the ask).
+2. **Name the picture.** For each slide, write what the reader must see to grasp the point in five seconds. Do this before choosing cells.
+3. **Compose each slide's scene from its picture.** Choose the rows and cells that draw it. A shift is a `from_to`; a state of play is a stat strip; an argument is prose plus a panel; evidence is a table or a card grid; a single number is one big `stat` with deliberate space around it; a voice is a `quote`; anything else is a `draw` diagram. Vary the shape where the story varies; keep it the same where the story is a series.
+4. **Set the tone rhythm.** Aim for roughly half dark, half light, and avoid three of the same in a row. Dark carries the cover, dividers, statement moments and the close; light carries the content slides that do the work. `cover`/`section`/`closing` default dark; set each scene's `tone`. The story can override this.
+5. **Fill with substance, not tricks.** If a slide looks thin, add the real next beat (another stat, a panel, a second prose block) or leave the space balanced. Never pad, shrink, or repeat a layout to fill.
+6. **Render.** `compose.render(plan, "Deck.pptx")`. On Windows it runs the resolve pass, inherits the org sensitivity label, and bakes fit-to-text so the deck opens correct with no manual step.
 
 ## Per deliverable (the story shapes differ)
 
@@ -118,9 +121,9 @@ The cells are the same; the *story* decides which scenes exist and how long each
 
 Three checks run on every `compose.render()` and print a report. Pass `shapes_strict=True` / `geometry_strict=True` to make findings raise instead.
 
-- **`audit_scene_shapes`** compares each scene's *signature* (its shape name plus the cell kinds in each row). Two consecutive scenes may not share one, and no signature may appear more than twice. This is the check that keeps a deck from collapsing into one repeated layout.
-- **`audit_geometry`** verifies no text bleeds off the canvas, runs into the wordmark band, or collides with other text. Containment is fine (a callout body inside its background rect is normal); only text-on-text counts.
-- **`audit_tones`** holds the dark/light rhythm at 50-70% dark.
+- **`audit_scene_shapes`** compares each scene's *signature* (its shape name plus the cell kinds in each row). Two consecutive scenes should not share one, and no signature should appear more than twice, unless they are a declared pair or series. This is the check that keeps a deck from collapsing into one repeated layout. It is a guide: if the story needs the repetition, declare it.
+- **`audit_geometry`** verifies no text bleeds off the canvas, runs into the wordmark band, or collides with other text. Containment is fine (a callout body inside its background rect is normal); only text-on-text counts. This one is a rule.
+- **`audit_tones`** checks the dark/light mix sits in a 40-60% dark band. It is a guide.
 
 Then **look at the deck**: `python scripts/contact_sheet.py MyDeck.pptx --cols 4` tiles every slide into one image. No assertion catches "this reads as templated"; seeing the whole deck at once does. What you find revises the plan, never a coordinate.
 

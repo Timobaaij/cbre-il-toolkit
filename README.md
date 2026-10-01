@@ -9,7 +9,7 @@ team can install it in a couple of clicks.
 
 | Skill | What it does |
 |-------|--------------|
-| **Corporate decks** | Polished, CBRE-branded PowerPoint decks built from your content. |
+| **Corporate decks** | Polished, CBRE-branded PowerPoint decks built from your content: the storyline planned first, each slide designed around its point, with bespoke diagrams where no stock layout fits. Also refines an existing deck in place, keeping your own edits. |
 | **Occupier brief** | A short, dense, internal pre-meeting brief on a target company: a CBRE-branded A4 document, a Source Ledger where every figure traces to a retrievable source, and a Verification Sheet. Runs a four-way research fan-out under a hard search budget, then one independent QA round. |
 | **Outreach angles** | A ranked sheet of evidence-backed reasons to contact a company now — each with a trigger, a way in, and a ready-to-send email hook — as a shareable CBRE-branded HTML file. |
 | **Property longlist** | An interactive longlist dashboard from a folder of brochures, emails, and spreadsheets. |

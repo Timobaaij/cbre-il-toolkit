@@ -37,7 +37,7 @@ Quick start
     build.cover(deck,
         title="Project Horizon",
         subtitle="A 5-year European industrial site selection strategy",
-        presenter="T. Baaij | Senior Consultant",
+        presenter="A. Advisor | Senior Consultant",
         org="CBRE Supply Chain Advisory",
         date="MAY 2026")
 

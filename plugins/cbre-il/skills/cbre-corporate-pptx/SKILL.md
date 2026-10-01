@@ -1,13 +1,28 @@
 ---
 name: cbre-corporate-pptx
 description: >-
-  Builds a polished, fully CBRE-branded PowerPoint deck (.pptx) from your content — the right CBRE typography (Financier Display and Calibre), the brand colour palette, and a dense, editorial, story-led layout that looks like a real in-house CBRE deck rather than a generic template. Use it whenever you want a CBRE deck, CBRE slides, a CBRE-branded or client-pitch presentation, an investor deck, advisory report, market overview, or capital-strategy memo, or any time you reference a CBRE template or ask for a polished .pptx in CBRE's house style.
+  Builds or edits a polished, fully CBRE-branded PowerPoint deck (.pptx) — the right CBRE typography (Financier Display and Calibre), the brand colour palette, and a clean, story-led layout where each slide is designed around the point it makes, not poured into a template. Plans the storyline first, decides what each slide must show, then builds it, including bespoke diagrams. Also refines existing decks in place. Use it whenever you want a CBRE deck, CBRE slides, a CBRE-branded or client-pitch presentation, an investor deck, advisory report, market overview, or capital-strategy memo, or any time you reference a CBRE template or ask for a polished .pptx in CBRE's house style.
 ---
 
 # CBRE Corporate Deck Builder
 
 A layout engine that owns every coordinate, and a composition vocabulary rich
-enough that you never need one.
+enough that you rarely need one.
+
+## Three rules above everything else
+
+1. **Story, then picture, then build.** Settle what the deck argues before you
+   touch a slide. For each slide, decide what the reader must *see* to get the
+   point. Only then choose how to build it. Never start from a layout.
+2. **The slide follows the story.** No cell, skeleton or audit outranks the
+   argument. If the story needs three slides that look alike, or a picture no
+   cell draws, the story wins.
+3. **Use creativity.** The best slide in a deck is often one no catalogue
+   contains: two routes on a map, a cost line that crosses another, dots that
+   cluster. Draw it (see "Bespoke diagrams").
+
+Everything below serves those three rules. Where a mechanic seems to conflict
+with them, the rules win and the mechanic is the bug.
 
 **The division of labour is the whole design.** You decide what each slide says
 and what *shape* says it best. The composer resolves that into rectangles: it
@@ -26,7 +41,6 @@ scene model and the full cell catalogue.
 ## The build path
 
 **Toolkit update check (run once, first).** Run `python scripts/version_check.py`. It prints a one-line note to stderr *only* if a newer CBRE I&L Toolkit version has been published (otherwise it is silent); it does nothing but a single public version lookup, never blocks the build, and is safe to ignore.
-
 
 ```python
 import sys
@@ -92,7 +106,7 @@ right side has its own internal rhythm. A partition of a partition is still a
 partition, so nesting costs nothing in safety. Four levels deep is the limit,
 and you will hit a legibility wall long before that.
 
-## Eighteen cells
+## Nineteen cells
 
 The vocabulary each region draws from. Full fields in
 `references/scene-composition.md`.
@@ -114,31 +128,103 @@ filled in:
 | `directions` | Strengthened / refocused / deprioritised |
 | `bars` | Categorisation by weight or intensity |
 | `sightline` | The signature CBRE rule device (max one per slide) |
+| `draw` | Any picture the others cannot draw: your own diagram, bounded to the cell |
 
 Each device is bounded to its cell and declares a minimum height. Ask for one
 in a region too small and the build stops with the specific fix, rather than
 drawing something squashed.
 
-## Compose from the point, not from the menu
+## Step 1: plan the story
 
-Work the content first: for each slide, settle the **beat** (the real point or
-number it lands) and its **job** in one sentence — status? core message? a shift?
-a trade-off? one number? The job picks the shape.
+Before any slide exists, answer four questions in writing:
 
-Then write a story spine before rendering. One row per slide:
+| Question | Why it matters |
+|---|---|
+| Who reads this, and what must they decide or believe afterwards? | Sets the ending. Every slide moves the reader towards it. |
+| What is the one-sentence through-line? | If it does not fit in a sentence, the deck has no spine yet. |
+| What does the reader already know, and what do they doubt? | Decides where the deck starts and which slides carry proof. |
+| What is the ask, or the next step? | A deck without one ends on a shrug. |
 
-| # | Point | Job | Tone | Scene (composed unless a preset earns it) |
-|---|---|---|---|---|
-| 1 | Built, now being sharpened | Summary of threads | light | composed: prose over a 5-item numbered `list` |
-| 2 | Phase 2 of 3, executing | State of play | dark | composed: `timeline` row over a prose read |
-| 3 | EUR 16.9m run-rate | One number | light | `poster` — *why:* the slide is one number and deliberate space; that is all this preset is |
+Then draft the **headline sequence**: one full-sentence headline per slide,
+read top to bottom with nothing else. This is the ghost deck. If the
+headlines alone do not tell the story in order, no layout will rescue it.
+Fix the sequence first: reorder, merge, cut. Each headline should answer the
+question the previous one raised.
 
-Most rows should say **composed**. A preset in the last column needs its `why`
-written out here, and it carries into the plan as `shape_why`.
+When a deck runs past roughly eight slides, give the reader a way to keep
+their place: a roadmap slide early on, and a small tracker or numbered eyebrow
+on the slides that follow it. Use it only when it helps; a short deck does not
+need one.
+
+## Step 2: decide what each slide must show
+
+For each headline, ask: **what must the reader see to grasp this point in
+five seconds?** Name the picture before naming any cell.
+
+| If the point is... | The picture is usually... |
+|---|---|
+| A trade-off between two forces | Two things pulling apart: two routes, two lines, two weights |
+| A distance, reach or catchment | A simple map or schematic of dots and lines |
+| A sequence or dependency | A track, a timeline, steps that hand over to each other |
+| A shift | From X to Y, with the destination emphasised |
+| A choice between options | The options side by side, with the deciding criterion obvious |
+| One number | The number, large, with space around it |
+| A list of what we heard, or open questions | Short, parallel statements, the same shape every time |
+
+The table is a prompt, not a lookup. If the point has a shape of its own, draw
+that shape.
+
+Write it into a **story spine** before building. One row per slide:
+
+| # | Headline (the point) | Reader question it answers | Picture | Build | Tone |
+|---|---|---|---|---|---|
+| 2 | Prime rents have outpaced the wider market for three years | Is this market still worth entering? | Two lines that pull apart over time | composed: a `draw` line pair over a one-line read | light |
+| 4–6 | One slide per shortlisted site: where it wins, where it falls short | How do the sites compare? | The same layout on each, so the reader compares like with like | composed, `parallel_group: "sites"` | light |
+| 8 | Selling now releases EUR 40m before the market softens | Why sell this year? | One number with space | `poster`, *why:* one number and nothing else | dark |
 
 The spine is a real artifact, not an in-head sketch — building first is how
-decks drift back to one repeated layout. When you are working interactively,
-show it to the user before rendering.
+decks drift back to one repeated layout. When working interactively, show the
+headline sequence and the spine to the user and agree them before rendering.
+
+## Step 3: build each slide from its picture
+
+Now choose how to draw what the spine says. In order of preference:
+
+1. **A composed scene** of rows and cells, when the cells can draw the picture.
+2. **A bespoke diagram** (`draw` cell), when the picture is something no cell
+   draws. This is a first-class path, not a fallback.
+3. **A named skeleton**, only when the slide is genuinely conventional, with a
+   `shape_why`.
+
+A preset in the Build column needs its `why` written out, and it carries into
+the plan as `shape_why`.
+
+## Bespoke diagrams
+
+When the picture is a map, a network, a cost curve, a footprint or any other
+shape the cells do not draw, use a `draw` cell. You write a small function that
+draws with the `build` primitives inside the rect it is handed; the composer
+places that rect on the grid and checks afterwards that nothing escaped it.
+
+```python
+def two_routes(s, x, y, w, h, tone):
+    ink = build.COLORS["white"] if tone == "dark" else build.COLORS["green"]
+    # place dots and lines as fractions of w and h, never as fixed inches
+    ...
+
+{"kind": "draw", "name": "two_routes", "fn": two_routes, "min_h": 2.0, "span": 1.2}
+```
+
+Rules for a good diagram:
+
+- Draw relative to `x, y, w, h`. Fixed coordinates break when the cell moves.
+- Use brand colours only, and the tone-conditional accent (`compose._accent(tone)`).
+- Keep it schematic. A diagram explains one mechanism; it is not a data dump.
+  Label directly on the drawing rather than adding a legend.
+- If the diagram goes off its rect, the build stops with `DiagramOutOfBounds`.
+  Fix the drawing, or give the row more weight.
+- If the same diagram recurs across decks, promote it to a `c_<kind>` cell in
+  `compose.py` and document it, rather than copying the function around.
 
 **Write in the CBRE voice as you draft.** Read the `cbre-tone-of-voice` skill
 (`${CLAUDE_PLUGIN_ROOT}/skills/cbre-tone-of-voice/SKILL.md`, or
@@ -147,11 +233,29 @@ investor, board and advisory decks dial the voice **down** (clarity-first,
 restrained, still opinionated); market overviews and thought leadership dial it
 **up**. Board-grade conventions are in `references/spacing-and-rules.md` §12–13.
 
+**Client-facing decks.** Let the brief set the story shape. A follow-up after
+a meeting, a tender response, a market update and a recommendation each need a
+different structure. Never reuse the last deck's structure by default.
+
+- Open with the client's situation in their terms before CBRE's offer.
+- Word a judgement as a judgement. Never present something the client only
+  raised as an option as if it were fact.
+- By default, name the client company but not the individuals, unless the
+  deck needs them (for example a stakeholder map).
+
 ## The three audits
 
 They run automatically on `save()` / `compose.render()` and print a report.
 Pass `shapes_strict=True` / `geometry_strict=True` to turn findings into errors
 (the smoke test does).
+
+**Geometry is a rule; tone and shape are guides.** `audit_geometry` protects
+the file: text off the canvas or colliding is always wrong. `audit_tones` and
+`audit_scene_shapes` protect against drift into a template, which is a real
+risk, but they cannot read the story. When one warns, ask whether the story
+needs what you built. If it does, keep it and say why in the plan
+(`shape_why`, `parallel_group`, or a note to the user). Never add a slide,
+change a tone or vary a layout only to quiet an audit.
 
 | Audit | Enforces | Fails when |
 |---|---|---|
@@ -194,9 +298,17 @@ intentional instead of flagging it:
 {"kind": "scene", "parallel_to": 5, "scene": [...]}   # slide 6 mirrors slide 5
 ```
 
-Pairs only: a slide may be the target of at most one other, so this cannot be
-used to wave a whole deck through. The two must genuinely share a skeleton, or
-the parallel is invisible to the reader and the audit says so.
+`parallel_to` is for pairs. For a **series** of three or more (three options,
+four markets, the open questions a client raised) give every member the same
+`parallel_group` name:
+
+```python
+{"kind": "scene", "parallel_group": "questions", "scene": [...]}   # slides 3, 4, 5
+```
+
+Members must genuinely share a skeleton, or the series is invisible to the
+reader and the audit says so. Past five slides a series reads as a template
+and the audit warns.
 
 ### The fourth check is your eyes
 
@@ -209,9 +321,18 @@ python scripts/critique/critique.py MyDeck.pptx
 ```
 
 It tiles your deck into one contact sheet, tiles the gold reference set into
-another, and prints the questions to answer. View both images, then fix the
-**plan** and re-render. Never adjust a coordinate by hand: that is what the
-geometry audit exists to prevent.
+another, and prints the questions to answer. Answer the story questions first,
+because they are the ones code cannot check:
+
+- Read only the headlines, in order. Do they tell the whole story?
+- Does each slide show its point, or only state it?
+- Is there a slide where the picture fights the point, or where text is doing
+  a job a diagram would do better?
+- Does any slide look the way it does only because a cell or audit pushed it
+  there? View both images, then fix the
+**plan** and re-render. When building, never adjust a coordinate by hand: that
+is what the geometry audit exists to prevent. (A deck already edited by hand is
+different; see "Editing an existing deck".)
 
 The gold set lives in `scripts/critique/gold/` and is deliberately **not** in
 `references/`. It is a yardstick read at critique time and nowhere else. Do not
@@ -243,8 +364,12 @@ before delivery.
 
 ## Density, and the confidence to leave space
 
-Density comes from substance. When a slide looks thin the fix is another real
-beat — a second stat, a panel, the next point — or balanced space. Deliberate
+Clean beats full. A slide carries one point; white space and alignment are what
+make that point land. Cut words before adding shapes: if a line wraps to a
+stray word, shorten the sentence rather than the font or the margin.
+
+Density comes from substance. When a slide looks genuinely thin the fix is
+another real beat — a second stat, a panel, the next point — or balanced space. Deliberate
 emptiness beneath a hero stat reads as confidence; the same stat with a coverage
 band crammed under it to fill the space reads as nervousness. When a tall device
 needs room, drop the `lead` rather than squeezing.
@@ -327,11 +452,34 @@ If you have drawn a `_rect` and are about to hand-place a title at `cy + 0.10`
 and a body at `cy + 0.36`, use `CardFlow` instead — that offset pattern is what
 silently collapses bottom padding to nothing.
 
+## Editing an existing deck
+
+Most decks are refined after the first build: the user edits in PowerPoint,
+the client gives feedback, a second version is needed. Once a deck has been
+touched by hand, rebuilding it from the plan would throw that work away. Edit
+it in place instead. In this mode, and only in this mode, adjusting a
+position directly is allowed.
+
+| Step | How |
+|---|---|
+| Back up first | Copy the current file to an `Archive` folder beside it, with a dated or labelled name, before any change. |
+| Work on a copy | Copy the deck to a local temp path, edit that, render it, check it. |
+| Find shapes by their text | Shape names repeat and change when users edit. Match on the text a shape holds, and stop if the match is missing or ambiguous. |
+| Replace text cleanly | Set the first run and remove the others, so no fragment of the old sentence survives. Remove extra paragraphs too. |
+| Respect the user's edits | Before a script touches a slide, compare it with what you last saved. If the user changed it, keep their version and apply only your change. |
+| Keep sibling decks aligned | When a short and a long version share slides, make every change to both, and list any deliberate difference. |
+| Save safely | Before copying back, check the delivery file has not changed since you read it (compare hashes). After copying, re-read it and confirm the change is there. On OneDrive, ask the user to close the deck first; AutoSave can overwrite a scripted save. |
+| Look at it | Render the changed slides and view them before reporting. |
+
+Still apply the three rules. A change that makes a slide state its point
+without showing it, or crams it, is a regression even if the text is better.
+
 ## Escape hatch
 
-For a slide the cell set genuinely cannot cover (a custom chart, a one-off
-device), build it from primitives on a `build.blank()` slide and save it into the
-same deck. `references/layouts.md` has the recipe signatures,
+A bespoke picture inside a normal slide is a `draw` cell, not this. Use the
+escape hatch only when the whole slide must break the scene model (a
+full-bleed map, a custom chart that needs the full canvas): build it from
+primitives on a `build.blank()` slide and save it into the same deck. `references/layouts.md` has the recipe signatures,
 `references/editorial-archetypes.md` the archetype sketches. Both are raw
 material — reaching for a whole-slide recipe when a scene would do is how decks
 end up looking alike, and `audit_scene_shapes` will notice.
@@ -370,6 +518,7 @@ render-and-measure pass for fast iteration; run a full save before delivery.
 - `scripts/build.py` — the visual system: primitives, recipes, palette, fonts, the resolve/label/bake save pass, the three audits.
 - `scripts/contact_sheet.py` — render the deck and tile it into one reviewable image.
 - `scripts/_smoke_compose.py` — exercises every cell and skeleton under strict audits. Run it after changing either module.
+- `scripts/_smoke_story.py` — exercises the `draw` cell (including its bounds check) and `parallel_group`.
 - `references/scene-composition.md` — the scene model and full cell catalogue. **Read first.**
 - `references/editorial-archetypes.md` — archetype sketches: job → composition.
 - `references/layouts.md` — recipe parameter lists.

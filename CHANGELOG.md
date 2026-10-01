@@ -7,6 +7,57 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.24.0] — 2026-10-01
+
+Marketplace 1.24.0: **CBRE I&L Toolkit 1.18.0**. UK I&L Toolkit unchanged at 1.8.0.
+
+### Added — corporate decks
+- **Bespoke diagrams as a first-class cell.** A new `draw` cell (the composer now has
+  nineteen) takes your own drawing function and hands it a rect on the grid: two routes on a
+  map, a cost line that crosses another, dots that cluster. Everything it draws is checked
+  against that rect afterwards, and anything that escapes stops the build with
+  `DiagramOutOfBounds`, so a custom picture keeps the same no-overlap guarantee as every stock
+  cell.
+- **`parallel_group` for a series of slides.** `parallel_to` only covered pairs; three options,
+  four markets or a client's open questions can now share one skeleton by giving each slide the
+  same group name. Members must genuinely match, and a group past five slides warns, so it
+  cannot wave a whole deck through.
+- **Editing an existing deck.** A deck that has been changed by hand is refined in place rather
+  than rebuilt from the plan: back up to an `Archive` folder first, find shapes by their text,
+  keep the user's own edits, keep short and long versions aligned, and confirm the delivery file
+  has not changed before saving over it.
+- New `scripts/_smoke_story.py` exercises the `draw` cell, including its bounds check, and
+  `parallel_group`.
+
+### Changed — corporate decks
+- **Story first.** SKILL.md now opens with three rules (story, then picture, then build; the
+  slide follows the story; use creativity) and a three-step method: plan the headline sequence,
+  name what each slide must show, then choose how to build it. The story spine gains *reader
+  question* and *picture* columns.
+- **The audits are explained as rule versus guide.** The geometry audit is a rule; the tone and
+  shape audits are guides that cannot read the story, so a warning is a prompt to justify the
+  choice, never a reason to add a slide or vary a layout just to quiet it. The tone band is
+  documented as 40–60% dark.
+- **The primary accent depends on the slide tone:** wheat gold on dark, Accent Green `#17E88F`
+  on white, matching the corporate template. The palette, typography and eyebrow guidance now
+  describe what `build.py` already does.
+- Guidance on client-facing decks (open with the client's situation, word a judgement as a
+  judgement, name the company but not individuals by default) and on keeping slides clean
+  rather than full.
+
+### Verification
+`_smoke_compose.py` (15 slides, 19 cell kinds, strict audits clean) and the new
+`_smoke_story.py` both pass, and a rendered test deck was checked by eye. Five of the uploaded
+files differed from the repo only in Windows line endings; those were normalised and are
+unchanged.
+
+### Fixed
+- Re-added the toolkit update check at the start of the build path; the upload had dropped it.
+
+### Security
+- The code example in `build.py` now uses the skill's own placeholder presenter name instead
+  of a real one.
+
 ## [1.23.0] — 2026-09-29
 
 Marketplace 1.23.0: **CBRE I&L Toolkit 1.17.0**. UK I&L Toolkit unchanged at 1.8.0.
@@ -1668,6 +1719,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.24.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.24.0
 [1.23.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.23.0
 [1.22.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.22.0
 [1.21.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.21.0

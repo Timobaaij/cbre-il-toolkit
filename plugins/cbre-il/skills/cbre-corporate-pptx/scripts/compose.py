@@ -114,8 +114,8 @@ class SceneCellTooSmall(ValueError):
     """A scene cell's rect is too small to draw its content honestly."""
 
 
-def _assert_cell_room(kind, x, y, w, h, path=""):
-    need_h = MIN_CELL_H.get(kind, _MIN_CELL_H_DEFAULT)
+def _assert_cell_room(kind, x, y, w, h, path="", need=None):
+    need_h = need if need is not None else MIN_CELL_H.get(kind, _MIN_CELL_H_DEFAULT)
     where = f"cell '{kind}'" + (f" at {path}" if path else "")
     if w < MIN_CELL_W or h < need_h:
         raise SceneCellTooSmall(
@@ -513,12 +513,48 @@ def c_sightline(s, cell, x, y, w, h, tone):
                         length=length, tone=tone)
 
 
+class DiagramOutOfBounds(ValueError):
+    """A bespoke diagram drew outside the cell rect it was given."""
+
+
+def c_draw(s, cell, x, y, w, h, tone):
+    """A bespoke diagram, drawn by the author, bounded to the cell rect.
+
+    This is how a slide shows the picture its point needs when no stock cell
+    draws it: two routes on a map, a cost curve, a network of dots and lines,
+    a before/after footprint. The author passes `fn(s, x, y, w, h, tone)`,
+    which draws with the `build` primitives (`_rect`, `_text`, `_line`, ...)
+    using only the rect it is handed. Everything it adds is checked against
+    that rect afterwards, so a bespoke picture keeps the same no-overlap
+    guarantee as every other cell.
+    """
+    fn = cell.get("fn")
+    if not callable(fn):
+        raise TypeError(
+            "cell 'draw' needs `fn`: a callable(s, x, y, w, h, tone) that "
+            "draws the diagram inside the rect it is given.")
+    before = len(s.shapes)
+    fn(s, x, y, w, h, tone)
+    tol = Inches(0.02)
+    for sh in list(s.shapes)[before:]:
+        if sh.left is None or sh.top is None:
+            continue
+        if (sh.left < Inches(x) - tol or sh.top < Inches(y) - tol
+                or sh.left + sh.width > Inches(x + w) + tol
+                or sh.top + sh.height > Inches(y + h) + tol):
+            raise DiagramOutOfBounds(
+                f"diagram {cell.get('name', 'draw')!r} put {sh.name!r} outside "
+                f"its {w:.2f}x{h:.2f}in cell. Draw relative to the x, y, w, h "
+                f"you are given, or give the row more weight.")
+
+
 CELL = {
     "prose": c_prose, "stat": c_stat, "list": c_list, "table": c_table,
     "panel": c_panel, "quote": c_quote, "heading": c_heading, "rule": c_rule,
     "callout": c_callout, "chips": c_chips, "card": c_card, "image": c_image,
     "from_to": c_from_to, "timeline": c_timeline, "tiers": c_tiers,
     "directions": c_directions, "bars": c_bars, "sightline": c_sightline,
+    "draw": c_draw,
 }
 
 # ---------------------------------------------------------------------------
@@ -556,7 +592,8 @@ def _render_scene(s, scene, x, y, w, h, tone, _path="scene", _depth=0):
             cw = avail_w * (float(c.get("span", 1.0)) / total_span)
             kind = c.get("kind", "prose")
             path = f"{_path}.row{ri + 1}.cell{ci + 1}"
-            _assert_cell_room(kind, cx, cy, cw, rh, path)
+            _assert_cell_room(kind, cx, cy, cw, rh, path,
+                              need=c.get("min_h") if kind == "draw" else None)
             if kind == "split":
                 _render_scene(s, c.get("scene", []), cx, cy, cw, rh, tone,
                               _path=path, _depth=_depth + 1)
@@ -746,7 +783,9 @@ def _scene_signature(slide):
         kinds = []
         for c in r.get("cells", []):
             k = c.get("kind", "prose")
-            if k == "split":
+            if k == "draw":
+                k = "draw:" + str(c.get("name") or getattr(c.get("fn"), "__name__", "diagram"))
+            elif k == "split":
                 inner = [ic.get("kind", "prose")
                          for ir in c.get("scene", [])
                          for ic in ir.get("cells", [])]
@@ -793,8 +832,9 @@ def audit_scene_shapes(plan, *, verbose=True, strict=False,
     Deliberate parallelism is not repetition: two slides walking two comparable
     routes should look alike so the reader can compare them. Declare it with
     `parallel_to: <earlier slide number>` and the shared skeleton is reported
-    as intentional rather than warned. Pairs only, so it cannot blanket-exempt
-    a deck.
+    as intentional rather than warned. For a series of three to five, give each
+    member the same `parallel_group: "<name>"`; members must share one skeleton
+    and a group past five warns, so neither can blanket-exempt a deck.
     """
     slides = plan.get("slides", [])
     scenes = []
@@ -836,7 +876,42 @@ def audit_scene_shapes(plan, *, verbose=True, strict=False,
             parallel[i] = tgt
             notes.append(f"slides {tgt} and {i} are deliberately parallel.")
 
+    # --- declared parallel groups -----------------------------------------
+    # A set of slides walking one series (three options, four markets, the
+    # questions a client asked) should share a skeleton so the reader sees the
+    # series. `parallel_group: "<name>"` declares it. The members must really
+    # match, and a group past five slides is a house layout, not a series.
+    groups = {}
+    for i, sig, sl in scenes:
+        g = sl.get("parallel_group")
+        if g:
+            groups.setdefault(str(g), []).append((i, sig))
+    group_of = {}
+    for g, members in groups.items():
+        idxs = [i for i, _ in members]
+        if len(members) < 2:
+            warnings.append(
+                f"parallel_group {g!r} has only slide {idxs[0]}. A series "
+                f"needs at least two slides.")
+            continue
+        if len({sig for _, sig in members}) > 1:
+            warnings.append(
+                f"parallel_group {g!r} (slides {', '.join(map(str, idxs))}) "
+                f"does not share one skeleton, so the series is invisible to "
+                f"the reader. Compose them alike or drop the group.")
+            continue
+        if len(members) > 5:
+            warnings.append(
+                f"parallel_group {g!r} spans {len(members)} slides. Past five "
+                f"a series reads as a template; split it or vary the later ones.")
+        for i in idxs:
+            group_of[i] = g
+        notes.append(f"slides {', '.join(map(str, idxs))} are a deliberate "
+                     f"series ({g!r}).")
+
     def _paired(a, b):
+        if a in group_of and group_of.get(a) == group_of.get(b):
+            return True
         return parallel.get(a) == b or parallel.get(b) == a
 
     # --- 1. consecutive repeats -------------------------------------------
@@ -903,7 +978,9 @@ def audit_scene_shapes(plan, *, verbose=True, strict=False,
     distinct = len(counts)
     if discipline and n >= 4:
         floor = -(-7 * n // 10)
-        allowed = floor - len(parallel)
+        in_series = sum(len(m) - 1 for g, m in groups.items()
+                        if g in set(group_of.values()))
+        allowed = floor - len(parallel) - in_series
         if distinct < allowed:
             warnings.append(
                 f"only {distinct} distinct skeletons across {n} scenes "
@@ -913,7 +990,7 @@ def audit_scene_shapes(plan, *, verbose=True, strict=False,
 
     result = {"scenes": n, "distinct": distinct,
               "signatures": [(i, sig) for i, sig, _ in scenes],
-              "skeletons": shelf, "parallel": parallel,
+              "skeletons": shelf, "parallel": parallel, "groups": group_of,
               "notes": notes, "warnings": warnings, "ok": not warnings}
 
     if verbose:
