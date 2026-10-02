@@ -7,6 +7,35 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.25.0] — 2026-10-02
+
+Marketplace 1.25.0: **CBRE I&L Toolkit 1.19.0**. UK I&L Toolkit unchanged at 1.8.0.
+
+### Changed — occupier brief, outreach angles, warehouse network mapper
+- **Local-language search for European companies.** `WebSearch` returns US results, so local
+  trade press, registries and regional papers rarely surface through it. The research agents in
+  all three skills now also search every European company fact in the local language through a
+  local search helper (`~/.claude/tools/eu_search.py`: Google and Bing set to that country and
+  language). On a 403, captcha or empty page they try the helper's `fetch`, then Playwright,
+  before recording a gap. Searches run one after another, never in parallel loops.
+- **Clean fallback where the helper is not installed.** The helper is not part of this plugin.
+  On a machine without it, the agents use `WebSearch` with local-language queries and
+  `WebFetch`, then Playwright on a blocked page, and note that local search was unavailable.
+- Occupier brief: each helper search counts against the 60-search budget. Warehouse network
+  mapper: the blind verifier also tries the helper and Playwright on a 403 before it labels a
+  source "unverifiable (link rot)".
+
+### Verification
+Smoke tests pass for the occupier brief (13 of 13) and outreach angles (all checks); all 11
+skills load.
+
+### Kept from the repo
+The upload carried older copies of most occupier-brief and outreach-angles files, so only the
+new research instructions were taken from it. Kept: the occupier-brief name (the upload still
+used the earlier pursuit-brief name), the quoted outreach-angles description (unquoted, its
+colon stops the skill loading), the hand-offs that no longer point at the removed
+account-briefing skill, and the occupier brief's update check.
+
 ## [1.24.0] — 2026-10-01
 
 Marketplace 1.24.0: **CBRE I&L Toolkit 1.18.0**. UK I&L Toolkit unchanged at 1.8.0.
@@ -1719,6 +1748,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.25.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.25.0
 [1.24.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.24.0
 [1.23.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.23.0
 [1.22.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.22.0

@@ -65,6 +65,7 @@ last line of the reply:          SEARCHES_USED: <n>
     source states it, in `figure_at_source`, before you restate it in your own words.
   - An estimate is labelled an estimate, with its basis.
   - A gap is a finding. Return `GAPS:` rather than a guess. You will not be judged on volume.
+  - **European web research.** `WebSearch` returns US results only, so local trade press, registries and regional papers rarely surface through it. For every European company fact, also search in the local language with `python "$HOME/.claude/tools/eu_search.py" search "<local-language query>" --country <ISO2>` (Google and Bing with that country and language; `--region wt-wt` for international). On a 403, captcha or empty page run `python "$HOME/.claude/tools/eu_search.py" fetch "<url>"`; if it returns `BLOCKED`, open the page in Playwright (`browser_navigate`, then `browser_snapshot`) before recording a gap. Pacing is built in: run searches one after another, never in parallel loops. Details: `~/.claude/tools/eu-web-research.md`. If `eu_search.py` is not installed on this machine (the command is not found, or it reports that `ddgs` is missing), use `WebSearch` with local-language queries and `WebFetch` instead, then Playwright on a blocked page, and note that local search was unavailable. Each `eu_search.py search` counts as one search against your cap.
   - Do not write prose for the brief. Return findings and sources; the orchestrator writes.
 
 ## Workstream A: the company and its numbers (cap 18)
