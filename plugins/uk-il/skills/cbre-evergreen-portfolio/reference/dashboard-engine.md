@@ -72,8 +72,9 @@ That alone gives:
 - a title band from `meta.client` / `meta.sector`, with a computed lede and source line;
 - up to six KPIs, each chosen only if this export can support it;
 - filters for every dimension with at least two values;
-- the default panels: map, lease expiry, rent, landlords, quality and EPC, and the unit table;
-- a CSV export.
+- the default panels: map, lease expiry, rent, landlords, quality and EPC, and the unit table.
+
+There is no CSV export button: the page never offers one (see `dashboard-craft.md` §11).
 
 There are no findings, because findings are analysis and analysis is yours.
 
@@ -419,6 +420,9 @@ List these in `panels` to use them.
 | `events` | block | The next lease events: expiries, breaks and reviews of running leases, and starts of leases not yet running, in the next `copy.events.years` (default 3), soonest first, up to `copy.events.max` (default 8). `DASH.stock.events.list(rows)` returns `[{r, d, kind}]`. |
 
 ### 4.10 CSV
+
+**The page has no CSV export button and must never get one.** The engine's CSV builder is
+kept only so the QA script `page_text.js` can read the table text; nothing on the page calls it.
 The stock columns are:
 `id, name, town, postcode, region, corridor, park, group, tenure, leaseState, landlord,
 landlordIntra, landlordOnRecord, size, siteAcres, quality, leaseStart, leaseTerm, expiry,

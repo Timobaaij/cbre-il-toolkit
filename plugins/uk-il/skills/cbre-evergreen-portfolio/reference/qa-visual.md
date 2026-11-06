@@ -519,7 +519,8 @@ place it appears, and each line is the block's whole sentence (a `<p>` with a
 `<b>` figure inside it is one line, not three fragments).
 - `view` is `story`, `dash`, `dash[landlord=X]` (a filtered state),
   `drawer:<unit>`, `popup` (map marker pop-ups and tooltips, `where` = the
-  unit id and short name) or `csv`.
+  unit id and short name) or `csv` (only with `csv: true`; the page itself has
+  no CSV export).
 - `where` is the nearest scene, section or panel id.
 - `kind` is:
   - the block's tag (`p`, `h2`, `li`, `td`, `dd`, `figcaption`, `button` …) or
@@ -527,11 +528,11 @@ place it appears, and each line is the block's whole sentence (a `<p>` with a
   - `tooltip` (an SVG `<title>` or a map tooltip), `aria-label`, `title`, `alt`;
   - `counter` (`shown=… final=…`, prefixed `MISMATCH` when the screen isn't at
     the final value; `counter·hidden` for a print twin);
-  - `header` / `row` (the CSV the reader downloads).
+  - `header` / `row` (the engine's table text, only with `csv: true`).
   - A `·sr` suffix marks screen-reader-only text, and `·hidden` marks text in
     the DOM that isn't rendered.
 
 The dump covers both views, every `<details>` opened, the first, largest and
 sparsest units' drawers plus any you name, the largest landlord's filtered KPI
-band and basis lines, every map pop-up, and the CSV. Produce it with reduced
+band and basis lines, and every map pop-up. Produce it with reduced
 motion on.

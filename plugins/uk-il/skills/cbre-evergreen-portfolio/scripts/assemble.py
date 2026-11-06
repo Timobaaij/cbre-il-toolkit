@@ -105,12 +105,6 @@ body{margin:0;background:#012A2D;font-family:'Calibre',-apple-system,'Segoe UI',
 .appbar-r{margin-left:auto;display:flex;align-items:center;gap:16px;min-width:0;
   font:400 12px/1 'Calibre',sans-serif;color:rgba(255,255,255,.78);white-space:nowrap}
 .appbar-r .ctx{min-width:0;max-width:min(40vw,560px);overflow:hidden;text-overflow:ellipsis}
-.btn-csv{font:400 10px/1 'Space Mono',monospace;letter-spacing:.14em;text-transform:uppercase;
-  background:transparent;border:1px solid var(--acc);color:var(--acc);padding:9px 13px;
-  min-height:34px;border-radius:2px;cursor:pointer;
-  transition:background 120ms cubic-bezier(.2,0,.2,1),color 120ms cubic-bezier(.2,0,.2,1)}
-.btn-csv:hover{background:var(--acc);color:var(--cbre)}
-.btn-csv:focus-visible{outline:2px solid #fff;outline-offset:2px}
 /* Focus moves to the new view's heading on switch; a programmatic target gets no ring. */
 #view-story [tabindex="-1"]:focus,#view-dash [tabindex="-1"]:focus{outline:none!important;box-shadow:none!important}
 #view-story,#view-dash{padding-top:var(--bar-h)}
@@ -121,10 +115,8 @@ body{margin:0;background:#012A2D;font-family:'Calibre',-apple-system,'Segoe UI',
 #view-story{isolation:isolate}
 body[data-view="story"]{background:#012A2D}
 body[data-view="dash"]{background:#F5F7F7}
-body[data-view="story"] .btn-csv{display:none}
 @media (max-width:860px){
   .appbar-r .ctx{display:none}
-  .btn-csv .lbl{display:none}
   .viewswitch button{padding:9px 11px;letter-spacing:.1em}
 }
 @media print{
@@ -242,8 +234,7 @@ def main():
     <button type="button" role="tab" id="tab-story" data-view="story" aria-selected="true" aria-controls="view-story">Storyline</button>
     <button type="button" role="tab" id="tab-dash" data-view="dash" aria-selected="false" aria-controls="view-dash">Dashboard</button>
   </nav>
-  <div class="appbar-r"><span class="ctx" title="{html.escape(ctx)}">{html.escape(ctx)}</span>
-    <button class="btn-csv" id="btnCsv" type="button"><span class="lbl">Export </span>CSV</button></div>
+  <div class="appbar-r"><span class="ctx" title="{html.escape(ctx)}">{html.escape(ctx)}</span></div>
 </div></header>"""
 
     desc = meta.get("description") or f"CBRE portfolio storyline and dashboard for {client}."

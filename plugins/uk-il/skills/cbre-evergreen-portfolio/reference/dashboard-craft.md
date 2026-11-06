@@ -199,15 +199,12 @@ Follow design-system.md §8. Dashboard specifics:
 - Pills, chips and selects are at least 44px tall. Links inside prose are
   exempt.
 
-## 11. CSV export
+## 11. No CSV export
 
-- The button lives in the app bar and shows only in the dashboard view. It
-  exports the **filtered, sorted** set.
-- Columns have human names with units ("Size sq ft", "Rent per sq ft",
-  "Eaves m") and include the Building ID and coordinates for traceability.
-- Nulls are **empty cells**: never 0, never "n/r". Dates are ISO. Prepend a
-  UTF-8 BOM so Excel reads £ and accents. Name the file
-  `<Client>_Portfolio_<n>_units.csv`.
+- The page **never** carries a CSV export button, or any other export or
+  download control. `assemble.py` does not render one; do not add one in the
+  app bar, a panel or the table, and do not accept a committee finding that
+  asks for one. The file shares the analysis, not the raw data.
 
 ## 12. Alternative panels: replace or add when the client needs them
 

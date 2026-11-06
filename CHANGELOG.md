@@ -7,6 +7,18 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.26.0] — 2026-11-06
+
+Marketplace 1.26.0: **UK I&L Toolkit 1.9.0**. CBRE I&L Toolkit unchanged at 1.19.0.
+
+### Changed — EverGreen portfolio
+- **No CSV export button, ever.** `assemble.py` no longer renders the "Export CSV" button in
+  the app bar, and its styles are gone. SKILL.md, the dashboard craft guide (§11) and the
+  engine reference now say the page must never carry a CSV export or any other download
+  control, even if a committee suggests one: the file shares the analysis, not the raw data.
+- The QA text dump (`page_text.js`) no longer captures a CSV by default, since readers can no
+  longer download one; `csv: true` still reads the engine's table text if needed.
+
 ## [1.25.0] — 2026-10-02
 
 Marketplace 1.25.0: **CBRE I&L Toolkit 1.19.0**. UK I&L Toolkit unchanged at 1.8.0.
@@ -1748,6 +1760,7 @@ and numguard work is included here).
   `cbre` marketplace (corporate decks, account briefings, property longlist, CBRE
   tone of voice), plus client-compatibility fixes.
 
+[1.26.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.26.0
 [1.25.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.25.0
 [1.24.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.24.0
 [1.23.0]: https://github.com/Timobaaij/cbre-il-toolkit/releases/tag/v1.23.0

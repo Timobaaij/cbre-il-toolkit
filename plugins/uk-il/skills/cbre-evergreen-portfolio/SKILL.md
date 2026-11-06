@@ -8,8 +8,12 @@ description: Turn a CBRE EverGreen Excel export into one client-ready HTML file,
 **Input:** an EverGreen building export (.xlsx, one row per building) for a UK
 occupier client. **Output:** one self-contained HTML file with a CBRE app bar and
 two views. **Storyline** (opens first) is a scroll narrative of the portfolio's
-argument. **Dashboard** is where the reader explores: map, filters, charts, table,
-unit drawer, CSV. The file opens by double-click, offline, with nothing to install.
+argument. **Dashboard** is where the reader explores: map, filters, charts, table and
+unit drawer. The file opens by double-click, offline, with nothing to install.
+
+**Never add a CSV export button** (or any other export or download control) to the
+page, in the app bar, the dashboard or anywhere else, even if a committee suggests
+one. The file shares the analysis, not the raw data.
 
 It is written for the client (CBRE speaking to the occupier), so every figure
 must be traceable and the design must hold up in front of a board.

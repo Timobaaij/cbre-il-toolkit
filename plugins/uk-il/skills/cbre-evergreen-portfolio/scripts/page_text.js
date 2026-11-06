@@ -30,10 +30,10 @@ async function pageText(opts) {
      Options: { filters: [['landlord','<Landlord>'], ...] (default: the largest
        landlord), drawers: ['<unit id>', '3', ...] (unit ids or 1-based table rows;
        the first, largest and sparsest units are always added), popups: true,
-       csv: true }
+       csv: false (the page has no CSV export; true reads the engine's internal table text) }
      It opens every <details>, scrolls the storyline so reveals and counters
      fire, and restores the page (storyline view, filters reset) at the end. */
-  opts = Object.assign({ filters: null, drawers: [], popups: true, csv: true }, (opts && typeof opts === 'object' && !opts.nodeType) ? opts : {});
+  opts = Object.assign({ filters: null, drawers: [], popups: true, csv: false }, (opts && typeof opts === 'object' && !opts.nodeType) ? opts : {});
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const clean = s => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
   const slug = s => clean(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').split('-').filter(Boolean).slice(0, 4).join('-');
@@ -239,7 +239,7 @@ async function pageText(opts) {
       await wait(300);
     }
 
-    // the CSV the reader downloads, in the DEFAULT state (a click above may have
+    // opt-in only: the page has no CSV export button. The engine's table text, in the DEFAULT state (a click above may have
     // filtered the table): capture the Blob instead of downloading it
     if (D() && D().reset) { D().reset(); await wait(300); }
     if (opts.csv && typeof window.__dashExportCsv === 'function') {
