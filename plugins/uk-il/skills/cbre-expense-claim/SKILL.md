@@ -115,7 +115,7 @@ line, with the receipt fields left null.
 - `merchant` is the trading name on the receipt, not the card descriptor. Tube
   charges go in as `TFL Travel Charge`, the user's own convention.
 - `description` is terse: `Dinner`, `Drinks`, `Lunch`, `Breakfast`, `Snack`,
-  `Tube Travel`, `In-flight WiFi`. Infer it from the line items and the time of
+  `Tube Travel`, `In-flight WiFi`, `Extra Bag`, `Seat Selection`. Infer it from the line items and the time of
   day, not from the merchant name. Add ` - context` only where the approver needs
   it, as in `Taxi - airport to hotel` or a split bill.
 - `time` is the printed receipt timestamp, `HH:MM`, and is documentation only.
@@ -230,8 +230,25 @@ what the spend was.
 | Road tolls, vignettes, congestion charge | `TOLLCNG` |
 | Parking | `PARKING` |
 | Hotel, and hotel city tax | `HOTEL` |
-| In-flight WiFi | `OTHER` |
+| Flight ticket (the fare itself), international or between countries | `AIRFARE` |
+| Flight ticket, domestic (both ends in one country) | `AIRFDOM` |
+| **Airline charges that are not the ticket**: extra or checked luggage, seat selection, in-flight WiFi, priority boarding, change or rebooking fees | `OTHER` |
 | **Food and drink, and anything not listed above** | `SUBSIST` |
+
+**Airfare is the ticket and nothing else.** Only the fare itself goes on
+`AIRFARE` or `AIRFDOM`. Every other charge an airline makes (luggage, seats,
+WiFi, priority boarding, change fees) goes on `OTHER`, even though it sits in
+the same airline email and looks like part of the flight. Food and drink bought
+on board is still food and drink, so `SUBSIST`. Read the line items, not the
+merchant name: an airline merchant does not mean `AIRFARE`.
+
+- A separate purchase (a bag added after booking, a seat bought at check-in, a
+  WiFi pass) is its own claim line, so it is its own `OTHER` line. Describe it
+  as `Extra Bag`, `Seat Selection`, `In-flight WiFi`.
+- One card charge that covers the ticket and extras together stays **one line**
+  typed `AIRFARE` (or `AIRFDOM`). Never split a charge, because the card amount
+  cannot be divided without inventing a number. Say so at STOP 1, naming the
+  line and the extras amount printed on the receipt, so the user can decide.
 
 Prefill food and drink as `SUBSIST`. Whether a given meal is really Client
 Entertaining or Staff Entertaining turns on who was at the table, which no rule

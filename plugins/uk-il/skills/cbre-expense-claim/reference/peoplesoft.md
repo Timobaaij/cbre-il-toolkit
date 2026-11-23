@@ -170,6 +170,9 @@ Lunches, `TOLLCNG` Tolls/Congestion Charge, `PHONECM` Phone/Comms,
 `CONFSEM` Conferences/Seminars, `MBRSHIP` Membership/Subscriptions,
 `ITEQUIP` IT Equipment, `LEGALPR` Legal & Professional Fees, `OTHER` Other.
 
+`AIRFARE` and `AIRFDOM` are for the flight ticket only. Luggage, seat
+selection, in-flight WiFi, priority boarding and change fees are `OTHER`.
+
 Codes come from column K of `Expenses.xlsx`, never from a guess here. The
 default mapping that prefills that column is in `SKILL.md`; whether a meal is
 Subsistence, Client Entertaining or Staff Entertaining is the user's call alone.

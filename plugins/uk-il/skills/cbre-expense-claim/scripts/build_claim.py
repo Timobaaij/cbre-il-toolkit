@@ -78,6 +78,9 @@ TYPE_HINT = "\n".join([
     "",
     "Food and drink is prefilled as Subsistence. Change it to Client",
     "Entertaining or Staff Entertaining where that is what it was.",
+    "",
+    "Airfare is the ticket only. Luggage, seats, WiFi and other airline",
+    "extras are Other.",
 ])
 ATTENDEE_HINT = "\n".join([
     "Who was there, besides you. You are added automatically.",

@@ -7,6 +7,21 @@ decide whether an installed plugin is out of date, so it is bumped on every rele
 
 How to update to the latest version is in the [README](./README.md#updating).
 
+## [1.27.0] — 2026-11-23
+
+Marketplace 1.27.0: **UK I&L Toolkit 1.9.1**. CBRE I&L Toolkit unchanged at 1.19.0.
+
+### Changed — Expense claim
+- **Airfare is the ticket only.** Luggage, seat selection, in-flight WiFi, priority boarding and
+  change fees now map to `OTHER`, not `AIRFARE`. The default mapping in SKILL.md gains explicit
+  rows for the ticket itself (`AIRFARE`, or `AIRFDOM` for domestic) and for airline extras, and
+  says to read the line items rather than the merchant name.
+- A separate extra (a bag or seat bought later) is its own `OTHER` line. A single card charge that
+  bundles ticket and extras stays one `AIRFARE` line and is flagged at STOP 1, since a charge
+  cannot be split without inventing a number.
+- The Expense Type tooltip in `Expenses.xlsx` and the type-code note in `reference/peoplesoft.md`
+  state the same rule.
+
 ## [1.26.0] — 2026-11-06
 
 Marketplace 1.26.0: **UK I&L Toolkit 1.9.0**. CBRE I&L Toolkit unchanged at 1.19.0.
